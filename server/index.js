@@ -9,13 +9,18 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { CONFIG, isEmailConfigured, validateProductionConfig } from './config.js';
 import { agents, webClients, userFileTabs, userStatsDeltas } from './context.js';
-import { invitationDb, userStatsDb, closeDb } from './database.js';
+import { invitationDb, userDb, userStatsDb, closeDb } from './database.js';
 import { registerApiRoutes } from './api.js';
 import { registerProxyRoutes, handleProxyWebSocketUpgrade } from './proxy.js';
 import { handleAgentConnection } from './ws-agent.js';
 import { handleWebConnection } from './ws-client.js';
 import { sendToWebClient } from './ws-utils.js';
 import { markAgentHeartbeatPing, markAgentHeartbeatStall, shouldTerminateAgentHeartbeat } from './heartbeat-policy.js';
+import { createSandboxReconciler } from './sandbox-reconciler.js';
+import {
+  closeSandboxAttestationListener,
+  startSandboxAttestationListener
+} from './sandbox-attestation-listener.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -62,6 +67,7 @@ const wss = new WebSocketServer({
 // =====================
 const AGENT_HEARTBEAT_INTERVAL = 30000;
 const CLIENT_HEARTBEAT_INTERVAL = 90000;
+const ACCOUNT_DELETION_RECONCILE_INTERVAL = 5000;
 
 let lastAgentHeartbeatTickAt = Date.now();
 setInterval(() => {
@@ -221,13 +227,57 @@ if (configValidation.warnings) {
   console.warn('');
 }
 
-server.listen(CONFIG.port, CONFIG.host, () => {
+let sandboxReconcileTimer = null;
+let sandboxAttestationListener = null;
+const accountDeletionTimer = setInterval(() => {
+  try {
+    userDb.reconcilePendingDeletions();
+  } catch (error) {
+    console.error('[AccountDeletion] Reconcile failed:', error.message);
+  }
+}, ACCOUNT_DELETION_RECONCILE_INTERVAL);
+accountDeletionTimer.unref?.();
+userDb.reconcilePendingDeletions();
+
+async function startServers() {
+  sandboxAttestationListener = await startSandboxAttestationListener({ config: CONFIG.sandbox });
+  if (sandboxAttestationListener) {
+    console.log(`Sandbox Host attestation listener running on https://${CONFIG.sandbox.hostAttestationListenerHost}:${CONFIG.sandbox.hostAttestationListenerPort}`);
+  }
+
+  try {
+    await new Promise((resolve, reject) => {
+      const onError = (err) => {
+        server.off('listening', onListening);
+        reject(err);
+      };
+      const onListening = () => {
+        server.off('error', onError);
+        resolve();
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(CONFIG.port, CONFIG.host);
+    });
+  } catch (err) {
+    await closeSandboxAttestationListener(sandboxAttestationListener);
+    sandboxAttestationListener = null;
+    throw err;
+  }
+
+  sandboxReconcileTimer = createSandboxReconciler({ config: CONFIG.sandbox }).start();
   console.log(`Server running on http://${CONFIG.host || '0.0.0.0'}:${CONFIG.port}`);
   console.log(`Auth mode: ${CONFIG.skipAuth ? 'SKIP (development)' : 'ENABLED'}`);
   if (!CONFIG.skipAuth) {
     console.log(`Users configured: ${CONFIG.users.length}`);
     console.log(`Email verification: ${isEmailConfigured() ? 'ENABLED' : 'DISABLED'}`);
   }
+}
+
+startServers().catch(err => {
+  console.error('[Startup] Failed to start server:', err);
+  if (sandboxReconcileTimer) clearInterval(sandboxReconcileTimer);
+  process.exit(1);
 });
 
 // =====================
@@ -235,6 +285,14 @@ server.listen(CONFIG.port, CONFIG.host, () => {
 // =====================
 async function gracefulShutdown(signal) {
   console.log(`\n[Shutdown] Received ${signal}, starting graceful shutdown...`);
+  if (sandboxReconcileTimer) clearInterval(sandboxReconcileTimer);
+  clearInterval(accountDeletionTimer);
+  try {
+    await closeSandboxAttestationListener(sandboxAttestationListener);
+    if (sandboxAttestationListener) console.log('[Shutdown] Sandbox attestation listener closed');
+  } catch (err) {
+    console.error('[Shutdown] Failed to close Sandbox attestation listener:', err.message);
+  }
 
   // 1. 通知所有 web client 服务即将更新
   const updateMsg = { type: 'server_updating' };

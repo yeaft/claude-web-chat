@@ -43,14 +43,22 @@ export function handleWebConnection(ws, url, req = {}) {
     role = result?.role === 'admin' ? 'admin' : (result ? 'pro' : null);
   }
 
-  // 获取或创建用户
+  // Authenticated mode must never recreate a deleted or pending account from
+  // a surviving JWT. SKIP_AUTH retains its development bootstrap behavior.
   if (authenticated && username) {
     try {
-      const user = userDb.getOrCreate(username);
-      userId = user.id;
-      userDb.updateLogin(userId);
+      const user = CONFIG.skipAuth
+        ? userDb.getOrCreate(username)
+        : userDb.getByUsername(username);
+      if (!user || (!CONFIG.skipAuth && user.deletion_state !== 'active')) {
+        authenticated = false;
+      } else {
+        userId = user.id;
+        userDb.updateLogin(userId);
+      }
     } catch (e) {
-      console.error('Failed to get/create user:', e.message);
+      authenticated = false;
+      console.error('Failed to resolve user:', e.message);
     }
   }
 
@@ -175,6 +183,11 @@ const WORKBENCH_TYPES = new Set([
 async function handleWebMessage(clientId, msg) {
   const client = webClients.get(clientId);
   if (!client || !client.authenticated) return;
+  if (!CONFIG.skipAuth && !userDb.isActive(client.userId)) {
+    client.authenticated = false;
+    client.ws.close(1008, 'Account disabled');
+    return;
+  }
 
   // feat-ws-plaintext-negotiation: early capability frame from new web
   // clients. Tells the server "you may stop encrypting outbound to me".

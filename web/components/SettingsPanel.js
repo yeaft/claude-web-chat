@@ -309,6 +309,67 @@ export default {
                 </div>
               </div>
             </div>
+
+            <!-- Managed Sandbox -->
+            <div v-show="activeTab === 'sandbox'" class="settings-pane">
+              <div class="sp-group">
+                <div v-if="sandboxLoading" class="sp-desc" role="status">{{ $t('common.loading') }}</div>
+                <div v-else-if="sandboxLoadError" class="sp-error" role="alert">
+                  {{ $t('settings.sandbox.error.SANDBOX_LOAD_FAILED') }}
+                </div>
+                <template v-else-if="sandboxSnapshot">
+                  <div class="sp-row">
+                    <div class="sp-row-left">
+                      <span class="sp-label sp-text-wrap">{{ sandboxSnapshot.agentName }}</span>
+                      <span class="sp-desc-small">{{ $t('settings.sandbox.size.' + sandboxSnapshot.sizeId) }}</span>
+                    </div>
+                    <span class="sp-badge">{{ $t('settings.sandbox.state.' + sandboxSnapshot.observedState) }}</span>
+                  </div>
+                  <p class="sp-desc" v-if="sandboxSnapshot.operation">
+                    {{ $t('settings.sandbox.stage.' + sandboxSnapshot.operation.stage) }}
+                  </p>
+                  <p class="sp-error" v-if="sandboxSnapshot.lastErrorCode">
+                    {{ $t('settings.sandbox.error.' + sandboxSnapshot.lastErrorCode) }}
+                  </p>
+                  <div class="sp-actions-row">
+                    <button v-if="sandboxSnapshot.observedState === 'running'" class="btn-secondary" @click="requestSandboxAction('stop')" :disabled="sandboxSubmitting">
+                      {{ $t('settings.sandbox.stop') }}
+                    </button>
+                    <button v-if="sandboxSnapshot.observedState === 'stopped'" class="btn-primary" @click="requestSandboxAction('start')" :disabled="sandboxSubmitting">
+                      {{ $t('settings.sandbox.start') }}
+                    </button>
+                    <button v-if="['failed', 'remove_failed'].includes(sandboxSnapshot.observedState)" class="btn-secondary" @click="requestSandboxAction('retry')" :disabled="sandboxSubmitting">
+                      {{ $t('settings.sandbox.retry') }}
+                    </button>
+                    <button class="btn-secondary" @click="confirmRemoveSandbox" :disabled="sandboxSubmitting">
+                      {{ $t('settings.sandbox.remove') }}
+                    </button>
+                  </div>
+                </template>
+                <template v-else>
+                  <p class="sp-desc">{{ $t('settings.sandbox.description') }}</p>
+                  <div v-if="!sandboxCapability.available" class="sp-info">
+                    {{ sandboxUnavailableText }}
+                  </div>
+                  <template v-else>
+                    <label class="sp-label" for="sandbox-agent-name">{{ $t('settings.sandbox.agentName') }}</label>
+                    <input id="sandbox-agent-name" class="sp-input" v-model="sandboxAgentName" maxlength="64">
+                    <label class="sp-label" for="sandbox-size">{{ $t('settings.sandbox.sizeLabel') }}</label>
+                    <select id="sandbox-size" v-model="sandboxSizeId">
+                      <option v-for="size in sandboxCapability.catalog" :key="size.id" :value="size.id">
+                        {{ $t('settings.sandbox.size.' + size.id) }} — {{ size.cpuMillis / 1000 }} CPU / {{ size.memoryMiB / 1024 }} GiB / {{ size.diskGiB }} GB
+                      </option>
+                    </select>
+                    <div class="sp-actions-row">
+                      <button class="btn-primary" @click="createSandbox" :disabled="sandboxSubmitting">
+                        {{ sandboxSubmitting ? $t('settings.sandbox.creating') : $t('settings.sandbox.enable') }}
+                      </button>
+                    </div>
+                  </template>
+                </template>
+              </div>
+            </div>
+
             <div v-show="activeTab === 'invitations'" class="settings-pane" v-if="authStore.role === 'admin'">
               <div class="sp-group">
                 <div class="sp-row">
@@ -505,7 +566,15 @@ export default {
       telemetrySaving: false,
       ssoBoundMessage: '',
       ssoConflictMessage: '',
-      qrDataUrl: ''
+      qrDataUrl: '',
+      sandboxLoading: false,
+      sandboxSubmitting: false,
+      sandboxLoadError: false,
+      sandboxCapability: { available: false, reasonCode: 'SANDBOX_DISABLED', catalog: [] },
+      sandboxSnapshot: null,
+      sandboxAgentName: '',
+      sandboxSizeId: 'normal',
+      sandboxIdempotencyKeys: {}
     };
   },
   computed: {
@@ -535,7 +604,8 @@ export default {
       const tabs = [
         { key: 'general', label: this.$t('settings.tabs.general') },
         { key: 'account', label: this.$t('settings.tabs.account') },
-        { key: 'security', label: this.$t('settings.tabs.security') }
+        { key: 'security', label: this.$t('settings.tabs.security') },
+        { key: 'sandbox', label: this.$t('settings.tabs.sandbox') }
       ];
       if (this.authStore.role === 'admin' || this.authStore.role === 'pro') {
         tabs.push({ key: 'yeaft', label: this.$t('settings.tabs.yeaft') });
@@ -635,6 +705,15 @@ export default {
           identity: linked.get(r.key) || null
         }));
     },
+    sandboxUnavailableText() {
+      const code = this.sandboxCapability.reasonCode || 'SANDBOX_CAPACITY_UNAVAILABLE';
+      const keys = {
+        SANDBOX_DISABLED: 'disabled',
+        SANDBOX_NOT_ENTITLED: 'notEntitled',
+        SANDBOX_CAPACITY_UNAVAILABLE: 'capacityUnavailable'
+      };
+      return this.$t('settings.sandbox.unavailable.' + (keys[code] || 'capacityUnavailable'));
+    },
     qrModalTitle() {
       const p = this.authStore.qrPanel?.provider;
       if (p === 'alipay') return this.$t('login.qr.titleAlipay');
@@ -650,13 +729,18 @@ export default {
     }
     return undefined;
   },
+  beforeUnmount() {
+    this.stopSandboxPolling();
+  },
   watch: {
     visible(val) {
       if (val) {
         this.applyInitialEntryPoint();
         this.loadTelemetry();
         this.loadData();
+        if (this.activeTab === 'sandbox') this.loadSandbox();
       } else {
+        this.stopSandboxPolling();
         // Closing settings while a bind QR is up should tear it down too.
         if (this.authStore.qrPanel) this.cancelQrBind();
       }
@@ -665,6 +749,8 @@ export default {
       if (tab === 'invitations' && this.authStore.role === 'admin') {
         this.loadInvitations();
       }
+      if (tab === 'sandbox') this.loadSandbox();
+      else this.stopSandboxPolling();
     },
     // When the bind QR completes (server reports status='bound'), close the
     // modal, refresh the linked-identities list, and surface a success toast.
@@ -687,6 +773,131 @@ export default {
     }
   },
   methods: {
+    sandboxNeedsPolling(snapshot = this.sandboxSnapshot) {
+      return snapshot?.operation?.status === 'pending' || snapshot?.operation?.status === 'running';
+    },
+
+    syncSandboxPolling() {
+      if (!this.visible || this.activeTab !== 'sandbox' || !this.sandboxNeedsPolling()) {
+        this.stopSandboxPolling();
+        return;
+      }
+      if (!this._sandboxPollTimer) {
+        this._sandboxPollTimer = setTimeout(async () => {
+          this._sandboxPollTimer = null;
+          await this.loadSandbox({ background: true });
+        }, 2000);
+      }
+    },
+
+    stopSandboxPolling() {
+      if (this._sandboxPollTimer) {
+        clearTimeout(this._sandboxPollTimer);
+        this._sandboxPollTimer = null;
+      }
+    },
+
+    async loadSandbox({ background = false } = {}) {
+      if (!background) this.sandboxLoading = true;
+      if (!background) this.sandboxLoadError = false;
+      try {
+        const headers = this.getHeaders();
+        const [capabilityResponse, snapshotResponse] = await Promise.all([
+          fetch('/api/sandbox/capability', { headers }),
+          fetch('/api/sandbox', { headers })
+        ]);
+        if (!capabilityResponse.ok || !snapshotResponse.ok) throw new Error('SANDBOX_LOAD_FAILED');
+        this.sandboxCapability = await capabilityResponse.json();
+        this.sandboxSnapshot = (await snapshotResponse.json()).sandbox;
+        if (!this.sandboxAgentName && this.profile?.username) {
+          this.sandboxAgentName = this.profile.username + '-sandbox';
+        }
+        if (!this.sandboxCapability.catalog.some(size => size.id === this.sandboxSizeId)) {
+          this.sandboxSizeId = this.sandboxCapability.catalog[0]?.id || 'normal';
+        }
+      } catch {
+        this.sandboxLoadError = true;
+        this.sandboxCapability = { available: false, reasonCode: 'SANDBOX_CAPACITY_UNAVAILABLE', catalog: [] };
+        if (background) this.stopSandboxPolling();
+      } finally {
+        if (!background) this.sandboxLoading = false;
+        this.syncSandboxPolling();
+      }
+    },
+
+    sandboxIdempotencyKey(action) {
+      if (!this.sandboxIdempotencyKeys[action]) {
+        this.sandboxIdempotencyKeys[action] = crypto.randomUUID();
+      }
+      return this.sandboxIdempotencyKeys[action];
+    },
+
+    clearSandboxIdempotencyKey(action) {
+      delete this.sandboxIdempotencyKeys[action];
+    },
+
+    async createSandbox() {
+      if (!this.sandboxCapability.available || this.sandboxSubmitting) return;
+      this.sandboxSubmitting = true;
+      try {
+        const response = await fetch('/api/sandbox', {
+          method: 'POST',
+          headers: {
+            ...this.getHeaders(),
+            'Content-Type': 'application/json',
+            'Idempotency-Key': this.sandboxIdempotencyKey('create')
+          },
+          body: JSON.stringify({ agentName: this.sandboxAgentName, sizeId: this.sandboxSizeId })
+        });
+        const body = await response.json();
+        if (!response.ok) {
+          this.clearSandboxIdempotencyKey('create');
+          throw new Error(body.code || 'SANDBOX_CREATE_FAILED');
+        }
+        this.clearSandboxIdempotencyKey('create');
+        this.sandboxSnapshot = body.snapshot;
+        this.syncSandboxPolling();
+      } catch (err) {
+        this.message = this.$t('settings.sandbox.error.' + (err.message || 'SANDBOX_CREATE_FAILED'));
+        this.isError = true;
+      } finally {
+        this.sandboxSubmitting = false;
+      }
+    },
+
+    confirmRemoveSandbox() {
+      if (window.confirm(this.$t('settings.sandbox.removeConfirm'))) {
+        this.requestSandboxAction('remove');
+      }
+    },
+
+    async requestSandboxAction(action) {
+      if (this.sandboxSubmitting) return;
+      this.sandboxSubmitting = true;
+      try {
+        const response = await fetch('/api/sandbox/' + action, {
+          method: 'POST',
+          headers: {
+            ...this.getHeaders(),
+            'Idempotency-Key': this.sandboxIdempotencyKey(action)
+          }
+        });
+        const body = await response.json();
+        if (!response.ok) {
+          this.clearSandboxIdempotencyKey(action);
+          throw new Error(body.code || 'SANDBOX_ACTION_FAILED');
+        }
+        this.clearSandboxIdempotencyKey(action);
+        this.sandboxSnapshot = body.snapshot;
+        this.syncSandboxPolling();
+      } catch (err) {
+        this.message = this.$t('settings.sandbox.error.' + (err.message || 'SANDBOX_ACTION_FAILED'));
+        this.isError = true;
+      } finally {
+        this.sandboxSubmitting = false;
+      }
+    },
+
     trackOverlayPointerDown,
     trackOverlayPointerUp,
     clearOverlayPointerGesture,
