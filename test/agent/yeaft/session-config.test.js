@@ -70,6 +70,34 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
 });
 
+describe('Yeaft Session context lifetime', () => {
+  it('releases settled route-promise message keys', async () => {
+    const pending = Promise.resolve('done');
+    __testHooks.registerRoutePromiseForTest('route-msg-lifetime', pending);
+    expect(__testHooks.routePromiseEntryCountForTest()).toBe(1);
+
+    await pending;
+    await Promise.resolve();
+
+    expect(__testHooks.routePromiseEntryCountForTest()).toBe(0);
+  });
+
+  it('closes a newly opened handle when the cached coordinator already owns one', () => {
+    const sessionId = 'session-handle-lifetime';
+    const first = { getMeta: () => ({ id: sessionId, roster: [] }), close: vi.fn() };
+    const unused = { getMeta: () => ({ id: sessionId, roster: [] }), close: vi.fn() };
+
+    const cached = __testHooks.getOrCreateSessionContextForTest(sessionId, first);
+    const reused = __testHooks.getOrCreateSessionContextForTest(sessionId, unused);
+
+    expect(reused).toBe(cached);
+    expect(first.close).not.toHaveBeenCalled();
+    expect(unused.close).toHaveBeenCalledTimes(1);
+    __testHooks.clearSessionContextForTest(sessionId);
+    expect(first.close).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('Yeaft session-scoped model config', () => {
   it('normalizes and persists bounded telemetry settings without touching other config', () => {
     expect(normaliseTelemetrySection({
