@@ -147,6 +147,143 @@ function makeStore() {
 }
 
 describe('message flow regressions', () => {
+  it('does not refresh Work Center for routine agent inventory broadcasts', () => {
+    const store = useChatStore();
+    store.workCenterOpen = true;
+    store.workCenterAgentId = 'agent-work-center';
+    store.currentAgent = 'agent-work-center';
+    store.currentView = 'yeaft';
+    store._hasHandledAgentList = true;
+    store._yeaftReconnectCatchUpPending = false;
+    store.agents = [{
+      id: 'agent-work-center',
+      name: 'server',
+      online: true,
+      version: '1.0.369',
+      capabilities: ['work_center'],
+      conversations: [],
+    }];
+    store.currentAgentInfo = store.agents[0];
+    store.listWorkItems = vi.fn(() => Promise.resolve([]));
+    store.loadOpenedYeaftSessionsForConnectedAgents = vi.fn();
+    store.requestYeaftSessionBootstrap = vi.fn();
+    store.sendWsMessage = vi.fn(() => true);
+
+    handleMessage(store, {
+      type: 'agent_list',
+      agents: [{ ...store.agents[0], latency: 12 }],
+    });
+    handleMessage(store, {
+      type: 'agent_list',
+      agents: [{ ...store.agents[0], latency: 18 }],
+    });
+
+    expect(store.listWorkItems).not.toHaveBeenCalled();
+  });
+
+  it('refreshes Work Center once after a genuine reconnect and preserves active filters', () => {
+    const store = useChatStore();
+    const activeFilters = {
+      lane: 'active',
+      keyword: 'reconnect',
+      vpId: 'vp-reviewer',
+    };
+    store.workCenterOpen = true;
+    store.workCenterAgentId = 'agent-work-center';
+    store.currentAgent = 'agent-work-center';
+    store.currentView = 'chat';
+    store.recoveryDismissed = true;
+    store._hasHandledAgentList = false;
+    store._yeaftReconnectCatchUpPending = true;
+    store._workCenterListFiltersByAgent = {
+      'agent-work-center': activeFilters,
+    };
+    store.agents = [{
+      id: 'agent-work-center',
+      name: 'server',
+      online: true,
+      version: '1.0.369',
+      capabilities: ['work_center'],
+      conversations: [],
+    }];
+    store.currentAgentInfo = store.agents[0];
+    store.listWorkItems = vi.fn(() => Promise.resolve([]));
+    store.loadOpenedYeaftSessionsForConnectedAgents = vi.fn();
+    store.requestYeaftSessionBootstrap = vi.fn();
+    store.sendWsMessage = vi.fn(() => true);
+
+    handleMessage(store, {
+      type: 'agent_list',
+      agents: [{ ...store.agents[0], latency: 12 }],
+    });
+
+    expect(store.listWorkItems).toHaveBeenCalledTimes(1);
+    expect(store.listWorkItems).toHaveBeenCalledWith('agent-work-center', activeFilters);
+    expect(store._yeaftReconnectCatchUpPending).toBe(false);
+    expect(store.sendWsMessage).toHaveBeenCalledWith({
+      type: 'select_agent',
+      agentId: 'agent-work-center',
+      silent: true,
+    });
+
+    handleMessage(store, {
+      type: 'agent_list',
+      agents: [{ ...store.agents[0], latency: 18 }],
+    });
+
+    expect(store.listWorkItems).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes an open Work Center once when its Agent process comes back online', () => {
+    const store = useChatStore();
+    const activeFilters = { lane: 'needs_attention', keyword: 'restart' };
+    store.workCenterOpen = true;
+    store.workCenterAgentId = 'agent-work-center';
+    store.currentAgent = 'agent-work-center';
+    store.currentView = 'chat';
+    store.recoveryDismissed = true;
+    store._hasHandledAgentList = true;
+    store._yeaftReconnectCatchUpPending = false;
+    store._yeaftAgentSeen = {
+      id: 'agent-work-center',
+      online: false,
+      version: '1.0.369',
+    };
+    store._workCenterListFiltersByAgent = {
+      'agent-work-center': activeFilters,
+    };
+    store.agents = [];
+    store.currentAgentInfo = null;
+    store.listWorkItems = vi.fn(() => Promise.resolve([]));
+    store.loadOpenedYeaftSessionsForConnectedAgents = vi.fn();
+    store.requestYeaftSessionBootstrap = vi.fn();
+    store.sendWsMessage = vi.fn(() => true);
+
+    const onlineAgent = {
+      id: 'agent-work-center',
+      name: 'server',
+      online: true,
+      version: '1.0.370',
+      capabilities: ['work_center'],
+      conversations: [],
+    };
+    handleMessage(store, {
+      type: 'agent_list',
+      agents: [onlineAgent],
+    });
+
+    expect(store.listWorkItems).toHaveBeenCalledTimes(1);
+    expect(store.listWorkItems).toHaveBeenCalledWith('agent-work-center', activeFilters);
+    expect(store._yeaftReconnectCatchUpPending).toBe(false);
+
+    handleMessage(store, {
+      type: 'agent_list',
+      agents: [{ ...onlineAgent, latency: 24 }],
+    });
+
+    expect(store.listWorkItems).toHaveBeenCalledTimes(1);
+  });
+
   it('prunes completed Yeaft resident turns at terminal metadata boundaries', async () => {
     const { useChatStore } = await import('../../web/stores/chat.js');
     const store = useChatStore();

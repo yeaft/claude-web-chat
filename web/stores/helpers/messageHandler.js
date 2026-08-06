@@ -243,12 +243,9 @@ export function handleMessage(store, msg) {
 
     case 'agent_list':
       handleAgentList(store, msg);
-      // Legacy Servers broadcast agent_list before sending any Session slices.
-      // Only an actual slice can start the quiet completion window; otherwise a
-      // slow first slice would turn the current live inventory into a fake empty one.
-      if (store.workCenterOpen && store.workCenterAgentId) {
-        store.listWorkItems(store.workCenterAgentId).catch(() => {});
-      }
+      // Work Center projects live scheduler changes through work_center_event.
+      // Routine inventory frames also carry latency/status updates, so refreshing
+      // here turns every broadcast into a visible loading → empty/content cycle.
       break;
 
     case 'yeaft_session_hydrate': {
