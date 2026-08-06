@@ -561,15 +561,11 @@ describe('Yeaft history result rendered reveal', () => {
     expect(scrollTop).toBe(pausedTop);
     expect(messageList.get('.scroll-to-latest').classes()).not.toContain('is-hidden');
 
-    // Only the strict 2px boundary or the explicit latest button can resume.
+    // Reaching the bottom manually remains paused. Only the explicit latest
+    // button restores live following.
     scrollTop = 950;
     scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 1 }));
     scrollTop = 978;
-    scroller.dispatchEvent(new Event('scroll'));
-    await Vue.nextTick();
-    expect(messageList.get('.scroll-to-latest').classes()).toContain('is-hidden');
-    scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 }));
-    scrollTop = 940;
     scroller.dispatchEvent(new Event('scroll'));
     await Vue.nextTick();
     expect(messageList.get('.scroll-to-latest').classes()).not.toContain('is-hidden');

@@ -610,6 +610,21 @@ export class LLMAdapter {
   }
 
   /**
+   * Capture a stream request before a caller crosses an async boundary.
+   *
+   * Implementations with mutable runtime routing should override this to freeze
+   * their dispatch table at capture time. The base implementation retains
+   * compatibility with legacy adapters by calling stream() without advancing
+   * its async iterator.
+   *
+   * @param {object} params
+   * @returns {AsyncGenerator<StreamEvent>}
+   */
+  captureStream(params) {
+    return this.stream(params);
+  }
+
+  /**
    * Make a single model call without tools (for side queries like summarization).
    *
    * @param {{ model: string, system: string, messages: UnifiedMessage[], maxTokens?: number, signal?: AbortSignal }} params

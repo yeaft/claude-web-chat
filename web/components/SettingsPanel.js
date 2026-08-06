@@ -1351,13 +1351,6 @@ export default {
 
     onLlmMessage(msg, isError) {
       this.showMessage(msg, isError);
-    },
-    onYeaftLlmSaved() {
-      // Mirror old YeaftSettings: bounce engine so new LLM config takes effect.
-      const agentId = this.chatStore?.currentAgent;
-      if (agentId) {
-        this.chatStore.sendWsMessage({ type: 'yeaft_reset', agentId });
-      }
     }
   }
 };

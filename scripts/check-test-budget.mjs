@@ -7,6 +7,10 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { CORE_TEST_FILES, REVIEWED_TEST_FILES, isTestFile, normalizeTestPath } from './test-suite-manifest.mjs';
 
+// The core suite deliberately stays under this cap to keep the release gate
+// bounded. Add coverage by extending the closest existing test when possible.
+export const TEST_CASE_LIMIT = 500;
+
 function walkFiles(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
     const path = resolve(directory, entry.name);

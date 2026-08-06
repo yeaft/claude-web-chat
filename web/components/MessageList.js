@@ -1383,7 +1383,6 @@ export default {
     const isAtBottom = Vue.ref(true);
     const autoFollowPaused = Vue.ref(false);
     const SCROLL_THRESHOLD = virtualTranscriptDefaults.bottomThreshold;
-    const SCROLL_RESUME_THRESHOLD = virtualTranscriptDefaults.resumeBottomThreshold;
     let loadMoreArmed = true;
 
     const hasStreamingMessage = Vue.computed(() => {
@@ -1844,13 +1843,6 @@ export default {
       });
     };
 
-    const setAutoFollowFromScrollState = ({ scrollTop, scrollHeight, clientHeight }) => {
-      const atBottom = shouldFollowTranscriptBottom({ scrollTop, scrollHeight, clientHeight, threshold: SCROLL_THRESHOLD });
-      isAtBottom.value = atBottom;
-      autoFollowPaused.value = !atBottom;
-      return atBottom;
-    };
-
     const resumeAutoFollow = () => {
       autoFollowPaused.value = false;
       isAtBottom.value = true;
@@ -1973,16 +1965,17 @@ export default {
       userScrollEndTimer = setTimeout(clearUserScrollInteraction, USER_SCROLL_END_FALLBACK_MS);
     };
 
-    const markUserScrollIntent = (event) => {
+    const markUserScrollIntent = () => {
+      pauseAutoFollow();
       userScrollInteractionActive = true;
       virtualTranscriptRef.value?.clearTargetAnchor?.();
       lastObservedScrollTop = Number(containerRef.value?.scrollTop || 0);
-      if (Number(event?.deltaY) < 0) pauseAutoFollow();
       scheduleUserScrollInteractionEnd();
     };
 
     const onPointerScrollStart = (event) => {
       if (!isTranscriptScrollbarPointer(event, containerRef.value)) return;
+      pauseAutoFollow();
       pointerScrollActive = true;
       userScrollInteractionActive = true;
       virtualTranscriptRef.value?.clearTargetAnchor?.();
@@ -2000,7 +1993,7 @@ export default {
 
     const onScrollKey = (event) => {
       if (!shouldMarkTranscriptKeyScroll(event, containerRef.value)) return;
-      if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') pauseAutoFollow();
+      pauseAutoFollow();
       userScrollInteractionActive = true;
       virtualTranscriptRef.value?.clearTargetAnchor?.();
       scheduleUserScrollInteractionEnd();
@@ -2008,21 +2001,13 @@ export default {
 
     const onScroll = () => {
       const currentScrollTop = Number(containerRef.value?.scrollTop || 0);
-      const direction = userScrollInteractionActive ? currentScrollTop - lastObservedScrollTop : 0;
       const wasFollowing = !autoFollowPaused.value;
       lastObservedScrollTop = currentScrollTop;
       const atBottom = checkIfAtBottom();
-      const reachedBottom = shouldFollowTranscriptBottom({
-        scrollTop: currentScrollTop,
-        scrollHeight: containerRef.value?.scrollHeight || 0,
-        clientHeight: containerRef.value?.clientHeight || 0,
-        threshold: SCROLL_RESUME_THRESHOLD,
-      });
       isAtBottom.value = resolveTranscriptUserFollow({
         following: wasFollowing,
         atBottom,
-        resumeBoundaryReached: reachedBottom,
-        direction,
+        userScroll: userScrollInteractionActive,
       });
       autoFollowPaused.value = !isAtBottom.value;
       virtualTranscriptRef.value?.setBottomFollowEnabled?.(isAtBottom.value);
@@ -2048,6 +2033,7 @@ export default {
       // being hydrated, make the intent explicit: stay on the newest loaded
       // row, and when the in-flight page lands the existing smart-scroll
       // watchers will keep us pinned because auto-follow has resumed.
+      clearUserScrollInteraction();
       resumeAutoFollow();
       Vue.nextTick(scrollToBottom);
     };
