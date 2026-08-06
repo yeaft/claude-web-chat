@@ -195,7 +195,7 @@ describe('Yeaft session-scoped model config', () => {
     }
   }
 
-  async function assertMcpReloadRetiresInactiveRuntime({ active = 'project' } = {}) {
+  async function assertMcpReloadRuntimeCacheBehavior({ active = 'project', targetName = null } = {}) {
     const root = makeDir();
     const projectWorkDir = 'project-runtime';
     const configPath = join(root, 'config.json');
@@ -289,12 +289,17 @@ describe('Yeaft session-scoped model config', () => {
         names: ['github'],
       });
 
-      // Simulate an Agent config/CLI/external edit, then exercise the normal
-      // MCP Settings Reload all wire path rather than the CRUD writers.
-      writeFileSync(configPath, JSON.stringify({ mcpServers: [], plugins: {} }));
+      const requestId = `reload-${targetName || 'all'}-${active}`;
+      if (!targetName) {
+        // Full reload applies an Agent config/CLI/external edit, so it must
+        // retire inactive caches before a later runtime switch can revive the
+        // old server.
+        writeFileSync(configPath, JSON.stringify({ mcpServers: [], plugins: {} }));
+      }
       await handleMessage({
         type: 'yeaft_mcp_reload',
-        requestId: `reload-retire-${active}`,
+        requestId,
+        ...(targetName ? { name: targetName } : {}),
       });
       await vi.waitFor(() => expect(sent.some(frame => (
         frame.type === 'yeaft_mcp_updated' && frame.reason === 'reload'
@@ -304,35 +309,48 @@ describe('Yeaft session-scoped model config', () => {
       const reloadBroadcast = sent.filter(frame => (
         frame.type === 'yeaft_mcp_updated' && frame.reason === 'reload'
       )).at(-1);
+      const expectedNames = targetName ? ['github'] : [];
       expect(reloadResult).toMatchObject({
-        requestId: `reload-retire-${active}`,
-        servers: [],
-        runtime: { connected: false, perServer: [] },
+        requestId,
+        servers: targetName ? [expect.objectContaining({ name: 'github' })] : [],
+        runtime: { connected: !!targetName, perServer: targetName ? [expect.objectContaining({ name: 'github' })] : [] },
         error: null,
       });
       expect(reloadBroadcast).toMatchObject({
-        servers: [],
-        runtime: { connected: false, perServer: [] },
+        servers: targetName ? [expect.objectContaining({ name: 'github' })] : [],
+        runtime: { connected: !!targetName, perServer: targetName ? [expect.objectContaining({ name: 'github' })] : [] },
         error: null,
       });
-      expect(managers[activeIndex].names()).toEqual([]);
-      expect(managers[inactiveIndex].names()).toEqual([]);
+      expect(managers[activeIndex].names()).toEqual(expectedNames);
+      expect(managers[inactiveIndex].names()).toEqual(expectedNames);
 
-      // A real next turn must rebuild the retired inactive runtime from the
-      // current disk config, not merely fall back to an empty manager.
-      if (active === 'base') {
-        await __testHooks.scheduleProjectRuntimeLoadForTest(projectWorkDir);
-        __testHooks.activateProjectRuntimeForTest(projectWorkDir);
+      if (targetName) {
+        // Per-row reload is a local reconnect only. The inactive cache remains
+        // warm and switching runtimes must not create a third manager.
+        if (active === 'base') __testHooks.activateProjectRuntimeForTest(projectWorkDir);
+        else __testHooks.activateBaseRuntimeForTest();
+        expect(managers).toHaveLength(2);
+        expect(hotSwapSnapshots.at(-1)).toMatchObject({
+          label: `runtime-${inactiveIndex}`,
+          names: ['github'],
+        });
       } else {
-        await __testHooks.scheduleBaseRuntimeLoadForTest();
-        __testHooks.activateBaseRuntimeForTest();
+        // A real next turn must rebuild the retired inactive runtime from the
+        // current disk config, not merely fall back to an empty manager.
+        if (active === 'base') {
+          await __testHooks.scheduleProjectRuntimeLoadForTest(projectWorkDir);
+          __testHooks.activateProjectRuntimeForTest(projectWorkDir);
+        } else {
+          await __testHooks.scheduleBaseRuntimeLoadForTest();
+          __testHooks.activateBaseRuntimeForTest();
+        }
+        expect(managers).toHaveLength(3);
+        expect(managers[2].names()).toEqual([]);
+        expect(hotSwapSnapshots.at(-1)).toMatchObject({
+          label: 'runtime-2',
+          names: [],
+        });
       }
-      expect(managers).toHaveLength(3);
-      expect(managers[2].names()).toEqual([]);
-      expect(hotSwapSnapshots.at(-1)).toMatchObject({
-        label: 'runtime-2',
-        names: [],
-      });
     } finally {
       __testHooks.resetRuntimeFactoriesForTest();
       ctx.ws = previousTransport.ws;
@@ -558,11 +576,19 @@ describe('Yeaft session-scoped model config', () => {
   });
 
   it('does not let full MCP reload revive a stale base cache after a project runtime is active', async () => {
-    await assertMcpReloadRetiresInactiveRuntime({ active: 'project' });
+    await assertMcpReloadRuntimeCacheBehavior({ active: 'project' });
   });
 
   it('does not let full MCP reload revive a stale project cache after the base runtime is active', async () => {
-    await assertMcpReloadRetiresInactiveRuntime({ active: 'base' });
+    await assertMcpReloadRuntimeCacheBehavior({ active: 'base' });
+  });
+
+  it('keeps the base cache warm after named MCP reload on an active project runtime', async () => {
+    await assertMcpReloadRuntimeCacheBehavior({ active: 'project', targetName: 'github' });
+  });
+
+  it('keeps the project cache warm after named MCP reload on an active base runtime', async () => {
+    await assertMcpReloadRuntimeCacheBehavior({ active: 'base', targetName: 'github' });
   });
 
   it('rejects MCP reload before touching a live runtime when config is invalid', async () => {
