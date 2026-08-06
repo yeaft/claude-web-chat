@@ -456,9 +456,9 @@ export function classifyFetchError(err, opts = {}) {
  * NOTE: there is intentionally NO body / response truncation here. The whole
  * point of the "copy request" debug feature is to capture EXACTLY what we
  * sent to the LLM. A truncated copy is worse than useless — it lies about
- * what the model saw. If the resulting payload is too large for the debug
- * store, the fix is to bound retention (drop oldest turns), not to mutilate
- * individual payloads. See `MAX_YEAFT_DEBUG_LOOPS` in `web/stores/chat.js`.
+ * what the model saw. Full payloads therefore stay in the Agent's bounded,
+ * file-backed debug trace and are fetched for one Turn on demand; live browser
+ * events carry summary metadata only.
  *
  * @param {{ url: string, method: string, headers: object, body: any }} req
  * @returns {{ url: string, method: string, headers: object, body: any }}

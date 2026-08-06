@@ -344,6 +344,65 @@ describe('Yeaft load-history first paint', () => {
     }
   });
 
+  it('keeps live debug events lightweight and leaves full detail in the persisted trace', () => {
+    sent.length = 0;
+    const handlerCtx = {
+      sessionId: 'session-fast',
+      vpId: 'vp-linus',
+      turnId: 'turn-large-debug',
+      threadId: 'main',
+      resetQueryTimer: vi.fn(),
+    };
+    const large = 'x'.repeat(1024 * 1024);
+
+    __testHandleEngineEvent({
+      type: 'loop',
+      turnId: 'turn-large-debug',
+      loopNumber: 7,
+      model: 'provider/model',
+      systemPrompt: large,
+      messages: [{ role: 'user', content: large }],
+      response: large,
+      toolCalls: [{ id: 'call-1', name: 'Bash', input: { command: large } }],
+      usage: { totalTokens: 42 },
+      latencyMs: 12,
+      ttfbMs: 3,
+      stopReason: 'tool_use',
+      at: 123,
+      rawRequest: { body: large },
+      rawResponse: large,
+    }, handlerCtx);
+
+    __testHandleEngineEvent({
+      type: 'tool_exec',
+      turnId: 'turn-large-debug',
+      loopNumber: 7,
+      callId: 'call-1',
+      name: 'Bash',
+      durationMs: 8,
+      isError: false,
+      toolOutput: large,
+    }, handlerCtx);
+
+    const loop = sent.find(message => message.event?.type === 'loop')?.event;
+    expect(loop).toMatchObject({
+      type: 'loop',
+      turnId: 'turn-large-debug',
+      loopNumber: 7,
+      model: 'provider/model',
+      usage: { totalTokens: 42 },
+    });
+    expect(loop).not.toHaveProperty('systemPrompt');
+    expect(loop).not.toHaveProperty('messages');
+    expect(loop).not.toHaveProperty('rawRequest');
+    expect(loop).not.toHaveProperty('rawResponse');
+    expect(loop).not.toHaveProperty('response');
+    expect(loop).not.toHaveProperty('toolCalls');
+    const tool = sent.find(message => message.event?.type === 'tool_exec')?.event;
+    expect(tool).not.toHaveProperty('toolOutput');
+    expect(JSON.stringify(sent).length).toBeLessThan(4096);
+  });
+
   it('preserves TodoWrite through the real store page and history wire projection', () => {
     const dir = mkdtempSync(join(tmpdir(), 'yeaft-todo-history-'));
     try {

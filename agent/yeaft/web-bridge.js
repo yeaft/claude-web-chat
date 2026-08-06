@@ -4241,6 +4241,10 @@ function handleEngineEvent(event, hctx) {
       break;
 
     case 'tool_exec':
+      // Full tool output is already durable in the file-backed debug trace and
+      // is fetched on demand when the user opens this Turn. Do not mirror it
+      // into the always-on browser store: a long-lived tab otherwise retains
+      // every large Bash/FileRead result even while the debug panel is closed.
       sendSessionEvent({
         type: 'tool_exec',
         turnId: event.turnId,
@@ -4249,7 +4253,6 @@ function handleEngineEvent(event, hctx) {
         name: event.name,
         durationMs: event.durationMs,
         isError: event.isError,
-        toolOutput: event.toolOutput,
       }, envelope);
       break;
 
@@ -4299,26 +4302,21 @@ function handleEngineEvent(event, hctx) {
       break;
 
     case 'loop':
-      // feat-6af5f9f1 PR B: replaces the old `debug_turn` event. Same
-      // payload shape plus turnId + loopNumber + usage.totalTokens.
-      // feat-debug-timestamp: also forward `at` (epoch ms) so the
-      // debug panel can render per-loop HH:MM:SS.
+      // Live clients only need bounded summary metadata. The complete request,
+      // response, prompt, messages, and tool calls are already persisted by
+      // DebugTrace and fetched for one Turn on demand. Forwarding those growing
+      // snapshots on every loop made a long-lived browser tab retain hundreds
+      // of MiB (or GiB) while the debug panel was closed.
       sendSessionEvent({
         type: 'loop',
         turnId: event.turnId,
         loopNumber: event.loopNumber,
         model: event.model,
-        systemPrompt: event.systemPrompt,
-        messages: event.messages,
-        response: event.response,
-        toolCalls: event.toolCalls,
         usage: event.usage,
         latencyMs: event.latencyMs,
         ttfbMs: event.ttfbMs,
         stopReason: event.stopReason,
         at: event.at,
-        rawRequest: event.rawRequest,
-        rawResponse: event.rawResponse,
       }, envelope);
       break;
 

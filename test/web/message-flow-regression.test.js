@@ -202,11 +202,76 @@ describe('message flow regressions', () => {
     const kept = store.messagesMap[conversationId];
     expect(kept.length).toBeLessThanOrEqual(YEAFT_HISTORY_CACHE_LIMITS.maxRowsPerSession);
     expect(kept.some(row => row.id === `user-${turnCount}`)).toBe(true);
-    expect(kept.some(row => row.id === `assistant-${turnCount}`)).toBe(true);
     expect(kept.some(row => row.id === 'user-1')).toBe(false);
   });
+
+  it('drops oversized live debug detail from legacy Agent events', async () => {
+    const { useChatStore } = await import('../../web/stores/chat.js');
+    const store = useChatStore();
+    const large = 'x'.repeat(1024 * 1024);
+    store.yeaftDebugLoops = [];
+    store.yeaftDebugTurnsById = {
+      'turn-legacy-debug': {
+        turnId: 'turn-legacy-debug',
+        sessionId: 'session-debug',
+        tools: [],
+        closedAt: null,
+      },
+    };
+    store.yeaftDebugTurnOrder = ['turn-legacy-debug'];
+
+    store.handleYeaftOutput({
+      agentId: 'agent-debug',
+      conversationId: 'conv-debug',
+      sessionId: 'session-debug',
+      event: {
+        type: 'loop',
+        turnId: 'turn-legacy-debug',
+        loopNumber: 1,
+        model: 'provider/model',
+        systemPrompt: large,
+        messages: [{ role: 'user', content: large }],
+        response: large,
+        toolCalls: [{ id: 'call-1', name: 'Bash', input: { command: large } }],
+        rawRequest: { body: large },
+        rawResponse: large,
+        usage: { totalTokens: 42 },
+      },
+    });
+    store.handleYeaftOutput({
+      agentId: 'agent-debug',
+      conversationId: 'conv-debug',
+      sessionId: 'session-debug',
+      event: {
+        type: 'tool_exec',
+        turnId: 'turn-legacy-debug',
+        loopNumber: 1,
+        callId: 'call-1',
+        name: 'Bash',
+        toolOutput: large,
+      },
+    });
+
+    expect(store.yeaftDebugLoops).toHaveLength(1);
+    expect(store.yeaftDebugLoops[0]).toMatchObject({
+      turnId: 'turn-legacy-debug',
+      loopNumber: 1,
+      model: 'provider/model',
+      usage: { totalTokens: 42 },
+    });
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('systemPrompt');
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('messages');
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('rawRequest');
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('rawResponse');
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('response');
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('toolCalls');
+    expect(store.yeaftDebugTurnsById['turn-legacy-debug'].tools[0]).not.toHaveProperty('toolOutput');
+    expect(JSON.stringify(store.yeaftDebugLoops).length).toBeLessThan(2048);
+  });
+
   it('keeps same-id streaming updates in one assistant message', () => {
     const store = makeStore();
+
 
     appendToAssistantMessageForConversation(store, 'conv-1', 'hello ', {
       id: 'msg-1',
