@@ -90,7 +90,21 @@ export function createCliSessionRunner({
     const meta = handle.getMeta();
     const engine = engineFor(vpId);
     const prompt = envelope?.msg?.text || '';
-    const messages = loaded.conversationStore.loadSessionHistoryForVp(sessionId, vpId);
+    const persistedUserClientMessageId = typeof envelope?._persistedUserClientMessageId === 'string'
+      ? envelope._persistedUserClientMessageId
+      : null;
+    // The shared formal-Session user row is persisted before fan-out, but
+    // Engine.query() always appends `prompt` to the provider messages. Load the
+    // latest history at actual VP execution time, then exclude only this root
+    // turn's exact durable row so queued VPs still see intervening completed
+    // turns and repeated prompt text from older turns is never guessed away.
+    const messages = loaded.conversationStore
+      .loadSessionHistoryForVp(sessionId, vpId)
+      .filter(message => !(
+        persistedUserClientMessageId
+        && message?.role === 'user'
+        && message.clientMessageId === persistedUserClientMessageId
+      ));
     const todos = [];
     let resultText = '';
     let failed = null;
@@ -222,8 +236,9 @@ export function createCliSessionRunner({
       // The shared user row is the durability boundary. Validate structured
       // routing above before this append so malformed machine selectors never
       // enter the transcript or reach a provider.
+      let persistedUserClientMessageId = null;
       if (!options.internal) {
-        loaded.conversationStore.append({
+        const persistedUser = loaded.conversationStore.append({
           role: 'user',
           content: prompt,
           sessionId,
@@ -231,6 +246,7 @@ export function createCliSessionRunner({
           clientMessageId: messageId,
           userAuthored: true,
         });
+        persistedUserClientMessageId = persistedUser?.clientMessageId || messageId;
       }
       const report = coordinator.ingest({
         id: messageId,
@@ -249,6 +265,7 @@ export function createCliSessionRunner({
           },
         } : {}),
         ...(routingIntent ? { _routingIntent: routingIntent } : {}),
+        ...(persistedUserClientMessageId ? { _persistedUserClientMessageId: persistedUserClientMessageId } : {}),
         _cliTurnContext: turnContext,
       });
       const results = [];

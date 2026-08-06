@@ -11,6 +11,8 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCliSessionRunner } from '../../../agent/yeaft/cli-session-runner.js';
+import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js';
+import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { runStreamSessionTurn } from '../../../agent/yeaft/stdio-protocol.js';
 import { buildStreamSubAgentFrame } from '../../../agent/yeaft/sub-agent/public-event.js';
 import {
@@ -50,6 +52,87 @@ function makeConversationStore() {
     }),
     loadSessionHistoryForVp: vi.fn(() => rows.slice()),
   };
+}
+
+class RecordingAdapter {
+  constructor() {
+    this.streamCalls = [];
+  }
+
+  async *stream(params) {
+    this.streamCalls.push({
+      ...params,
+      messages: structuredClone(params.messages || []),
+    });
+    yield { type: 'text_delta', text: 'recorded response' };
+    yield { type: 'stop', stopReason: 'end_turn' };
+  }
+
+  async call() {
+    return { text: 'recorded summary', usage: {} };
+  }
+}
+
+function writeLateTaskProviderServer(root) {
+  const scriptPath = join(root, 'late-task-provider.mjs');
+  const portPath = join(root, 'late-task-provider-port');
+  const requestLogPath = join(root, 'late-task-provider-requests.jsonl');
+  writeFileSync(requestLogPath, '');
+  writeFileSync(scriptPath, [
+    "import { createServer } from 'node:http';",
+    "import { appendFileSync, writeFileSync } from 'node:fs';",
+    "function send(res, events, delayMs = 0) {",
+    "  setTimeout(() => {",
+    "    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });",
+    "    res.end(events.map(event => `data: ${JSON.stringify(event)}\\n\\n`).join(''));",
+    "  }, delayMs);",
+    "}",
+    "function textEvents(text) {",
+    "  return [",
+    "    { type: 'message_start', message: { usage: { input_tokens: 1, output_tokens: 0 } } },",
+    "    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },",
+    "    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },",
+    "    { type: 'content_block_stop', index: 0 },",
+    "    { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } },",
+    "    { type: 'message_stop' },",
+    "  ];",
+    "}",
+    "function spawnEvents() {",
+    "  const input = JSON.stringify({ name: 'late-child', mission: 'return the late child payload' });",
+    "  return [",
+    "    { type: 'message_start', message: { usage: { input_tokens: 1, output_tokens: 0 } } },",
+    "    { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'spawn-late-child', name: 'SpawnAgent' } },",
+    "    { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: input } },",
+    "    { type: 'content_block_stop', index: 0 },",
+    "    { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 1 } },",
+    "    { type: 'message_stop' },",
+    "  ];",
+    "}",
+    "const server = createServer((req, res) => {",
+    "  let body = '';",
+    "  req.on('data', chunk => { body += chunk; });",
+    "  req.on('end', () => {",
+    "    appendFileSync(process.argv[3], `${body}\\n`);",
+    "    let parsed = {};",
+    "    try { parsed = JSON.parse(body); } catch {}",
+    "    const system = JSON.stringify(parsed.system || '');",
+    "    const messages = JSON.stringify(parsed.messages || []);",
+    "    if (system.includes('You are a sub-agent')) {",
+    "      send(res, textEvents('late child payload'), 350);",
+    "    } else if (messages.includes('<task-result id=')) {",
+    "      send(res, textEvents('owner consumed late child result exactly once'));",
+    "    } else if (!messages.includes('\\\"name\\\":\\\"SpawnAgent\\\"')) {",
+    "      send(res, spawnEvents());",
+    "    } else {",
+    "      send(res, textEvents('root turn deferred while child runs'));",
+    "    }",
+    "  });",
+    "});",
+    "server.listen(0, '127.0.0.1', () => writeFileSync(process.argv[2], String(server.address().port)));",
+    "process.on('SIGTERM', () => server.close(() => process.exit(0)));",
+  ].join('\n'));
+  const child = spawn(process.execPath, [scriptPath, portPath, requestLogPath], { stdio: 'ignore' });
+  return { child, portPath, requestLogPath };
 }
 
 function writeMockProviderServer(root) {
@@ -112,7 +195,7 @@ async function waitForFile(path) {
   throw new Error(`Timed out waiting for ${path}`);
 }
 
-function runCli(root, args, input) {
+function runCli(root, args, input, extraEnv = {}) {
   const child = spawn(process.execPath, [
     join(process.cwd(), 'agent', 'yeaft', 'cli.js'),
     '--skip-mcp',
@@ -124,6 +207,7 @@ function runCli(root, args, input) {
       ...process.env,
       YEAFT_DIR: root,
       YEAFT_SKIP_MANAGED_CLI_INSTALLS: 'true',
+      ...extraEnv,
     },
   });
   let stdout = '';
@@ -271,6 +355,79 @@ describe('stream-json Session runtime protocol', () => {
     expect(outcome.report.dispatched).toEqual(['martin']);
     expect(calls).toEqual([{ vpId: 'martin', prompt: 'plain prompt with no mention' }]);
     expect(runner.meta).toEqual(before);
+    await runner.close();
+  });
+
+  it.each([
+    {
+      label: 'single VP',
+      roster: ['linus'],
+      routingIntent: { targetVpIds: ['linus'], explicit: true },
+      expectedVpIds: ['linus'],
+    },
+    {
+      label: 'multi-VP broadcast',
+      roster: ['linus', 'martin'],
+      routingIntent: { targetVpIds: ['linus', 'martin'], broadcast: true, explicit: true },
+      expectedVpIds: ['linus', 'martin'],
+    },
+  ])('sends the current formal-Session prompt exactly once for $label', async ({
+    roster,
+    routingIntent,
+    expectedVpIds,
+  }) => {
+    const root = tempRoot('stdio-current-prompt-once');
+    const sessionId = `session_stdio_prompt_once_${roster.length}`;
+    createFormalSession(root, sessionId, roster);
+    const conversationStore = new ConversationStore(root);
+    conversationStore.append({
+      role: 'user',
+      content: 'prior prompt stays in history',
+      sessionId,
+      threadId: 'main',
+      clientMessageId: 'prior-client-message',
+      userAuthored: true,
+    });
+    const adapter = new RecordingAdapter();
+    const loaded = {
+      yeaftDir: root,
+      config: {
+        model: 'test-model',
+        primaryModel: 'test-model',
+        maxOutputTokens: 1024,
+        language: 'en',
+        _readOnly: true,
+      },
+      adapter,
+      trace: new NullTrace(),
+      conversationStore,
+      memoryIndex: null,
+      amsRegistry: null,
+      toolRegistry: null,
+      skillManager: null,
+      mcpManager: null,
+      taskManager: null,
+      toolStats: null,
+      managedCliReady: null,
+    };
+    const runner = createCliSessionRunner({ loaded, sessionId });
+    const currentPrompt = 'current prompt must reach each provider request once';
+
+    const outcome = await runner.run(currentPrompt, { routingIntent });
+
+    expect(outcome.report.dispatched.slice().sort()).toEqual(expectedVpIds.slice().sort());
+    expect(adapter.streamCalls).toHaveLength(expectedVpIds.length);
+    for (const call of adapter.streamCalls) {
+      const userContents = call.messages
+        .filter(message => message.role === 'user')
+        .map(message => message.content);
+      expect(userContents.filter(content => content === currentPrompt)).toHaveLength(1);
+      expect(userContents).toContain('prior prompt stays in history');
+    }
+    const persistedCurrentRows = conversationStore.loadAllBySession(sessionId).filter(message => (
+      message.role === 'user' && message.content === currentPrompt
+    ));
+    expect(persistedCurrentRows).toHaveLength(1);
     await runner.close();
   });
 
@@ -591,6 +748,78 @@ describe('stream-json Session runtime protocol', () => {
       expect(requests).toHaveLength(1);
       expect(requests[0]).toContain('second prompt');
       expect(requests[0]).not.toContain('must reject before provider');
+    } finally {
+      provider.child.kill('SIGTERM');
+      await new Promise(resolve => provider.child.once('close', resolve));
+    }
+  }, 40_000);
+
+  it('drains a model-reentry task that completes after stdin EOF before closing the Session runner', async () => {
+    const root = tempRoot('stdio-late-task-shutdown');
+    const sessionId = 'session_stdio_late_task_shutdown';
+    createFormalSession(root, sessionId, ['linus']);
+    const provider = writeLateTaskProviderServer(root);
+    const timeShiftPath = join(root, 'shift-time.mjs');
+    writeFileSync(timeShiftPath, [
+      'const realNow = Date.now.bind(Date);',
+      'Date.now = () => realNow() + 180_000;',
+    ].join('\n'));
+
+    try {
+      await waitForFile(provider.portPath);
+      const port = readFileSync(provider.portPath, 'utf8').trim();
+      writeFileSync(join(root, 'config.json'), JSON.stringify({
+        providers: [{
+          name: 'mock',
+          baseUrl: `http://127.0.0.1:${port}`,
+          apiKey: 'test',
+          protocol: 'anthropic',
+          models: ['claude-test'],
+        }],
+        primaryModel: 'mock/claude-test',
+        llmRetry: { maxRetries: 0, forbiddenRetryDelaysMs: [] },
+      }));
+      writeFileSync(join(root, 'models_dev_cache.json'), '{}');
+      const input = `${JSON.stringify({
+        type: 'prompt',
+        prompt: 'spawn a child that completes after the root turn is deferred',
+        targetVpId: 'linus',
+      })}\n`;
+
+      const outcome = await runCli(root, [
+        '--session-id', sessionId,
+        '--cwd', root,
+        '--input-format', 'stream-json',
+        '--output-format', 'stream-json',
+      ], input, {
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --import=${timeShiftPath}`.trim(),
+      });
+      const frames = outcome.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      const results = frames.filter(frame => frame.type === 'result');
+      const taskCompletions = frames.filter(frame => frame.type === 'task' && frame.subtype === 'completed');
+      const runnerClosedErrors = frames.filter(frame => (
+        frame.type === 'error' && JSON.stringify(frame).includes('CLI Session runner is closed')
+      ));
+      const requestBodies = readFileSync(provider.requestLogPath, 'utf8')
+        .trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      const taskResultRequests = requestBodies.filter(body => JSON.stringify(body.messages || []).includes('<task-result id='));
+
+      expect(outcome).toMatchObject({ code: 0, signal: null });
+      expect(outcome.stdout).not.toContain('CLI Session runner is closed');
+      expect(outcome.stderr).not.toContain('CLI Session runner is closed');
+      expect(runnerClosedErrors).toEqual([]);
+      expect(results).toHaveLength(2);
+      const terminalResultsByTurn = Map.groupBy(results, frame => frame.turn_id);
+      expect(terminalResultsByTurn.size).toBe(2);
+      expect(Array.from(terminalResultsByTurn.values()).map(turnResults => turnResults.length)).toEqual([1, 1]);
+      expect(results[0].turn_id).not.toBe(results[1].turn_id);
+      expect(results.every(frame => frame.subtype === 'success' && frame.is_error === false)).toBe(true);
+      expect(results[0].result).toContain('root turn deferred while child runs');
+      expect(taskCompletions).toHaveLength(1);
+      expect(taskResultRequests).toHaveLength(1);
+      expect(results[1].result).toContain('owner consumed late child result exactly once');
+      expect(frames.indexOf(results[0])).toBeLessThan(frames.indexOf(taskCompletions[0]));
+      expect(frames.indexOf(taskCompletions[0])).toBeLessThan(frames.indexOf(results[1]));
     } finally {
       provider.child.kill('SIGTERM');
       await new Promise(resolve => provider.child.once('close', resolve));

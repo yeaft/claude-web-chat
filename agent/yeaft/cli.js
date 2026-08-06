@@ -47,6 +47,7 @@ import {
 } from './stdio-protocol.js';
 import { createCliSessionRunner } from './cli-session-runner.js';
 import { emitStreamTaskEvent, taskResultReentryContext } from './tasks/result-delivery.js';
+import { TASK_RESULT_DELIVERY, taskResultDeliveryFor } from './tasks/store.js';
 import { buildStreamSubAgentFrame } from './sub-agent/public-event.js';
 import {
   cleanupManagedCliRuntimePaths,
@@ -894,8 +895,17 @@ async function runStreamJson(config, args) {
   const asyncTaskOwners = new Map();
   const rescuedTaskIds = new Set();
   const pendingTaskRescues = new Set();
+  const taskLifecycleWaiters = new Set();
   let sessionRunner = null;
+  let taskEventIntakeOpen = true;
   let hadError = false;
+
+  const wakeTaskLifecycleWaiters = () => {
+    if (taskLifecycleWaiters.size === 0) return;
+    const waiters = Array.from(taskLifecycleWaiters);
+    taskLifecycleWaiters.clear();
+    for (const resolveWaiter of waiters) resolveWaiter();
+  };
 
   const rescueTaskResult = async (context) => {
     const taskId = context?.task?.id;
@@ -930,9 +940,14 @@ async function runStreamJson(config, args) {
   };
 
   const queueTaskRescue = (context) => {
+    if (!taskEventIntakeOpen) return null;
     let rescue;
-    rescue = rescueTaskResult(context).finally(() => pendingTaskRescues.delete(rescue));
+    rescue = rescueTaskResult(context).finally(() => {
+      pendingTaskRescues.delete(rescue);
+      wakeTaskLifecycleWaiters();
+    });
     pendingTaskRescues.add(rescue);
+    wakeTaskLifecycleWaiters();
     return rescue;
   };
 
@@ -1003,13 +1018,46 @@ async function runStreamJson(config, args) {
 
   if (loaded.taskManager && typeof loaded.taskManager.setEventSink === 'function') {
     loaded.taskManager.setEventSink((event) => {
+      if (!taskEventIntakeOpen) return;
       const hadExactOwner = asyncTaskOwners.has(event?.task?.id);
       const delivery = emitStreamTaskEvent({ event, asyncTaskOwners, write, sessionId });
-      if (!delivery.projected || delivery.delivered || hadExactOwner || event?.event !== 'completed') return;
-      const context = taskResultReentryContext(event, { sessionId });
-      if (context) queueTaskRescue(context);
+      if (delivery.projected && !delivery.delivered && !hadExactOwner && event?.event === 'completed') {
+        const context = taskResultReentryContext(event, { sessionId });
+        if (context) queueTaskRescue(context);
+      }
+      wakeTaskLifecycleWaiters();
     });
   }
+
+  const activeModelReentryTasks = () => {
+    if (!loaded.taskManager || typeof loaded.taskManager.listActiveTasks !== 'function') return [];
+    return loaded.taskManager.listActiveTasks(sessionId).filter(task => (
+      taskResultDeliveryFor(task) === TASK_RESULT_DELIVERY.MODEL_REENTRY
+    ));
+  };
+
+  const drainTaskLifecycle = async () => {
+    if (!loaded.taskManager || typeof loaded.taskManager.setEventSink !== 'function') {
+      taskEventIntakeOpen = false;
+      return;
+    }
+    // EOF is a lifecycle fence, not permission to abandon model-reentry work.
+    // Keep the Session runner and task event sink alive until every owned
+    // result-producing task is terminal and every resulting rescue turn has
+    // settled. `status_only` tasks remain detached and never hold CLI exit.
+    for (;;) {
+      if (activeModelReentryTasks().length === 0 && pendingTaskRescues.size === 0) {
+        // JavaScript runs this check + close synchronously. No TaskManager
+        // completion can interleave between observing the empty sets and
+        // detaching the sink, so no late rescue can target a closed runner.
+        taskEventIntakeOpen = false;
+        loaded.taskManager.setEventSink(null);
+        wakeTaskLifecycleWaiters();
+        return;
+      }
+      await new Promise(resolveWaiter => taskLifecycleWaiters.add(resolveWaiter));
+    }
+  };
 
   const runPrompt = async (prompt, message = null) => {
     const routingIntent = normalizeStreamRoutingIntent(message);
@@ -1070,9 +1118,7 @@ async function runStreamJson(config, args) {
     }
   } finally {
     input?.close();
-    while (pendingTaskRescues.size > 0) {
-      await Promise.allSettled(Array.from(pendingTaskRescues));
-    }
+    await drainTaskLifecycle();
     await sessionRunner?.close();
     await loaded.shutdown();
     console.log = originalConsole.log;
