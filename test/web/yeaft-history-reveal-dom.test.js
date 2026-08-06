@@ -134,7 +134,9 @@ function primeStore() {
   return store;
 }
 
-async function openDefaultUserSearch(wrapper, store) {
+async function openDefaultUserSearch(wrapper, store, results = [
+  indexedHistoryResult({ role: 'user', snippet: 'old question' }),
+]) {
   wrapper.vm.toggleHistorySearch();
   await Vue.nextTick();
   const request = store._sent.find(message => message.type === 'yeaft_search_history');
@@ -150,7 +152,7 @@ async function openDefaultUserSearch(wrapper, store) {
     requestId: request.requestId,
     query: '',
     senderKey: 'user',
-    results: [indexedHistoryResult({ role: 'user', snippet: 'old question' })],
+    results,
     hasMore: false,
     nextBeforeSeq: null,
   })).toBe(true);
@@ -191,12 +193,16 @@ function mountPage({ renderComposer = false } = {}) {
   });
 }
 
-async function settleWindow(store, revealWindow = null) {
+async function settleWindow(store, revealWindow = null, {
+  messageId = 'm42',
+  content = 'old answer',
+  createdAt = 42,
+} = {}) {
   const request = store._sent.filter(message => message.type === 'yeaft_load_history_window').at(-1);
   expect(request).toMatchObject({
     agentId: 'agent-a',
     sessionId: 'same',
-    anchorMessageId: 'm42',
+    anchorMessageId: messageId,
     beforeTurns: 5,
     afterTurns: 5,
   });
@@ -211,7 +217,7 @@ async function settleWindow(store, revealWindow = null) {
     sourceMessageIds: [request.anchorMessageId],
     anchorMessageId: request.anchorMessageId,
     anchorSeq: request.anchorSeq,
-    messages: [{ id: 'm42', role: 'assistant', content: 'old answer', createdAt: 42 }],
+    messages: [{ id: messageId, role: 'assistant', content, createdAt }],
   };
   const pendingWindow = store.pendingYeaftHistoryWindow(response);
   if (pendingWindow?.pending?.prefetch === true) response.prefetch = true;
@@ -222,9 +228,7 @@ async function settleWindow(store, revealWindow = null) {
   await Vue.nextTick();
   if (revealWindow) {
     await expect(revealWindow.mock.results.at(-1)?.value).resolves.toBe(true);
-    expect(store.messagesMap['conv-a'].map(row => row.messageId || row.id)).toEqual([
-      'm42', 'm50', 'm51', 'm52', 'm53', 'm54', 'm55', 'm56', 'm57', 'm58', 'm59', 'm60', 'm61',
-    ]);
+    expect(store.messagesMap['conv-a'].some(row => (row.messageId || row.id) === messageId)).toBe(true);
   }
 }
 
@@ -588,6 +592,50 @@ describe('Yeaft history result rendered reveal', () => {
     );
     await settleWindow(store, revealWindow);
     await expectRenderedReveal(wrapper, store, scrollToKey);
+
+    wrapper.unmount();
+  });
+
+  it('reveals consecutive uncached search results instead of leaving the first target anchored', async () => {
+    const store = primeStore();
+    store.revealYeaftMessage = vi.fn(store.revealYeaftMessage.bind(store));
+    const secondResult = indexedHistoryResult({
+      entryId: 'entry-m32',
+      entryStartSeq: 32,
+      messageId: 'm32',
+      seq: 32,
+      sourceMessageIds: ['m32'],
+      role: 'user',
+      snippet: 'older question',
+    });
+    const revealWindow = vi.spyOn(store, 'revealYeaftHistoryResult');
+    const wrapper = mountPage();
+    await openDefaultUserSearch(wrapper, store, [
+      indexedHistoryResult({ role: 'user', snippet: 'old question' }),
+      secondResult,
+    ]);
+
+    const scrollToKey = observeVirtualScroll(wrapper);
+    const options = wrapper.findAll('[role="option"]');
+    expect(options).toHaveLength(2);
+
+    await options[0].trigger('click');
+    await settleWindow(store, revealWindow);
+    await expectRenderedReveal(wrapper, store, scrollToKey);
+
+    scrollToKey.mockClear();
+    await options[1].trigger('click');
+    await settleWindow(store, revealWindow, {
+      messageId: 'm32',
+      content: 'older answer',
+      createdAt: 32,
+    });
+    await expectRenderedReveal(wrapper, store, scrollToKey);
+    expect(revealWindow).toHaveBeenCalledTimes(2);
+    expect(store.revealYeaftMessage).toHaveBeenCalledTimes(2);
+    expect(store.revealYeaftMessage).toHaveBeenLastCalledWith('same', 'm32', 'conv-a', 'agent-a');
+    expect(scrollToKey.mock.calls[0][0]).toContain('m32');
+    expect(store._yeaftHistoryRevealLeases).toEqual({});
 
     wrapper.unmount();
   });

@@ -129,7 +129,16 @@ export default {
         ? (this.store && this.store.yeaftDebugTurnsById && this.store.yeaftDebugTurnsById[panel.turnId])
         : null;
       if (!turn) return [];
-      return [this.decorateTurnTokenBreakdowns(turn)];
+      // Detail responses keep Turn summaries and Loop payloads in separate
+      // bounded stores. Rejoin them for this exact Turn before rendering;
+      // otherwise the header can report `1L` while the expanded body has no
+      // system prompt or loop rows at all. Preserve embedded loops only as a
+      // compatibility fallback for older live payloads.
+      const storedLoops = this.debugLoopsForTurn(turn.turnId);
+      const loops = storedLoops.length > 0
+        ? storedLoops
+        : (Array.isArray(turn.loops) ? turn.loops : []);
+      return [this.decorateTurnTokenBreakdowns({ ...turn, loops })];
     },
     currentTurnId() {
       return (this.store && this.store.yeaftDebugPanel && this.store.yeaftDebugPanel.turnId) || '';
