@@ -132,16 +132,16 @@ const pendingUserPrompts = new Map();
 /** @type {import('./session.js').Session | null} */
 let session = null;
 
-// MCP config is Agent-local and the live MCP manager is mutable. WebSocket
-// dispatch deliberately allows unrelated frames to overlap, so serialize only
-// add/remove/reload from config mutation through runtime and UI publication.
-// Keep the tail fulfilled after a failure: the caller still receives its error,
-// but a later user mutation must not be permanently blocked behind it.
-let mcpMutationTail = Promise.resolve();
+// Agent-local MCP config and live runtime managers are mutable. WebSocket
+// dispatch deliberately allows unrelated frames to overlap, so serialize MCP
+// CRUD and runtime bootstrap from config read through connection, activation,
+// tool hot-swap, and MCP publication. Keep the tail fulfilled after a failure:
+// the caller still receives its error, but a later transition is not blocked.
+let mcpTransitionTail = Promise.resolve();
 
-function enqueueMcpMutation(operation) {
-  const queued = mcpMutationTail.then(operation);
-  mcpMutationTail = queued.catch(() => undefined);
+function enqueueMcpTransition(operation) {
+  const queued = mcpTransitionTail.then(operation);
+  mcpTransitionTail = queued.catch(() => undefined);
   return queued;
 }
 
@@ -2399,8 +2399,8 @@ export async function __testDrainVpDrivers() {
  * a half-aborted controller writing to a now-cleared map.
  */
 export async function __testResetVpState() {
-  await mcpMutationTail.catch(() => undefined);
-  mcpMutationTail = Promise.resolve();
+  await mcpTransitionTail.catch(() => undefined);
+  mcpTransitionTail = Promise.resolve();
   await shutdownProjectRuntimes();
   for (const ctrl of vpAborts.values()) {
     try { if (!ctrl.signal.aborted) ctrl.abort(); } catch { /* */ }
@@ -2659,7 +2659,7 @@ function stopSkillHotReload(owner = null) {
   return true;
 }
 
-async function loadBaseRuntime(owner = captureRuntimeOwner()) {
+async function runBaseRuntimeTransition(owner = captureRuntimeOwner()) {
   if (!isCurrentRuntimeOwner(owner)) return null;
   const ownerSession = owner.ownerSession;
   const yeaftDir = ctx.CONFIG?.yeaftDir || ownerSession.yeaftDir || DEFAULT_YEAFT_DIR;
@@ -2739,12 +2739,16 @@ async function loadBaseRuntime(owner = captureRuntimeOwner()) {
       activateBaseRuntime(owner, { reloadSkills: false });
       hydrateYeaftStatusFromSession(ownerSession, { reason: 'base_runtime_mcp', emitEvent: true });
       if (isCurrentRuntimeOwner(owner)) {
-        try { void broadcastMcpUpdated({ reason: 'base-runtime-load' }).catch(() => {}); } catch { /* best-effort */ }
+        try { await broadcastMcpUpdated({ reason: 'base-runtime-load' }); } catch { /* best-effort */ }
       }
     }
   }
 
   return isCurrentRuntimeOwner(owner) && baseRuntime === runtime ? runtime : null;
+}
+
+function loadBaseRuntime(owner = captureRuntimeOwner()) {
+  return enqueueMcpTransition(() => runBaseRuntimeTransition(owner));
 }
 
 function scheduleBaseRuntimeLoad() {
@@ -2770,7 +2774,7 @@ function scheduleBaseRuntimeLoad() {
   return promise;
 }
 
-async function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
+async function runProjectRuntimeTransition(workDir, owner = captureRuntimeOwner()) {
   if (!isCurrentRuntimeOwner(owner)) return null;
   const ownerSession = owner.ownerSession;
   const normalizedWorkDir = normalizeSessionWorkDir(workDir);
@@ -2850,6 +2854,10 @@ async function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
   return runtimeBelongsToOwner(runtime, owner) && projectRuntimes.get(key) === runtime ? runtime : null;
 }
 
+function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
+  return enqueueMcpTransition(() => runProjectRuntimeTransition(workDir, owner));
+}
+
 function scheduleProjectRuntimeLoad(workDir) {
   const owner = captureRuntimeOwner();
   const normalizedWorkDir = normalizeSessionWorkDir(workDir);
@@ -2881,6 +2889,7 @@ function getProjectRuntimeForTurn(sessionMeta) {
   if (!owner) return null;
   const workDir = normalizeSessionWorkDir(sessionMeta?.workDir);
   if (!workDir) {
+    if (!runtimeBelongsToOwner(baseRuntime, owner)) scheduleBaseRuntimeLoad();
     activateBaseRuntime(owner);
     return null;
   }
@@ -7624,16 +7633,54 @@ export async function resetYeaftSession() {
  * connection state next to the configured servers. Safe to call when
  * the session hasn't been initialised yet — returns an empty runtime.
  */
+function activeMcpManager(owner = captureRuntimeOwner()) {
+  if (!isCurrentRuntimeOwner(owner)) return session?.mcpManager || null;
+  if (activeRuntimeKey !== BASE_RUNTIME_KEY) {
+    const runtime = projectRuntimes.get(activeRuntimeKey) || null;
+    if (runtimeBelongsToOwner(runtime, owner)) return runtime.mcpManager || null;
+  }
+  return owner.ownerSession.mcpManager || null;
+}
+
+async function retireInactiveMcpRuntimes(owner, activeManager) {
+  if (!isCurrentRuntimeOwner(owner)) return;
+  const retire = [];
+
+  // The base manager stays cached while a project runtime is active. It was
+  // built from the old Agent config, so remove it rather than allowing a later
+  // base activation to revive a deleted MCP. The next base turn schedules a
+  // fresh loader; until then there is deliberately no base MCP fallback.
+  if (runtimeBelongsToOwner(baseRuntime, owner) && baseRuntime.mcpManager !== activeManager) {
+    const staleBase = baseRuntime;
+    baseRuntime = null;
+    baseRuntimeLoadPromises.delete(BASE_RUNTIME_KEY);
+    if (owner.ownerSession.mcpManager === staleBase.mcpManager) owner.ownerSession.mcpManager = null;
+    // A loading manager may acquire its connection after this point. Its
+    // post-connect ownership check performs the reliable cleanup in that case.
+    if (!staleBase.loading) retire.push(disconnectRuntimeMcpManager(staleBase.mcpManager));
+  }
+
+  for (const [key, runtime] of projectRuntimes) {
+    if (!runtimeBelongsToOwner(runtime, owner) || runtime.mcpManager === activeManager) continue;
+    projectRuntimes.delete(key);
+    projectRuntimeLoadPromises.delete(key);
+    if (!runtime.loading) retire.push(disconnectRuntimeMcpManager(runtime.mcpManager));
+  }
+
+  await Promise.allSettled(retire);
+}
+
 function mcpRuntimeSnapshot() {
-  if (!session?.mcpManager) {
+  const mcpManager = activeMcpManager();
+  if (!mcpManager) {
     return { connected: false, toolCount: 0, perServer: [] };
   }
-  const status = session.mcpManager.status() || [];
-  const toolCount = typeof session.mcpManager.toolCount === 'number'
-    ? session.mcpManager.toolCount
+  const status = mcpManager.status() || [];
+  const toolCount = typeof mcpManager.toolCount === 'number'
+    ? mcpManager.toolCount
     : status.reduce((sum, s) => sum + (s.toolCount || 0), 0);
   return {
-    connected: !!session.mcpManager.hasServers,
+    connected: !!mcpManager.hasServers,
     toolCount,
     perServer: status.map(s => ({
       name: s.name,
@@ -7649,7 +7696,8 @@ function mcpRuntimeSnapshot() {
  * pick up the change.
  */
 function hotSwapMcpTools() {
-  return replaceSessionMcpTools(captureRuntimeOwner(), session?.mcpManager);
+  const owner = captureRuntimeOwner();
+  return replaceSessionMcpTools(owner, activeMcpManager(owner));
 }
 
 /**
@@ -7705,25 +7753,27 @@ async function runYeaftMcpAddMutation(msg = {}) {
     return;
   }
 
-  // Apply at runtime when the session is live. The MCPManager's
-  // `connect(serverConfig)` already disconnects-and-reconnects if a
-  // server with the same name was already registered.
+  // A queued runtime bootstrap may have made a project manager active before
+  // this mutation runs. Capture the manager after the config write, then
+  // retire inactive caches and update the manager that owns live tools.
+  const owner = captureRuntimeOwner();
+  const mcpManager = activeMcpManager(owner);
+  await retireInactiveMcpRuntimes(owner, mcpManager);
   let connectError = null;
-  if (session?.mcpManager && !isMcpServerEnabled(result.server.name)) {
+  if (mcpManager && !isMcpServerEnabled(result.server.name)) {
     try {
-      await session.mcpManager.disconnect(result.server.name);
+      await mcpManager.disconnect(result.server.name);
     } catch { /* no active connection to retire */ }
-  } else if (session?.mcpManager) {
+  } else if (mcpManager) {
     try {
-      await session.mcpManager.connect(result.server);
+      await mcpManager.connect(result.server);
     } catch (err) {
       connectError = err?.message || String(err);
       console.warn(`[Yeaft] MCP connect "${result.server.name}" failed:`, connectError);
     }
   }
 
-  const swap = replaceSessionMcpTools(captureRuntimeOwner(), session?.mcpManager);
-
+  const swap = replaceSessionMcpTools(owner, mcpManager);
   await sendToServer({
     type: 'yeaft_mcp_add_result',
     requestId: msg.requestId || null,
@@ -7742,7 +7792,7 @@ async function runYeaftMcpAddMutation(msg = {}) {
 }
 
 export function handleYeaftMcpAdd(msg = {}) {
-  return enqueueMcpMutation(() => runYeaftMcpAddMutation(msg));
+  return enqueueMcpTransition(() => runYeaftMcpAddMutation(msg));
 }
 
 async function runYeaftMcpRemoveMutation(msg = {}) {
@@ -7760,16 +7810,18 @@ async function runYeaftMcpRemoveMutation(msg = {}) {
     return;
   }
 
-  if (session?.mcpManager) {
+  const owner = captureRuntimeOwner();
+  const mcpManager = activeMcpManager(owner);
+  await retireInactiveMcpRuntimes(owner, mcpManager);
+  if (mcpManager) {
     try {
-      await session.mcpManager.disconnect(name);
+      await mcpManager.disconnect(name);
     } catch (err) {
       console.warn(`[Yeaft] MCP disconnect "${name}" failed:`, err?.message || err);
     }
   }
 
-  const swap = replaceSessionMcpTools(captureRuntimeOwner(), session?.mcpManager);
-
+  const swap = replaceSessionMcpTools(owner, mcpManager);
   await sendToServer({
     type: 'yeaft_mcp_remove_result',
     requestId: msg.requestId || null,
@@ -7787,7 +7839,7 @@ async function runYeaftMcpRemoveMutation(msg = {}) {
 }
 
 export function handleYeaftMcpRemove(msg = {}) {
-  return enqueueMcpMutation(() => runYeaftMcpRemoveMutation(msg));
+  return enqueueMcpTransition(() => runYeaftMcpRemoveMutation(msg));
 }
 
 async function runYeaftMcpReloadMutation(msg = {}) {
@@ -7809,8 +7861,10 @@ async function runYeaftMcpReloadMutation(msg = {}) {
     return;
   }
 
-  if (!session?.mcpManager) {
-    // Session not yet alive — just echo the current config + an empty
+  const owner = captureRuntimeOwner();
+  const mcpManager = activeMcpManager(owner);
+  if (!mcpManager) {
+    // Session not yet alive; just echo the current config + an empty
     // runtime so the UI knows to wait for session boot.
     await sendToServer({
       type: 'yeaft_mcp_reload_result',
@@ -7824,23 +7878,19 @@ async function runYeaftMcpReloadMutation(msg = {}) {
 
   const configured = listed.servers;
   const enabled = configured.filter(server => isMcpServerEnabled(server.name));
-
-  // Per-server reload: disconnect + reconnect the named server only.
-  // Whole-set reload: disconnect everything, then reconnect from current
-  // config.json. The latter is what the user clicks "Reload all" for.
   const failures = [];
   try {
     if (targetName) {
-      const cfg = enabled.find(s => s.name === targetName);
-      try { await session.mcpManager.disconnect(targetName); } catch { /* ignore */ }
+      const cfg = enabled.find(server => server.name === targetName);
+      try { await mcpManager.disconnect(targetName); } catch { /* ignore */ }
       if (cfg) {
-        try { await session.mcpManager.connect(cfg); }
+        try { await mcpManager.connect(cfg); }
         catch (err) { failures.push({ name: targetName, error: err?.message || String(err) }); }
       }
     } else {
-      try { await session.mcpManager.disconnectAll(); } catch { /* ignore */ }
+      try { await mcpManager.disconnectAll(); } catch { /* ignore */ }
       for (const cfg of enabled) {
-        try { await session.mcpManager.connect(cfg); }
+        try { await mcpManager.connect(cfg); }
         catch (err) { failures.push({ name: cfg.name, error: err?.message || String(err) }); }
       }
     }
@@ -7848,8 +7898,7 @@ async function runYeaftMcpReloadMutation(msg = {}) {
     console.warn('[Yeaft] MCP reload failed:', err?.message || err);
   }
 
-  const swap = replaceSessionMcpTools(captureRuntimeOwner(), session?.mcpManager);
-
+  const swap = replaceSessionMcpTools(owner, mcpManager);
   await sendToServer({
     type: 'yeaft_mcp_reload_result',
     requestId: msg.requestId || null,
@@ -7868,7 +7917,7 @@ async function runYeaftMcpReloadMutation(msg = {}) {
 }
 
 export function handleYeaftMcpReload(msg = {}) {
-  return enqueueMcpMutation(() => runYeaftMcpReloadMutation(msg));
+  return enqueueMcpTransition(() => runYeaftMcpReloadMutation(msg));
 }
 
 export const __testHooks = {

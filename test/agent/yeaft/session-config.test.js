@@ -88,6 +88,113 @@ afterEach(async () => {
 });
 
 describe('Yeaft session-scoped model config', () => {
+  async function assertMcpBootstrapRemoveDoesNotRestoreServer({ workDir = '' } = {}) {
+    const root = makeDir();
+    const configPath = join(root, 'config.json');
+    const previousTransport = {
+      ws: ctx.ws,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+      CONFIG: ctx.CONFIG,
+    };
+    const sent = [];
+    const hotSwapSnapshots = [];
+    let releaseConnect;
+    const mayConnect = new Promise(resolve => { releaseConnect = resolve; });
+    let markConnectStarted;
+    const connectStarted = new Promise(resolve => { markConnectStarted = resolve; });
+    const connected = new Set();
+    const mcpManager = {
+      get hasServers() { return connected.size > 0; },
+      get toolCount() { return connected.size; },
+      status: () => [...connected].map(name => ({ name, ready: true, toolCount: 1 })),
+      async connectAll(servers) {
+        markConnectStarted();
+        await mayConnect;
+        for (const server of servers) connected.add(server.name);
+        return { connected: [...connected], failed: [] };
+      },
+      async connect() {},
+      async disconnect(name) { connected.delete(name); },
+      async disconnectAll() { connected.clear(); },
+    };
+    const liveSession = {
+      yeaftDir: root,
+      config: { dir: root, plugins: {} },
+      skillManager: { size: 0, list: () => [] },
+      mcpManager: { status: () => [], hasServers: false, async disconnect() {}, async disconnectAll() {}, async connect() {} },
+      toolRegistry: {
+        size: 0,
+        replaceMcpTools(manager) {
+          hotSwapSnapshots.push((manager?.status?.() || []).map(status => status.name));
+          return { removed: 0, added: hotSwapSnapshots.at(-1).length };
+        },
+      },
+      engine: { setRuntimeManagers() {} },
+      status: { skills: 0, mcpServers: [], mcpFailed: [], mcpSkipped: [], tools: 0 },
+    };
+    writeFileSync(configPath, JSON.stringify({
+      mcpServers: [{ name: 'github', command: 'node', args: [], env: {} }],
+      plugins: {},
+    }));
+    ctx.CONFIG = { yeaftDir: root };
+    ctx.ws = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+    ctx.serverEncryptionRequired = false;
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = false;
+    __testSetSession(liveSession);
+    __testHooks.setRuntimeFactoriesForTest({
+      createSkillManager: () => ({ size: 0, list: () => [] }),
+      createMcpManager: () => mcpManager,
+      loadMcpConfig: () => ({
+        servers: JSON.parse(readFileSync(configPath, 'utf8')).mcpServers,
+        skipped: [],
+      }),
+    });
+
+    try {
+      const boot = workDir
+        ? __testHooks.scheduleProjectRuntimeLoadForTest(workDir)
+        : __testHooks.scheduleBaseRuntimeLoadForTest();
+      await connectStarted;
+      const remove = handleMessage({
+        type: 'yeaft_mcp_remove',
+        requestId: workDir ? 'remove-project-bootstrap-github' : 'remove-base-bootstrap-github',
+        name: 'github',
+      });
+      await Promise.resolve();
+      // The queued remove must not pass the loader while its old config is
+      // still blocked in connectAll.
+      expect(JSON.parse(readFileSync(configPath, 'utf8')).mcpServers.map(server => server.name))
+        .toEqual(['github']);
+      releaseConnect();
+      await Promise.all([boot, remove]);
+      await vi.waitFor(() => expect(sent.some(frame => (
+        frame.type === 'yeaft_mcp_updated' && frame.reason === 'remove'
+      ))).toBe(true));
+
+      const finalBroadcast = sent.filter(frame => frame.type === 'yeaft_mcp_updated').at(-1);
+      expect(JSON.parse(readFileSync(configPath, 'utf8')).mcpServers).toEqual([]);
+      expect(connected).toEqual(new Set());
+      expect(hotSwapSnapshots.at(-1)).toEqual([]);
+      expect(finalBroadcast).toMatchObject({
+        reason: 'remove',
+        servers: [],
+        runtime: { connected: false, perServer: [] },
+        error: null,
+      });
+    } finally {
+      releaseConnect?.();
+      __testHooks.resetRuntimeFactoriesForTest();
+      ctx.ws = previousTransport.ws;
+      ctx.serverEncryptionRequired = previousTransport.serverEncryptionRequired;
+      ctx.outboundSendQueue = previousTransport.outboundSendQueue;
+      ctx.outboundSendQueueActive = previousTransport.outboundSendQueueActive;
+      ctx.CONFIG = previousTransport.CONFIG;
+    }
+  }
+
   it('normalizes and persists bounded telemetry settings without touching other config', () => {
     expect(normaliseTelemetrySection({
       enabled: false,
@@ -292,6 +399,14 @@ describe('Yeaft session-scoped model config', () => {
       ctx.outboundSendQueueActive = previousTransport.outboundSendQueueActive;
       ctx.CONFIG = previousTransport.CONFIG;
     }
+  });
+
+  it('does not let a base runtime bootstrap restore an MCP removed during startup', async () => {
+    await assertMcpBootstrapRemoveDoesNotRestoreServer();
+  });
+
+  it('does not let a project runtime bootstrap restore an MCP removed during startup', async () => {
+    await assertMcpBootstrapRemoveDoesNotRestoreServer({ workDir: 'project-runtime' });
   });
 
   it('rejects MCP reload before touching a live runtime when config is invalid', async () => {
