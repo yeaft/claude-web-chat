@@ -16,11 +16,6 @@ import { handleAgentConnection } from './ws-agent.js';
 import { handleWebConnection } from './ws-client.js';
 import { sendToWebClient } from './ws-utils.js';
 import { markAgentHeartbeatPing, markAgentHeartbeatStall, shouldTerminateAgentHeartbeat } from './heartbeat-policy.js';
-import { createSandboxReconciler } from './sandbox-reconciler.js';
-import {
-  closeSandboxAttestationListener,
-  startSandboxAttestationListener
-} from './sandbox-attestation-listener.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -227,8 +222,6 @@ if (configValidation.warnings) {
   console.warn('');
 }
 
-let sandboxReconcileTimer = null;
-let sandboxAttestationListener = null;
 const accountDeletionTimer = setInterval(() => {
   try {
     userDb.reconcilePendingDeletions();
@@ -240,32 +233,20 @@ accountDeletionTimer.unref?.();
 userDb.reconcilePendingDeletions();
 
 async function startServers() {
-  sandboxAttestationListener = await startSandboxAttestationListener({ config: CONFIG.sandbox });
-  if (sandboxAttestationListener) {
-    console.log(`Sandbox Host attestation listener running on https://${CONFIG.sandbox.hostAttestationListenerHost}:${CONFIG.sandbox.hostAttestationListenerPort}`);
-  }
+  await new Promise((resolve, reject) => {
+    const onError = (err) => {
+      server.off('listening', onListening);
+      reject(err);
+    };
+    const onListening = () => {
+      server.off('error', onError);
+      resolve();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(CONFIG.port, CONFIG.host);
+  });
 
-  try {
-    await new Promise((resolve, reject) => {
-      const onError = (err) => {
-        server.off('listening', onListening);
-        reject(err);
-      };
-      const onListening = () => {
-        server.off('error', onError);
-        resolve();
-      };
-      server.once('error', onError);
-      server.once('listening', onListening);
-      server.listen(CONFIG.port, CONFIG.host);
-    });
-  } catch (err) {
-    await closeSandboxAttestationListener(sandboxAttestationListener);
-    sandboxAttestationListener = null;
-    throw err;
-  }
-
-  sandboxReconcileTimer = createSandboxReconciler({ config: CONFIG.sandbox }).start();
   console.log(`Server running on http://${CONFIG.host || '0.0.0.0'}:${CONFIG.port}`);
   console.log(`Auth mode: ${CONFIG.skipAuth ? 'SKIP (development)' : 'ENABLED'}`);
   if (!CONFIG.skipAuth) {
@@ -276,7 +257,6 @@ async function startServers() {
 
 startServers().catch(err => {
   console.error('[Startup] Failed to start server:', err);
-  if (sandboxReconcileTimer) clearInterval(sandboxReconcileTimer);
   process.exit(1);
 });
 
@@ -285,14 +265,7 @@ startServers().catch(err => {
 // =====================
 async function gracefulShutdown(signal) {
   console.log(`\n[Shutdown] Received ${signal}, starting graceful shutdown...`);
-  if (sandboxReconcileTimer) clearInterval(sandboxReconcileTimer);
   clearInterval(accountDeletionTimer);
-  try {
-    await closeSandboxAttestationListener(sandboxAttestationListener);
-    if (sandboxAttestationListener) console.log('[Shutdown] Sandbox attestation listener closed');
-  } catch (err) {
-    console.error('[Shutdown] Failed to close Sandbox attestation listener:', err.message);
-  }
 
   // 1. 通知所有 web client 服务即将更新
   const updateMsg = { type: 'server_updating' };

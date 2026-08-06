@@ -66,18 +66,8 @@ export function connect(WebSocketImpl = WebSocket) {
       if (msg.type === 'auth_required' && msg.tempId) {
         console.log('Received auth challenge, sending credentials...');
         ctx.pendingAuthTempId = msg.tempId;
-        // Send authentication via WebSocket (not URL)
-        const managed = ctx.CONFIG.managedSandboxIdentity;
-        socket.send(JSON.stringify(managed ? {
-          type: 'auth',
-          tempId: msg.tempId,
-          authKind: 'sandbox',
-          credentialId: managed.credentialId,
-          secret: managed.secret,
-          sandboxClaims: managed.claims,
-          capabilities: ctx.agentCapabilities,
-          version: ctx.agentVersion
-        } : {
+        // Send the ordinary Agent credential via WebSocket (not URL).
+        socket.send(JSON.stringify({
           type: 'auth',
           tempId: msg.tempId,
           secret: ctx.CONFIG.agentSecret,

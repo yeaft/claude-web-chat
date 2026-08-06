@@ -7,6 +7,7 @@ import {
 } from '../auth/session-store.js';
 import { clearSessionCookie } from '../auth/request-auth.js';
 import { agents, webClients, userStatsDeltas } from '../context.js';
+import { containerAgentService } from '../container-agent-service.js';
 
 // 过滤用户敏感字段
 function sanitizeUser(user) {
@@ -154,6 +155,9 @@ export function registerUserRoutes(app, { requireAuth, requireAdmin }) {
         }
       }
 
+      // Remove the Server-managed container before deleting the owner record.
+      // Manually launched remote container Agents remain outside Server lifecycle control.
+      await containerAgentService.action(user.id, 'remove');
       const deletion = userDb.beginDeletion(user.id);
       if (!deletion) return res.status(404).json({ error: 'User not found or already deleted' });
 

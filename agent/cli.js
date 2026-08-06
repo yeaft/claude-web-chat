@@ -65,12 +65,12 @@ if (command === 'doctor') {
   await handleLlmCommand(subArgs);
 } else if (command === 'local') {
   await handleLocalCommand(subArgs);
-} else if (command === 'managed-sandbox') {
+} else if (command === 'container') {
   try {
-    const { runManagedSandboxAgent } = await import('./managed-sandbox/agent-runtime.js');
-    await runManagedSandboxAgent(subArgs);
+    const { runContainerCli } = await import('./container-cli.js');
+    await runContainerCli(subArgs);
   } catch (error) {
-    console.error(`Managed Sandbox Agent failed: ${error.message}`);
+    console.error(`Container Agent failed: ${error.code || error.message}`);
     process.exit(1);
   }
 } else if (command === 'upgrade') {
@@ -138,6 +138,7 @@ function printHelp() {
     yeaft-agent logs [options]         View service logs (follow mode)
     yeaft-agent doctor                 Diagnose service configuration
     yeaft-agent llm <command>          Configure local Yeaft LLM providers/models
+    yeaft-agent container <command>    Manage a Dockerized yeaft-agent
     yeaft-agent upgrade [--name <id>]  Upgrade and restart the selected service
     yeaft-agent --version              Show version
 

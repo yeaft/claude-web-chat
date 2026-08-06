@@ -6,6 +6,7 @@
   "type": "module",
   "bin": {
     "yeaft-agent": "./cli.js",
+    "yeaft-agent-container": "./container-cli.js",
     "yeaft": "./yeaft/cli.js",
     "yeaft-stats": "./bin/yeaft-stats.js"
   },
@@ -36,6 +37,8 @@
   },
   "files": [
     "**/*.js",
+    "Dockerfile",
+    "docker-entrypoint.sh",
     "yeaft/templates/**/*.md",
     "yeaft/dream/prompts/**/*.md",
     "local-runtime/**/*"

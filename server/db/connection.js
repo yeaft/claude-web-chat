@@ -1324,12 +1324,6 @@ export const stmts = {
   clearInvitationUsedBy: db.prepare(`
     UPDATE invitations SET used_by = NULL WHERE used_by = ?
   `),
-  getReservedSandboxForUser: db.prepare(`
-    SELECT id FROM sandboxes WHERE user_id = ? AND reservation_held = 1 LIMIT 1
-  `),
-  deleteReleasedSandboxesForUser: db.prepare(`
-    DELETE FROM sandboxes WHERE user_id = ? AND reservation_held = 0
-  `),
   deleteUserById: db.prepare(`
     DELETE FROM users WHERE id = ?
   `),

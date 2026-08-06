@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { WebSocket } from 'ws';
 import { CONFIG } from './config.js';
 import { verifyAgent } from './auth.js';
-import { authenticateSandboxAgent, canForceReadyAfterSyncTimeout } from './sandbox-agent-auth.js';
+
 import { encodeKey } from './encryption.js';
 import { agents, pendingAgentConnections } from './context.js';
 import { userDb } from './database.js';
@@ -104,15 +104,11 @@ export function handleAgentConnection(ws, url) {
           clearTimeout(pending.timeout);
           pendingAgentConnections.delete(tempId);
 
-          const sandboxAuth = !skipAgentAuth && msg.authKind === 'sandbox'
-            ? authenticateSandboxAgent(msg, pending)
-            : null;
-          const authResult = sandboxAuth
-            || (msg.authKind
-              ? { valid: false, sessionKey: null, userId: null, username: null }
-              : skipAgentAuth
-                ? { valid: true, sessionKey: null, userId: null, username: null }
-                : verifyAgent(msg.secret));
+          const authResult = msg.authKind
+            ? { valid: false, sessionKey: null, userId: null, username: null }
+            : skipAgentAuth
+              ? { valid: true, sessionKey: null, userId: null, username: null }
+              : verifyAgent(msg.secret);
           if (!authResult.valid) {
             pruneAgentConnectionGenerations();
             console.log(`Agent auth failed: ${agentName}`);
@@ -122,21 +118,15 @@ export function handleAgentConnection(ws, url) {
 
           const capabilities = Array.isArray(msg.capabilities) ? msg.capabilities : urlCapabilities;
           const agentVersion = msg.version || null;
-          if (sandboxAuth && !capabilities.includes('managed-sandbox')) {
-            pruneAgentConnectionGenerations();
-            ws.close(1008, 'Invalid Sandbox Agent capability');
-            return;
-          }
           // Local no-auth mode still has one durable browser owner. This makes
           // the server-side Session catalog persistent without changing generic
           // development-server behavior, which remains ownerless.
           const localOwner = skipAgentAuth && process.env.YEAFT_LOCAL_RUN === 'true'
             ? userDb.getOrCreate('dev-user')
             : null;
-          const ownerId = sandboxAuth?.userId || localOwner?.id || authResult.userId;
+          const ownerId = localOwner?.id || authResult.userId;
           const ownerUsername = localOwner?.username || authResult.username || null;
-          const registeredInstanceId = sandboxAuth?.instanceId
-            || pending.instanceId || pending.agentId || pending.agentName;
+          const registeredInstanceId = pending.instanceId || pending.agentId || pending.agentName;
           // Authenticated Agents use an owner-scoped key. SKIP_AUTH preserves
           // its historical unscoped id while still receiving version metadata.
           resolvedAgentId = skipAgentAuth
@@ -159,11 +149,6 @@ export function handleAgentConnection(ws, url) {
             ownerUsername,
             agentVersion,
             registeredInstanceId,
-            sandboxAuth ? {
-              sandboxId: sandboxAuth.sandboxId,
-              generation: sandboxAuth.generation,
-              imageDigest: sandboxAuth.imageDigest,
-            } : null,
           );
           pruneAgentConnectionGenerations();
         }
@@ -248,7 +233,7 @@ function handleAgentDisconnect(agentId, agentName, ws) {
   broadcastAgentList();
 }
 
-function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, capabilities = [], ownerId = null, ownerUsername = null, agentVersion = null, instanceId = null, sandboxIdentity = null) {
+function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, capabilities = [], ownerId = null, ownerUsername = null, agentVersion = null, instanceId = null) {
   // 如果是重连，保留 conversations；否则（server 重启）创建空 Map
   const existingAgent = agents.get(agentId);
   const conversations = existingAgent?.conversations || new Map();
@@ -285,13 +270,12 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
     ownerId,
     ownerUsername,
     version: agentVersion,
-    encryptOutbound,
-    sandboxIdentity
+    encryptOutbound
   });
 
   const syncTimeout = setTimeout(() => {
     const ag = agents.get(agentId);
-    if (ag?.ws === ws && ag.status === 'syncing' && canForceReadyAfterSyncTimeout(ag)) {
+    if (ag?.ws === ws && ag.status === 'syncing') {
       console.warn(`[Sync] Agent ${agentName} sync timeout, forcing ready`);
       ag.status = 'ready';
       broadcastAgentList();

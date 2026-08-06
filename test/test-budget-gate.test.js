@@ -23,7 +23,10 @@ describe('test budget gate', () => {
     expect(isMainModule(pathToFileURL(windowsEntry).href, windowsEntry)).toBe(true);
     expect(isMainModule(import.meta.url, windowsEntry)).toBe(false);
 
-    expect(SANDBOX_TEST_FILES).toHaveLength(10);
+    expect(SANDBOX_TEST_FILES).toEqual([
+      'test/agent/container-manager.test.js',
+      'test/web/sandbox-settings.test.js',
+    ]);
     expect(REVIEWED_TEST_FILES).toEqual([...CORE_TEST_FILES, ...SANDBOX_TEST_FILES]);
     for (const file of SANDBOX_TEST_FILES) {
       expect(CORE_TEST_FILES).not.toContain(file);

@@ -322,7 +322,7 @@ export default {
                   <div class="sp-row">
                     <div class="sp-row-left">
                       <span class="sp-label sp-text-wrap">{{ sandboxSnapshot.agentName }}</span>
-                      <span class="sp-desc-small">{{ $t('settings.sandbox.size.' + sandboxSnapshot.sizeId) }}</span>
+                      <span class="sp-desc-small">{{ $t('settings.sandbox.containerAgent') }}</span>
                     </div>
                     <span class="sp-badge">{{ $t('settings.sandbox.state.' + sandboxSnapshot.observedState) }}</span>
                   </div>
@@ -353,14 +353,7 @@ export default {
                     {{ sandboxUnavailableText }}
                   </div>
                   <template v-else>
-                    <label class="sp-label" for="sandbox-agent-name">{{ $t('settings.sandbox.agentName') }}</label>
-                    <input id="sandbox-agent-name" class="sp-input" v-model="sandboxAgentName" maxlength="64">
-                    <label class="sp-label" for="sandbox-size">{{ $t('settings.sandbox.sizeLabel') }}</label>
-                    <select id="sandbox-size" v-model="sandboxSizeId">
-                      <option v-for="size in sandboxCapability.catalog" :key="size.id" :value="size.id">
-                        {{ $t('settings.sandbox.size.' + size.id) }} — {{ size.cpuMillis / 1000 }} CPU / {{ size.memoryMiB / 1024 }} GiB / {{ size.diskGiB }} GB
-                      </option>
-                    </select>
+                    <p class="sp-desc">{{ $t('settings.sandbox.serverManaged') }}</p>
                     <div class="sp-actions-row">
                       <button class="btn-primary" @click="createSandbox" :disabled="sandboxSubmitting">
                         {{ sandboxSubmitting ? $t('settings.sandbox.creating') : $t('settings.sandbox.enable') }}
@@ -810,12 +803,6 @@ export default {
         if (!capabilityResponse.ok || !snapshotResponse.ok) throw new Error('SANDBOX_LOAD_FAILED');
         this.sandboxCapability = await capabilityResponse.json();
         this.sandboxSnapshot = (await snapshotResponse.json()).sandbox;
-        if (!this.sandboxAgentName && this.profile?.username) {
-          this.sandboxAgentName = this.profile.username + '-sandbox';
-        }
-        if (!this.sandboxCapability.catalog.some(size => size.id === this.sandboxSizeId)) {
-          this.sandboxSizeId = this.sandboxCapability.catalog[0]?.id || 'normal';
-        }
       } catch {
         this.sandboxLoadError = true;
         this.sandboxCapability = { available: false, reasonCode: 'SANDBOX_CAPACITY_UNAVAILABLE', catalog: [] };
@@ -848,7 +835,7 @@ export default {
             'Content-Type': 'application/json',
             'Idempotency-Key': this.sandboxIdempotencyKey('create')
           },
-          body: JSON.stringify({ agentName: this.sandboxAgentName, sizeId: this.sandboxSizeId })
+          body: JSON.stringify({})
         });
         const body = await response.json();
         if (!response.ok) {

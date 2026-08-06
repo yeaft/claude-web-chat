@@ -668,7 +668,9 @@ export default {
   'auth.sessionExpired': 'Session expired. Please log in again.',
 
   // Settings - Managed Sandbox
-  'settings.sandbox.description': 'Create a separate, persistent managed Yeaft Agent on a qualified dedicated Sandbox Host.',
+  'settings.sandbox.description': 'Run a persistent Yeaft Agent in a Docker container managed by this Server.',
+  'settings.sandbox.containerAgent': 'Dockerized Yeaft Agent',
+  'settings.sandbox.serverManaged': 'The Server manages only this container’s start, stop, and removal. The Agent itself uses the normal Yeaft connection.',
   'settings.sandbox.agentName': 'Agent name',
   'settings.sandbox.sizeLabel': 'Size',
   'settings.sandbox.enable': 'Enable Sandbox',
@@ -700,7 +702,7 @@ export default {
   'settings.sandbox.stage.complete': 'Complete',
   'settings.sandbox.stage.dispatching': 'Dispatching securely',
   'settings.sandbox.stage.capacity_rejected': 'Waiting for capacity',
-  'settings.sandbox.unavailable.disabled': 'The server-side managed Sandbox service is not enabled for this deployment. Updating an existing Agent does not enable it.',
+  'settings.sandbox.unavailable.disabled': 'Container Agent management is disabled. Set SANDBOX_ENABLED=true and SANDBOX_SERVER_URL on the Server.',
   'settings.sandbox.unavailable.notEntitled': 'Sandbox is not available for this account.',
   'settings.sandbox.unavailable.capacityUnavailable': 'Sandbox is temporarily unavailable.',
   'settings.sandbox.error.SANDBOX_LOAD_FAILED': 'Sandbox status could not be loaded. Close Settings and try again.',
