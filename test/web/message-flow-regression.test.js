@@ -2070,8 +2070,7 @@ describe('message flow regressions', () => {
     });
     expect(workCenterPage.get('.work-center-agent-picker .modern-select-label').text()).toBe('server');
 
-    let resolvePluginConfig;
-    const pendingPluginConfig = new Promise(resolve => { resolvePluginConfig = resolve; });
+    const pluginConfigRequests = [];
     const pluginStore = Vue.reactive({
       agents: [{ id: 'agent-a', name: 'Agent A', online: true }],
       currentAgent: 'agent-a',
@@ -2088,7 +2087,9 @@ describe('message flow regressions', () => {
         },
       },
       pluginCatalogKey: (agentId, workDir = '') => `${agentId}:${workDir}`,
-      loadPluginConfig: vi.fn(() => pendingPluginConfig),
+      loadPluginConfig: vi.fn(() => new Promise(resolve => {
+        pluginConfigRequests.push(resolve);
+      })),
       loadPluginCatalog: vi.fn(() => Promise.resolve()),
       savePluginConfig: vi.fn(plugins => Promise.resolve({ plugins })),
     });
@@ -2103,8 +2104,28 @@ describe('message flow regressions', () => {
     await pluginCenter.vm.save();
     expect(pluginStore.savePluginConfig).not.toHaveBeenCalled();
 
-    resolvePluginConfig({ plugins: { tools: ['FileRead'] } });
-    await pendingPluginConfig;
+    pluginConfigRequests[0]({ plugins: {}, error: 'Failed to read plugin config: malformed config' });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Vue.nextTick();
+    expect(pluginCenter.vm.configReady).toBe(false);
+    expect(pluginCenter.get('.btn-primary').attributes('disabled')).toBeDefined();
+    expect(pluginCenter.vm.selection).toBeNull();
+    pluginStore.pluginConfigByAgent['agent-a'] = {
+      plugins: {},
+      error: 'Failed to read plugin config: malformed config',
+      loaded: true,
+    };
+    pluginCenter.vm.loadConfig('agent-a');
+    await Vue.nextTick();
+    expect(pluginConfigRequests).toHaveLength(2);
+    expect(pluginCenter.vm.configReady).toBe(false);
+    expect(pluginCenter.get('.btn-primary').attributes('disabled')).toBeDefined();
+    await pluginCenter.vm.save();
+    expect(pluginStore.savePluginConfig).not.toHaveBeenCalled();
+
+    pluginConfigRequests[1]({ plugins: { tools: ['FileRead'] } });
+    await Promise.resolve();
     await Promise.resolve();
     await Vue.nextTick();
     expect(pluginCenter.vm.configReady).toBe(true);

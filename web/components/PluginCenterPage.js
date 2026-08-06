@@ -84,7 +84,7 @@ export default {
       this.configLoadedAgentId = null;
       this.configLoading = false;
       this.configLoadError = '';
-      if (this.configRecord?.loaded) {
+      if (this.configRecord?.loaded && !this.configRecord?.error) {
         this.selection = this.copySelection(this.configRecord.plugins);
         this.configLoadedAgentId = agentId;
         return;
