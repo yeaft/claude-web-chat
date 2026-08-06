@@ -1,6 +1,5 @@
 // Message CRUD and streaming helpers
 
-import { applyLiveToolWindow } from './tool-window.js';
 import { conversationRepositoryFor } from './conversation-repository.js';
 import {
   yeaftOptimisticMessageIdentity,
@@ -301,7 +300,6 @@ export function addMessageToConversation(store, conversationId, msg) {
       sessionId: newMsg.sessionId,
       row: newMsg,
     });
-    applyLiveToolWindow(store.messagesMap[conversationId]);
     return stored;
   }
   const stableId = explicitMessageId(msg);
@@ -316,7 +314,6 @@ export function addMessageToConversation(store, conversationId, msg) {
     }
   }
   store.messagesMap[conversationId].push(newMsg);
-  applyLiveToolWindow(store.messagesMap[conversationId]);
   // Bug 1: keep messages sorted by timestamp so history loaded out-of-order
   // (e.g. from different sessions) still displays chronologically.
   if (conversationId === store.yeaftConversationId) {
@@ -602,29 +599,12 @@ export function maxDbMessageId(msgs) {
   return max;
 }
 
-const DETAILED_HISTORY_TOOL_NAMES = new Set(['TodoWrite', 'AskUserQuestion']);
-
 function dbMessageBase(dbMsg) {
   return {
     id: dbMsg.id,
     dbMessageId: dbMsg.id,  // ★ Bug #3: 保留 DB id 用于分页锚点
     timestamp: dbMsg.created_at
   };
-}
-
-export function formatDbMessageForHistoryHydration(dbMsg) {
-  if (!dbMsg) return null;
-  if (dbMsg.message_type === 'tool_use' && !DETAILED_HISTORY_TOOL_NAMES.has(dbMsg.tool_name)) {
-    return {
-      ...dbMessageBase(dbMsg),
-      type: 'tool-use',
-      toolName: dbMsg.tool_name || 'unknown',
-      hasResult: true,
-      isHistory: true,
-      startTime: dbMsg.created_at || 0,
-    };
-  }
-  return formatDbMessage(dbMsg);
 }
 
 export function formatDbMessage(dbMsg) {

@@ -138,9 +138,6 @@ export default {
 
       <!-- 3. Tool actions -->
       <div v-if="showToolActions" class="turn-actions">
-        <div v-if="turn.toolSummaryCount > 0" class="turn-actions-summary">
-          {{ toolSummaryLabel }}
-        </div>
         <div v-if="expanded" class="turn-actions-history">
           <template v-for="(tool, i) in historyTools" :key="i">
             <ToolLine
@@ -197,7 +194,7 @@ export default {
       </div>
 
       <!-- 6. Response footer actions (visible on hover) -->
-      <div class="turn-footer" v-if="(turn.textContent || responseCollapsible || showDebugAction || (sessionActions && (turn.todoMsg || turn.toolMsgs?.length || turn.toolSummaryCount))) && !turn.isStreaming">
+      <div class="turn-footer" v-if="(turn.textContent || responseCollapsible || showDebugAction || (sessionActions && (turn.todoMsg || turn.toolMsgs?.length))) && !turn.isStreaming">
         <span
           v-if="turnTime && !turn.speakerVpId"
           class="turn-time"
@@ -291,9 +288,7 @@ export default {
       return tools.filter(tool => tool?.toolName !== 'RouteForward');
     });
 
-    const showToolActions = Vue.computed(() => {
-      return actionTools.value.length > 0 || Number(props.turn.toolSummaryCount || 0) > 0;
-    });
+    const showToolActions = Vue.computed(() => actionTools.value.length > 0);
 
     const latestTool = Vue.computed(() => {
       const tools = actionTools.value;
@@ -305,13 +300,6 @@ export default {
     });
 
     const latestToolIndex = Vue.computed(() => Math.max(0, actionTools.value.length - 1));
-
-    const toolSummaryLabel = Vue.computed(() => {
-      const count = Number(props.turn.toolSummaryCount || 0);
-      if (!count) return '';
-      if (typeof t === 'function') return t('chat.toolActionsOmitted', { count });
-      return `${count} older tool actions omitted`;
-    });
 
     const displayedTodos = Vue.computed(() => {
       const todos = props.turn?.todoMsg?.toolInput?.todos;
@@ -642,7 +630,6 @@ export default {
       latestToolIndex,
       actionTools,
       routeMessages,
-      toolSummaryLabel,
       toggleExpand,
       toolExpandedValue,
       updateToolExpanded,

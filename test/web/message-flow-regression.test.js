@@ -2036,7 +2036,7 @@ describe('message flow regressions', () => {
         'chat:a': { requestId: 'request-a', catalogKey: 'chat:a', loading: true },
         'chat:b': { requestId: 'request-b', catalogKey: 'chat:b', loading: true },
       },
-      formatDbMessageForHistoryHydration: vi.fn(row => ({ id: `row-${row.id}`, dbMessageId: row.id, type: row.role, content: row.content })),
+      formatDbMessage: vi.fn(row => ({ id: `row-${row.id}`, dbMessageId: row.id, type: row.role, content: row.content })),
       isCurrentChatHistoryResponse(msg) {
         return msg.catalogKey === `chat:${msg.conversationId}`
           && this.chatHistoryRequests[msg.catalogKey]?.requestId === msg.requestId;
@@ -3957,7 +3957,7 @@ describe('message flow regressions', () => {
     store.sendWsMessage = vi.fn(() => true);
     store.addMessage = vi.fn();
     store.saveOpenSessions = vi.fn();
-    store.formatDbMessageForHistoryHydration = vi.fn(row => row);
+    store.formatDbMessage = vi.fn(row => row);
     handleConversationCreated(store, {
       conversationId: 'created-copilot',
       agentId: 'agent-a',

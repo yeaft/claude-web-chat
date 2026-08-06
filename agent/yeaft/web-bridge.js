@@ -1323,9 +1323,6 @@ function projectPersistedToHistoryEntry(m, { includeReflections = false } = {}) 
       input: tc.input,
     }));
   }
-  if (Number.isFinite(m.toolSummaryCount) && m.toolSummaryCount > 0) {
-    entry.toolSummaryCount = m.toolSummaryCount;
-  }
   if (m.isError) entry.isError = true;
   if (m.ts) entry.ts = m.ts;
   else if (m.time) entry.ts = m.time;
@@ -1333,7 +1330,7 @@ function projectPersistedToHistoryEntry(m, { includeReflections = false } = {}) 
   if (Array.isArray(m.attachments) && m.attachments.length > 0) entry.attachments = m.attachments;
   if (m.quote && typeof m.quote === 'object') entry.quote = m.quote;
   if (Array.isArray(m.todos)) entry.todos = m.todos;
-  if ((entry.role === 'user' || entry.role === 'assistant') && !entry.content && !entry.attachments && !entry.images && !entry.toolCalls && !entry.todos && !entry.toolSummaryCount && !entry.askUserResults) return null;
+  if ((entry.role === 'user' || entry.role === 'assistant') && !entry.content && !entry.attachments && !entry.images && !entry.toolCalls && !entry.todos && !entry.askUserResults) return null;
   return entry;
 }
 
@@ -1436,9 +1433,7 @@ function projectVisibleHistoryChunkMessages(messages = []) {
       ...(typeof m.stopReason === 'string' && m.stopReason ? { stopReason: m.stopReason } : {}),
       ...(Array.isArray(m.todos) ? { todos: m.todos } : {}),
       ...(Array.isArray(m.askUserResults) && m.askUserResults.length > 0 ? { askUserResults: m.askUserResults } : {}),
-      ...(Number.isFinite(m.toolSummaryCount) && m.toolSummaryCount > 0
-        ? { toolSummaryCount: m.toolSummaryCount }
-        : (Array.isArray(m.toolCalls) && m.toolCalls.length > 0 ? { toolSummaryCount: m.toolCalls.length } : {})),
+      ...(Array.isArray(m.toolCalls) && m.toolCalls.length > 0 ? { toolCalls: m.toolCalls } : {}),
     }));
 }
 
@@ -1498,25 +1493,12 @@ function emitLegacyHistoryOutputFrames(replayEntries) {
           id: entry.id || null,
           content: [
             ...(entry.content ? [{ type: 'text', text: entry.content }] : []),
+            ...((entry.toolCalls || []).map(toolCall => ({ type: 'tool_use', ...toolCall, history: true }))),
             ...((entry.images || []).map(image => ({ type: 'image_asset', image }))),
           ],
         },
         ts: entry.ts || null,
       }, envelopeOpts);
-      if (Array.isArray(entry.toolCalls) && entry.toolCalls.length > 0) {
-        sendSessionOutputFrame({
-          type: 'assistant',
-          message: {
-            content: [{
-              type: 'tool_summary',
-              count: entry.toolCalls.length,
-              omittedCount: entry.toolCalls.length,
-              source: 'history',
-            }],
-          },
-          ts: entry.ts || null,
-        }, envelopeOpts);
-      }
       sendSessionOutputFrame({ type: 'result', result_text: '' }, envelopeOpts);
     }
   }

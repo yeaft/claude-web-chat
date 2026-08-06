@@ -202,7 +202,7 @@ describe('Yeaft load-history first paint', () => {
     expect(projected[0]).toMatchObject({ id: 'm0002', quote });
   });
 
-  it('projects the latest TodoWrite snapshot without counting it as a generic tool summary', () => {
+  it('projects the latest TodoWrite snapshot with full tool actions', () => {
     const projected = __testHooks.projectVisibleHistoryChunkMessages([{
       id: 'm0003',
       role: 'assistant',
@@ -218,7 +218,7 @@ describe('Yeaft load-history first paint', () => {
 
     expect(projected[0]).toMatchObject({
       todos: [{ content: 'New', status: 'completed' }],
-      toolSummaryCount: 1,
+      toolCalls: [{ id: 'bash', name: 'Bash', input: { command: 'true' } }],
       responseKind: 'progress',
     });
 
@@ -426,12 +426,12 @@ describe('Yeaft load-history first paint', () => {
 
       expect(page.messages[1]).toMatchObject({
         todos: [{ content: 'Verify', status: 'completed' }],
-        toolSummaryCount: 1,
+        toolCalls: [{ id: 'bash', name: 'Bash', input: { command: 'true' } }],
         responseKind: 'result',
       });
       expect(projected[1]).toMatchObject({
         todos: [{ content: 'Verify', status: 'completed' }],
-        toolSummaryCount: 1,
+        toolCalls: [{ id: 'bash', name: 'Bash', input: { command: 'true' } }],
         responseKind: 'result',
       });
 
@@ -503,7 +503,9 @@ describe('Yeaft load-history first paint', () => {
         }],
       }),
     ]);
-    expect(projected[0].toolSummaryCount).toBeUndefined();
+    expect(projected[0].toolCalls).toEqual([
+      { id: 'ask_1', name: 'AskUser', input: { question: 'Continue?', options: ['Yes', 'No'] } },
+    ]);
   });
 
   historyScenario('keeps outline totals opt-in and traces bounded outline/search scans', async () => {
@@ -652,7 +654,10 @@ describe('Yeaft load-history first paint', () => {
         hasMore: true,
         messages: [
           { role: 'user', content: 'new q', sessionId: 'session-fast' },
-          { role: 'assistant', content: '', sessionId: 'session-fast', speakerVpId: 'vp-linus', toolSummaryCount: 1 },
+          {
+            role: 'assistant', content: '', sessionId: 'session-fast', speakerVpId: 'vp-linus',
+            toolCalls: [{ id: 'tool-1', name: 'Bash', input: { command: 'echo ok' } }],
+          },
         ],
       });
       const historyDone = sent.find(m => m.event?.type === 'history_loaded');
@@ -1030,7 +1035,7 @@ describe('Yeaft load-history first paint', () => {
             content: 'I will use a tool',
             ts: '2026-06-20T01:00:02.000Z',
             speakerVpId: 'vp-linus',
-            toolSummaryCount: 1,
+            toolCalls: [{ id: 'toolu_1', name: 'Bash', input: { command: 'echo ok' } }],
           },
         ],
       });
@@ -1214,7 +1219,7 @@ describe('Yeaft load-history first paint', () => {
             content: 'ready delta assistant',
             ts: '2026-06-20T02:00:02.000Z',
             speakerVpId: 'vp-martin',
-            toolSummaryCount: 1,
+            toolCalls: [{ id: 'toolu_2', name: 'WebSearch', input: { query: 'yeaft' } }],
           },
         ],
       });

@@ -1011,10 +1011,12 @@ describe('Yeaft history outline state', () => {
   it('reveals a tool-only response through its persisted anchor', () => {
     const store = primeStore();
     store.messagesMap['conv-a'] = [{
-      id: 'm42:tool-summary',
-      messageId: 'm42:tool-summary',
+      id: 'm42:tool:read',
+      messageId: 'm42:tool:read',
       persistedMessageId: 'm42',
-      type: 'tool-summary',
+      type: 'tool-use',
+      toolName: 'FileRead',
+      toolInput: { file_path: 'README.md' },
       sessionId: 'same',
       turnId: 'response-tool-only',
     }];

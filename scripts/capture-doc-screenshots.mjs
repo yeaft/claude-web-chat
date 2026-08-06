@@ -288,9 +288,10 @@ const sessionMessages = [
     content: 'Updated the documentation from current code evidence.\n\n**Verified product model**\n- Agent-local execution and storage boundaries\n- One native Session model with 1..N VPs\n- Project instructions with scoped sibling-Session recall\n- 33 built-in native tools plus Skills and MCP\n- Work Center as WorkItem → Action → Run, separate from Session data\n\nEnglish and Chinese entry pages now share the same structure.',
   },
   {
-    id: 'session-tool-summary-1', messageId: 'session-tool-summary-1', type: 'tool-summary',
+    id: 'session-tool-1', messageId: 'session-tool-1', type: 'tool-use',
     sessionId: 'docs-session', turnId: 'turn-linus', vpId: 'linus', speakerVpId: 'linus',
-    timestamp: baseNow - 2_390_000, count: 18, omittedCount: 18, source: 'history', isStreaming: false,
+    timestamp: baseNow - 2_390_000, toolName: 'FileEdit', toolInput: { file_path: 'README.md' },
+    hasResult: true, isHistory: true, isStreaming: false,
   },
   {
     id: 'session-user-2', messageId: 'session-user-2', type: 'user', sessionId: 'docs-session',
@@ -304,9 +305,10 @@ const sessionMessages = [
     content: '**Independent review in progress**\n\nThe new structure correctly separates vendor CLI conversations, native Sessions, Projects, and Agent-level Work Center. I am checking exact CLI flags, Project memory boundaries, Action concurrency, and every screenshot caption before approval. No roadmap capability is being treated as current behavior.',
   },
   {
-    id: 'session-tool-summary-2', messageId: 'session-tool-summary-2', type: 'tool-summary',
+    id: 'session-tool-2', messageId: 'session-tool-2', type: 'tool-use',
     sessionId: 'docs-session', turnId: 'turn-martin', vpId: 'martin', speakerVpId: 'martin',
-    timestamp: baseNow - 590_000, count: 9, omittedCount: 9, source: 'history', isStreaming: false,
+    timestamp: baseNow - 590_000, toolName: 'Grep', toolInput: { pattern: 'roadmap' },
+    hasResult: true, isHistory: true, isStreaming: false,
   },
 ];
 

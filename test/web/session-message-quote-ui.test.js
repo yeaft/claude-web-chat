@@ -107,7 +107,9 @@ describe('Session message quote UI wiring', () => {
       },
       {
         id: 'handoff-tool',
-        type: 'tool-summary',
+        type: 'tool-use',
+        toolName: 'FileRead',
+        toolInput: { file_path: 'README.md' },
         speakerVpId: 'linus',
         turnId: 'runtime-d',
         executionOrigin: 'route_forward',
@@ -119,7 +121,7 @@ describe('Session message quote UI wiring', () => {
       .toEqual(['handoff-d', 'handoff-tool']);
 
     const turn = {
-      id: 'turn-row', turnId: 't1', textContent: '', textSegments: [], toolMsgs: [], toolSummaryCount: 0,
+      id: 'turn-row', turnId: 't1', textContent: '', textSegments: [], toolMsgs: [],
       imageMsgs: [], todoMsg: null, askMsg: null, isStreaming: false, messages: [rows[0], rows[2]],
     };
     appendTurnResponseSegment(turn, rows[0]);
@@ -145,6 +147,33 @@ describe('Session message quote UI wiring', () => {
     expect(wrapper.text()).not.toContain('结果');
     expect(wrapper.get('.turn-response-result h2').text()).toBe('改动');
     wrapper.unmount();
+
+    const toolTurn = {
+      ...turn,
+      textContent: '',
+      textSegments: [],
+      messages: [],
+      toolMsgs: [{
+        id: 'history-read',
+        toolName: 'FileRead',
+        toolInput: { file_path: 'README.md' },
+        hasResult: true,
+        isHistory: true,
+      }],
+    };
+    const toolWrapper = mount(AssistantTurn, {
+      props: { turn: toolTurn },
+      global: {
+        mocks: { $t: key => key },
+        provide: { t: key => key },
+        stubs: { ToolLine: { props: ['toolName', 'toolInput'], template: '<div class="tool-line-stub">{{ toolName }} {{ toolInput.file_path }}</div>' }, AskCard: true, VpSpeakerHeader: true },
+      },
+    });
+    await Vue.nextTick();
+    expect(toolWrapper.get('.tool-line-stub').text()).toBe('FileRead README.md');
+    expect(toolWrapper.text()).not.toContain('omitted');
+    expect(toolWrapper.text()).not.toContain('省略');
+    toolWrapper.unmount();
 
     const streamingTurn = { ...turn, textContent: '', textSegments: [], messages: [], isStreaming: false, isActive: true };
     appendTurnResponseSegment(streamingTurn, {
@@ -345,7 +374,6 @@ describe('Session message quote UI wiring', () => {
           textContent: 'Done',
           textSegments: [{ key: 'result', content: 'Done', kind: 'result', isStreaming: false }],
           toolMsgs: [],
-          toolSummaryCount: 0,
           imageMsgs: [],
           todoMsg: null,
           askMsg: null,
