@@ -1,7 +1,6 @@
-#!/usr/bin/env node
-
 import { appendFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 function appendLog(logPath, message) {
@@ -26,6 +25,9 @@ export function spawnWindowsUpgradeRunner({
     let child;
     try {
       child = spawnProcess(nodePath, [runnerPath, payloadPath], {
+        // Never inherit the Agent's package cwd. Windows will otherwise keep
+        // that directory locked while npm tries to replace it.
+        cwd: dirname(runnerPath),
         detached: true,
         stdio: 'ignore',
         windowsHide: true,

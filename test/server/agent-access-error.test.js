@@ -13,7 +13,7 @@ import { handleAgentOutput } from '../../server/handlers/agent-output.js';
 import { handleAgentConversation } from '../../server/handlers/agent-conversation.js';
 import { handleClientConversation } from '../../server/handlers/client-conversation.js';
 import {
-  MIN_SAFE_REMOTE_UPGRADE_VERSION,
+  SAFE_REMOTE_UPGRADE_CAPABILITY,
   handleClientMisc,
   requiresManualUpgradeBridge,
 } from '../../server/handlers/client-misc.js';
@@ -427,14 +427,12 @@ describe('resolveAgentAccessError', () => {
     ]);
   });
 
-  it('blocks legacy self-updaters before they can take the Agent offline', async () => {
-    expect(MIN_SAFE_REMOTE_UPGRADE_VERSION).toBe('1.0.342');
-    expect(requiresManualUpgradeBridge('1.0.337')).toBe(true);
-    expect(requiresManualUpgradeBridge('1.0.341')).toBe(true);
-    expect(requiresManualUpgradeBridge(null)).toBe(true);
-    expect(requiresManualUpgradeBridge('not-semver')).toBe(true);
-    expect(requiresManualUpgradeBridge('1.0.342')).toBe(false);
-    expect(requiresManualUpgradeBridge('v1.0.350')).toBe(false);
+  it('blocks Agents without the safe remote-upgrade capability before they can take the Agent offline', async () => {
+    expect(SAFE_REMOTE_UPGRADE_CAPABILITY).toBe('remote_upgrade_safe');
+    expect(requiresManualUpgradeBridge(undefined)).toBe(true);
+    expect(requiresManualUpgradeBridge([])).toBe(true);
+    expect(requiresManualUpgradeBridge(['plaintext-ok'])).toBe(true);
+    expect(requiresManualUpgradeBridge(['plaintext-ok', SAFE_REMOTE_UPGRADE_CAPABILITY])).toBe(false);
 
     const client = {
       encryptOutbound: false,
@@ -446,7 +444,8 @@ describe('resolveAgentAccessError', () => {
     };
     const legacyCommands = [];
     agents.set('agent-old', {
-      version: '1.0.337',
+      version: '1.0.369',
+      capabilities: ['plaintext-ok'],
       encryptOutbound: false,
       ws: { readyState: 1, send(payload) { legacyCommands.push(JSON.parse(payload)); } },
     });
@@ -462,13 +461,14 @@ describe('resolveAgentAccessError', () => {
       agentId: 'agent-old',
       success: false,
       reason: 'manual_upgrade_required',
-      version: '1.0.337',
-      minimumVersion: '1.0.342',
+      version: '1.0.369',
+      requiredCapability: SAFE_REMOTE_UPGRADE_CAPABILITY,
     });
 
     const safeCommands = [];
     agents.set('agent-safe', {
-      version: '1.0.342',
+      version: '1.0.369',
+      capabilities: ['plaintext-ok', SAFE_REMOTE_UPGRADE_CAPABILITY],
       encryptOutbound: false,
       ws: { readyState: 1, send(payload) { safeCommands.push(JSON.parse(payload)); } },
     });
@@ -490,13 +490,12 @@ describe('resolveAgentAccessError', () => {
       },
     };
 
-    for (const [agentId, version, shouldUpgrade] of [
-      ['skip-old', '1.0.337', false],
-      ['skip-minimum', '1.0.342', true],
-      ['skip-current', '1.0.350', true],
+    for (const [agentId, version, capabilities, shouldUpgrade] of [
+      ['skip-legacy', '1.0.369', ['plaintext-ok'], false],
+      ['skip-safe', '1.0.369', ['plaintext-ok', SAFE_REMOTE_UPGRADE_CAPABILITY], true],
     ]) {
       const socket = new MockWebSocket(WS_OPEN);
-      const url = new URL(`ws://localhost/?type=agent&id=${agentId}&name=${agentId}&instanceId=${agentId}&capabilities=plaintext-ok`);
+      const url = new URL(`ws://localhost/?type=agent&id=${agentId}&name=${agentId}&instanceId=${agentId}&capabilities=${capabilities.join(',')}`);
       expect(url.searchParams.has('version')).toBe(false);
 
       handleAgentConnection(socket, url);
@@ -506,13 +505,14 @@ describe('resolveAgentAccessError', () => {
         type: 'auth',
         tempId: challenge.tempId,
         secret: '',
-        capabilities: ['plaintext-ok'],
+        capabilities,
         version,
       });
       await new Promise(resolve => setTimeout(resolve, 0));
 
       expect(agents.get(agentId)).toMatchObject({
         version,
+        capabilities,
         ownerId: null,
         encryptOutbound: false,
       });
@@ -532,6 +532,7 @@ describe('resolveAgentAccessError', () => {
           type: 'upgrade_agent_ack',
           reason: 'manual_upgrade_required',
           version,
+          requiredCapability: SAFE_REMOTE_UPGRADE_CAPABILITY,
         });
       }
     }

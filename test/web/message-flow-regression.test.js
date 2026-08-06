@@ -1653,13 +1653,13 @@ describe('message flow regressions', () => {
       agentId: 'agent-a',
       success: false,
       reason: 'manual_upgrade_required',
-      version: '1.0.337',
-      minimumVersion: '1.0.342',
+      version: '1.0.369',
+      requiredCapability: 'remote_upgrade_safe',
     });
     expect(upgradeAckDetail).toMatchObject({
       reason: 'manual_upgrade_required',
-      version: '1.0.337',
-      minimumVersion: '1.0.342',
+      version: '1.0.369',
+      requiredCapability: 'remote_upgrade_safe',
     });
     expect(alertSpy).toHaveBeenLastCalledWith('chat.agent.manualUpgradeRequired');
     parentStore.mutateProject.mockResolvedValueOnce({ ok: false, error: { code: 'timeout' } });
@@ -1712,8 +1712,8 @@ describe('message flow regressions', () => {
         agentId: 'agent-a',
         success: false,
         reason: 'manual_upgrade_required',
-        version: '1.0.337',
-        minimumVersion: '1.0.342',
+        version: '1.0.369',
+        requiredCapability: 'remote_upgrade_safe',
       },
     }));
     expect(alertSpy).toHaveBeenLastCalledWith('chat.agent.manualUpgradeRequired');

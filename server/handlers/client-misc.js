@@ -3,23 +3,13 @@ import {
   sendToWebClient, forwardToAgent, broadcastAgentList
 } from '../ws-utils.js';
 
-// v1.0.342 is the first release with the bootstrap -> detached runner handoff.
-// Older Windows Agents can lose their updater to PM2 tree-kill before npm runs.
-export const MIN_SAFE_REMOTE_UPGRADE_VERSION = '1.0.342';
+// Only Agents that explicitly advertise the package-replacement-safe updater
+// may receive remote upgrade commands. Version thresholds are insufficient:
+// builds without this capability may still inherit the installed package cwd.
+export const SAFE_REMOTE_UPGRADE_CAPABILITY = 'remote_upgrade_safe';
 
-function parseVersion(version) {
-  const match = String(version || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)$/u);
-  return match ? match.slice(1).map(Number) : null;
-}
-
-export function requiresManualUpgradeBridge(version) {
-  const current = parseVersion(version);
-  const minimum = parseVersion(MIN_SAFE_REMOTE_UPGRADE_VERSION);
-  if (!current || !minimum) return true;
-  for (let index = 0; index < minimum.length; index++) {
-    if (current[index] !== minimum[index]) return current[index] < minimum[index];
-  }
-  return false;
+export function requiresManualUpgradeBridge(capabilities) {
+  return !Array.isArray(capabilities) || !capabilities.includes(SAFE_REMOTE_UPGRADE_CAPABILITY);
 }
 
 /**
@@ -46,15 +36,15 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       if (!upgradeAgentId) break;
       if (!await checkAgentAccess(upgradeAgentId)) break;
       const upgradeAgent = agents.get(upgradeAgentId);
-      if (requiresManualUpgradeBridge(upgradeAgent?.version)) {
+      if (requiresManualUpgradeBridge(upgradeAgent?.capabilities)) {
         await sendToWebClient(client, {
           type: 'upgrade_agent_ack',
           agentId: upgradeAgentId,
           success: false,
           reason: 'manual_upgrade_required',
           version: upgradeAgent?.version || null,
-          minimumVersion: MIN_SAFE_REMOTE_UPGRADE_VERSION,
-          error: `Agent ${upgradeAgent?.version || 'unknown'} predates the safe remote-upgrade handoff; manually install ${MIN_SAFE_REMOTE_UPGRADE_VERSION} or newer once`,
+          requiredCapability: SAFE_REMOTE_UPGRADE_CAPABILITY,
+          error: `Agent ${upgradeAgent?.version || 'unknown'} does not advertise the safe remote-upgrade contract; manually install the latest version once`,
         });
         break;
       }
