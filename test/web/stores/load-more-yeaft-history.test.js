@@ -1795,6 +1795,7 @@ describe('Yeaft conversation loading state', () => {
 
     const result = pruneConversationMessageRetention(store, {
       conversationId,
+      agentId: 'agent-live',
       sessionId: targetSessionId,
       limits: {
         maxRowsPerSession: 9,
@@ -1814,6 +1815,78 @@ describe('Yeaft conversation loading state', () => {
     expect(kept.some(row => row.id === 'assistant-8')).toBe(true);
     expect(kept.some(row => row.id === 'tool-8')).toBe(true);
     expect(kept.some(row => row.id === 'user-1')).toBe(false);
+  });
+
+  historyScenario('reopens exhausted pagination after resident durable eviction', () => {
+    const conversationId = 'yeaft-reload-evicted';
+    const agentId = 'agent-reload';
+    const sessionId = 'session-reload';
+    const sessionKey = yeaftHistoryIdentityKey(agentId, sessionId);
+    const rows = [];
+    for (let seq = 1; seq <= 12; seq += 1) {
+      rows.push({
+        id: `m${seq}`,
+        messageId: `m${seq}`,
+        persistedMessageId: `m${seq}`,
+        stableKey: `${sessionKey}:${seq}`,
+        type: seq % 2 === 1 ? 'user' : 'assistant',
+        content: `row ${seq}`,
+        sessionId,
+        seq,
+        status: 'completed',
+      });
+    }
+    const store = {
+      messagesMap: { [conversationId]: rows },
+      yeaftHistoryCacheState: {
+        [sessionKey]: {
+          agentId,
+          sessionId,
+          conversationId,
+          rowCount: 12,
+          byteCount: 1200,
+          ranges: [{ startSeq: 1, endSeq: 12 }],
+          rangeEpoch: 1,
+        },
+      },
+      yeaftSessionHistoryState: {
+        [sessionKey]: {
+          loaded: true,
+          serverOldestFetchedSeq: 1,
+          oldestSeq: 1,
+          serverHasMore: false,
+          hasMore: false,
+          gapTraversalInitialized: true,
+          completedHistoryWorkKeys: ['server:9'],
+        },
+      },
+    };
+
+    pruneConversationMessageRetention(store, {
+      conversationId,
+      agentId,
+      sessionId,
+      limits: {
+        maxRowsPerSession: 4,
+        maxBytesPerSession: 100_000,
+        recentRowsFloor: 1,
+      },
+    });
+
+    const cache = store.yeaftHistoryCacheState[sessionKey];
+    expect(store.messagesMap[conversationId].map(row => row.seq)).toEqual([9, 10, 11, 12]);
+    expect(cache).toEqual(expect.objectContaining({
+      rowCount: 4,
+      ranges: [{ startSeq: 9, endSeq: 12 }],
+      rangeEpoch: 2,
+    }));
+    const plan = planNextYeaftHistoryPage(
+      store.yeaftSessionHistoryState[sessionKey],
+      cache.ranges,
+      cache.rangeEpoch,
+    );
+    expect(plan.request).toEqual(expect.objectContaining({ kind: 'server', beforeSeq: 9 }));
+    expect(plan.state.hasMore).toBe(true);
   });
 
   historyScenario('keeps one oversized newest turn instead of splitting its boundary', () => {
@@ -1837,6 +1910,7 @@ describe('Yeaft conversation loading state', () => {
 
     pruneConversationMessageRetention(store, {
       conversationId,
+      agentId: 'agent-large',
       sessionId,
       limits: {
         maxRowsPerSession: 4,

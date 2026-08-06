@@ -75,12 +75,15 @@ function residentTurns(rows) {
  */
 export function pruneConversationMessageRetention(store, {
   conversationId,
+  agentId = null,
   sessionId = null,
   limits = YEAFT_HISTORY_CACHE_LIMITS,
 } = {}) {
   const allRows = store?.messagesMap?.[conversationId];
-  if (!Array.isArray(allRows) || allRows.length === 0) return { evictedRows: 0, keptRows: 0 };
-  const matchesScope = row => sessionId === null || rowSessionId(row) === sessionId;
+  if (!Array.isArray(allRows) || allRows.length === 0 || !agentId || !sessionId) {
+    return { evictedRows: 0, keptRows: 0 };
+  }
+  const matchesScope = row => rowSessionId(row) === sessionId;
   const scopedRows = allRows.filter(matchesScope);
   const turns = residentTurns(scopedRows);
   if (turns.length === 0) return { evictedRows: 0, keptRows: 0 };
@@ -103,9 +106,57 @@ export function pruneConversationMessageRetention(store, {
   }
 
   const keptRows = new Set(turns.filter(turn => selected.has(turn)).flatMap(turn => turn.rows));
+  const evicted = scopedRows.filter(row => !keptRows.has(row));
+  if (evicted.length === 0) return { evictedRows: 0, keptRows: keptRows.size, keptBytes: bytes };
   store.messagesMap[conversationId] = allRows.filter(row => !matchesScope(row) || keptRows.has(row));
+
+  const key = yeaftHistoryIdentityKey(agentId, sessionId);
+  const previousCache = store.yeaftHistoryCacheState?.[key] || null;
+  const summary = summarizeRows(scopedRows.filter(row => keptRows.has(row)));
+  const previousRanges = JSON.stringify(previousCache?.ranges || []);
+  const rangeEpoch = previousRanges === JSON.stringify(summary.ranges)
+    ? (Number(previousCache?.rangeEpoch) || 0)
+    : (Number(previousCache?.rangeEpoch) || 0) + 1;
+  store.yeaftHistoryCacheState = {
+    ...(store.yeaftHistoryCacheState || {}),
+    [key]: {
+      ...(previousCache || {}),
+      agentId,
+      sessionId,
+      conversationId,
+      lastAccessed: Date.now(),
+      rangeEpoch,
+      ...summary,
+    },
+  };
+
+  if (evicted.some(isDurableYeaftHistoryRow)) {
+    const oldestResidentSeq = summary.ranges[0]?.startSeq ?? null;
+    const previousHistory = store.yeaftSessionHistoryState?.[key] || {};
+    store.yeaftSessionHistoryState = {
+      ...(store.yeaftSessionHistoryState || {}),
+      [key]: {
+        ...previousHistory,
+        serverOldestFetchedSeq: oldestResidentSeq,
+        oldestSeq: oldestResidentSeq,
+        serverHasMore: oldestResidentSeq !== null,
+        hasMore: oldestResidentSeq !== null,
+        gapTraversalInitialized: false,
+        gapQueue: [],
+        requestedBeforeSeqs: [],
+        completedHistoryWorkKeys: [],
+        pendingPageKind: null,
+        pendingPageBeforeSeq: null,
+        pendingGapStopAtSeq: null,
+        pendingCacheEpoch: null,
+        pendingHistoryWorkKey: null,
+        paginationError: null,
+        count: summary.rowCount,
+      },
+    };
+  }
   return {
-    evictedRows: scopedRows.length - keptRows.size,
+    evictedRows: evicted.length,
     keptRows: keptRows.size,
     keptBytes: bytes,
   };

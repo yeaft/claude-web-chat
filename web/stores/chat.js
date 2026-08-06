@@ -5676,7 +5676,7 @@ export const useChatStore = defineStore('chat', {
             // guaranteed terminal boundary for every VP. Re-prune idempotently
             // here so dropped/reordered data frames cannot leave live rows
             // resident forever.
-            this.pruneConversationMessageRetention(conv, terminalSessionId);
+            this.pruneConversationMessageRetention(conv, terminalSessionId, terminalAgentId);
           }
           break;
         }
@@ -7194,8 +7194,8 @@ export const useChatStore = defineStore('chat', {
     addMessageToConversation(conversationId, msg) {
       return msgHelpers.addMessageToConversation(this, conversationId, msg);
     },
-    pruneConversationMessageRetention(conversationId, sessionId = null, limits = undefined) {
-      return pruneConversationMessageRetention(this, { conversationId, sessionId, limits });
+    pruneConversationMessageRetention(conversationId, sessionId = null, agentId = null, limits = undefined) {
+      return pruneConversationMessageRetention(this, { conversationId, sessionId, agentId, limits });
     },
     appendToAssistantMessageForConversation(conversationId, text, opts) { msgHelpers.appendToAssistantMessageForConversation(this, conversationId, text, opts); },
     finishStreamingForConversation(conversationId, options) { msgHelpers.finishStreamingForConversation(this, conversationId, options); },

@@ -441,9 +441,12 @@ export function handleAssistantOutputFrame(store, conversationId, data, frameAge
     // VirtualTranscript bounds mounted DOM, not the Pinia source array. Prune at
     // the terminal boundary so streaming rows, pending AskUser cards, and
     // optimistic sends are never evicted mid-turn.
-    store.pruneConversationMessageRetention?.(
-      conversationId,
-      completedYeaftSessionId || null,
-    );
+    if (completedYeaftSessionId && frameAgentId) {
+      store.pruneConversationMessageRetention?.(
+        conversationId,
+        completedYeaftSessionId,
+        frameAgentId,
+      );
+    }
   }
 }
