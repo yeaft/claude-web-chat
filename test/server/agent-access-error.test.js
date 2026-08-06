@@ -432,6 +432,10 @@ describe('resolveAgentAccessError', () => {
     expect(requiresManualUpgradeBridge(undefined)).toBe(true);
     expect(requiresManualUpgradeBridge([])).toBe(true);
     expect(requiresManualUpgradeBridge(['plaintext-ok'])).toBe(true);
+    expect(requiresManualUpgradeBridge(['plaintext-ok'], 'win32')).toBe(true);
+    expect(requiresManualUpgradeBridge(['plaintext-ok'], 'linux')).toBe(false);
+    expect(requiresManualUpgradeBridge(['plaintext-ok'], 'darwin')).toBe(false);
+    expect(requiresManualUpgradeBridge(['plaintext-ok', 'work_item_attachments'])).toBe(false);
     expect(requiresManualUpgradeBridge(['plaintext-ok', SAFE_REMOTE_UPGRADE_CAPABILITY])).toBe(false);
 
     const client = {
@@ -488,6 +492,19 @@ describe('resolveAgentAccessError', () => {
       agentId: 'agent-safe',
     }, async () => true);
     expect(safeCommands).toEqual([{ type: 'upgrade_agent' }]);
+
+    const legacyLinuxCommands = [];
+    agents.set('agent-linux-legacy', {
+      version: '1.0.373',
+      capabilities: ['plaintext-ok', 'work_item_attachments'],
+      encryptOutbound: false,
+      ws: { readyState: 1, send(payload) { legacyLinuxCommands.push(JSON.parse(payload)); } },
+    });
+    await handleClientMisc('client-1', client, {
+      type: 'upgrade_agent',
+      agentId: 'agent-linux-legacy',
+    }, async () => true);
+    expect(legacyLinuxCommands).toEqual([{ type: 'upgrade_agent' }]);
   });
 
   it('preserves safe self-upgrades through the real SKIP_AUTH registration handshake', async () => {
@@ -501,9 +518,11 @@ describe('resolveAgentAccessError', () => {
       },
     };
 
-    for (const [agentId, version, capabilities, shouldUpgrade] of [
-      ['skip-legacy', '1.0.369', ['plaintext-ok'], false],
-      ['skip-safe', '1.0.369', ['plaintext-ok', SAFE_REMOTE_UPGRADE_CAPABILITY], true],
+    for (const [agentId, version, capabilities, platform, shouldUpgrade] of [
+      ['skip-legacy', '1.0.369', ['plaintext-ok'], null, false],
+      ['skip-windows', '1.0.373', ['plaintext-ok'], 'win32', false],
+      ['skip-linux', '1.0.373', ['plaintext-ok'], 'linux', true],
+      ['skip-safe', '1.0.369', ['plaintext-ok', SAFE_REMOTE_UPGRADE_CAPABILITY], null, true],
     ]) {
       const socket = new MockWebSocket(WS_OPEN);
       const url = new URL(`ws://localhost/?type=agent&id=${agentId}&name=${agentId}&instanceId=${agentId}&capabilities=${capabilities.join(',')}`);
@@ -518,12 +537,14 @@ describe('resolveAgentAccessError', () => {
         secret: '',
         capabilities,
         version,
+        platform,
       });
       await new Promise(resolve => setTimeout(resolve, 0));
 
       expect(agents.get(agentId)).toMatchObject({
         version,
         capabilities,
+        platform,
         ownerId: null,
         encryptOutbound: false,
       });

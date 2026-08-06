@@ -54,6 +54,7 @@ export function handleAgentConnection(ws, url) {
   const agentName = url.searchParams.get('name') || `Agent-${clientAgentId.slice(0, 8)}`;
   const instanceId = url.searchParams.get('instanceId') || clientAgentId;
   const workDir = url.searchParams.get('workDir') || '';
+  const urlPlatform = url.searchParams.get('platform') || null;
 
   // Both authenticated and SKIP_AUTH connections use the existing auth frame
   // for registration metadata. Released Agents already send their version there;
@@ -118,6 +119,9 @@ export function handleAgentConnection(ws, url) {
 
           const capabilities = Array.isArray(msg.capabilities) ? msg.capabilities : urlCapabilities;
           const agentVersion = msg.version || null;
+          const agentPlatform = typeof msg.platform === 'string' && msg.platform
+            ? msg.platform
+            : urlPlatform;
           // Local no-auth mode still has one durable browser owner. This makes
           // the server-side Session catalog persistent without changing generic
           // development-server behavior, which remains ownerless.
@@ -149,6 +153,7 @@ export function handleAgentConnection(ws, url) {
             ownerUsername,
             agentVersion,
             registeredInstanceId,
+            agentPlatform,
           );
           pruneAgentConnectionGenerations();
         }
@@ -233,7 +238,7 @@ function handleAgentDisconnect(agentId, agentName, ws) {
   broadcastAgentList();
 }
 
-function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, capabilities = [], ownerId = null, ownerUsername = null, agentVersion = null, instanceId = null) {
+function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, capabilities = [], ownerId = null, ownerUsername = null, agentVersion = null, instanceId = null, agentPlatform = null) {
   // 如果是重连，保留 conversations；否则（server 重启）创建空 Map
   const existingAgent = agents.get(agentId);
   const conversations = existingAgent?.conversations || new Map();
@@ -270,6 +275,7 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
     ownerId,
     ownerUsername,
     version: agentVersion,
+    platform: agentPlatform,
     encryptOutbound
   });
 
