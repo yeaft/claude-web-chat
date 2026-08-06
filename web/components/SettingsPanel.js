@@ -573,7 +573,8 @@ export default {
       sandboxCapability: { available: false, reasonCode: 'SANDBOX_DISABLED', catalog: [] },
       sandboxSnapshot: null,
       sandboxAgentName: '',
-      sandboxSizeId: 'normal'
+      sandboxSizeId: 'normal',
+      sandboxIdempotencyKeys: {}
     };
   },
   computed: {
@@ -824,6 +825,17 @@ export default {
       }
     },
 
+    sandboxIdempotencyKey(action) {
+      if (!this.sandboxIdempotencyKeys[action]) {
+        this.sandboxIdempotencyKeys[action] = crypto.randomUUID();
+      }
+      return this.sandboxIdempotencyKeys[action];
+    },
+
+    clearSandboxIdempotencyKey(action) {
+      delete this.sandboxIdempotencyKeys[action];
+    },
+
     async createSandbox() {
       if (!this.sandboxCapability.available || this.sandboxSubmitting) return;
       this.sandboxSubmitting = true;
@@ -833,12 +845,16 @@ export default {
           headers: {
             ...this.getHeaders(),
             'Content-Type': 'application/json',
-            'Idempotency-Key': crypto.randomUUID()
+            'Idempotency-Key': this.sandboxIdempotencyKey('create')
           },
           body: JSON.stringify({ agentName: this.sandboxAgentName, sizeId: this.sandboxSizeId })
         });
         const body = await response.json();
-        if (!response.ok) throw new Error(body.code || 'SANDBOX_CREATE_FAILED');
+        if (!response.ok) {
+          this.clearSandboxIdempotencyKey('create');
+          throw new Error(body.code || 'SANDBOX_CREATE_FAILED');
+        }
+        this.clearSandboxIdempotencyKey('create');
         this.sandboxSnapshot = body.snapshot;
         this.syncSandboxPolling();
       } catch (err) {
@@ -861,10 +877,17 @@ export default {
       try {
         const response = await fetch('/api/sandbox/' + action, {
           method: 'POST',
-          headers: { ...this.getHeaders(), 'Idempotency-Key': crypto.randomUUID() }
+          headers: {
+            ...this.getHeaders(),
+            'Idempotency-Key': this.sandboxIdempotencyKey(action)
+          }
         });
         const body = await response.json();
-        if (!response.ok) throw new Error(body.code || 'SANDBOX_ACTION_FAILED');
+        if (!response.ok) {
+          this.clearSandboxIdempotencyKey(action);
+          throw new Error(body.code || 'SANDBOX_ACTION_FAILED');
+        }
+        this.clearSandboxIdempotencyKey(action);
         this.sandboxSnapshot = body.snapshot;
         this.syncSandboxPolling();
       } catch (err) {

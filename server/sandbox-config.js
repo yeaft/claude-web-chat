@@ -8,7 +8,8 @@ export function validateSandboxDeploymentConfig(config) {
   if (!config?.enabled || !config.controllerUrl || !config.controllerToken
     || !config.operationSigningPrivateKey || !config.controllerResultPublicKey
     || !config.controllerHostId || !config.bootstrapSigningKey
-    || !config.hostAttestationKey || !config.helperAttestationPublicKey || !config.imageDigest
+    || !config.hostAttestationKey || !config.controllerAttestationFingerprint
+    || !config.helperAttestationPublicKey || !config.imageDigest
     || !config.controllerClientCert || !config.controllerClientKey
     || !config.controllerCaCert
     || !Number.isSafeInteger(config.hostMemoryReserveMiB)

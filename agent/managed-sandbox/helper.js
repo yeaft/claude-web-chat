@@ -3,16 +3,17 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-const ALLOWED_ACTIONS = new Set(['create', 'start', 'stop', 'retry', 'remove']);
+const ALLOWED_ACTIONS = new Set(['ACTIVATE_EPOCH', 'create', 'start', 'stop', 'retry', 'remove']);
 
 function canonicalOperation(operation) {
   return JSON.stringify({
     protocolVersion: operation.protocolVersion,
     operationId: operation.operationId,
     hostId: operation.hostId,
-    sandboxId: operation.sandboxId,
+    sandboxId: operation.sandboxId || null,
     action: operation.action,
-    generation: operation.generation,
+    requestDigest: operation.requestDigest,
+    generation: operation.generation || null,
     hostEpoch: operation.hostEpoch,
     instanceId: operation.instanceId,
     imageDigest: operation.imageDigest,
@@ -33,8 +34,10 @@ function canonicalAttestation(attestation) {
   return JSON.stringify({
     protocolVersion: attestation.protocolVersion,
     operationId: attestation.operationId,
+    hostId: attestation.hostId,
     sandboxId: attestation.sandboxId,
     action: attestation.action,
+    requestDigest: attestation.requestDigest,
     generation: attestation.generation,
     hostEpoch: attestation.hostEpoch,
     requestNonce: attestation.requestNonce,
@@ -78,16 +81,18 @@ function buildAttestation(operation, result, config, issuedAt) {
   const attestation = {
     protocolVersion: 1,
     operationId: operation.operationId,
-    sandboxId: operation.sandboxId,
+    hostId: operation.hostId,
+    sandboxId: operation.sandboxId || null,
     action: operation.action,
-    generation: operation.generation,
+    requestDigest: operation.requestDigest,
+    generation: operation.generation || null,
     hostEpoch: operation.hostEpoch,
     requestNonce: operation.nonce,
     issuedAt,
-    imageDigest: operation.action === 'remove' ? null : operation.imageDigest,
-    readinessProof: result.success && operation.action !== 'remove' ? result.readinessProof : null,
+    imageDigest: ['remove', 'ACTIVATE_EPOCH'].includes(operation.action) ? null : operation.imageDigest,
+    readinessProof: result.success && !['remove', 'ACTIVATE_EPOCH'].includes(operation.action) ? result.readinessProof : null,
     absenceProof: result.success && operation.action === 'remove' ? result.absenceProof : null,
-    resourceInspection: result.success && operation.action !== 'remove' ? result.resourceInspection : null
+    resourceInspection: result.success && !['remove', 'ACTIVATE_EPOCH'].includes(operation.action) ? result.resourceInspection : null
   };
   attestation.signature = sign(
     null,
@@ -98,19 +103,20 @@ function buildAttestation(operation, result, config, issuedAt) {
 }
 
 function validateOperation(operation, config, now) {
+  const activation = operation?.action === 'ACTIVATE_EPOCH';
   if (!operation || operation.protocolVersion !== 1
-    || !operation.operationId || !operation.sandboxId || !operation.instanceId
+    || !operation.operationId || (!activation && (!operation.sandboxId || !operation.instanceId))
     || operation.hostId !== config.hostId
     || !ALLOWED_ACTIONS.has(operation.action)
-    || !Number.isInteger(operation.generation) || operation.generation < 1
-    || !operation.hostEpoch || !operation.nonce
+    || (!activation && (!Number.isInteger(operation.generation) || operation.generation < 1))
+    || !operation.requestDigest || !operation.hostEpoch || !operation.nonce
     || !Number.isFinite(operation.issuedAt) || !Number.isFinite(operation.expiresAt)
     || operation.issuedAt > now + config.maxClockSkewMs
     || operation.expiresAt < now
     || operation.expiresAt - operation.issuedAt > config.maxOperationTtlMs) {
     throw new Error('Sandbox Helper rejected an invalid operation envelope');
   }
-  if (operation.action !== 'remove') {
+  if (!activation && operation.action !== 'remove') {
     const resources = operation.resources;
     if (!resources || !Number.isInteger(resources.cpuMillis) || resources.cpuMillis <= 0
       || !Number.isInteger(resources.memoryMiB) || resources.memoryMiB <= 0
@@ -138,7 +144,7 @@ function validateOperation(operation, config, now) {
  * The injected executor is the only component allowed to perform runtime actions.
  */
 export function createSandboxHelper({ config, executor, now = Date.now }) {
-  if (!config?.hostId || !config.hostEpoch || !config.imageDigest || !config.operationSigningPublicKey
+  if (!config?.hostId || !config.imageDigest || !config.operationSigningPublicKey
     || !config.attestationSigningPrivateKey || !config.journalPath || !executor?.execute) {
     throw new Error('Sandbox Helper requires a complete dedicated Host configuration');
   }
@@ -159,6 +165,7 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
     CREATE TABLE IF NOT EXISTS helper_operations (
       operation_id TEXT PRIMARY KEY,
       sandbox_id TEXT,
+      action TEXT,
       request_digest TEXT NOT NULL,
       host_epoch TEXT NOT NULL,
       status TEXT NOT NULL CHECK(status IN ('in_progress', 'succeeded', 'failed', 'recovery_required')),
@@ -169,6 +176,9 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
   const operationColumns = db.prepare('PRAGMA table_info(helper_operations)').all();
   if (!operationColumns.some(column => column.name === 'sandbox_id')) {
     db.exec('ALTER TABLE helper_operations ADD COLUMN sandbox_id TEXT');
+  }
+  if (!operationColumns.some(column => column.name === 'action')) {
+    db.exec('ALTER TABLE helper_operations ADD COLUMN action TEXT');
   }
 
   let executing = 0;
@@ -188,13 +198,21 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
     write.run(`epoch:${epoch}`, digest);
   }
 
-  async function activateEpoch(epoch, digest = effectiveConfig.imageDigest) {
-    if (!epoch || !digest) throw new Error('Sandbox Helper rejected an invalid epoch activation');
+  async function activateEpoch(operation) {
+    validateOperation(operation, effectiveConfig, now());
+    if (operation.action !== 'ACTIVATE_EPOCH') {
+      throw new Error('Sandbox Helper rejected an invalid epoch activation');
+    }
+    const epoch = operation.hostEpoch;
+    // The durable epoch identity is the Server-authorized immutable activation
+    // digest. Per-request nonce/timestamps remain covered by the signature but
+    // must not make an idempotent activation look like a conflicting epoch.
+    const digest = operation.requestDigest;
     if (executing > 0) await new Promise(resolve => { activationWaiter = resolve; });
     const current = activeEpoch();
     if (current?.epoch === epoch) {
       if (current.digest !== digest) throw new Error('Sandbox Helper rejected conflicting epoch activation');
-      return { epoch, digest, activated: false };
+      return buildAttestation(operation, { success: true, activated: false }, effectiveConfig, now());
     }
     if (db.prepare('SELECT value FROM helper_state WHERE key = ?').get(`epoch:${epoch}`)) {
       throw new Error('Sandbox Helper rejected epoch rollback');
@@ -207,18 +225,7 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
       db.exec('ROLLBACK');
       throw error;
     }
-    return { epoch, digest, activated: true };
-  }
-
-  if (!activeEpoch()) {
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      writeActiveEpoch(effectiveConfig.hostEpoch, effectiveConfig.imageDigest);
-      db.exec('COMMIT');
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw error;
-    }
+    return buildAttestation(operation, { success: true, activated: true }, effectiveConfig, now());
   }
 
   const interrupted = db.prepare("SELECT operation_id, sandbox_id FROM helper_operations WHERE status = 'in_progress'").all();
@@ -248,10 +255,10 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
   }
 
   async function execute(operation) {
+    if (operation?.action === 'ACTIVATE_EPOCH') return activateEpoch(operation);
     validateOperation(operation, effectiveConfig, now());
     const epoch = activeEpoch();
-    if (!epoch || operation.hostEpoch !== epoch.epoch
-      || (operation.action !== 'remove' && operation.imageDigest !== epoch.digest)) {
+    if (!epoch || operation.hostEpoch !== epoch.epoch) {
       throw new Error('Sandbox Helper rejected an inactive Host epoch');
     }
     assertAvailable(operation);
@@ -270,9 +277,10 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
     db.exec('BEGIN IMMEDIATE');
     try {
       db.prepare(`INSERT INTO helper_operations
-        (operation_id, sandbox_id, request_digest, host_epoch, status, updated_at)
-        VALUES (?, ?, ?, ?, 'in_progress', ?)`)
-        .run(operation.operationId, operation.sandboxId, requestDigest, operation.hostEpoch, now());
+        (operation_id, sandbox_id, action, request_digest, host_epoch, status, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'in_progress', ?)`)
+        .run(operation.operationId, operation.sandboxId, operation.action,
+          requestDigest, operation.hostEpoch, now());
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');

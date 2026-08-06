@@ -9,7 +9,8 @@ const roots = [];
 
 function runtime(overrides = {}, availableMemoryBytes = () => 4 * 1024 * 1024 * 1024) {
   const root = mkdtempSync(join(tmpdir(), 'yeaft-sandbox-runtime-'));
-  roots.push(root);
+  const secretRoot = mkdtempSync(join(tmpdir(), 'yeaft-sandbox-secrets-'));
+  roots.push(root, secretRoot);
   const calls = [];
   let exists = false;
   const tables = new Set();
@@ -34,7 +35,7 @@ function runtime(overrides = {}, availableMemoryBytes = () => 4 * 1024 * 1024 * 
         Mounts: [
           { Type: 'bind', Source: join(root, 'sandbox-1', 'home') },
           { Type: 'bind', Source: join(root, 'sandbox-1', 'workspace') },
-          { Type: 'bind', Source: join(root, 'sandbox-1', 'bootstrap.json') }
+          { Type: 'bind', Source: join(secretRoot, 'sandbox-1', 'bootstrap.json') }
         ]
       }]) };
     }
@@ -61,6 +62,7 @@ function runtime(overrides = {}, availableMemoryBytes = () => 4 * 1024 * 1024 * 
     config: {
       dedicatedHost: true,
       dataRoot: root,
+      secretRoot,
       policyRoot: join(root, '.policy'),
       imageDigest: 'sha256:fixed',
       serverUrl: 'https://server.example',
@@ -76,9 +78,10 @@ function runtime(overrides = {}, availableMemoryBytes = () => 4 * 1024 * 1024 * 
       ...overrides
     },
     run,
-    availableMemoryBytes
+    availableMemoryBytes,
+    statfsImpl: async () => ({ type: 0x01021994 }),
   });
-  return { instance, run, calls, root };
+  return { instance, run, calls, root, secretRoot };
 }
 
 function operation(action = 'create', overrides = {}) {
@@ -102,7 +105,7 @@ afterEach(() => {
 
 describe('managed Sandbox dedicated Host runtime executor', () => {
   it('creates a fixed-digest isolated container and proves resource, quota, and network enforcement', async () => {
-    const { instance, calls, root } = runtime();
+    const { instance, calls, root, secretRoot } = runtime();
 
     const result = await instance.execute(operation());
 
@@ -131,6 +134,9 @@ describe('managed Sandbox dedicated Host runtime executor', () => {
     expect(policy).toContain('ip6 daddr fc00::/7 reject');
     expect(policy).toContain('ip6 daddr fe80::/10 reject');
     expect(policy).toContain('ip6 daddr ::1/128 reject');
+    expect(create.join(' ')).toContain(join(secretRoot, 'sandbox-1', 'bootstrap.json'));
+    await expect(import('node:fs/promises').then(fs => fs.access(join(secretRoot, 'sandbox-1', 'bootstrap.json'))))
+      .rejects.toThrow();
     await expect(import('node:fs/promises').then(fs => fs.access(join(root, 'sandbox-1', 'bootstrap.json'))))
       .rejects.toThrow();
   });

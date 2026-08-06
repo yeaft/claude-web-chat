@@ -22,6 +22,7 @@ function signedOperation(overrides = {}) {
     hostId: 'dedicated-1',
     sandboxId: 'sandbox-1',
     action: 'create',
+    requestDigest: 'request-digest-1',
     generation: 1,
     hostEpoch: 'epoch-1',
     instanceId: 'instance-1',
@@ -32,6 +33,31 @@ function signedOperation(overrides = {}) {
     nonce: 'nonce-1',
     bootstrap: null,
     resources: { cpuMillis: 500, memoryMiB: 1024, diskGiB: 10 },
+    ...overrides
+  };
+  operation.signature = sign(null, Buffer.from(canonicalOperation(operation)), privateKey).toString('base64url');
+  return operation;
+}
+
+function signedActivation(overrides = {}) {
+  const issuedAt = Date.now();
+  const operation = {
+    protocolVersion: 1,
+    operationId: 'activate-epoch-1',
+    hostId: 'dedicated-1',
+    sandboxId: null,
+    action: 'ACTIVATE_EPOCH',
+    requestDigest: 'activation-digest-1',
+    generation: null,
+    hostEpoch: 'epoch-1',
+    instanceId: null,
+    imageDigest: null,
+    desiredState: null,
+    issuedAt,
+    expiresAt: issuedAt + 10_000,
+    nonce: 'activation-nonce-1',
+    bootstrap: null,
+    resources: null,
     ...overrides
   };
   operation.signature = sign(null, Buffer.from(canonicalOperation(operation)), privateKey).toString('base64url');
@@ -66,21 +92,20 @@ function successfulRuntimeResult() {
 function helper(executor = { execute: vi.fn(async () => successfulRuntimeResult()) }) {
   const root = mkdtempSync(join(tmpdir(), 'yeaft-sandbox-helper-'));
   roots.push(root);
-  return {
-    executor,
-    instance: createSandboxHelper({
-      config: {
-        hostId: 'dedicated-1',
-        hostEpoch: 'epoch-1',
-        imageDigest: 'sha256:fixed',
-        operationSigningPublicKey: publicKey,
-        attestationSigningPrivateKey: attestationPrivateKey,
-        journalPath: join(root, 'helper.db')
-      },
-      executor
-    }),
-    root
-  };
+  const instance = createSandboxHelper({
+    config: {
+      hostId: 'dedicated-1',
+      hostEpoch: 'epoch-1',
+      imageDigest: 'sha256:fixed',
+      operationSigningPublicKey: publicKey,
+      attestationSigningPrivateKey: attestationPrivateKey,
+      journalPath: join(root, 'helper.db')
+    },
+    executor
+  });
+  const activation = signedActivation();
+  void instance.execute(activation);
+  return { activation, executor, instance, root };
 }
 
 afterEach(() => {
@@ -243,19 +268,23 @@ describe('managed Sandbox Helper authorization boundary', () => {
   });
 
   it('durably activates epochs, rejects conflicts and rollback, and fences late envelopes', async () => {
-    const { instance, root } = helper();
+    const { activation, instance, root } = helper();
 
-    expect(instance.activeEpoch()).toEqual({ epoch: 'epoch-1', digest: 'sha256:fixed' });
-    await expect(instance.activateEpoch('epoch-1', 'sha256:fixed')).resolves.toEqual({
-      epoch: 'epoch-1', digest: 'sha256:fixed', activated: false
+    expect(instance.activeEpoch()).toMatchObject({ epoch: 'epoch-1' });
+    await expect(instance.activateEpoch(activation)).resolves.toMatchObject({
+      success: true, activated: false
     });
-    await expect(instance.activateEpoch('epoch-1', 'sha256:other'))
+    await expect(instance.activateEpoch(signedActivation({ requestDigest: 'other-digest' })))
       .rejects.toThrow('conflicting epoch activation');
-    await instance.activateEpoch('epoch-2', 'sha256:fixed');
+    await instance.activateEpoch(signedActivation({
+      operationId: 'activate-epoch-2', hostEpoch: 'epoch-2',
+      requestDigest: 'activation-digest-2', nonce: 'activation-nonce-2'
+    }));
     await expect(instance.execute(signedOperation({ operationId: 'late', nonce: 'late' })))
       .rejects.toThrow('inactive Host epoch');
-    await expect(instance.activateEpoch('epoch-1', 'sha256:fixed'))
-      .rejects.toThrow('epoch rollback');
+    await expect(instance.activateEpoch(signedActivation({
+      operationId: 'rollback', requestDigest: 'rollback-digest', nonce: 'rollback-nonce'
+    }))).rejects.toThrow('epoch rollback');
     instance.close();
 
     const restarted = createSandboxHelper({
@@ -266,7 +295,7 @@ describe('managed Sandbox Helper authorization boundary', () => {
       },
       executor: { execute: vi.fn(async () => successfulRuntimeResult()) }
     });
-    expect(restarted.activeEpoch()).toEqual({ epoch: 'epoch-2', digest: 'sha256:fixed' });
+    expect(restarted.activeEpoch()).toMatchObject({ epoch: 'epoch-2', digest: expect.any(String) });
     await expect(restarted.execute(signedOperation({
       operationId: 'current', hostEpoch: 'epoch-2', nonce: 'current'
     }))).resolves.toMatchObject({ success: true });
@@ -281,7 +310,10 @@ describe('managed Sandbox Helper authorization boundary', () => {
     await vi.waitFor(() => expect(executor.execute).toHaveBeenCalledOnce());
 
     let activated = false;
-    const activation = instance.activateEpoch('epoch-2', 'sha256:fixed').then(() => { activated = true; });
+    const activation = instance.activateEpoch(signedActivation({
+      operationId: 'activate-wait', hostEpoch: 'epoch-2',
+      requestDigest: 'activation-wait-digest', nonce: 'activation-wait-nonce'
+    })).then(() => { activated = true; });
     await Promise.resolve();
     expect(activated).toBe(false);
     finish(successfulRuntimeResult());

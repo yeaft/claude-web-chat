@@ -9,13 +9,15 @@ process.env.SERVER_DATA_DIR = dataDir;
 let db;
 let sandboxDb;
 let userDb;
+let authenticateSandboxController;
 let registerSandboxRoutes;
 
 beforeAll(async () => {
   ({ default: db } = await import('../../server/db/connection.js'));
   ({ sandboxDb } = await import('../../server/db/sandbox-db.js'));
   ({ userDb } = await import('../../server/db/user-db.js'));
-  ({ registerSandboxRoutes } = await import('../../server/routes/sandbox-routes.js'));
+  ({ authenticateSandboxController, registerSandboxRoutes }
+    = await import('../../server/routes/sandbox-routes.js'));
 });
 
 afterAll(() => {
@@ -48,7 +50,17 @@ function entitle(userId) {
 }
 
 function applyControllerResult(result, config) {
-  return sandboxDb.applyControllerResult(result, config, { isAgentReady: () => true });
+  const operation = db.prepare(`
+    SELECT o.*, s.host_id FROM sandbox_operations o
+    JOIN sandboxes s ON s.id = o.sandbox_id WHERE o.id = ?
+  `).get(result.operationId);
+  return sandboxDb.applyControllerResult({
+    action: operation?.kind,
+    hostId: operation?.host_id,
+    sandboxId: operation?.sandbox_id,
+    requestDigest: operation?.request_digest,
+    ...result
+  }, config, { isAgentReady: () => true });
 }
 
 describe('sandbox control-plane reservation', () => {
@@ -63,6 +75,19 @@ describe('sandbox control-plane reservation', () => {
     addQualifiedHost({ qualified: 0 });
     expect(sandboxDb.capability(user.id, sandboxConfig({ maxReservedSandboxes: 2 })).reasonCode)
       .toBe('SANDBOX_CAPACITY_UNAVAILABLE');
+  });
+
+  it('requires a pinned authorized mTLS identity for Host attestation', () => {
+    const socket = (authorized, fingerprint256) => ({
+      authorized,
+      getPeerCertificate: () => ({ fingerprint256 })
+    });
+    const expected = 'AA:BB:CC';
+
+    expect(authenticateSandboxController({ socket: socket(true, expected) }, expected)).toBe(true);
+    expect(authenticateSandboxController({ socket: socket(false, expected) }, expected)).toBe(false);
+    expect(authenticateSandboxController({ socket: socket(true, 'AA:BB:CD') }, expected)).toBe(false);
+    expect(authenticateSandboxController({ socket: socket(true, expected) }, '')).toBe(false);
   });
 
   it('protects the entitlement write route with both authentication and admin authorization', () => {
@@ -721,6 +746,10 @@ describe('sandbox control-plane reservation', () => {
     const operation = db.prepare('SELECT * FROM sandbox_operations WHERE sandbox_id = ?').get(created.snapshot.id);
     const result = {
       operationId: operation.id,
+      action: operation.kind,
+      hostId: db.prepare('SELECT host_id FROM sandboxes WHERE id = ?').get(operation.sandbox_id).host_id,
+      sandboxId: operation.sandbox_id,
+      requestDigest: operation.request_digest,
       generation: operation.generation,
       hostEpoch: operation.host_epoch,
       imageDigest: 'sha256:fixed',

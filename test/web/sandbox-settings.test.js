@@ -35,6 +35,15 @@ describe('Sandbox Settings contract', () => {
     expect(component).not.toMatch(/sandboxSnapshot\s*=\s*\{[^}]*observedState/s);
   });
 
+  it('reuses idempotency keys while a lifecycle response is uncertain', () => {
+    expect(component).toContain('sandboxIdempotencyKeys: {}');
+    expect(component).toContain("this.sandboxIdempotencyKey('create')");
+    expect(component).toContain('this.sandboxIdempotencyKey(action)');
+    expect(component).toContain("this.clearSandboxIdempotencyKey('create')");
+    expect(component).toContain('this.clearSandboxIdempotencyKey(action)');
+    expect(component).not.toContain("'Idempotency-Key': crypto.randomUUID()");
+  });
+
   it('uses stable, non-sensitive unavailable messages in both locales', () => {
     for (const locale of [en, zh]) {
       expect(locale).toContain("'settings.sandbox.unavailable.disabled'");
@@ -56,6 +65,10 @@ describe('Sandbox Settings contract', () => {
     for (const locale of [en, zh]) {
       expect(locale).toContain("'settings.sandbox.error.SANDBOX_LOAD_FAILED'");
       expect(locale).toContain("'settings.sandbox.state.recovery_required'");
+      expect(locale).toContain("'settings.sandbox.state.waiting_for_agent'");
+      expect(locale).toContain("'settings.sandbox.state.removed'");
+      expect(locale).toContain("'settings.sandbox.stage.dispatching'");
+      expect(locale).toContain("'settings.sandbox.stage.capacity_rejected'");
     }
   });
 });

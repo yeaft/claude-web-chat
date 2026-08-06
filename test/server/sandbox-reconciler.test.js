@@ -24,6 +24,7 @@ const operation = {
   sandbox_id: 'sandbox-1',
   host_id: 'dedicated-1',
   kind: 'create',
+  request_digest: 'request-digest-1',
   generation: 1,
   host_epoch: 'epoch-1',
   instance_id: 'instance-1',
@@ -48,6 +49,7 @@ function config(overrides = {}) {
     controllerHostId: 'dedicated-1',
     bootstrapSigningKey: 'test-bootstrap-signing-key',
     hostAttestationKey: 'test-host-attestation-key',
+    controllerAttestationFingerprint: 'AA:BB:CC',
     helperAttestationPublicKey,
     imageDigest: 'sha256:fixed',
     hostMemoryReserveMiB: 512,
@@ -59,8 +61,10 @@ function signedHelperAttestation(request, overrides = {}) {
   const attestation = {
     protocolVersion: 1,
     operationId: request.operationId,
+    hostId: request.hostId,
     sandboxId: request.sandboxId,
     action: request.action,
+    requestDigest: request.requestDigest,
     generation: request.generation,
     hostEpoch: request.hostEpoch,
     requestNonce: request.nonce,
@@ -82,8 +86,10 @@ function signedHelperAttestation(request, overrides = {}) {
   attestation.signature = sign(null, Buffer.from(JSON.stringify({
     protocolVersion: attestation.protocolVersion,
     operationId: attestation.operationId,
+    hostId: attestation.hostId,
     sandboxId: attestation.sandboxId,
     action: attestation.action,
+    requestDigest: attestation.requestDigest,
     generation: attestation.generation,
     hostEpoch: attestation.hostEpoch,
     requestNonce: attestation.requestNonce,
@@ -106,6 +112,10 @@ function signedResult(request, overrides = {}) {
   if (overrides.invalidHelperSignature) helperAttestation.signature = 'invalid';
   const result = {
     operationId: request.operationId,
+    action: request.action,
+    hostId: request.hostId,
+    sandboxId: request.sandboxId,
+    requestDigest: request.requestDigest,
     generation: request.generation,
     hostEpoch: request.hostEpoch,
     requestNonce: request.nonce,
@@ -122,6 +132,10 @@ function signedResult(request, overrides = {}) {
   delete result.invalidHelperSignature;
   result.signature = sign(null, Buffer.from(JSON.stringify({
     operationId: result.operationId,
+    action: result.action,
+    hostId: result.hostId,
+    sandboxId: result.sandboxId,
+    requestDigest: result.requestDigest,
     generation: result.generation,
     hostEpoch: result.hostEpoch,
     requestNonce: result.requestNonce,
@@ -165,6 +179,7 @@ describe('sandbox reconciler', () => {
     expect(validateControllerConfig(config({ controllerResultPublicKey: '' }))).toBe(false);
     expect(validateControllerConfig(config({ bootstrapSigningKey: '' }))).toBe(false);
     expect(validateControllerConfig(config({ hostAttestationKey: '' }))).toBe(false);
+    expect(validateControllerConfig(config({ controllerAttestationFingerprint: '' }))).toBe(false);
     expect(validateControllerConfig(config({ helperAttestationPublicKey: '' }))).toBe(false);
     expect(validateControllerConfig(config({ imageDigest: '' }))).toBe(false);
     expect(validateControllerConfig(config({ controllerHostId: '' }))).toBe(false);
@@ -289,6 +304,7 @@ describe('sandbox reconciler', () => {
         hostId: unsignedEnvelope.hostId,
         sandboxId: unsignedEnvelope.sandboxId,
         action: unsignedEnvelope.action,
+        requestDigest: unsignedEnvelope.requestDigest,
         generation: unsignedEnvelope.generation,
         hostEpoch: unsignedEnvelope.hostEpoch,
         instanceId: unsignedEnvelope.instanceId,

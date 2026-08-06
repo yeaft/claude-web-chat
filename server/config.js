@@ -129,6 +129,7 @@ export const CONFIG = {
     bootstrapTtlMs: parseInt(process.env.SANDBOX_BOOTSTRAP_TTL_MS, 10) || 5 * 60_000,
     bootstrapSigningKey: process.env.SANDBOX_BOOTSTRAP_SIGNING_KEY || '',
     hostAttestationKey: process.env.SANDBOX_HOST_ATTESTATION_KEY || '',
+    controllerAttestationFingerprint: process.env.SANDBOX_CONTROLLER_ATTESTATION_FINGERPRINT || '',
     helperAttestationPublicKey: process.env.SANDBOX_HELPER_ATTESTATION_PUBLIC_KEY || '',
     hostAttestationMaxSkewMs: parseInt(process.env.SANDBOX_HOST_ATTESTATION_MAX_SKEW_MS, 10) || 30_000,
     imageDigest: process.env.SANDBOX_IMAGE_DIGEST || '',
@@ -287,7 +288,7 @@ export function validateProductionConfig() {
   }
 
   if (CONFIG.sandbox.enabled && !validateSandboxDeploymentConfig(CONFIG.sandbox)) {
-    errors.push('Sandbox requires an HTTPS dedicated Controller, Host binding, fixed image digest, mTLS client identity and CA, Controller token, asymmetric operation/result keys, bootstrap signing key, Host attestation key, and Helper attestation public key');
+    errors.push('Sandbox requires an HTTPS dedicated Controller, Host binding, fixed image digest, pinned attestation certificate fingerprint, mTLS client identity and CA, Controller token, asymmetric operation/result keys, bootstrap signing key, Host attestation key, and Helper attestation public key');
   }
 
   // Check that at least one user with a password exists (in DB or config)

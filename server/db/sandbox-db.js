@@ -167,6 +167,28 @@ function appendAuditEvent({ sandbox, operationId = null, eventType, actorKind, o
 }
 
 export const sandboxDb = {
+  isEpochActivated(hostId, epoch) {
+    return Boolean(db.prepare(`
+      SELECT 1 FROM sandbox_host_audit_events
+      WHERE host_id = ? AND epoch = ? AND event_type = 'epoch_activation'
+        AND outcome = 'succeeded'
+      ORDER BY id DESC LIMIT 1
+    `).get(hostId, epoch));
+  },
+
+  recordEpochActivation(hostId, epoch, activationDigest, now = Date.now()) {
+    return transaction(() => {
+      const host = db.prepare('SELECT epoch FROM sandbox_hosts WHERE id = ?').get(hostId);
+      if (!host || host.epoch !== epoch) throw new SandboxConflictError('SANDBOX_STALE_RESULT');
+      db.prepare(`
+        INSERT INTO sandbox_host_audit_events
+          (host_id, epoch, event_type, outcome, error_code, created_at)
+        VALUES (?, ?, 'epoch_activation', 'succeeded', ?, ?)
+      `).run(hostId, epoch, activationDigest, now);
+      return true;
+    })();
+  },
+
   capability(userId, config) {
     if (!config.enabled) return { available: false, reasonCode: 'SANDBOX_DISABLED', catalog: [] };
     if (!getEntitlement.get(userId)?.enabled) {
@@ -439,7 +461,9 @@ export const sandboxDb = {
       const operation = db.prepare('SELECT * FROM sandbox_operations WHERE id = ?').get(result.operationId);
       if (!operation) throw new SandboxConflictError('SANDBOX_OPERATION_NOT_FOUND');
       const sandbox = getSandboxById.get(operation.sandbox_id);
-      if (!sandbox || operation.generation !== result.generation || sandbox.generation !== result.generation
+      if (!sandbox || result.action !== operation.kind || result.hostId !== sandbox.host_id
+        || result.sandboxId !== operation.sandbox_id || result.requestDigest !== operation.request_digest
+        || operation.generation !== result.generation || sandbox.generation !== result.generation
         || operation.host_epoch !== result.hostEpoch || sandbox.host_epoch !== result.hostEpoch) {
         throw new SandboxConflictError('SANDBOX_STALE_RESULT');
       }

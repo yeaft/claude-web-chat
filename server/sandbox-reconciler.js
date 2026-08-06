@@ -11,6 +11,7 @@ function canonicalEnvelope(envelope) {
     hostId: envelope.hostId,
     sandboxId: envelope.sandboxId,
     action: envelope.action,
+    requestDigest: envelope.requestDigest,
     generation: envelope.generation,
     hostEpoch: envelope.hostEpoch,
     instanceId: envelope.instanceId,
@@ -28,12 +29,18 @@ function signEnvelope(envelope, privateKey) {
   return sign(null, Buffer.from(canonicalEnvelope(envelope)), privateKey).toString('base64url');
 }
 
+function activationDigest(envelope) {
+  return Buffer.from(canonicalEnvelope(envelope)).toString('base64url');
+}
+
 function canonicalHelperAttestation(attestation) {
   return JSON.stringify({
     protocolVersion: attestation.protocolVersion,
     operationId: attestation.operationId,
+    hostId: attestation.hostId,
     sandboxId: attestation.sandboxId,
     action: attestation.action,
+    requestDigest: attestation.requestDigest,
     generation: attestation.generation,
     hostEpoch: attestation.hostEpoch,
     requestNonce: attestation.requestNonce,
@@ -48,6 +55,10 @@ function canonicalHelperAttestation(attestation) {
 function canonicalControllerResult(result) {
   return JSON.stringify({
     operationId: result.operationId,
+    action: result.action,
+    hostId: result.hostId,
+    sandboxId: result.sandboxId,
+    requestDigest: result.requestDigest,
     generation: result.generation,
     hostEpoch: result.hostEpoch,
     requestNonce: result.requestNonce,
@@ -63,8 +74,10 @@ function verifyHelperAttestation(result, operation, config, now) {
   const attestation = result.helperAttestation;
   if (!attestation || attestation.protocolVersion !== 1
     || attestation.operationId !== operation.id
+    || attestation.hostId !== operation.host_id
     || attestation.sandboxId !== operation.sandbox_id
     || attestation.action !== operation.kind
+    || attestation.requestDigest !== operation.request_digest
     || attestation.generation !== operation.generation
     || attestation.hostEpoch !== operation.host_epoch
     || attestation.requestNonce !== operation.requestNonce
@@ -88,7 +101,7 @@ function verifyHelperAttestation(result, operation, config, now) {
 }
 
 function verifyResourceInspection(attestation, operation) {
-  if (operation.kind === 'remove') return;
+  if (['remove', 'ACTIVATE_EPOCH'].includes(operation.kind)) return;
   const inspection = attestation.resourceInspection;
   const expected = {
     cpuMillis: operation.cpu_millis,
@@ -109,6 +122,10 @@ function verifyResourceInspection(attestation, operation) {
 
 function verifyControllerResult(result, operation, config, now = Date.now()) {
   if (result.operationId !== operation.id
+    || result.action !== operation.kind
+    || result.hostId !== operation.host_id
+    || result.sandboxId !== operation.sandbox_id
+    || result.requestDigest !== operation.request_digest
     || result.generation !== operation.generation
     || result.hostEpoch !== operation.host_epoch
     || result.requestNonce !== operation.requestNonce) {
@@ -172,8 +189,59 @@ export function createSandboxReconciler({
 }) {
   let running = false;
 
+  async function ensureEpochActivated(operation) {
+    if (!store.isEpochActivated || !store.recordEpochActivation) return;
+    const issuedAt = Date.now();
+    const activation = {
+      protocolVersion: 1,
+      operationId: `activate:${operation.host_id}:${operation.host_epoch}`,
+      hostId: operation.host_id,
+      sandboxId: null,
+      action: 'ACTIVATE_EPOCH',
+      requestDigest: `epoch:${operation.host_epoch}`,
+      generation: null,
+      hostEpoch: operation.host_epoch,
+      instanceId: null,
+      imageDigest: null,
+      desiredState: null,
+      issuedAt,
+      expiresAt: issuedAt + (config.controllerRequestTimeoutMs || 10_000),
+      nonce: `activate:${operation.host_epoch}`,
+      bootstrap: null,
+      resources: null
+    };
+    const digest = activationDigest(activation);
+    if (store.isEpochActivated?.(operation.host_id, operation.host_epoch, digest)) return;
+    const response = await fetchImpl(new URL('/v1/operations', config.controllerUrl), {
+      method: 'POST',
+      headers: { authorization: `Bearer ${config.controllerToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ ...activation, signature: signEnvelope(activation, config.operationSigningPrivateKey) }),
+      cert: config.controllerClientCert,
+      key: config.controllerClientKey,
+      ca: config.controllerCaCert,
+      timeout: config.controllerRequestTimeoutMs || 10_000
+    });
+    if (!response.ok) throw new Error(`Controller returned HTTP ${response.status}`);
+    const result = await response.json();
+    verifyControllerResult(result, {
+      id: activation.operationId,
+      kind: activation.action,
+      host_id: activation.hostId,
+      sandbox_id: activation.sandboxId,
+      request_digest: activation.requestDigest,
+      generation: activation.generation,
+      host_epoch: activation.hostEpoch,
+      requestNonce: activation.nonce,
+      cpu_millis: null,
+      memory_mib: null,
+      disk_gib: null
+    }, config);
+    store.recordEpochActivation?.(operation.host_id, operation.host_epoch, digest, Date.now());
+  }
+
   async function dispatch(pendingOperation) {
     if (pendingOperation.host_id !== config.controllerHostId) return;
+    await ensureEpochActivated(pendingOperation);
     const operation = store.admitPendingOperation?.(pendingOperation.id, config, Date.now())
       || (store.admitPendingOperation ? null : pendingOperation);
     if (!operation) return;
@@ -184,6 +252,7 @@ export function createSandboxReconciler({
       hostId: operation.host_id,
       sandboxId: operation.sandbox_id,
       action: operation.kind,
+      requestDigest: operation.request_digest,
       generation: operation.generation,
       hostEpoch: operation.host_epoch,
       instanceId: operation.instance_id,

@@ -14,6 +14,8 @@ function operation(overrides = {}) {
     operationId: 'op-1',
     hostId: 'dedicated-1',
     sandboxId: 'sandbox-1',
+    action: 'create',
+    requestDigest: 'request-digest-1',
     generation: 2,
     hostEpoch: 'epoch-1',
     nonce: 'request-nonce',

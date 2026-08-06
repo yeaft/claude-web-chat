@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'crypto';
 import { CONFIG } from '../config.js';
 import { sandboxDb, userDb } from '../database.js';
 import { SandboxConflictError } from '../db/sandbox-db.js';
@@ -20,6 +21,19 @@ function sendError(res, err) {
   return res.status(500).json({ code: 'SANDBOX_INTERNAL_ERROR' });
 }
 
+function normalizedFingerprint(value) {
+  return String(value || '').replaceAll(':', '').trim().toLowerCase();
+}
+
+export function authenticateSandboxController(request, expectedFingerprint) {
+  if (!request?.socket?.authorized) return false;
+  const expected = Buffer.from(normalizedFingerprint(expectedFingerprint));
+  const certificate = request.socket.getPeerCertificate?.();
+  const actual = Buffer.from(normalizedFingerprint(certificate?.fingerprint256));
+  return expected.length > 0 && expected.length === actual.length
+    && timingSafeEqual(expected, actual);
+}
+
 export function registerSandboxRoutes(app, { requireAuth, requireAdmin }) {
   // The managed runtime has no user Agent secret. Its one-time bootstrap token
   // is itself the scoped authorization for obtaining a revocable credential.
@@ -35,9 +49,12 @@ export function registerSandboxRoutes(app, { requireAuth, requireAdmin }) {
     }
   });
 
-  // Dedicated Controllers authenticate the attestation itself with a separate
-  // HMAC key. This route never accepts user or general Agent credentials.
+  // Host qualification requires both a pinned mTLS Controller identity and a
+  // payload signature. The HMAC alone is not a Controller authentication token.
   app.post('/api/sandbox/hosts/attest', (req, res) => {
+    if (!authenticateSandboxController(req, CONFIG.sandbox.controllerAttestationFingerprint)) {
+      return res.status(401).json({ code: 'SANDBOX_CONTROLLER_IDENTITY_REJECTED' });
+    }
     try {
       registerSandboxHostAttestation(req.body, CONFIG.sandbox);
       return res.status(202).json({ accepted: true });

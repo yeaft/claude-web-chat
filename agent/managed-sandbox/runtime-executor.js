@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, rm, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { lstat, mkdir, open, rm, statfs, writeFile } from 'node:fs/promises';
 import { freemem } from 'node:os';
-import { join, resolve, sep } from 'node:path';
+import { join, parse, resolve, sep } from 'node:path';
 const SANDBOX_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
 const PRIVATE_IPV4_DESTINATIONS = [
   '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
@@ -70,6 +71,23 @@ function within(root, path) {
   return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}${sep}`);
 }
 
+async function assertNoSymlink(path, { allowMissing = false } = {}) {
+  const absolute = resolve(path);
+  const root = parse(absolute).root;
+  const relative = absolute.slice(root.length).split(sep).filter(Boolean);
+  let current = root;
+  for (const part of relative) {
+    current = join(current, part);
+    try {
+      const stat = await lstat(current);
+      if (stat.isSymbolicLink()) throw new Error('Sandbox runtime rejected a symbolic-link path');
+    } catch (error) {
+      if (error.code === 'ENOENT' && allowMissing) return;
+      throw error;
+    }
+  }
+}
+
 function parseInspect(stdout) {
   const parsed = JSON.parse(stdout);
   const value = Array.isArray(parsed) ? parsed[0] : parsed;
@@ -87,8 +105,13 @@ function exactImage(inspect, digest) {
  * No caller-controlled command, path, mount, capability or network argument is
  * accepted.
  */
-export function createSandboxRuntimeExecutor({ config, run = commandRunner, availableMemoryBytes = freemem }) {
-  if (!config?.dedicatedHost || !config.dataRoot || !config.imageDigest
+export function createSandboxRuntimeExecutor({
+  config,
+  run = commandRunner,
+  availableMemoryBytes = freemem,
+  statfsImpl = statfs,
+}) {
+  if (!config?.dedicatedHost || !config.dataRoot || !config.secretRoot || !config.imageDigest
     || !config.serverUrl || !config.runtimeBinary || !config.xfsQuotaBinary
     || !config.nftBinary || !config.networkName || !config.networkBridge
     || !Number.isInteger(config.pidsLimit) || config.pidsLimit <= 0
@@ -99,7 +122,27 @@ export function createSandboxRuntimeExecutor({ config, run = commandRunner, avai
   }
 
   const dataRoot = resolve(config.dataRoot);
+  const secretRoot = resolve(config.secretRoot);
   const policyRoot = resolve(config.policyRoot || join(dataRoot, '.policy'));
+  if (within(dataRoot, secretRoot) || within(secretRoot, dataRoot)) {
+    throw new Error('Sandbox runtime secret root must be isolated from persistent data');
+  }
+
+  async function prepareSecretDirectory(operation) {
+    await assertNoSymlink(secretRoot, { allowMissing: true });
+    await mkdir(secretRoot, { recursive: true, mode: 0o700 });
+    await assertNoSymlink(secretRoot);
+    const filesystem = await statfsImpl(secretRoot);
+    // Linux TMPFS_MAGIC. Secret material must never fall back to persistent storage.
+    if (Number(filesystem.type) !== 0x01021994) {
+      throw new Error('Sandbox runtime secret root is not tmpfs');
+    }
+    const directory = join(secretRoot, operation.sandboxId);
+    await assertNoSymlink(directory, { allowMissing: true });
+    await mkdir(directory, { mode: 0o700 });
+    await assertNoSymlink(directory);
+    return directory;
+  }
 
   function paths(operation) {
     assertSandboxId(operation.sandboxId);
@@ -195,52 +238,69 @@ export function createSandboxRuntimeExecutor({ config, run = commandRunner, avai
     if (operation.imageDigest !== config.imageDigest) throw new Error('Sandbox runtime rejected an unpinned image');
     const name = sandboxName(operation.sandboxId);
     const target = paths(operation);
+    await assertNoSymlink(dataRoot);
+    await assertNoSymlink(target.root, { allowMissing: true });
     await mkdir(target.home, { recursive: true, mode: 0o700 });
     await mkdir(target.workspace, { recursive: true, mode: 0o700 });
+    await assertNoSymlink(target.home);
+    await assertNoSymlink(target.workspace);
     await applyQuota(operation, target.root);
     await applyNetwork(operation, name, target.policy);
 
     let inspect = await inspectContainer(name);
     assertMemoryAvailable(operation);
-    if (!inspect) {
-      if (!operation.bootstrap?.token || !Number.isFinite(operation.bootstrap.expiresAt)) {
-        throw new Error('Sandbox runtime requires a scoped bootstrap envelope');
-      }
-      const bootstrapPath = join(target.root, 'bootstrap.json');
-      await writeFile(bootstrapPath, JSON.stringify({
-        serverUrl: config.serverUrl,
-        token: operation.bootstrap.token,
-        claims: {
-          sandboxId: operation.sandboxId,
-          instanceId: operation.instanceId,
-          generation: operation.generation,
-          imageDigest: operation.imageDigest
+    let secretDirectory = null;
+    try {
+      if (!inspect) {
+        if (!operation.bootstrap?.token || !Number.isFinite(operation.bootstrap.expiresAt)) {
+          throw new Error('Sandbox runtime requires a scoped bootstrap envelope');
         }
-      }), { mode: 0o600 });
-      await run(config.runtimeBinary, [
-        'create', '--name', name,
-        '--label', `io.yeaft.sandbox-id=${operation.sandboxId}`,
-        '--label', `io.yeaft.instance-id=${operation.instanceId}`,
-        '--runtime', config.isolationRuntime || 'runsc', '--read-only',
-        '--cap-drop=ALL', '--security-opt=no-new-privileges', '--userns=auto',
-        '--user', String(config.containerUid || 10001), '--network', config.networkName,
-        '--cpus', String(operation.resources.cpuMillis / 1000),
-        '--memory', `${operation.resources.memoryMiB}m`, '--pids-limit', String(config.pidsLimit),
-        '--blkio-weight', String(config.ioWeight), '--tmpfs', '/tmp:rw,noexec,nosuid,size=256m',
-        '--tmpfs', '/run:rw,noexec,nosuid,size=64m', '--tmpfs', '/dev/shm:rw,noexec,nosuid,size=64m',
-        '--mount', `type=bind,src=${target.home},dst=/home/yeaft,rw,nosuid,nodev`,
-        '--mount', `type=bind,src=${target.workspace},dst=/workspace,rw,nosuid,nodev`,
-        '--mount', `type=bind,src=${bootstrapPath},dst=/run/yeaft/bootstrap.json,ro,nosuid,nodev,noexec`,
-        config.imageDigest,
-        'yeaft-agent', 'managed-sandbox', '--bootstrap-file', '/run/yeaft/bootstrap.json'
-      ]);
-      inspect = await inspectContainer(name);
+        secretDirectory = await prepareSecretDirectory(operation);
+        const bootstrapPath = join(secretDirectory, 'bootstrap.json');
+        const file = await open(
+          bootstrapPath,
+          fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+          0o600,
+        );
+        try {
+          await file.writeFile(JSON.stringify({
+            serverUrl: config.serverUrl,
+            token: operation.bootstrap.token,
+            claims: {
+              sandboxId: operation.sandboxId,
+              instanceId: operation.instanceId,
+              generation: operation.generation,
+              imageDigest: operation.imageDigest
+            }
+          }));
+        } finally {
+          await file.close();
+        }
+        await run(config.runtimeBinary, [
+          'create', '--name', name,
+          '--label', `io.yeaft.sandbox-id=${operation.sandboxId}`,
+          '--label', `io.yeaft.instance-id=${operation.instanceId}`,
+          '--runtime', config.isolationRuntime || 'runsc', '--read-only',
+          '--cap-drop=ALL', '--security-opt=no-new-privileges', '--userns=auto',
+          '--user', String(config.containerUid || 10001), '--network', config.networkName,
+          '--cpus', String(operation.resources.cpuMillis / 1000),
+          '--memory', `${operation.resources.memoryMiB}m`, '--pids-limit', String(config.pidsLimit),
+          '--blkio-weight', String(config.ioWeight), '--tmpfs', '/tmp:rw,noexec,nosuid,size=256m',
+          '--tmpfs', '/run:rw,noexec,nosuid,size=64m', '--tmpfs', '/dev/shm:rw,noexec,nosuid,size=64m',
+          '--mount', `type=bind,src=${target.home},dst=/home/yeaft,rw,nosuid,nodev`,
+          '--mount', `type=bind,src=${target.workspace},dst=/workspace,rw,nosuid,nodev`,
+          '--mount', `type=bind,src=${bootstrapPath},dst=/run/yeaft/bootstrap.json,ro,nosuid,nodev,noexec`,
+          config.imageDigest,
+          'yeaft-agent', 'managed-sandbox', '--bootstrap-file', '/run/yeaft/bootstrap.json'
+        ]);
+        inspect = await inspectContainer(name);
+      }
+      if (!inspect || !exactImage(inspect, config.imageDigest)) throw new Error('Sandbox fixed image inspection failed');
+      await run(config.runtimeBinary, ['start', name]);
+      return await runtimeProof(operation, inspect);
+    } finally {
+      if (secretDirectory) await rm(secretDirectory, { recursive: true, force: true });
     }
-    if (!inspect || !exactImage(inspect, config.imageDigest)) throw new Error('Sandbox fixed image inspection failed');
-    await run(config.runtimeBinary, ['start', name]);
-    const proof = await runtimeProof(operation, inspect);
-    await rm(join(target.root, 'bootstrap.json'), { force: true });
-    return proof;
   }
 
   async function runtimeProof(operation, inspect) {
@@ -263,7 +323,8 @@ export function createSandboxRuntimeExecutor({ config, run = commandRunner, avai
       && String(container.User || '') === String(config.containerUid || 10001)
       && host.NetworkMode === config.networkName
       && mounts.length >= 3
-      && mounts.every(mount => mount.Type === 'bind' && within(dataRoot, mount.Source));
+      && mounts.every(mount => mount.Type === 'bind'
+        && (within(dataRoot, mount.Source) || within(secretRoot, mount.Source)));
     if (!valid) throw new Error('Sandbox runtime isolation inspection failed');
     await inspectQuota(operation);
     await inspectNetwork(operation);

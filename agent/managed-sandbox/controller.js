@@ -6,6 +6,10 @@ const MAX_REQUEST_BYTES = 64 * 1024;
 function canonicalControllerResult(result) {
   return JSON.stringify({
     operationId: result.operationId,
+    action: result.action,
+    hostId: result.hostId,
+    sandboxId: result.sandboxId,
+    requestDigest: result.requestDigest,
     generation: result.generation,
     hostEpoch: result.hostEpoch,
     requestNonce: result.requestNonce,
@@ -48,7 +52,11 @@ export function createSandboxController({ config, helper, now = Date.now, create
     const helperResult = await helper.execute(operation);
     const result = {
       operationId: operation.operationId,
-      generation: operation.generation,
+      action: operation.action,
+      hostId: operation.hostId,
+      sandboxId: operation.sandboxId || null,
+      requestDigest: operation.requestDigest,
+      generation: operation.generation || null,
       hostEpoch: operation.hostEpoch,
       requestNonce: operation.nonce,
       issuedAt: now(),
