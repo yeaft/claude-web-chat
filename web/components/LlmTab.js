@@ -205,6 +205,22 @@ export default {
           </div>
         </div>
 
+        <!-- Debug traces: per-agent opt-in. Off by default; when enabled the
+             agent collects per-turn debug traces so the turn debug action can
+             show the full request/loop/tool timeline. -->
+        <div class="sp-group llm-section">
+          <div class="llm-section-header">
+            <div>
+              <div class="sp-group-title">{{ $t('settings.llm.debugTitle') }}</div>
+              <p class="sp-desc">{{ $t('settings.llm.debugDesc') }}</p>
+            </div>
+          </div>
+          <label class="llm-toggle-row">
+            <input type="checkbox" v-model="localDebug" @change="markDirty" />
+            <span class="llm-toggle-label">{{ $t('settings.llm.enableDebug') }}</span>
+          </label>
+        </div>
+
         <!-- Save button -->
         <div class="llm-save-row">
           <span v-if="isDirty" class="llm-dirty-hint">{{ $t('settings.llm.unsavedChanges') }}</span>
@@ -236,6 +252,7 @@ export default {
       providerModelsText: [],
       localPrimaryModel: null,
       localFastModel: null,
+      localDebug: false,
       isDirty: false,
       saving: false,
       openDropdown: null,
@@ -303,6 +320,7 @@ export default {
           this.providerModelsText = [];
           this.localPrimaryModel = null;
           this.localFastModel = null;
+          this.localDebug = false;
           this.isDirty = false;
           this.modelDiscoveryWarning = null;
           this.modelDiscoveryError = null;
@@ -488,6 +506,7 @@ export default {
 
       this.localPrimaryModel = config.agentConfig?.primaryModel || config.primaryModel || null;
       this.localFastModel = config.agentConfig?.fastModel || config.fastModel || null;
+      this.localDebug = config.agentConfig?.debug === true;
       this.isDirty = false;
       this.showApiKey = {};
     },
@@ -725,7 +744,8 @@ export default {
       // UI never silently clears another context's saved fastModel.
       const llmConfig = {
         providers,
-        primaryModel: this.localPrimaryModel || null
+        primaryModel: this.localPrimaryModel || null,
+        debug: this.localDebug === true,
       };
       if (this.context !== 'yeaft') {
         llmConfig.fastModel = this.localFastModel || null;

@@ -29,6 +29,7 @@ import {
   LLMAdapter,
   LLMRateLimitError,
   LLMAuthError,
+  classifyAuthError,
   LLMContextError,
   LLMServerError,
   LLMAbortError,
@@ -38,6 +39,7 @@ import {
   redactRawRequest,
   safeHeaders,
   SseLineBuffer,
+  createBoundedTextAccumulator,
   toWellFormedJson,
 } from './adapter.js';
 import {
@@ -207,7 +209,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
 
   #classifyError(status, body, response = null) {
     if (status === 401 || status === 403) {
-      return new LLMAuthError(`Auth error: ${body}`, status);
+      return classifyAuthError(status, body);
     }
     if (status === 429) {
       const retryAfter = retryAfterFromResponse(response);
@@ -258,7 +260,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
    * `api-key` headers are auto-redacted (see `redactRawRequest` in
    * `adapter.js`); request-body fields are caller-controlled.
    */
-  async *stream({ model, system, messages, tools, maxTokens = 16384, effort, effortSource, effortContext = {}, extraBody, signal, onRawExchange, onRequestStart }) {
+  async *stream({ model, system, messages, tools, maxTokens = 16384, effort, effortSource, effortContext = {}, extraBody, signal, onRawExchange, rawExchangeMaxBytes = 512 * 1024, onRequestStart }) {
     if (signal?.aborted) throw new LLMAbortError();
 
     const body = {
@@ -345,11 +347,10 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
     const emittedToolCallIds = new Set();
     let sawToolCall = false;
 
-    // Accumulate raw SSE body verbatim for the debug panel. No truncation:
-    // see `redactRawRequest` in adapter.js for the verbatim-design rationale.
-    // Push-then-join keeps allocation bounded for multi-MiB payloads (avoids
-    // O(n²) string concat).
-    const rawSseBodyChunks = [];
+    // Keep raw SSE chunks only until the engine receives the bounded exchange
+    // callback. The engine owns the configured byte budget; the adapter avoids
+    // quadratic string concatenation by storing chunks separately.
+    const rawSseBody = createBoundedTextAccumulator(rawExchangeMaxBytes);
     const responseHeaders = safeHeaders(response);
     const responseStatus = response.status;
     let sawTerminalEvent = false;
@@ -363,7 +364,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
         });
         if (done) break;
         const chunkText = decoder.decode(value, { stream: true });
-        rawSseBodyChunks.push(chunkText);
+        rawSseBody.push(chunkText);
 
         // SSE events are separated by blank lines; SseLineBuffer yields each
         // completed line (newline stripped) in O(n) total.
@@ -502,8 +503,11 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
             rawResponse: {
               status: responseStatus,
               headers: responseHeaders,
-              body: rawSseBodyChunks.join(''),
+              body: rawSseBody.text(),
               format: 'sse',
+              truncated: rawSseBody.truncated,
+              originalBytes: rawSseBody.totalBytes,
+              maxBytes: rawSseBody.maxBytes,
             },
           });
         } catch { /* ignore */ }

@@ -12,12 +12,14 @@ import { generateVerificationCode, maskEmail } from './utils.js';
  * Helper: complete login and return token + sessionKey + role
  */
 export function completeLogin(username, sessionKey, role) {
+  const user = getUserByUsername(username);
   const token = issueSessionToken(username);
   activeSessions.set(token, { username, sessionKey });
   return {
     success: true,
     token,
     sessionKey: encodeKey(sessionKey),
+    userId: user?.id || null,
     role: role === 'admin' ? 'admin' : 'pro',
     needTotpCode: false,
     needTotpSetup: false,

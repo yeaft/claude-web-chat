@@ -15,7 +15,7 @@ import LlmTab from './LlmTab.js';
 import WorkCenterPage from './WorkCenterPage.js';
 import { parseMentions } from '../utils/parseMentions.js';
 import { buildTimelineRows, resolveTimelineSession, selectGroupRosterVpList } from '../stores/helpers/vp-timeline.js';
-import { buildModelSelectionRows, getDefaultModelEffort, getSelectableModelEfforts, modelOptionMatchesRef, modelOptionRef, resolveSessionModelEffort, resolveSessionModelRef } from '../utils/modelRefs.js';
+import { buildModelSelectionRows, getDefaultModelEffort, getSelectableModelEfforts, modelOptionMatchesRef, resolveSessionModelEffort, resolveSessionModelRef } from '../utils/modelRefs.js';
 import {
   clearOverlayPointerGesture,
   shouldDismissFromOverlayClick,
@@ -28,6 +28,8 @@ import { shouldCloseLlmConfigAfterSave } from '../utils/llm-config-save.js';
 import { revealOutlineResult, shouldDismissHistorySearch } from '../utils/message-search-navigation.js';
 
 const HISTORY_SENDER_PREFERENCES_KEY = 'yeaft-history-sender-preferences';
+const HISTORY_SENDER_ALL = '__all__';
+const DEFAULT_HISTORY_SENDER = 'user';
 
 function historySenderPreferenceId(agentId, sessionId) {
   return agentId && sessionId ? `${agentId}:${sessionId}` : '';
@@ -52,15 +54,20 @@ function readHistorySenderPreferences(storage) {
 }
 
 export function loadHistorySenderPreference({ agentId, sessionId, validKeys = [], storage } = {}) {
+  const defaultSender = validKeys.length === 0 || validKeys.includes(DEFAULT_HISTORY_SENDER)
+    ? DEFAULT_HISTORY_SENDER
+    : '';
   const id = historySenderPreferenceId(agentId, sessionId);
-  if (!id) return '';
+  if (!id) return defaultSender;
   const resolvedStorage = resolveHistorySenderStorage(storage);
   const preferences = readHistorySenderPreferences(resolvedStorage);
+  if (!Object.prototype.hasOwnProperty.call(preferences, id)) return defaultSender;
   const senderKey = typeof preferences[id] === 'string' ? preferences[id] : '';
-  if (!senderKey || validKeys.includes(senderKey)) return senderKey;
+  if (senderKey === HISTORY_SENDER_ALL) return '';
+  if (senderKey && validKeys.includes(senderKey)) return senderKey;
   delete preferences[id];
   try { resolvedStorage?.setItem(HISTORY_SENDER_PREFERENCES_KEY, JSON.stringify(preferences)); } catch { /* best effort */ }
-  return '';
+  return defaultSender;
 }
 
 export function saveHistorySenderPreference({ agentId, sessionId, senderKey, storage } = {}) {
@@ -69,8 +76,7 @@ export function saveHistorySenderPreference({ agentId, sessionId, senderKey, sto
   const resolvedStorage = resolveHistorySenderStorage(storage);
   if (!resolvedStorage) return false;
   const preferences = readHistorySenderPreferences(resolvedStorage);
-  if (senderKey) preferences[id] = senderKey;
-  else delete preferences[id];
+  preferences[id] = senderKey || HISTORY_SENDER_ALL;
   try {
     resolvedStorage.setItem(HISTORY_SENDER_PREFERENCES_KEY, JSON.stringify(preferences));
     return true;
@@ -87,12 +93,8 @@ function sessionTaskSortTime(task) {
 
 export function visibleSessionStatusTasks(taskMap) {
   return Object.values(taskMap || {})
-    .filter(Boolean)
-    .sort((a, b) => {
-      if (a.status === 'running' && b.status !== 'running') return -1;
-      if (a.status !== 'running' && b.status === 'running') return 1;
-      return sessionTaskSortTime(b) - sessionTaskSortTime(a);
-    });
+    .filter(task => task?.status === 'running')
+    .sort((a, b) => sessionTaskSortTime(b) - sessionTaskSortTime(a));
 }
 
 export default {
@@ -144,62 +146,13 @@ export default {
 
         <!-- task-339-F1: SessionSelector removed from topbar — groups now surface via sidebar section. -->
 
-          <!-- Model selector doubles as the LLM settings entry; no extra gear. -->
-          <div class="yeaft-topbar-model" @click="toggleModelDropdown" :title="$t('yeaft.modelMenu.title')">
-            <span class="yeaft-topbar-model-name">{{ topbarModel || $t('settings.llm.selectModel') }}</span>
-            <span v-if="store.yeaftModelsRefreshing" class="yeaft-model-refreshing">{{ $t('common.loading') || 'Loading' }}</span>
-            <svg class="yeaft-model-chevron" :class="{ open: modelDropdownOpen }" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-            <div class="yeaft-model-dropdown yeaft-topbar-model-dropdown" v-if="modelDropdownOpen" @click.stop>
-              <div class="yeaft-model-selector-body">
-                <div class="yeaft-model-list" role="listbox" :aria-label="$t('settings.llm.selectModel')">
-                  <div
-                    v-for="row in topbarModelRows"
-                    :key="row.modelRef"
-                    class="yeaft-model-option"
-                    :class="{
-                      active: isModelRowActive(row),
-                      current: modelOptionMatchesRef(row.model, topbarModel),
-                      'yeaft-model-option-with-effort': row.efforts.length,
-                    }"
-                    role="option"
-                    :aria-selected="isModelRowActive(row) ? 'true' : 'false'"
-                  >
-                    <span class="yeaft-model-check" v-if="isModelRowActive(row)">&check;</span>
-                    <span class="yeaft-model-check" v-else></span>
-                    <button
-                      type="button"
-                      class="yeaft-model-option-main"
-                      @click="selectModel(row.modelRef, row.defaultEffort)"
-                    >
-                      <span class="yeaft-model-option-label">{{ row.label }}</span>
-                      <span class="yeaft-model-option-meta">
-                        <span class="yeaft-model-option-provider" v-if="row.model.provider">{{ row.model.provider }}</span>
-                        <span class="yeaft-model-option-ctx" v-if="row.model.contextWindow">{{ formatModelCtx(row.model) }}</span>
-                      </span>
-                    </button>
-                    <span class="yeaft-model-effort-list" v-if="row.efforts.length" :aria-label="row.label">
-                      <button
-                        v-for="effort in row.efforts"
-                        :key="row.modelRef + ':' + effort"
-                        type="button"
-                        class="yeaft-model-effort-chip"
-                        :class="{ active: isModelSelectionActive(row.model, effort) }"
-                        @click="selectModel(row.modelRef, effort)"
-                      >{{ $t('yeaft.modelMenu.effort.' + effort) }}</button>
-                    </span>
-                  </div>
-                </div>
-                <div class="yeaft-model-fixed-controls">
-                  <button type="button" class="yeaft-model-config-option" @click="openLlmConfig">
-                    <span class="yeaft-model-config-label">{{ $t('settings.llm.configureMenu') }}</span>
-                    <span class="yeaft-model-config-hint">{{ $t('yeaft.modelMenu.configureHint') }}</span>
-                  </button>
-                </div>
-              </div>
+          <div class="yeaft-topbar-context">
+            <div v-if="topbarFolderPath" class="yeaft-topbar-folder" :title="topbarFolderPath">
+              <span class="yeaft-topbar-folder-path">{{ topbarFolderPath }}</span>
             </div>
-          </div>
-          <div class="yeaft-topbar-title-group" :title="showOnboardingGuide ? $t('yeaft.onboarding.topbarTitle') : (topbarSessionTitle || topbarGroup?.id || '')">
-            <div class="yeaft-topbar-session-title">{{ showOnboardingGuide ? $t('yeaft.onboarding.topbarTitle') : (topbarSessionTitle || $t('yeaft.session.create.untitled')) }}</div>
+            <div class="yeaft-topbar-title-group" :title="showOnboardingGuide ? $t('yeaft.onboarding.topbarTitle') : (topbarSessionTitle || topbarGroup?.id || '')">
+              <div class="yeaft-topbar-session-title">{{ showOnboardingGuide ? $t('yeaft.onboarding.topbarTitle') : (topbarSessionTitle || $t('yeaft.session.create.untitled')) }}</div>
+            </div>
           </div>
 
           <YeaftSessionActions
@@ -237,6 +190,15 @@ export default {
         />
 
         <div class="yeaft-conversation-body">
+          <div
+            v-if="!showSettings && !showOnboardingGuide && (store.yeaftSessionHydrateError || store.yeaftHistoryLoadError)"
+            class="yeaft-history-load-error"
+            :class="{ 'has-messages': store.yeaftVisibleMessages.length > 0 }"
+            role="alert"
+          >
+            <span>{{ $t(store.yeaftSessionHydrateError ? 'yeaft.sessionInventory.error' : 'yeaft.historyLoad.error') }}</span>
+            <button type="button" class="btn-secondary" @click="store.yeaftSessionHydrateError ? retryConversationInventory() : reloadMessages()">{{ $t(store.yeaftSessionHydrateError ? 'yeaft.sessionInventory.retry' : 'yeaft.historyLoad.retry') }}</button>
+          </div>
         <!-- H2.f.6: YeaftFeatureDetailView removed — cross-thread aggregation
              retired with the multi-thread engine; the task-detail view had
              no message data source after H2.f.1, so it's been deleted.
@@ -320,13 +282,23 @@ export default {
           </div>
         </section>
 
+        <div
+          v-if="!showSettings && !showOnboardingGuide && !conversationInventoryReady && !store.yeaftSessionHydrateError && store.yeaftVisibleMessages.length === 0"
+          class="initial-message-loading yeaft-conversation-bootstrap-loading"
+          role="status"
+          aria-live="polite"
+        >
+          <div class="initial-message-loading-spinner" aria-hidden="true"></div>
+          <div class="initial-message-loading-text">{{ $t('chat.session.loadingHistory') }}</div>
+        </div>
+
         <!-- Messages Area — reuse standard MessageList for identical rendering -->
         <!-- task-fix-empty-group: hero state replaces MessageList when the
              active group has no roster — gives the user a single, clear
              next step instead of a blank canvas. The modal still pops on
              top for groups the user hasn't dismissed yet. -->
         <div
-          v-if="!showSettings && !showOnboardingGuide && isActiveGroupEmpty"
+          v-if="!showSettings && !showOnboardingGuide && conversationInventoryReady && isActiveGroupEmpty && store.yeaftVisibleMessages.length === 0 && !store.yeaftInitialHistoryLoading && !store.yeaftHistoryLoadError"
           class="yeaft-empty-group-hero"
         >
           <div class="yeaft-empty-group-hero__icon" aria-hidden="true">
@@ -342,7 +314,7 @@ export default {
         </div>
         <MessageList
           ref="messageListRef"
-          v-if="!showSettings && !showOnboardingGuide && !isActiveGroupEmpty"
+          v-if="!showSettings && !showOnboardingGuide && (conversationInventoryReady || store.yeaftVisibleMessages.length > 0) && (!isActiveGroupEmpty || store.yeaftVisibleMessages.length > 0 || store.yeaftInitialHistoryLoading)"
           @quote-message="setMessageQuote"
           @edit-message-as-new="editMessageAsNew"
         />
@@ -371,6 +343,7 @@ export default {
         <ChatInput
           v-if="!showSettings && !showOnboardingGuide"
           ref="chatInputRef"
+          class="yeaft-session-input"
           :conversation-id="store.yeaftConversationId"
           :draft-key="yeaftInputDraftKey"
           :send-fn="sendMessage"
@@ -381,7 +354,91 @@ export default {
           placeholder-key="yeaft.placeholder"
           @remove-quote="messageQuote = null"
           @quote-consumed="messageQuote = null"
-        />
+        >
+          <template #actions-end-before>
+            <div class="yeaft-composer-model-controls">
+              <div
+                class="yeaft-composer-choice yeaft-composer-model-choice"
+                :class="{ 'is-open': composerMenuOpen === 'model' }"
+                @focusout="onComposerMenuFocusout($event, 'model')"
+              >
+                <button
+                  type="button"
+                  class="yeaft-composer-model"
+                  @click.stop="toggleComposerMenu('model')"
+                  :title="$t('yeaft.modelMenu.label')"
+                  aria-haspopup="menu"
+                  :aria-expanded="composerMenuOpen === 'model' ? 'true' : 'false'"
+                >
+                  <span class="yeaft-composer-model-name">{{ topbarModelLabel || $t('settings.llm.selectModel') }}</span>
+                  <span v-if="store.yeaftModelsRefreshing" class="yeaft-model-refreshing">{{ $t('common.loading') || 'Loading' }}</span>
+                  <svg class="yeaft-model-chevron" :class="{ open: composerMenuOpen === 'model' }" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                </button>
+                <div v-if="composerMenuOpen === 'model'" class="yeaft-model-dropdown yeaft-composer-model-dropdown" role="menu" :aria-label="$t('settings.llm.selectModel')">
+                  <div class="yeaft-model-list">
+                    <button
+                      v-for="row in topbarModelRows"
+                      :key="row.modelRef"
+                      type="button"
+                      class="yeaft-model-option"
+                      :class="{ active: modelOptionMatchesRef(row.model, topbarModel) }"
+                      role="menuitemradio"
+                      :aria-checked="modelOptionMatchesRef(row.model, topbarModel) ? 'true' : 'false'"
+                      @click="selectModel(row.modelRef, row.defaultEffort)"
+                    >
+                      <span class="yeaft-model-check" aria-hidden="true">{{ modelOptionMatchesRef(row.model, topbarModel) ? '✓' : '' }}</span>
+                      <span class="yeaft-model-option-main">
+                        <span class="yeaft-model-option-label">{{ row.label }}</span>
+                        <span class="yeaft-model-option-meta" v-if="row.model.provider || row.model.contextWindow">
+                          <span class="yeaft-model-option-provider" v-if="row.model.provider">{{ row.model.provider }}</span>
+                          <span class="yeaft-model-option-ctx" v-if="row.model.contextWindow">{{ formatModelCtx(row.model) }}</span>
+                        </span>
+                      </span>
+                    </button>
+                  </div>
+                  <button type="button" class="yeaft-model-config-option" @click="openLlmConfig">
+                    <span class="yeaft-model-config-label">{{ $t('settings.llm.configureMenu') }}</span>
+                    <span class="yeaft-model-config-hint">{{ $t('yeaft.modelMenu.configureHint') }}</span>
+                  </button>
+                </div>
+              </div>
+
+              <div
+                v-if="topbarEffortOptions.length"
+                class="yeaft-composer-choice yeaft-composer-effort-choice"
+                :class="{ 'is-open': composerMenuOpen === 'effort' }"
+                @focusout="onComposerMenuFocusout($event, 'effort')"
+              >
+                <button
+                  type="button"
+                  class="yeaft-composer-effort"
+                  @click.stop="toggleComposerMenu('effort')"
+                  :title="$t('yeaft.modelMenu.effort')"
+                  aria-haspopup="menu"
+                  :aria-expanded="composerMenuOpen === 'effort' ? 'true' : 'false'"
+                >
+                  <span>{{ $t('yeaft.modelMenu.effort.' + topbarEffort) }}</span>
+                  <svg class="yeaft-model-chevron" :class="{ open: composerMenuOpen === 'effort' }" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                </button>
+                <div v-if="composerMenuOpen === 'effort'" class="yeaft-model-dropdown yeaft-composer-effort-dropdown" role="menu" :aria-label="$t('yeaft.modelMenu.effort')">
+                  <button
+                    v-for="effort in topbarEffortOptions"
+                    :key="effort"
+                    type="button"
+                    class="yeaft-model-option yeaft-composer-effort-option"
+                    :class="{ active: effort === topbarEffort }"
+                    role="menuitemradio"
+                    :aria-checked="effort === topbarEffort ? 'true' : 'false'"
+                    @click="selectEffort(effort)"
+                  >
+                    <span class="yeaft-model-check" aria-hidden="true">{{ effort === topbarEffort ? '✓' : '' }}</span>
+                    <span class="yeaft-model-option-label">{{ $t('yeaft.modelMenu.effort.' + effort) }}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </template>
+        </ChatInput>
         </div><!-- /.yeaft-main-center -->
       </div>
 
@@ -478,8 +535,13 @@ export default {
     // visible as a "tasks memory / coming soon" placeholder). The right
     // detail panel is only rendered when debugMode is on, so the
     // conversation column gets the full width by default.
-    const debugMode = Vue.ref(false);
-    const modelDropdownOpen = Vue.ref(false);
+    // Turn-level debug: the detail panel visibility follows the store's
+    // `yeaftDebugPanel.open` so both the header entry and the per-turn
+    // turn debug action can open/close it from anywhere.
+    const debugMode = Vue.computed(() => !!(
+      store.yeaftDebugPanel && store.yeaftDebugPanel.open
+    ));
+    const composerMenuOpen = Vue.ref(null);
     const showSettings = Vue.ref(false);
     const showLlmConfig = Vue.ref(false);
     const sessionCreateOpen = Vue.ref(false);
@@ -816,9 +878,9 @@ export default {
       store.searchYeaftHistory(historySearchQuery.value, { senderKey });
     };
     const onHistorySenderInvalid = () => {
-      saveHistorySenderPreference({ ...historySearchIdentity(), senderKey: '' });
+      saveHistorySenderPreference({ ...historySearchIdentity(), senderKey: DEFAULT_HISTORY_SENDER });
       historySearchActiveMessageId.value = null;
-      store.searchYeaftHistory(historySearchQuery.value, { senderKey: '' });
+      store.searchYeaftHistory(historySearchQuery.value, { senderKey: DEFAULT_HISTORY_SENDER });
     };
     const loadOlderHistoryOutline = (scrollSnapshot) => {
       if (!store.loadYeaftHistoryOutline({ append: true })) return;
@@ -833,21 +895,24 @@ export default {
     };
     const loadMoreHistorySearchResults = () => store.searchYeaftHistory(store.yeaftHistorySearchState.query, { append: true, senderKey: store.yeaftHistorySearchState.senderKey });
     const previewHistorySearchResult = result => {
-      // Warm a bounded anchor window while the user points at a result. The
-      // store de-duplicates this with the eventual click, so preview never
-      // creates parallel reads and clicking an already-cached turn is instant.
+      // Warm a bounded anchor window while the user points at a result. Preview
+      // stays cache-only; click revalidates the indexed generation before it
+      // expands or scrolls, so a source mutation cannot reveal a stale locator.
       if (store.hasCapability('session_history_window_prefetch')) {
         store.loadYeaftHistoryWindow(result);
       }
     };
-    const selectHistorySearchResult = result => revealOutlineResult({
-      result,
-      revealWindow: candidate => store.revealYeaftHistoryResult(candidate),
-      nextTick: () => Vue.nextTick(),
-      revealMessage: messageId => messageListRef.value?.revealMessage?.(messageId),
-      isMobile: isMobile.value,
-      closeOutline: closeHistorySearch,
-    });
+    const selectHistorySearchResult = (result) => {
+      const revealLease = store.beginYeaftHistoryReveal?.(result) || null;
+      return revealOutlineResult({
+        result,
+        revealWindow: candidate => store.revealYeaftHistoryResult(candidate, revealLease),
+        nextTick: () => Vue.nextTick(),
+        revealMessage: target => messageListRef.value?.revealMessage?.(target),
+        isMobile: isMobile.value,
+        closeOutline: closeHistorySearch,
+      }).finally(() => store.finishYeaftHistoryReveal?.(revealLease));
+    };
 
     // Esc handling — close transient controls. Detail drill-down layers were
     // removed; the center pane always stays on the Session stream.
@@ -862,8 +927,8 @@ export default {
         closeHistorySearch();
         return;
       }
-      if (modelDropdownOpen.value) {
-        closeModelDropdown();
+      if (composerMenuOpen.value) {
+        closeComposerMenu();
         return;
       }
     };
@@ -875,7 +940,7 @@ export default {
       addMediaChangeListener(narrowDetailMedia);
       window.visualViewport?.addEventListener('resize', scheduleMobileViewportRecovery);
       window.visualViewport?.addEventListener('scroll', scheduleMobileViewportRecovery);
-      document.addEventListener('click', closeModelDropdownOutside);
+      document.addEventListener('click', closeComposerMenuOutside);
       document.addEventListener('click', closeHistorySearchOutside);
       document.addEventListener('keydown', onKeyDown);
       scheduleMobileViewportSync();
@@ -886,7 +951,7 @@ export default {
       removeMediaChangeListener(narrowDetailMedia);
       window.visualViewport?.removeEventListener('resize', scheduleMobileViewportRecovery);
       window.visualViewport?.removeEventListener('scroll', scheduleMobileViewportRecovery);
-      document.removeEventListener('click', closeModelDropdownOutside);
+      document.removeEventListener('click', closeComposerMenuOutside);
       document.removeEventListener('click', closeHistorySearchOutside);
       document.removeEventListener('keydown', onKeyDown);
       if (mobileViewportRaf != null) cancelAnimationFrame(mobileViewportRaf);
@@ -973,14 +1038,31 @@ export default {
     // button + placeholder are gone, so the helper is removed too.
 
     const toggleDebug = () => {
-      debugMode.value = !debugMode.value;
+      if (debugMode.value) {
+        store.closeYeaftDebugPanel();
+      } else if (typeof store.openYeaftTurnDebug === 'function') {
+        // Header entry: open an empty panel. The debug action on AI turns
+        // opens the panel pre-scoped to that exact turn.
+        store.openYeaftTurnDebug({});
+      }
     };
     const closeDebug = () => {
-      debugMode.value = false;
+      store.closeYeaftDebugPanel();
     };
 
     const reloadMessages = () => {
       store.reloadYeaftMessages();
+    };
+
+    const retryConversationInventory = () => {
+      if (typeof store.requestYeaftSessionInventory === 'function') {
+        store.requestYeaftSessionInventory();
+        return;
+      }
+      store._hasHandledAgentList = false;
+      store._hasHandledYeaftSessionHydrate = false;
+      store.yeaftSessionHydrateError = null;
+      store.sendWsMessage({ type: 'get_agents' });
     };
 
     const reloadPage = () => {
@@ -1035,6 +1117,11 @@ export default {
       return '';
     });
 
+    const topbarFolderPath = Vue.computed(() => {
+      const workDir = topbarGroup.value?.workDir;
+      return typeof workDir === 'string' ? workDir.trim() : '';
+    });
+
     const sessionStatusAnnouncementText = Vue.computed(() => {
       const text = topbarGroup.value && typeof topbarGroup.value.announcement === 'string'
         ? topbarGroup.value.announcement
@@ -1049,6 +1136,10 @@ export default {
       if (!id) return null;
       return store.yeaftAvailableModels.find(m => modelOptionMatchesRef(m, id)) || null;
     });
+
+    const topbarModelLabel = Vue.computed(() => (
+      topbarModelMeta.value?.label || topbarModelMeta.value?.id || topbarModel.value
+    ));
 
     const selectableEffortsForModel = (model) => getSelectableModelEfforts(model?.effortOptions);
 
@@ -1066,17 +1157,9 @@ export default {
 
     const topbarModelRows = Vue.computed(() => buildModelSelectionRows(store.yeaftAvailableModels));
 
-    const isModelSelectionActive = (model, effort) => {
-      if (!modelOptionMatchesRef(model, topbarModel.value)) return false;
-      if (!effort) return !selectableEffortsForModel(model).length;
-      return effort === topbarEffort.value;
-    };
-
-    const isModelRowActive = (row) => {
-      if (!row || !modelOptionMatchesRef(row.model, topbarModel.value)) return false;
-      if (!row.efforts.length) return true;
-      return row.efforts.includes(topbarEffort.value);
-    };
+    const topbarEffortOptions = Vue.computed(() => (
+      selectableEffortsForModel(topbarModelMeta.value)
+    ));
 
     // feat-6af5f9f1 PR C: the legacy debug helpers (toggleTurnExpand,
     // formatMessages, formatMsgContent, prettyJson, formatToolOutput,
@@ -1084,29 +1167,41 @@ export default {
     // here for the old inline debug panel. PR B replaced that panel
     // with <YeaftDebugPanel>; PR C removes the now-orphaned helpers.
 
-    const openModelDropdown = () => {
-      modelDropdownOpen.value = true;
+    const toggleComposerMenu = (menu) => {
+      if (menu === 'model' && !topbarModelRows.value.length) return;
+      if (menu === 'effort' && !topbarEffortOptions.value.length) return;
+      composerMenuOpen.value = composerMenuOpen.value === menu ? null : menu;
     };
 
-    const closeModelDropdown = () => {
-      modelDropdownOpen.value = false;
+    const closeComposerMenu = (menu = null) => {
+      if (!menu || composerMenuOpen.value === menu) composerMenuOpen.value = null;
     };
 
-    const toggleModelDropdown = (e) => {
-      e.stopPropagation();
-      if (!store.yeaftAvailableModels.length) return;
-      if (modelDropdownOpen.value) {
-        closeModelDropdown();
-      } else {
-        openModelDropdown();
+    const onComposerMenuFocusout = (event, menu) => {
+      const control = event.currentTarget;
+      if (event.relatedTarget) {
+        if (!control?.contains(event.relatedTarget)) closeComposerMenu(menu);
+        return;
       }
+      // Some browsers omit relatedTarget while moving focus. Wait until the
+      // click/focus sequence completes before deciding that focus left.
+      setTimeout(() => {
+        if (!control?.contains(document.activeElement)) closeComposerMenu(menu);
+      }, 0);
     };
 
     const selectModel = (modelId, effort = null) => {
       if (!modelId) return;
-      const groupId = topbarGroup.value?.id || null;
-      store.switchYeaftModel(modelId, groupId, effort);
-      closeModelDropdown();
+      const sessionId = topbarGroup.value?.id || null;
+      store.switchYeaftModel(modelId, sessionId, effort);
+      closeComposerMenu();
+    };
+
+    const selectEffort = (effort) => {
+      if (!topbarEffortOptions.value.includes(effort) || !topbarModel.value) return;
+      const sessionId = topbarGroup.value?.id || null;
+      store.switchYeaftModel(topbarModel.value, sessionId, effort);
+      closeComposerMenu();
     };
 
     // Format a token count compactly: 400000 → "400k", 1048576 → "1m", <1000 → raw.
@@ -1128,10 +1223,10 @@ export default {
       return ctx;
     };
 
-    const closeModelDropdownOutside = (e) => {
-      if (!modelDropdownOpen.value) return;
-      const row = e.target.closest('.yeaft-topbar-model, .yeaft-topbar-model-dropdown');
-      if (!row) closeModelDropdown();
+    const closeComposerMenuOutside = (e) => {
+      if (!composerMenuOpen.value) return;
+      const control = e.target.closest('.yeaft-composer-choice');
+      if (!control) closeComposerMenu();
     };
 
     const toggleSettings = () => {
@@ -1151,7 +1246,7 @@ export default {
     };
 
     const openLlmConfig = () => {
-      modelDropdownOpen.value = false;
+      closeComposerMenu();
       showLlmConfig.value = true;
     };
 
@@ -1267,11 +1362,19 @@ export default {
       const gs = sessionsStore();
       return !!(gs && gs.activeNeedsInvite);
     });
+    const conversationInventoryReady = Vue.computed(() => {
+      const gs = sessionsStore();
+      return store._hasHandledAgentList === true
+        && store._hasHandledYeaftSessionHydrate === true
+        && !!(gs && gs.hasLoadedSnapshot);
+    });
     const showOnboardingGuide = Vue.computed(() => {
       const gs = sessionsStore();
       return shouldShowYeaftOnboardingGuide({
+        agentInventoryReady: store._hasHandledAgentList === true,
         hasYeaftAgent: hasUsableYeaftAgent(store),
-        sessionsReady: !!(gs && gs.hasLoadedSnapshot),
+        sessionsReady: store._hasHandledYeaftSessionHydrate === true
+          && !!(gs && gs.hasLoadedSnapshot),
         sessionsEmpty: !!(gs && gs.isEmpty),
       });
     });
@@ -1400,7 +1503,12 @@ export default {
       const gs = sessionsStore();
       const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || null;
       if (!sessionId) return [];
-      const map = store.yeaftActiveTasksBySession?.[sessionId] || {};
+      const activeSession = typeof gs?.sessionById === 'function'
+        ? gs.sessionById(sessionId, store.currentAgent || null)
+        : null;
+      const agentId = activeSession?.agentId || store.currentAgent || null;
+      const taskKey = agentId ? `${agentId}\u001f${sessionId}` : sessionId;
+      const map = store.yeaftActiveTasksBySession?.[taskKey] || {};
       return visibleSessionStatusTasks(map);
     });
 
@@ -1500,7 +1608,7 @@ export default {
 
     const onCancelTaskFromTimeline = (task) => {
       if (!task?.id || !task.sessionId || typeof store.cancelYeaftTask !== 'function') return false;
-      return store.cancelYeaftTask({ sessionId: task.sessionId, taskId: task.id });
+      return store.cancelYeaftTask({ agentId: task.agentId, sessionId: task.sessionId, taskId: task.id });
     };
 
     return {
@@ -1508,16 +1616,16 @@ export default {
       pageRef,
       effectiveSidebarCollapsed,
       debugMode,
-      modelDropdownOpen,
+      composerMenuOpen,
       topbarGroup,
       topbarSessionTitle,
+      topbarFolderPath,
       topbarModel,
+      topbarModelLabel,
       topbarEffort,
       topbarModelRows,
+      topbarEffortOptions,
       selectableEffortsForModel,
-      isModelSelectionActive,
-      isModelRowActive,
-      modelOptionRef,
       modelOptionMatchesRef,
       showSettings,
       showLlmConfig,
@@ -1560,9 +1668,13 @@ export default {
       toggleDebug,
       closeDebug,
       reloadMessages,
+      retryConversationInventory,
       reloadPage,
-      toggleModelDropdown,
+      toggleComposerMenu,
+      closeComposerMenu,
+      onComposerMenuFocusout,
       selectModel,
+      selectEffort,
       openLlmConfig,
       trackOverlayPointerDown,
       trackOverlayPointerUp,
@@ -1589,6 +1701,7 @@ export default {
       onInviteOpenLibrary,
       onInviteDismiss,
       isActiveGroupEmpty,
+      conversationInventoryReady,
       showOnboardingGuide,
       installAgentCommand,
       connectAgentCommand,

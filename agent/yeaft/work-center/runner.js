@@ -1,5 +1,5 @@
 import { Engine } from '../engine.js';
-import { ToolRegistry } from '../tools/registry.js';
+import { ToolRegistry, isToolErrorOutput, toolErrorEffect } from '../tools/registry.js';
 import { defineTool } from '../tools/types.js';
 import { allTools } from '../tools/index.js';
 import { parsePatch } from '../tools/apply-patch.js';
@@ -10,8 +10,10 @@ import { resolveWorkItemModel, selectWorkItemVp } from './assignment.js';
 import { approxTokens } from '../memory/budget.js';
 import { runPreflow } from '../memory/preflow.js';
 import { formatPickedForInjection } from '../sessions/pre-flow.js';
-import { existsSync, lstatSync, realpathSync } from 'node:fs';
+import { cleanMemoryPromptText } from '../memory/prompt-cleanup.js';
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import { sessionMessageQuotePrompt } from '../session-message-quote.js';
 import { buildWorkItemAttachmentContext } from './attachments.js';
 import { withUsageAccounting } from '../llm/usage-accounting.js';
 import {
@@ -32,6 +34,7 @@ import { MCPManager } from '../mcp.js';
 import { buildMcpFlattenedTools } from '../tools/mcp-tools.js';
 import { recallWorkspaceSessionContext } from './workspace-context.js';
 import { applyGeneratedPlan, BUILT_IN_ACTION_TYPES } from './workflow.js';
+import { isDynamicWorkItem, usesMainlineContext } from './execution-mode.js';
 import {
   applyAdditivePlanProposal,
   applyReplanMutation,
@@ -62,6 +65,21 @@ const WORK_ITEM_TOOL_NAMES = Object.freeze([
 ]);
 const WORK_ITEM_TOOL_ALLOWLIST = new Set(WORK_ITEM_TOOL_NAMES);
 const DEFAULT_PROGRESS_INTERVAL_MS = 200;
+const ACTION_INPUT_QUOTE_MAX_BYTES = 8 * 1024;
+
+export function renderPendingActionInput(item, attachmentFileById = new Map()) {
+  const attachments = Array.isArray(item?.attachments) ? item.attachments : [];
+  const attachmentLines = attachments.map(attachment => {
+    const file = attachmentFileById.get(attachment.id);
+    return file ? `- ${attachment.name}: ${file.ref}` : `- ${attachment.name}`;
+  });
+  const quoteContext = sessionMessageQuotePrompt(item?.quote, {
+    maxBytes: ACTION_INPUT_QUOTE_MAX_BYTES,
+  });
+  return [item?.text || '', quoteContext, attachmentLines.length > 0
+    ? `Additional WorkItem attachments:\n${attachmentLines.join('\n')}` : '']
+    .filter(Boolean).join('\n\n');
+}
 
 function structuredOutcome(value) {
   return value && typeof value === 'object'
@@ -265,7 +283,7 @@ export function workItemToolPolicySnapshot(workDir, attachmentRefs = [], mcpTool
   };
 }
 
-function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive) {
+function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive, operationLifecycle = null) {
   return {
     ...tool,
     async execute(input, ctx) {
@@ -273,12 +291,28 @@ function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunAct
       const checkedInput = tool.name.startsWith('mcp__')
         ? input
         : assertToolInput(tool.name, input, canonicalDir, canonicalAttachmentFiles);
-      const output = await tool.execute(checkedInput, {
-        ...ctx,
-        cwd: canonicalDir,
-        workDir: canonicalDir,
-        imageAllowlist: canonicalAttachmentFiles.map(file => file.root),
-      });
+      const trackOperation = typeof operationLifecycle === 'function'
+        && tool.sideEffectScope !== 'run'
+        && tool.isReadOnly?.(checkedInput) !== true;
+      const operation = trackOperation ? operationLifecycle(tool.name, checkedInput) : null;
+      let output;
+      try {
+        output = await tool.execute(checkedInput, {
+          ...ctx,
+          cwd: canonicalDir,
+          workDir: canonicalDir,
+          imageAllowlist: canonicalAttachmentFiles.map(file => file.root),
+        });
+      } catch (error) {
+        operation?.complete('unknown', { error: String(error?.message || error) });
+        throw error;
+      }
+      const outputHash = hashMainlineSnapshot({ output: String(output || '') });
+      const returnedError = tool.errorOutput === 'json-error-envelope' && isToolErrorOutput(output);
+      const effectStatus = returnedError
+        ? toolErrorEffect(output) === 'none' ? 'failed_no_effect' : 'unknown'
+        : 'applied';
+      operation?.complete(effectStatus, { outputHash });
       if (!isRunActive()) throw new Error('Work Center Run lease was lost during tool execution');
       if (['FileRead', 'ViewImage'].includes(tool.name) && typeof output === 'string') {
         const withoutFilePaths = canonicalAttachmentFiles.reduce(
@@ -376,15 +410,34 @@ export function createSubmitWorkItemPlanTool({
     },
     isConcurrencySafe: () => false,
     isReadOnly: () => false,
+    sideEffectScope: 'run',
   });
 }
 
-function terminalPlanningFields() {
+function terminalPlanningFields(options = {}) {
   return {
     summary: { type: 'string', minLength: 1, maxLength: 2_000 },
     evidence: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 1_000 } },
     acceptanceChecks: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['criterion', 'status', 'evidence'], properties: { criterion: { type: 'string' }, status: { type: 'string', enum: ['passed', 'deferred', 'not_applicable'] }, evidence: { type: 'string', minLength: 1, maxLength: 1_000 } } } },
+    ...(options.review === true ? {
+      reviewDecision: { type: 'string', const: 'changes_requested' },
+    } : {}),
   };
+}
+
+function reviewPlanningRequirements(action) {
+  return action?.type === 'review' ? ['reviewDecision'] : [];
+}
+
+function assertReviewPlanningDecision(input, action) {
+  if (action?.type !== 'review') return;
+  if (input?.reviewDecision !== 'changes_requested') {
+    throw new Error('Review planning controls require reviewDecision "changes_requested"');
+  }
+}
+
+function reviewPlanningResult(input, action) {
+  return action?.type === 'review' ? { reviewDecision: input.reviewDecision } : {};
 }
 
 function plannedActionSchema(vpIds, { requireCandidates = true } = {}) {
@@ -411,11 +464,15 @@ export function createProposeWorkItemActionsTool({
     : '';
   return defineTool({
     name: 'ProposeWorkItemActions',
-    description: `Propose an additive change to the current WorkItem DAG. It is applied only if this Action completes and its Run lease plus basePlanRevision remain valid. Use stable stageId values in dependsOnActionIds, changesRequestedActionId, and dependencyPatches[].addDependsOnActionIds. The only internal id field is dependencyPatches[].actionId, which must use the displayed internalActionId of an eligible ready attempt=0 target.${currentIdentity} Existing Actions: ${existing.map(action => `stageId=${action.stageId} (internalActionId=${action.id}, ${action.status}, attempt ${action.attempt})`).join('; ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'})`).join('; ')}. Only add new Actions and optionally add dependencies to attempt=0 ready Actions. This tool validates the complete additive DAG immediately; if validation fails, correct the proposal in the same turn.`,
+    description: `Propose an additive change to the current WorkItem DAG. It is applied only if this Action completes and its Run lease plus basePlanRevision remain valid. Use stable stageId values in dependsOnActionIds, changesRequestedActionId, and dependencyPatches[].addDependsOnActionIds. The only internal id field is dependencyPatches[].actionId, which must use the displayed internalActionId of an eligible ready attempt=0 target.${currentIdentity} Existing Actions: ${existing.map(action => `stageId=${action.stageId} (internalActionId=${action.id}, ${action.status}, attempt ${action.attempt})`).join('; ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'})`).join('; ')}. Only add new Actions and optionally add dependencies to attempt=0 ready Actions. A Review submitting changes_requested must add remediation followed by a fresh Review and make delivery depend on that fresh approval gate; otherwise request a replan. This tool validates the complete additive DAG immediately; if validation fails, correct the proposal in the same turn.`,
     parameters: { type: 'object', additionalProperties: false,
-      required: ['summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'actions'],
+      required: [
+        'summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'actions',
+        ...reviewPlanningRequirements(currentAction),
+      ],
       properties: {
-        ...terminalPlanningFields(), proposalId: { type: 'string', minLength: 1, maxLength: 128 },
+        ...terminalPlanningFields({ review: currentAction?.type === 'review' }),
+        proposalId: { type: 'string', minLength: 1, maxLength: 128 },
         basePlanRevision: { type: 'integer', const: workItem.planRevision },
         actions: { type: 'array', minItems: 1, maxItems: 8, items: plannedActionSchema(vpIds) },
         dependencyPatches: { type: 'array', maxItems: 8, items: { type: 'object', additionalProperties: false, required: ['actionId', 'addDependsOnActionIds'], properties: { actionId: { type: 'string', enum: existing.filter(action => action.status === 'ready' && action.attempt === 0).map(action => action.id) }, addDependsOnActionIds: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string' } } } } },
@@ -423,38 +480,61 @@ export function createProposeWorkItemActionsTool({
     async execute(input, ctx = {}) {
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('A WorkItem plan mutation was already submitted for this Run');
+      assertReviewPlanningDecision(input, currentAction);
       applyAdditivePlanProposal({
         workItem,
         actions,
         proposal: input,
         availableVpIds: vpIds,
+        reviewAction: currentAction,
       });
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
-      collector.value = { kind: 'expand', input: structuredClone(input) };
+      collector.value = {
+        kind: 'expand',
+        input: {
+          ...structuredClone(input),
+          ...reviewPlanningResult(input, currentAction),
+        },
+      };
       ctx.requestEndTurn?.({ kind: 'work_item_actions_proposed', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId, actionCount: input.actions.length });
     },
+    sideEffectScope: 'run',
   });
 }
 
-export function createRequestWorkItemReplanTool({ workItem, collector, isRunActive }) {
+export function createRequestWorkItemReplanTool({
+  workItem, collector, isRunActive, currentAction = null,
+}) {
   return defineTool({
     name: 'RequestWorkItemReplan',
     description: 'Request an explicit replan barrier when additive Actions are insufficient because the contract or existing future topology must change. The current Action must still complete. Work Center will preserve completed history, fence sibling Runs, supersede only unfinished Actions, and insert a new triage/replan Action. Active integration finalization prevents the barrier.',
     parameters: { type: 'object', additionalProperties: false,
-      required: ['summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'reason'],
+      required: [
+        'summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'reason',
+        ...reviewPlanningRequirements(currentAction),
+      ],
       properties: {
-        ...terminalPlanningFields(), proposalId: { type: 'string', minLength: 1, maxLength: 128 },
+        ...terminalPlanningFields({ review: currentAction?.type === 'review' }),
+        proposalId: { type: 'string', minLength: 1, maxLength: 128 },
         basePlanRevision: { type: 'integer', const: workItem.planRevision },
         reason: { type: 'string', minLength: 1, maxLength: 4_000 },
       } },
     async execute(input, ctx = {}) {
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('A WorkItem plan mutation was already submitted for this Run');
-      collector.value = { kind: 'replan', input: structuredClone(input) };
+      assertReviewPlanningDecision(input, currentAction);
+      collector.value = {
+        kind: 'replan',
+        input: {
+          ...structuredClone(input),
+          ...reviewPlanningResult(input, currentAction),
+        },
+      };
       ctx.requestEndTurn?.({ kind: 'work_item_replan_requested', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId });
     },
+    sideEffectScope: 'run',
   });
 }
 
@@ -509,10 +589,13 @@ export function createSubmitWorkItemReplanTool({ vps, workItem, action, actions,
     },
     isConcurrencySafe: () => false,
     isReadOnly: () => false,
+    sideEffectScope: 'run',
   });
 }
 
-export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRunActive, mcpTools = [], runTools = [] }) {
+export function createWorkItemToolRegistry({
+  workDir, attachmentFiles = [], isRunActive, mcpTools = [], runTools = [], operationLifecycle = null,
+}) {
   const canonicalDir = canonicalWorkDir(path.resolve(workDir));
   const canonicalAttachmentFiles = attachmentFiles.map(file => ({
     ...file,
@@ -522,14 +605,20 @@ export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRu
   const hasAttachments = canonicalAttachmentFiles.length > 0;
   for (const tool of allTools) {
     if (!WORK_ITEM_TOOL_ALLOWLIST.has(tool.name) || (hasAttachments && tool.name === 'Bash')) continue;
-    registry.register(wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive));
+    registry.register(wrapWorkItemTool(
+      tool, canonicalDir, canonicalAttachmentFiles, isRunActive, operationLifecycle,
+    ));
   }
   for (const tool of mcpTools) {
     if (!tool?.name?.startsWith('mcp__')) continue;
-    registry.register(wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive));
+    registry.register(wrapWorkItemTool(
+      tool, canonicalDir, canonicalAttachmentFiles, isRunActive, operationLifecycle,
+    ));
   }
   for (const tool of runTools) {
-    registry.register(wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive));
+    registry.register(wrapWorkItemTool(
+      tool, canonicalDir, canonicalAttachmentFiles, isRunActive, operationLifecycle,
+    ));
   }
   return registry;
 }
@@ -723,7 +812,7 @@ function finalizeOwnedIntegration(store, action, run, ownerBootId) {
   }
 }
 
-function recallWorkItemMemory(runtime, workItem, action, vp) {
+export function recallWorkItemMemory(runtime, workItem, action, vp) {
   if (workItem?.reuseMemory === false || !runtime?.memoryIndex) return '';
   const query = workItemMemoryQuery(workItem, action);
   if (!query.trim()) return '';
@@ -736,15 +825,38 @@ function recallWorkItemMemory(runtime, workItem, action, vp) {
       currentTags: [action.type, action.stageId, vp.id].filter(Boolean),
       topK: 20,
       budgetTokens: WORK_ITEM_MEMORY_TOKEN_BUDGET,
+      canonicalOnly: true,
     });
     const allowed = new Set(scopes);
     if ((result.picked || []).some(entry => !allowed.has(entry.scope))) return '';
-    const formatted = formatPickedForInjection(result.picked || []);
+    const canonical = (result.picked || []).map(entry => {
+      const body = readCanonicalMemoryScope(runtime.yeaftDir, entry.scope);
+      return body ? { ...entry, body } : null;
+    }).filter(Boolean);
+    const formatted = formatPickedForInjection(canonical);
     if (!formatted) return '';
     return boundedMemoryBlock(escapeMemoryText(formatted));
   } catch {
     return '';
   }
+}
+
+function readCanonicalMemoryScope(yeaftDir, scope) {
+  if (!yeaftDir || !isCanonicalMemoryScope(scope)) return '';
+  const memoryRoot = path.join(yeaftDir, 'memory');
+  const contentPath = path.resolve(memoryRoot, scope, 'content.md');
+  if (!isPathInsideOrEqual(memoryRoot, contentPath)) return '';
+  if (!existsSync(contentPath) || !lstatSync(contentPath).isFile()) return '';
+  return cleanMemoryPromptText(readFileSync(contentPath, 'utf8'));
+}
+
+function isCanonicalMemoryScope(scope) {
+  const parts = String(scope || '').split('/').filter(Boolean);
+  if (parts[0] === 'user' && parts.length === 1) return true;
+  if (parts[0] === 'vp' && parts.length >= 2) return true;
+  if (!['sessions', 'session', 'group'].includes(parts[0]) || parts.length < 2) return false;
+  if (parts.length === 2) return true;
+  return ['user', 'vp', 'feature', 'topic'].includes(parts[2]);
 }
 
 export class WorkItemRunner {
@@ -753,8 +865,9 @@ export class WorkItemRunner {
     this.policyProvider = typeof options.policyProvider === 'function' ? options.policyProvider : null;
     this.attachmentRoot = options.attachmentRoot || null;
     this.trace = options.trace || createTrace({
-      enabled: Boolean(options.yeaftDir),
+      enabled: options.debug === true && Boolean(options.yeaftDir),
       dirPath: options.yeaftDir || null,
+      textMaxBytes: options.config?.telemetry?.traceTextMaxBytes,
     });
     this.actionWorktreeRoot = options.actionWorktreeRoot || null;
     this.store = options.store;
@@ -834,7 +947,9 @@ export class WorkItemRunner {
           action: finalizeOwnedIntegration(this.store, action, run, ownerBootId),
         };
       }
-      const dependencies = this.store.listActionDependencies(workItem.id, action.dependsOnStageIds || []);
+      const dependencies = isDynamicWorkItem(workItem)
+        ? this.store.listActionSources(workItem.id, action.sourceActionIds || [])
+        : this.store.listActionDependencies(workItem.id, action.dependsOnStageIds || []);
       if (dependencies.length > 0 && dependencies.every(dependency => (
         dependency.workspaceMode === 'shared' && !dependency.workspace?.isolated
       ))) {
@@ -909,9 +1024,8 @@ export class WorkItemRunner {
 
   async run({ workItem, action, run, signal, ownerBootId, onProgress, registerProgressReader, registerInputWake }) {
     const runtime = await this.runtimeProvider();
-    const currentSettings = workItem?.workflowSnapshot?.planningMode === 'ai' && this.policyProvider
-      ? await this.policyProvider()
-      : null;
+    const currentSettings = ['ai', 'coordinator'].includes(workItem?.workflowSnapshot?.planningMode)
+      && this.policyProvider ? await this.policyProvider() : null;
     const currentModelPolicy = currentSettings?.actionModelPolicies?.[action.type]
       || currentSettings?.actionModelPolicies?.custom
       || currentSettings?.modelPolicy
@@ -924,15 +1038,16 @@ export class WorkItemRunner {
       ? resolveWorkItemWorkDir({ workspaceKey: action.workspace.path }, runtime.defaultWorkDir)
       : workspaceDir;
     const priorRuns = this.store.listCompletedRuns(workItem.id);
-    const v2Execution = Number(workItem.executionSchemaVersion) === 2;
-    const dependencyContext = v2Execution
-      ? []
-      : this.store.listActionDependencies?.(workItem.id, action.dependsOnStageIds || []) || [];
+    const mainlineExecution = usesMainlineContext(workItem);
+    const dependencyContext = isDynamicWorkItem(workItem)
+      ? this.store.listActionSources?.(workItem.id, action.sourceActionIds || []) || []
+      : mainlineExecution ? []
+        : this.store.listActionDependencies?.(workItem.id, action.dependsOnStageIds || []) || [];
     const dependencyBlock = dependencyContext.length === 0 ? '' : `\n\nCompleted dependency results:\n${dependencyContext.map(dependency => {
       const evidence = dependency.evidence?.length
         ? `\nEvidence: ${dependency.evidence.map(item => item.label).join('; ')}`
         : '';
-      return `### ${dependency.stageId} (${dependency.vpId || 'unknown VP'})\n${dependency.summary || '(no summary)'}${evidence}`;
+      return `### ${isDynamicWorkItem(workItem) ? dependency.id : dependency.stageId} (${dependency.vpId || 'unknown VP'})\n${dependency.summary || '(no summary)'}${evidence}`;
     }).join('\n\n')}`;
     const resumeBlock = renderActionResumeBlock(this.store.getActionResumeContext?.(action.id, run.id));
     const assignment = executionAction.assignmentPolicy
@@ -954,7 +1069,12 @@ export class WorkItemRunner {
       throw error;
     }
     const resolvedModel = resolveWorkItemModel(runtime.config, vp, executionAction.modelPolicy);
-    const memoryBlock = recallWorkItemMemory(runtime, workItem, executionAction, vp);
+    const memoryBlock = recallWorkItemMemory(
+      { ...runtime, yeaftDir: runtime.yeaftDir || this.yeaftDir },
+      workItem,
+      executionAction,
+      vp,
+    );
     const workspaceSessionBlock = recallWorkspaceSessionContext({
       yeaftDir: this.yeaftDir,
       conversationStore: runtime.conversationStore,
@@ -967,7 +1087,7 @@ export class WorkItemRunner {
     const attachmentFileById = new Map(attachmentContext.files.map(file => [file.id, file]));
     const fixedPromptSuffix = `${resumeBlock}${attachmentContext.promptBlock}${completionContract(executionAction, workItem)}`;
     const reservedPromptBytes = Buffer.byteLength(fixedPromptSuffix, 'utf8');
-    const mainline = v2Execution
+    const mainline = mainlineExecution
       ? buildMainlineContextSnapshot(
           this.store.getWorkItemDetail(workItem.id),
           executionAction,
@@ -1008,7 +1128,12 @@ export class WorkItemRunner {
         actions: this.store.getWorkItemDetail(workItem.id).actions,
         collector: mutationCollector, isRunActive, currentAction: executionAction,
       }));
-      runTools.push(createRequestWorkItemReplanTool({ workItem, collector: mutationCollector, isRunActive }));
+      runTools.push(createRequestWorkItemReplanTool({
+        workItem,
+        collector: mutationCollector,
+        isRunActive,
+        currentAction: executionAction,
+      }));
     }
     const runToolNames = runTools.map(tool => tool.name);
     const toolPolicySnapshot = workItemToolPolicySnapshot(
@@ -1016,12 +1141,37 @@ export class WorkItemRunner {
       attachmentContext.files.map(file => file.ref),
       [...mcpToolNames, ...runToolNames],
     );
+    let operationOrdinal = 0;
+    const operationLifecycle = (toolName, input) => {
+      operationOrdinal += 1;
+      const idempotencyKey = `${run.id}:tool:${operationOrdinal}`;
+      const claimed = this.store.createAndClaimOperation({
+        workItemId: workItem.id,
+        actionId: action.id,
+        runId: run.id,
+        operationType: toolName,
+        idempotencyKey,
+        replayPolicy: 'never_automatic',
+        payload: { inputHash: hashMainlineSnapshot(input) },
+      }, ownerBootId, run.leaseEpoch, false);
+      if (!claimed) throw new Error(`Work Center could not claim Operation ${idempotencyKey}`);
+      return {
+        complete: (effectStatus, result) => {
+          if (!this.store.completeOperation(
+            idempotencyKey, ownerBootId, run.leaseEpoch, effectStatus, result,
+          )) {
+            throw new Error(`Work Center Operation ${idempotencyKey} lost its execution fence`);
+          }
+        },
+      };
+    };
     const toolRegistry = createWorkItemToolRegistry({
       workDir,
       attachmentFiles: attachmentContext.files,
       isRunActive,
       mcpTools: workspaceRuntime.mcpTools,
       runTools,
+      operationLifecycle,
     });
     // Work Center is intentionally outside the Agent Plugins MVP. Its Engine
     // must retain its own control-plane tools and runtime lifecycle, without
@@ -1069,7 +1219,9 @@ export class WorkItemRunner {
         executionManifest: mainline ? {
           schemaVersion: 2,
           ledgerRevision: mainline.contextSnapshot.ledgerRevision,
-          planRevision: mainline.contextSnapshot.graph.planRevision,
+          planRevision: isDynamicWorkItem(workItem)
+            ? mainline.contextSnapshot.actionJournal.revision
+            : mainline.contextSnapshot.graph.planRevision,
           contractRevision: mainline.contextSnapshot.contract.revision,
           actionGeneration: mainline.contextSnapshot.action.generation,
           actionSpecHash: mainline.contextSnapshot.action.specHash,
@@ -1085,6 +1237,7 @@ export class WorkItemRunner {
     let loopCount = 0;
     let toolCount = 0;
     let checkpoint = null;
+    let terminalEngineError = null;
     const toolInputs = new Map();
     const usageStats = {
       llmRequestCount: 0,
@@ -1140,32 +1293,63 @@ export class WorkItemRunner {
     if (typeof registerInputWake === 'function') {
       registerInputWake(() => engine.wakeForPendingUserMessage?.());
     }
+    const pendingEntriesById = new Map();
     const drainPendingUserMessages = () => {
       const pending = this.store.listPendingActionInputs?.(
         action.id, run.id, ownerBootId, run.leaseEpoch,
       ) || [];
       const accepted = [];
       for (const item of pending) {
-        const attachmentLines = item.attachments.map(attachment => {
-          const file = attachmentFileById.get(attachment.id);
-          return file ? `- ${attachment.name}: ${file.ref}` : `- ${attachment.name}`;
+        const content = renderPendingActionInput(item, attachmentFileById);
+        if (!content) continue;
+        pendingEntriesById.set(String(item.id), item);
+        accepted.push({
+          content,
+          preview: item.text || '[attachments]',
+          durableInputId: String(item.id),
         });
-        const content = [item.text, attachmentLines.length > 0
-          ? `Additional WorkItem attachments:\n${attachmentLines.join('\n')}` : '']
-          .filter(Boolean).join('\n\n');
-        if (!content || !this.store.acknowledgeActionInput?.(
-          item.id, action.id, run.id, ownerBootId, run.leaseEpoch,
-        )) continue;
-        accepted.push({ content, preview: item.text || '[attachments]' });
       }
       return accepted;
     };
+    const prepareProviderRequest = ({ entries, system, messages, model }) => {
+      const durableEntries = entries
+        .filter(entry => entry?.durableInputId)
+        .map(entry => pendingEntriesById.get(String(entry.durableInputId)))
+        .filter(Boolean);
+      const requestBody = { model, system, messages };
+      const turn = this.store.prepareEngineTurn?.(
+        action.id, run.id, ownerBootId, run.leaseEpoch, durableEntries,
+        { requestBody, dispatchCapability: 'unknown' },
+      );
+      if (!turn) throw new Error('Work Center could not persist the next provider turn');
+      return turn;
+    };
+    const startProviderRequest = turn => {
+      if (!turn) return;
+      const claimed = this.store.claimEngineTurn?.(turn.id, ownerBootId, run.leaseEpoch);
+      if (!claimed) throw new Error('Work Center provider turn lost its Run lease before dispatch');
+    };
+    const finishProviderRequest = (turn, result) => {
+      if (!turn) return;
+      if (!this.store.consumeEngineTurn?.(turn.id, ownerBootId, run.leaseEpoch, result)) {
+        throw new Error('Work Center provider response lost its EngineTurn fence');
+      }
+    };
+    const failProviderRequest = (turn, error) => {
+      if (!turn) return;
+      const failure = this.store.failEngineTurn?.(turn.id, ownerBootId, run.leaseEpoch, error);
+      if (failure && failure.allowRetry === false) {
+        error.retryable = false;
+        error.workItemFailureKind = 'provider_dispatch_unknown';
+        error.workItemFailureCode = 'engine_turn_dispatch_unknown';
+      }
+    };
     try {
-      const prompt = v2Execution
+      const prompt = mainlineExecution
         ? `${renderMainlineContextSnapshot(mainline.contextSnapshot)}${fixedPromptSuffix}`
         : `${executionAction.instruction}${dependencyBlock}${resumeBlock}${attachmentContext.promptBlock}${workspaceSessionBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
       const promptBytes = Buffer.byteLength(prompt, 'utf8');
-      if (v2Execution && promptBytes > MAINLINE_CONTEXT_HARD_LIMIT_BYTES) {
+      if (mainlineExecution && promptBytes > MAINLINE_CONTEXT_HARD_LIMIT_BYTES) {
         throw new Error(`Work Center Mainline prompt exceeds 64 KiB (${promptBytes} rendered UTF-8 bytes)`);
       }
       const promptParts = attachmentContext.promptParts.length > 0
@@ -1184,9 +1368,14 @@ export class WorkItemRunner {
         workDir,
         userAlreadyPersisted: true,
         drainPendingUserMessages,
+        prepareProviderRequest,
+        startProviderRequest,
+        finishProviderRequest,
+        failProviderRequest,
         closePendingUserInput: () => this.store.closeRunInput(
           run.id, ownerBootId, run.leaseEpoch,
         ),
+
         collabToolPolicy: 'single-vp',
       })) {
         if (event?.type === 'loop') {
@@ -1207,9 +1396,19 @@ export class WorkItemRunner {
             resource: checkpointResource(event.name, input, workDir),
           });
         }
+        else if (event?.type === 'error' && !terminalEngineError) {
+          terminalEngineError = event.error instanceof Error
+            ? event.error
+            : new Error(String(event.error?.message || event.error || 'Work Center Engine failed'));
+        }
         if (event?.type === 'text_delta' && typeof event.text === 'string') text += event.text;
         reportProgress(event?.type === 'loop');
       }
+      // Engine.query owns the terminal protocol and converts unexpected faults
+      // into error + terminal turn_end. Consume that boundary completely, then
+      // preserve Work Center's historical rejection semantics so Run fencing,
+      // hazardous side-effect handling, and retry policy still see the failure.
+      if (terminalEngineError) throw terminalEngineError;
     } catch (error) {
       error.workItemExecutionStats = currentProgress();
       throw error;
@@ -1247,6 +1446,7 @@ export class WorkItemRunner {
     } : submittedExpansion ? {
       outcome: 'completed', summary: submittedExpansion.summary,
       evidence: submittedExpansion.evidence, acceptanceChecks: submittedExpansion.acceptanceChecks,
+      ...reviewPlanningResult(submittedExpansion, executionAction),
       planProposal: {
         proposalId: submittedExpansion.proposalId,
         basePlanRevision: submittedExpansion.basePlanRevision,
@@ -1256,6 +1456,7 @@ export class WorkItemRunner {
     } : submittedReplan ? {
       outcome: 'completed', summary: submittedReplan.summary,
       evidence: submittedReplan.evidence, acceptanceChecks: submittedReplan.acceptanceChecks,
+      ...reviewPlanningResult(submittedReplan, executionAction),
       replanRequest: {
         proposalId: submittedReplan.proposalId,
         basePlanRevision: submittedReplan.basePlanRevision,

@@ -145,6 +145,7 @@ export function createSession(sessionsRoot, spec) {
     workDir: typeof spec.workDir === 'string' ? spec.workDir.trim() : '',
     workspaceKey: typeof spec.workspaceKey === 'string' ? spec.workspaceKey.trim() : '',
     createdAt: spec.createdAt || new Date().toISOString(),
+    metadataUpdatedAt: spec.metadataUpdatedAt || spec.createdAt || new Date().toISOString(),
   };
   h.saveMeta(meta);
   return h;

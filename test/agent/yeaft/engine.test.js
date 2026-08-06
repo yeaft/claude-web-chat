@@ -1,20 +1,73 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import {
+  chmodSync, existsSync, linkSync, lstatSync, mkdirSync, renameSync, rmSync, mkdtempSync, writeFileSync, readFileSync,
+  appendFileSync, readdirSync, symlinkSync, utimesSync,
+} from 'fs';
+import { delimiter, join } from 'path';
 import { tmpdir } from 'os';
+import { gzipSync } from 'node:zlib';
+import { lstat as lstatAsync, readdir as readdirAsync, stat as statAsync } from 'node:fs/promises';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { ActiveMemorySet } from '../../../agent/yeaft/memory/ams.js';
+import { backfillCanonicalContent } from '../../../agent/yeaft/memory/content-backfill.js';
+import { openSegmentIndex } from '../../../agent/yeaft/memory/index-db.js';
+import { runPreflow } from '../../../agent/yeaft/memory/preflow.js';
 import { filterMemoryPromptTextForPrompt } from '../../../agent/yeaft/memory/prompt-cleanup.js';
-import { Engine, buildResidentEntries, selectResidentTopicScopes } from '../../../agent/yeaft/engine.js';
+import { makeSegment, serializeSegments } from '../../../agent/yeaft/memory/segment.js';
+import { readScope } from '../../../agent/yeaft/memory/segment-store.js';
+import { syncAll } from '../../../agent/yeaft/memory/segment-sync.js';
+import { Engine, buildResidentEntries, selectCanonicalMemoryScopes, selectResidentTopicScopes, selectRelatedSessionIds } from '../../../agent/yeaft/engine.js';
+import { flushAgentPerfTrace } from '../../../agent/yeaft/perf-trace.js';
 import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js';
 import { AmsRegistry } from '../../../agent/yeaft/memory/ams-registry.js';
-import { writeSummary } from '../../../agent/yeaft/memory/store.js';
+import { writeContent, writeSummary } from '../../../agent/yeaft/memory/store.js';
 import { NullTrace, DebugTrace } from '../../../agent/yeaft/debug-trace.js';
+import { consolidateSessionTopics } from '../../../agent/yeaft/dream/topic-consolidation.js';
+import { resolveTopicRedirect } from '../../../agent/yeaft/memory/topic-redirect.js';
+import { runDream } from '../../../agent/yeaft/dream/runner.js';
+import { extractAndWriteMemorySegments } from '../../../agent/yeaft/dream/segment-extract.js';
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import { defineTool } from '../../../agent/yeaft/tools/types.js';
 import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
 import todoWriteTool from '../../../agent/yeaft/tools/todo-write.js';
 import startPlanTool from '../../../agent/yeaft/tools/start-plan.js';
+import {
+  cleanupManagedCliRuntimePaths,
+  ensureManagedCliTools,
+  extractManagedCliBinary,
+  managedCliBinDir,
+  managedCliToolSpecs,
+  prepareManagedCliToolEnvironment,
+  prependManagedCliBinToPath,
+  resolveManagedCliCommand,
+  runAfterManagedCliRuntimeCleanup,
+} from '../../../agent/yeaft/managed-cli.js';
+import { createFullRegistry } from '../../../agent/yeaft/tools/index.js';
+import { ToolRegistry, TOOL_RESULT_MAX_BYTES } from '../../../agent/yeaft/tools/registry.js';
+import { TaskManager } from '../../../agent/yeaft/tasks/manager.js';
+import {
+  createOutputCollector,
+  listRipgrepCandidatePaths,
+  nodeGrep,
+  runRipgrep,
+} from '../../../agent/yeaft/tools/grep.js';
+import { nodeDiskUsage, runDust } from '../../../agent/yeaft/tools/disk-usage.js';
+import { listFilesWithFd } from '../../../agent/yeaft/tools/glob.js';
+import { runProcess } from '../../../agent/yeaft/tools/process-runner.js';
+import bashTool, { createBashTool } from '../../../agent/yeaft/tools/bash.js';
+import agentTool, { _resetAgentRegistry, getAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
+import fileReadTool from '../../../agent/yeaft/tools/file-read.js';
+import fileWriteTool from '../../../agent/yeaft/tools/file-write.js';
+import {
+  SearchBackendLimitError,
+  SEARCH_SKIP_DIRS,
+} from '../../../agent/yeaft/tools/search-paths.js';
+import { __testSetWorkCenterService } from '../../../agent/yeaft/work-center/bridge.js';
+import { WorkCenterService } from '../../../agent/yeaft/work-center/service.js';
 
 // ─── Mock Adapter ─────────────────────────────────────────────
 
@@ -72,8 +125,8 @@ afterEach(() => {
 // ─── Tests ────────────────────────────────────────────────────
 
 describe('Engine memory prompt hygiene', () => {
-  it('strips dream-state metadata from resident summaries before prompt injection', () => {
-    const entries = buildResidentEntries({
+  it('normalizes current and related Session summaries into separate resident sources', () => {
+    const currentEntries = buildResidentEntries({
       sessionId: 's1',
       ownVpId: 'linus',
       summaries: {
@@ -85,9 +138,28 @@ describe('Engine memory prompt hygiene', () => {
       },
     });
 
-    expect(entries).toEqual([
+    expect(currentEntries).toEqual([
       { scope: 'sessions/s1', summary: 'Useful session fact.' },
       { scope: 'sessions/s1/topic/dream/recall', summary: 'Topic detail stays.' },
+    ]);
+
+    const relatedEntries = buildResidentEntries({
+      sessionId: 's1',
+      ownVpId: 'linus',
+      summaries: {
+        session: 'Current Session memory.',
+        relatedSessions: [
+          { sessionId: 's2', summary: 'Past Session experience: verify the remote tag target.' },
+          { sessionId: 's1', summary: 'Duplicate current Session summary must not be re-added.' },
+          { sessionId: 's3', summary: '<!-- dream-state -->\nold metadata\n<!-- /dream-state -->\nKeep this sibling lesson.' },
+        ],
+      },
+    });
+
+    expect(relatedEntries).toEqual([
+      { scope: 'sessions/s1', summary: 'Current Session memory.' },
+      { scope: 'sessions/s2', summary: 'Past Session experience: verify the remote tag target.' },
+      { scope: 'sessions/s3', summary: 'Keep this sibling lesson.' },
     ]);
   });
 
@@ -110,23 +182,19 @@ describe('Engine memory prompt hygiene', () => {
     expect(snap.onDemand.map(seg => seg.body)).toEqual(['A distinct implementation detail remains available.']);
   });
 
-  it('does not let over-budget resident candidates suppress onDemand memory', () => {
-    const ams = new ActiveMemorySet({
+  it('keeps onDemand memory when resident entries are over budget or only prefixes', () => {
+    const overBudget = new ActiveMemorySet({
       budget: { total: 100, resident: 1, recent: 1, onDemand: 80 },
     });
     const repeated = 'Budget-sensitive Dream memory detail should remain available from onDemand when the resident copy is too large for the resident budget.';
-    ams.setResident([{ scope: 'sessions/s1', summary: repeated }]);
-    ams.setOnDemand([
+    overBudget.setResident([{ scope: 'sessions/s1', summary: repeated }]);
+    overBudget.setOnDemand([
       { id: 'od-1', scope: 'sessions/s1/topic/dream', body: repeated, kind: 'context', tags: [], sourceMessages: [] },
     ]);
+    const overBudgetSnap = overBudget.snapshot();
+    expect(overBudgetSnap.resident).toEqual([]);
+    expect(overBudgetSnap.onDemand.map(seg => seg.body)).toEqual([repeated]);
 
-    const snap = ams.snapshot();
-
-    expect(snap.resident).toEqual([]);
-    expect(snap.onDemand.map(seg => seg.body)).toEqual([repeated]);
-  });
-
-  it('keeps detailed onDemand memory when resident summary is only a prefix', () => {
     const ams = new ActiveMemorySet({
       budget: { total: 1000, resident: 300, recent: 100, onDemand: 600 },
     });
@@ -218,35 +286,389 @@ describe('Engine memory prompt hygiene', () => {
     );
 
     expect(filtered).toBe('- Stable preference: user wants Dream memory topic labels compact.');
-  });
 
-  it('keeps related transient markdown bullets alongside stable bullets', () => {
-    const filtered = filterMemoryPromptTextForPrompt(
+    const related = filterMemoryPromptTextForPrompt(
       [
         '- Stable preference: user wants Dream memory topic labels compact.',
         '- Current Work Item #884: build billing dashboard export. Next step: merge PR #884.',
       ].join('\n'),
       '继续 billing dashboard export 的 work item',
     );
-
-    expect(filtered).toBe([
+    expect(related).toBe([
       '- Stable preference: user wants Dream memory topic labels compact.',
       '- Current Work Item #884: build billing dashboard export. Next step: merge PR #884.',
     ].join('\n'));
   });
 
-  it('loads resident topic summaries only for topics recalled or named this turn', () => {
-    expect(selectResidentTopicScopes([
-      'sessions/s1/topic/dream/relevance',
-      'sessions/s1/topic/dream/recall',
-      'sessions/s1/topic/billing/export',
-    ], [
-      { scope: 'sessions/s1/topic/dream/relevance', body: 'Relevant Dream memory.' },
-      { scope: 'sessions/s1', body: 'Session memory.' },
-    ], 'please inspect dream recall')).toEqual([
-      'sessions/s1/topic/dream/relevance',
-      'sessions/s1/topic/dream/recall',
-    ]);
+  it('migrates, selects, and consolidates canonical topic content without the old 24-topic cutoff', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-canonical-topic-'));
+    const topics = Array.from({ length: 30 }, (_, index) => `sessions/s1/topic/catalog/topic-${index}`);
+    let index;
+    try {
+      for (const [position, scope] of topics.entries()) {
+        mkdirSync(join(root, scope), { recursive: true });
+        const body = position === 29
+          ? 'Attachment input identity must be isolated by occurrence and never injected twice.'
+          : `Unrelated catalog record ${position}.`;
+        writeFileSync(join(root, scope, 'memory.md'), serializeSegments([
+          makeSegment({ scope, body, sourceMessages: [`m${position}`] }),
+        ]));
+      }
+
+      const legacyPlainScope = 'sessions/s1/topic/catalog/legacy-plain';
+      mkdirSync(join(root, legacyPlainScope), { recursive: true });
+      writeFileSync(
+        join(root, legacyPlainScope, 'memory.md'),
+        '# Before\n\nalpha\n\n---\n\nTHIS MUST SURVIVE\n\n---\n\nomega\n',
+      );
+      const metadataLikeFixtures = [
+        [
+          'legacy-kind-prose',
+          '# Before\n\n---\nkind: important\nTHIS PROSE MUST SURVIVE\n---\n\nafter',
+        ],
+        [
+          'legacy-id-prose',
+          'Intro\n\n---\nid: human-readable-section\nThis line is prose, not metadata.\n---\n\nTail',
+        ],
+        [
+          'legacy-leading-kind-prose',
+          '---\nkind: important\nTHIS LEADING PROSE MUST SURVIVE\n---\n\nafter',
+        ],
+        [
+          'legacy-leading-id-prose',
+          '---\nid: human-readable-section\nThis leading line is prose, not metadata.\n---\n\nTail',
+        ],
+        [
+          'legacy-full-looking-invalid-schema',
+          [
+            '---',
+            'id: seg_deadbeef',
+            'scope: user',
+            'kind: important',
+            'tags: [human-note]',
+            'sourceMessages: []',
+            'createdAt: someday',
+            'updatedAt: later',
+            '---',
+            'THIS FULL-LOOKING PROSE MUST SURVIVE',
+          ].join('\n'),
+        ],
+      ];
+      for (const [name, body] of metadataLikeFixtures) {
+        const scope = `sessions/s1/topic/catalog/${name}`;
+        mkdirSync(join(root, scope), { recursive: true });
+        writeFileSync(join(root, scope, 'memory.md'), `${body}\n`);
+      }
+
+      expect(backfillCanonicalContent(root)).toEqual({ created: 36 });
+      const legacyContent = readFileSync(join(root, legacyPlainScope, 'content.md'), 'utf8');
+      expect(existsSync(join(root, legacyPlainScope, 'memory.md'))).toBe(false);
+      expect(readFileSync(
+        join(root, '.legacy', 'plain-memory', legacyPlainScope, 'memory.md'),
+        'utf8',
+      )).toContain('THIS MUST SURVIVE');
+      expect(legacyContent).toContain('# Before');
+      expect(legacyContent).toContain('THIS MUST SURVIVE');
+      expect(legacyContent).toContain('omega');
+      for (const [name, body] of metadataLikeFixtures) {
+        const contentPath = join(root, 'sessions/s1/topic/catalog', name, 'content.md');
+        expect(readFileSync(contentPath, 'utf8')).toBe(`${body}\n`);
+        expect(existsSync(join(root, 'sessions/s1/topic/catalog', name, 'memory.md'))).toBe(false);
+        expect(readFileSync(
+          join(root, '.legacy', 'plain-memory', 'sessions/s1/topic/catalog', name, 'memory.md'),
+          'utf8',
+        )).toBe(`${body}\n`);
+      }
+      expect(backfillCanonicalContent(root)).toEqual({ created: 0 });
+      expect(readFileSync(join(root, legacyPlainScope, 'content.md'), 'utf8')).toBe(legacyContent);
+      for (const [name, body] of metadataLikeFixtures) {
+        const contentPath = join(root, 'sessions/s1/topic/catalog', name, 'content.md');
+        expect(readFileSync(contentPath, 'utf8')).toBe(`${body}\n`);
+      }
+      index = openSegmentIndex(join(root, 'index.db'));
+      expect(syncAll(root, index)).toMatchObject({ scopes: 36 });
+      expect(index.listByScope(legacyPlainScope)).toEqual([
+        expect.objectContaining({
+          tags: expect.arrayContaining(['canonical-content']),
+          sourceMessages: [],
+          body: expect.stringContaining('THIS MUST SURVIVE'),
+        }),
+      ]);
+      index.upsert({
+        id: 'near-match-tag',
+        scope: topics[0],
+        kind: 'context',
+        tags: ['not-canonical-content'],
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+        body: 'Attachment input identity duplicate occurrence.',
+      });
+
+      const recall = runPreflow(index, {
+        userMsg: 'prevent duplicate attachment input identity injection by occurrence',
+        relevantScopes: [...topics, legacyPlainScope],
+        pickLimit: 8,
+        uniqueScopes: true,
+        canonicalOnly: true,
+        topK: 500,
+      });
+      expect(recall.picked[0]?.scope).toBe(topics[29]);
+      expect(recall.hits.some(hit => hit.id === 'near-match-tag')).toBe(false);
+      expect(selectCanonicalMemoryScopes(recall.picked)).toEqual(new Set([topics[29]]));
+      expect(selectResidentTopicScopes(topics, recall.picked)).toEqual([topics[29]]);
+
+      const duplicateScope = 'sessions/s1/topic/catalog/topic-duplicate';
+      mkdirSync(join(root, duplicateScope), { recursive: true });
+      writeFileSync(join(root, duplicateScope, 'memory.md'), serializeSegments([
+        makeSegment({
+          scope: duplicateScope,
+          body: 'Attachment input identity must be isolated by occurrence and never injected twice.',
+          sourceMessages: ['m-duplicate'],
+        }),
+      ]));
+      writeFileSync(join(root, duplicateScope, 'content.md'), 'Duplicate attachment identity rule.\n');
+      writeFileSync(join(root, duplicateScope, 'summary.md'), 'Duplicate attachment identity rule.\n');
+      writeFileSync(join(root, topics[29], 'summary.md'), 'Attachment identity rule.\n');
+      syncAll(root, index);
+
+      const result = await consolidateSessionTopics({
+        root,
+        sessionId: 's1',
+        segmentIndex: index,
+        ts: '2026-08-04T00-00-00-000Z',
+        topics: [
+          ...topics.map((scope, position) => ({
+            path: scope.split('/topic/')[1],
+            summary: position === 29 ? 'Attachment identity rule.' : `Record ${position}.`,
+          })),
+          { path: 'catalog/topic-duplicate', summary: 'Duplicate attachment identity rule.' },
+        ],
+        llm: async ({ pass }) => pass === 'topic-consolidation'
+          ? JSON.stringify({ groups: [{ canonical: 'catalog/topic-29', merge: ['catalog/topic-duplicate'] }] })
+          : JSON.stringify({ content_md: 'Merged attachment identity rule.', summary_md: 'Attachment identity rule.' }),
+      });
+
+      expect(result.merged).toBe(1);
+      expect(existsSync(join(root, duplicateScope, 'content.md'))).toBe(false);
+      expect(JSON.parse(readFileSync(join(root, duplicateScope, 'redirect.json'), 'utf8'))).toEqual({
+        version: 1,
+        canonical: 'catalog/topic-29',
+      });
+      expect(readFileSync(join(root, topics[29], 'content.md'), 'utf8')).toContain('Merged attachment');
+      expect(index.listByScope(duplicateScope)).toEqual([]);
+      expect(index.search({
+        query: 'duplicate',
+        scopeFilter: [duplicateScope],
+        limit: 10,
+        requiredTag: 'canonical-content',
+      })).toEqual([]);
+      expect(index.listByScope(topics[29]).some(segment => (
+        segment.sourceMessages.includes('m29') && segment.sourceMessages.includes('m-duplicate')
+      ))).toBe(true);
+
+      const recalled = [
+        ...recall.picked,
+        { scope: 'sessions/sibling/topic/release', body: 'Sibling release evidence.' },
+      ];
+      expect(selectRelatedSessionIds(['sibling', 'other'], recalled)).toEqual(['sibling']);
+    } finally {
+      if (index) index.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects Dream evidence without an authorized source message id', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-segment-source-'));
+    const target = 'sessions/s1/topic/source-backed';
+    try {
+      const result = await extractAndWriteMemorySegments({
+        root,
+        sessionId: 's1',
+        messages: [{ id: 'm-real', role: 'user', body: 'Authoritative source fact.' }],
+        targets: [target],
+        nowIso: () => '2026-08-04T00:00:00.000Z',
+        llm: async () => JSON.stringify([
+          { kind: 'fact', body: 'EMPTY_SOURCE_ACCEPTED', tags: [], sourceMessages: [] },
+          { kind: 'fact', body: 'UNKNOWN_SOURCE_ACCEPTED', tags: [], sourceMessages: ['m-does-not-exist'] },
+          { kind: 'fact', body: 'AUTHORIZED_SOURCE_ACCEPTED', tags: [], sourceMessages: ['m-real'] },
+        ]),
+      });
+      expect(result.errors).toEqual([]);
+      expect(readScope(root, target)).toEqual([
+        expect.objectContaining({
+          body: 'AUTHORIZED_SOURCE_ACCEPTED',
+          sourceMessages: ['m-real'],
+        }),
+      ]);
+      expect(readFileSync(join(root, target, 'memory.md'), 'utf8')).not.toContain('EMPTY_SOURCE_ACCEPTED');
+      expect(readFileSync(join(root, target, 'memory.md'), 'utf8')).not.toContain('UNKNOWN_SOURCE_ACCEPTED');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('runs low-cardinality consolidation during a manual no-new-message Dream pass', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-manual-topic-consolidation-'));
+    const sessionId = 'manual-session';
+    for (const topic of ['alpha', 'beta']) {
+      const dir = join(root, 'sessions', sessionId, 'topic', topic);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'content.md'), `${topic.toUpperCase()}_CONTENT\n`);
+      writeFileSync(join(dir, 'summary.md'), 'Same durable subject.\n');
+    }
+    let calls = 0;
+    const report = await runDream({
+      root,
+      manual: true,
+      llm: async ({ pass }) => {
+        calls += 1;
+        return pass === 'topic-consolidation'
+          ? JSON.stringify({ groups: [{ canonical: 'alpha', merge: ['beta'] }] })
+          : JSON.stringify({ content_md: 'MERGED_MANUAL_CONTENT', summary_md: 'Merged subject.' });
+      },
+      listSessions: async () => [sessionId],
+      countMessages: async () => 0,
+      loadOverlapPreamble: async () => [],
+      listTopicSummaries: async () => [
+        { path: 'alpha', summary: 'Same durable subject.' },
+        { path: 'beta', summary: 'Same durable subject.' },
+      ],
+    });
+    expect(calls).toBe(2);
+    expect(report.sessions[0]).toMatchObject({ sessionId, status: 'consolidated', merged: 1 });
+    expect(readFileSync(join(root, 'sessions', sessionId, 'topic', 'alpha', 'content.md'), 'utf8'))
+      .toContain('MERGED_MANUAL_CONTENT');
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('restores every live topic file when staged activation rename fails', async () => {
+    const failureTargets = [
+      ['canonical-content', 'a/content.md'],
+      ['canonical-summary', 'a/summary.md'],
+      ['canonical-memory', 'a/memory.md'],
+      ['duplicate-redirect', 'b/redirect.json'],
+    ];
+    for (const [name, suffix] of failureTargets) {
+      const root = mkdtempSync(join(tmpdir(), `yeaft-topic-rename-${name}-`));
+      const canonicalDir = join(root, 'sessions', 's1', 'topic', 'a');
+      const duplicateDir = join(root, 'sessions', 's1', 'topic', 'b');
+      mkdirSync(canonicalDir, { recursive: true });
+      mkdirSync(duplicateDir, { recursive: true });
+      const original = new Map([
+        [join(canonicalDir, 'content.md'), 'A_CONTENT\n'],
+        [join(canonicalDir, 'summary.md'), 'A_SUMMARY\n'],
+        [join(canonicalDir, 'memory.md'), serializeSegments([
+          makeSegment({ scope: 'sessions/s1/topic/a', body: 'A_EVIDENCE', sourceMessages: ['m-a'] }),
+        ])],
+        [join(duplicateDir, 'content.md'), 'B_CONTENT\n'],
+        [join(duplicateDir, 'summary.md'), 'B_SUMMARY\n'],
+        [join(duplicateDir, 'memory.md'), serializeSegments([
+          makeSegment({ scope: 'sessions/s1/topic/b', body: 'B_EVIDENCE', sourceMessages: ['m-b'] }),
+        ])],
+      ]);
+      for (const [path, body] of original) writeFileSync(path, body);
+      let failed = false;
+      const fileOps = {
+        renameSync(from, to) {
+          const normalized = String(to).split('\\').join('/');
+          if (!failed && String(from).includes('/staged/') && normalized.endsWith(`/topic/${suffix}`)) {
+            failed = true;
+            const error = new Error(`synthetic ${name} staged rename failure`);
+            error.code = 'EIO';
+            throw error;
+          }
+          renameSync(from, to);
+        },
+      };
+      try {
+        await expect(consolidateSessionTopics({
+          root,
+          sessionId: 's1',
+          topics: [{ path: 'a', summary: 'Same.' }, { path: 'b', summary: 'Same.' }],
+          llm: async ({ pass }) => pass === 'topic-consolidation'
+            ? JSON.stringify({ groups: [{ canonical: 'a', merge: ['b'] }] })
+            : JSON.stringify({ content_md: 'MERGED', summary_md: 'Merged.' }),
+          fileOps,
+          ts: `2026-08-04T03-00-00-${name}`,
+        })).rejects.toThrow(`synthetic ${name} staged rename failure`);
+        expect(failed).toBe(true);
+        for (const [path, body] of original) expect(readFileSync(path, 'utf8')).toBe(body);
+        expect(existsSync(join(duplicateDir, 'redirect.json'))).toBe(false);
+        expect(existsSync(join(root, '.topic-consolidation'))).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('consolidates two topics, preserves nested canonical paths, and rolls back index failures', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-topic-consolidation-'));
+    const sessionId = 'nested-session';
+    const canonicalDir = join(root, 'sessions', sessionId, 'topic', 'parent', 'child');
+    const duplicateDir = join(root, 'sessions', sessionId, 'topic', 'parent');
+    mkdirSync(canonicalDir, { recursive: true });
+    writeFileSync(join(canonicalDir, 'content.md'), 'CHILD_CANONICAL\n');
+    writeFileSync(join(canonicalDir, 'summary.md'), 'Child canonical.\n');
+    writeFileSync(join(duplicateDir, 'content.md'), 'PARENT_DUPLICATE\n');
+    writeFileSync(join(duplicateDir, 'summary.md'), 'Parent duplicate.\n');
+
+    let calls = 0;
+    const llm = async ({ pass }) => {
+      calls += 1;
+      return pass === 'topic-consolidation'
+        ? JSON.stringify({ groups: [{ canonical: 'parent/child', merge: ['parent'] }] })
+        : JSON.stringify({ content_md: 'MERGED_NESTED_CONTENT', summary_md: 'Merged nested topic.' });
+    };
+    const failingIndex = {
+      listByScope() { return []; },
+      upsert() { throw new Error('synthetic index failure'); },
+      deleteMany() {},
+      deleteScope() {},
+    };
+
+    await expect(consolidateSessionTopics({
+      root,
+      sessionId,
+      topics: [
+        { path: 'parent/child', summary: 'Child canonical.' },
+        { path: 'parent', summary: 'Parent duplicate.' },
+      ],
+      segmentIndex: failingIndex,
+      llm,
+      ts: '2026-08-04T01-00-00-000Z',
+    })).rejects.toThrow('synthetic index failure');
+    expect(calls).toBe(2);
+    expect(readFileSync(join(canonicalDir, 'content.md'), 'utf8')).toContain('CHILD_CANONICAL');
+    expect(readFileSync(join(duplicateDir, 'content.md'), 'utf8')).toContain('PARENT_DUPLICATE');
+    expect(existsSync(join(duplicateDir, 'redirect.json'))).toBe(false);
+
+    const result = await consolidateSessionTopics({
+      root,
+      sessionId,
+      topics: [
+        { path: 'parent/child', summary: 'Child canonical.' },
+        { path: 'parent', summary: 'Parent duplicate.' },
+      ],
+      llm,
+      ts: '2026-08-04T02-00-00-000Z',
+    });
+    expect(result.merged).toBe(1);
+    expect(readFileSync(join(canonicalDir, 'content.md'), 'utf8')).toContain('MERGED_NESTED_CONTENT');
+    expect(existsSync(join(duplicateDir, 'content.md'))).toBe(false);
+    expect(JSON.parse(readFileSync(join(duplicateDir, 'redirect.json'), 'utf8'))).toEqual({
+      version: 1,
+      canonical: 'parent/child',
+    });
+    expect(resolveTopicRedirect(root, sessionId, 'parent')).toBe('parent/child');
+    await writeContent(
+      { kind: 'session-topic', sessionId, path: ['parent'] },
+      'FUTURE_UPDATE_FOLLOWS_REDIRECT',
+      { root },
+    );
+    expect(readFileSync(join(canonicalDir, 'content.md'), 'utf8')).toContain('FUTURE_UPDATE_FOLLOWS_REDIRECT');
+    expect(existsSync(join(duplicateDir, 'content.md'))).toBe(false);
+    rmSync(root, { recursive: true, force: true });
   });
 });
 
@@ -276,6 +698,40 @@ describe('Engine', () => {
   });
 
   describe('perf trace', () => {
+    it('bounds provider raw request and response previews through Engine capture', async () => {
+      const limit = 64 * 1024;
+      const mixedPayload = `${'😀'.repeat(8_000)}${'x'.repeat(320 * 1024)}`;
+      const adapter = {
+        async *stream(params) {
+          params.onRawExchange({
+            rawRequest: { body: mixedPayload },
+            rawResponse: { status: 200, body: mixedPayload },
+          });
+          yield { type: 'text_delta', text: 'ok' };
+          yield { type: 'stop', stopReason: 'end_turn' };
+        },
+      };
+      const engine = new Engine({
+        adapter,
+        trace,
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          telemetry: { rawExchangeMaxBytes: limit },
+        },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'capture raw exchange' })) events.push(event);
+
+      const loop = events.find(event => event.type === 'loop');
+      for (const exchange of [loop.rawRequest, loop.rawResponse]) {
+        expect(exchange).toMatchObject({ __truncated: true, maxBytes: limit });
+        expect(exchange.preview.isWellFormed()).toBe(true);
+        expect(Buffer.byteLength(exchange.preview, 'utf8')).toBeLessThanOrEqual(limit);
+      }
+    });
+
     it('records LLM request lifecycle events when an inbound perf trace id is present', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-perf-'));
       try {
@@ -302,6 +758,7 @@ describe('Engine', () => {
           // consume
         }
 
+        flushAgentPerfTrace({ yeaftDir });
         const day = new Date().toISOString().slice(0, 10);
         const rows = readFileSync(join(yeaftDir, 'perf-traces', `${day}.jsonl`), 'utf8')
           .trim()
@@ -320,7 +777,7 @@ describe('Engine', () => {
   });
 
   describe('tool registration', () => {
-    it('should register and list tools', () => {
+    it('should register, list, and unregister tools', () => {
       const engine = new Engine({
         adapter: mockAdapter,
         trace,
@@ -335,29 +792,13 @@ describe('Engine', () => {
       });
 
       expect(engine.toolNames).toEqual(['search']);
-    });
-
-    it('should unregister tools', () => {
-      const engine = new Engine({
-        adapter: mockAdapter,
-        trace,
-        config: { model: 'test-model' },
-      });
-
-      engine.registerTool({
-        name: 'search',
-        description: 'Search',
-        parameters: {},
-        execute: async () => 'ok',
-      });
-
       engine.unregisterTool('search');
       expect(engine.toolNames).toEqual([]);
     });
   });
 
   describe('input validation', () => {
-    it('should yield error for empty prompt', async () => {
+    it('should yield terminal errors and return a failed one-shot CLI status', async () => {
       const engine = new Engine({
         adapter: mockAdapter,
         trace,
@@ -369,28 +810,270 @@ describe('Engine', () => {
         events.push(event);
       }
 
-      expect(events).toHaveLength(1);
+      expect(events).toHaveLength(2);
       expect(events[0].type).toBe('error');
       expect(events[0].error.message).toContain('prompt is required');
+      expect(events[1]).toMatchObject({
+        type: 'turn_end',
+        turnNumber: 0,
+        stopReason: 'error',
+        terminal: true,
+      });
       // Should NOT have called adapter
       expect(mockAdapter.callLog).toHaveLength(0);
-    });
 
-    it('should yield error for null prompt', async () => {
-      const engine = new Engine({
-        adapter: mockAdapter,
-        trace,
-        config: { model: 'test-model', maxOutputTokens: 1024 },
-      });
+      const cliDir = mkdtempSync(join(tmpdir(), 'yeaft-cli-error-'));
+      const serverScript = join(cliDir, 'server.mjs');
+      const portPath = join(cliDir, 'port');
+      const requestLogPath = join(cliDir, 'provider-requests.jsonl');
+      writeFileSync(requestLogPath, '');
+      writeFileSync(serverScript, [
+        "import { createServer } from 'node:http';",
+        "import { appendFileSync, writeFileSync } from 'node:fs';",
+        "const server = createServer((req, res) => {",
+        "  let body = '';",
+        "  req.on('data', chunk => { body += chunk; });",
+        "  req.on('end', () => {",
+        "    let latestUser = '';",
+        "    try {",
+        "      const parsed = JSON.parse(body);",
+        "      const users = (parsed.messages || []).filter(message => message.role === 'user');",
+        "      latestUser = JSON.stringify(users.at(-1)?.content || '');",
+        "    } catch {}",
+        "    appendFileSync(process.argv[3], `${latestUser}\\n`);",
+        "    const delayMs = latestUser.includes('delayed') ? 1000 : 0;",
+        "    setTimeout(() => {",
+        "      if (latestUser.includes('must-write')) {",
+        "        const marker = latestUser.match(/marker=([^\\\"\\s]+)/)?.[1] || '';",
+        "        const toolInput = JSON.stringify({ file_path: marker, content: 'unexpected write' });",
+        "        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });",
+        "        res.end([",
+        "          'event: message_start',",
+        "          'data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}',",
+        "          '',",
+        "          'event: content_block_start',",
+        "          'data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"write-after-exit\",\"name\":\"FileWrite\"}}',",
+        "          '',",
+        "          'event: content_block_delta',",
+        "          `data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: toolInput } })}` ,",
+        "          '',",
+        "          'event: content_block_stop',",
+        "          'data: {\"type\":\"content_block_stop\",\"index\":0}',",
+        "          '',",
+        "          'event: message_delta',",
+        "          'data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":1}}',",
+        "          '',",
+        "          'event: message_stop',",
+        "          'data: {\"type\":\"message_stop\"}',",
+        "          '',",
+        "        ].join('\\n'));",
+        "        return;",
+        "      }",
+        "      if (!latestUser.includes('succeed')) {",
+        "        res.writeHead(401, { 'content-type': 'application/json' });",
+        "        res.end(JSON.stringify({ error: { message: 'forced cli auth failure' } }));",
+        "        return;",
+        "      }",
+        "      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });",
+        "      res.end([",
+        "      'event: message_start',",
+        "      'data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}',",
+        "      '',",
+        "      'event: content_block_start',",
+        "      'data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}',",
+        "      '',",
+        "      'event: content_block_delta',",
+        "      'data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"success\"}}',",
+        "      '',",
+        "      'event: content_block_stop',",
+        "      'data: {\"type\":\"content_block_stop\",\"index\":0}',",
+        "      '',",
+        "      'event: message_delta',",
+        "      'data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}',",
+        "      '',",
+        "      'event: message_stop',",
+        "      'data: {\"type\":\"message_stop\"}',",
+        "      '',",
+        "    ].join('\\n'));",
+        "    }, delayMs);",
+        "  });",
+        "});",
+        "server.listen(0, '127.0.0.1', () => writeFileSync(process.argv[2], String(server.address().port)));",
+        "process.on('SIGTERM', () => server.close(() => process.exit(0)));",
+      ].join('\n'));
+      const cliServer = spawn(process.execPath, [serverScript, portPath, requestLogPath], { stdio: 'ignore' });
+      let cliResult = null;
+      try {
+        for (let i = 0; i < 200 && !existsSync(portPath); i += 1) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(existsSync(portPath)).toBe(true);
+        const cliPort = readFileSync(portPath, 'utf8').trim();
+        writeFileSync(join(cliDir, 'config.json'), JSON.stringify({
+          providers: [{
+            name: 'mock',
+            baseUrl: `http://127.0.0.1:${cliPort}`,
+            apiKey: 'test',
+            protocol: 'anthropic',
+            models: ['claude-test'],
+          }],
+          primaryModel: 'mock/claude-test',
+          llmRetry: { maxRetries: 0, forbiddenRetryDelaysMs: [] },
+        }));
+        writeFileSync(join(cliDir, 'models_dev_cache.json'), '{}');
+        cliResult = spawn(process.execPath, [
+          join(process.cwd(), 'agent', 'yeaft', 'cli.js'),
+          '--skip-mcp',
+          '--skip-skills',
+          'trigger auth failure',
+        ], {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            YEAFT_DIR: cliDir,
+            YEAFT_SKIP_MANAGED_CLI_INSTALLS: 'true',
+          },
+        });
+        let cliStdout = '';
+        let cliStderr = '';
+        cliResult.stdout.on('data', chunk => { cliStdout += chunk; });
+        cliResult.stderr.on('data', chunk => { cliStderr += chunk; });
+        const cliExit = await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            cliResult.kill('SIGKILL');
+            reject(new Error(`CLI timed out; stdout=${cliStdout}; stderr=${cliStderr}`));
+          }, 30_000);
+          cliResult.once('error', reject);
+          cliResult.once('close', (code, signal) => {
+            clearTimeout(timer);
+            resolve({ code, signal });
+          });
+        });
+        expect(cliExit).toEqual({ code: 1, signal: null });
+        expect(cliStderr).toContain('Error: LLM provider returned HTTP 401');
 
-      const events = [];
-      for await (const event of engine.query({ prompt: null })) {
-        events.push(event);
+        const providerRequests = () => readFileSync(requestLogPath, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map(line => JSON.parse(line));
+        const runCli = (args, input) => {
+          const child = spawn(process.execPath, [
+            join(process.cwd(), 'agent', 'yeaft', 'cli.js'),
+            '--skip-mcp',
+            '--skip-skills',
+            ...args,
+          ], {
+            cwd: process.cwd(),
+            env: {
+              ...process.env,
+              YEAFT_DIR: cliDir,
+              YEAFT_SKIP_MANAGED_CLI_INSTALLS: 'true',
+            },
+          });
+          let stdout = '';
+          let stderr = '';
+          child.stdout.on('data', chunk => { stdout += chunk; });
+          child.stderr.on('data', chunk => { stderr += chunk; });
+          child.stdin.end(input);
+          return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+              child.kill('SIGKILL');
+              reject(new Error(`CLI timed out; stdout=${stdout}; stderr=${stderr}`));
+            }, 30_000);
+            child.once('error', reject);
+            child.once('close', (code, signal) => {
+              clearTimeout(timer);
+              resolve({ code, signal, stdout, stderr });
+            });
+          });
+        };
+        const streamResult = await runCli([
+          '--input-format', 'stream-json',
+          '--output-format', 'stream-json',
+        ], [
+          JSON.stringify({ type: 'prompt', prompt: 'fail first' }),
+          JSON.stringify({ type: 'prompt', prompt: 'succeed second' }),
+          '',
+        ].join('\n'));
+        const streamEvents = streamResult.stdout.trim().split('\n').map(line => JSON.parse(line));
+        expect(streamEvents.filter(event => event.type === 'result').map(event => event.is_error))
+          .toEqual([true, false]);
+        expect(streamResult).toMatchObject({ code: 1, signal: null });
+
+        const defaultExitMarker = join(cliDir, 'default-exit-marker');
+        const requestsBeforeImmediateExit = providerRequests().length;
+        const immediateExit = await runCli(
+          ['-i'],
+          `/exit\nmust-write marker=${defaultExitMarker}\n`,
+        );
+        expect(immediateExit).toMatchObject({ code: 0, signal: null });
+        expect(immediateExit.stdout).toContain('Bye!');
+        expect(existsSync(defaultExitMarker)).toBe(false);
+        expect(providerRequests()).toHaveLength(requestsBeforeImmediateExit);
+
+        const delayedExitMarker = join(cliDir, 'default-delayed-exit-marker');
+        const requestsBeforeDefaultSuccess = providerRequests().length;
+        const defaultSuccessStartedAt = Date.now();
+        const defaultSuccess = await runCli(
+          ['-i'],
+          `delayed succeed\n/exit\nmust-write marker=${delayedExitMarker}\n`,
+        );
+        expect(Date.now() - defaultSuccessStartedAt).toBeGreaterThanOrEqual(900);
+        expect(defaultSuccess.stdout).toContain('success');
+        expect(defaultSuccess.stderr).not.toContain('ERR_USE_AFTER_CLOSE');
+        expect(defaultSuccess).toMatchObject({ code: 0, signal: null });
+        expect(existsSync(delayedExitMarker)).toBe(false);
+        const defaultSuccessRequests = providerRequests().slice(requestsBeforeDefaultSuccess);
+        expect(defaultSuccessRequests.some(request => request.includes('delayed succeed'))).toBe(true);
+        expect(defaultSuccessRequests.some(request => request.includes('must-write'))).toBe(false);
+
+        const defaultFailureStartedAt = Date.now();
+        const defaultFailure = await runCli(['-i'], 'delayed fail\n/exit\n');
+        expect(Date.now() - defaultFailureStartedAt).toBeGreaterThanOrEqual(900);
+        expect(defaultFailure.stderr).toContain('Error:');
+        expect(defaultFailure.stderr).not.toContain('ERR_USE_AFTER_CLOSE');
+        expect(defaultFailure).toMatchObject({ code: 1, signal: null });
+
+        const sessionId = 'session_cli_exit_status';
+        const sessionDir = join(cliDir, 'sessions', sessionId);
+        mkdirSync(sessionDir, { recursive: true });
+        writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({
+          id: sessionId,
+          name: 'CLI exit status',
+          roster: ['linus'],
+          defaultVpId: 'linus',
+          announcement: '',
+          workDir: '',
+          createdAt: new Date().toISOString(),
+        }));
+        const sessionExitMarker = join(cliDir, 'session-delayed-exit-marker');
+        const requestsBeforeSessionSuccess = providerRequests().length;
+        const sessionSuccessStartedAt = Date.now();
+        const sessionSuccess = await runCli(
+          ['-i', '--session-id', sessionId],
+          `delayed succeed\n/exit\nmust-write marker=${sessionExitMarker}\n`,
+        );
+        expect(Date.now() - sessionSuccessStartedAt).toBeGreaterThanOrEqual(900);
+        expect(sessionSuccess.stdout).toContain('success');
+        expect(sessionSuccess.stderr).not.toContain('ERR_USE_AFTER_CLOSE');
+        expect(sessionSuccess).toMatchObject({ code: 0, signal: null });
+        expect(existsSync(sessionExitMarker)).toBe(false);
+        const sessionSuccessRequests = providerRequests().slice(requestsBeforeSessionSuccess);
+        expect(sessionSuccessRequests.some(request => request.includes('delayed succeed'))).toBe(true);
+        expect(sessionSuccessRequests.some(request => request.includes('must-write'))).toBe(false);
+
+        const sessionFailureStartedAt = Date.now();
+        const sessionFailure = await runCli(['-i', '--session-id', sessionId], 'delayed fail\n/exit\n');
+        expect(Date.now() - sessionFailureStartedAt).toBeGreaterThanOrEqual(900);
+        expect(sessionFailure.stderr).toContain('Error:');
+        expect(sessionFailure.stderr).not.toContain('ERR_USE_AFTER_CLOSE');
+        expect(sessionFailure).toMatchObject({ code: 1, signal: null });
+      } finally {
+        cliServer.kill('SIGTERM');
+        await new Promise(resolve => cliServer.once('close', resolve));
+        rmSync(cliDir, { recursive: true, force: true });
       }
-
-      expect(events).toHaveLength(1);
-      expect(events[0].type).toBe('error');
-    });
+    }, 30_000);
 
     it('should yield error for whitespace-only prompt', async () => {
       const engine = new Engine({
@@ -404,8 +1087,9 @@ describe('Engine', () => {
         events.push(event);
       }
 
-      expect(events).toHaveLength(1);
+      expect(events).toHaveLength(2);
       expect(events[0].type).toBe('error');
+      expect(events[1]).toMatchObject({ type: 'turn_end', stopReason: 'error', terminal: true });
     });
   });
 
@@ -445,8 +1129,11 @@ describe('Engine', () => {
 
       // Check turn_end
       const turnEnd = events.find(e => e.type === 'turn_end');
-      expect(turnEnd.stopReason).toBe('end_turn');
-      expect(turnEnd.turnNumber).toBe(1);
+      expect(turnEnd).toMatchObject({
+        stopReason: 'end_turn',
+        turnNumber: 1,
+        terminal: true,
+      });
 
       const continuityAdapter = new MockAdapter();
       continuityAdapter.pushResponse([
@@ -463,7 +1150,12 @@ describe('Engine', () => {
         messages: [
           { role: 'user', content: 'Original question' },
           { role: 'assistant', content: 'I found the relevant state boundary.', responseKind: 'progress' },
-          { role: 'assistant', content: 'The previous turn completed.', responseKind: 'result' },
+          {
+            role: 'assistant',
+            content: 'The previous turn completed.',
+            responseKind: 'result',
+            executionOrigin: 'route_forward',
+          },
         ],
       })) {
         // consume
@@ -515,6 +1207,57 @@ describe('Engine', () => {
       }
     });
 
+    it('persists RouteForward execution origin on assistant and tool rows', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-route-origin-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const adapter = new MockAdapter();
+        adapter.pushResponse([
+          { type: 'text_delta', text: 'handoff work' },
+          { type: 'tool_call', id: 'call_route_origin', name: 'route_origin_tool', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        adapter.pushResponse([
+          { type: 'text_delta', text: 'handoff complete' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+          vpId: 'vp-martin',
+        });
+        engine.registerTool({
+          name: 'route_origin_tool',
+          description: 'returns a durable result',
+          parameters: { type: 'object', properties: {} },
+          execute: async () => 'tool result',
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'Continue the review',
+          sessionId: 'session-route-origin',
+          vpTurnId: 'vp-turn-route-origin',
+          inboundEnvelope: { msg: { meta: { injectedBy: 'route_forward' } } },
+        })) {
+          // consume
+        }
+
+        const rows = conversationStore.loadRecentBySession('session-route-origin', 10)
+          .filter(message => message.role === 'assistant' || message.role === 'tool');
+        expect(rows).toHaveLength(3);
+        expect(rows).toEqual(rows.map(row => expect.objectContaining({
+          turnId: 'vp-turn-route-origin',
+          speakerVpId: 'vp-martin',
+          executionOrigin: 'route_forward',
+        })));
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
     it('persists partial assistant text when the provider fails mid-stream', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-partial-persist-'));
       try {
@@ -542,7 +1285,8 @@ describe('Engine', () => {
           // consume
         }
 
-        expect(conversationStore.loadRecentBySession('session-partial', 10)).toEqual([
+        const persisted = conversationStore.loadRecentBySession('session-partial', 10);
+        expect(persisted).toEqual([
           expect.objectContaining({ role: 'user', content: 'hello' }),
           expect.objectContaining({
             role: 'assistant',
@@ -554,6 +1298,7 @@ describe('Engine', () => {
             responseKind: 'progress',
           }),
         ]);
+        expect(persisted[1]).not.toHaveProperty('executionOrigin');
       } finally {
         rmSync(yeaftDir, { recursive: true, force: true });
       }
@@ -909,10 +1654,11 @@ describe('Engine', () => {
       }
     });
 
-    it('persists assistant rows with the caller-provided VP turn id', async () => {
+    it('persists assistant rows and debug trace with the caller-provided VP turn id', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-vp-turn-id-'));
       try {
         const conversationStore = new ConversationStore(join(yeaftDir, 'conversation'));
+        const debugTrace = new DebugTrace(join(yeaftDir, 'debug-trace.db'));
         mockAdapter.pushResponse([
           { type: 'text_delta', text: 'persisted reply' },
           { type: 'usage', inputTokens: 8, outputTokens: 3 },
@@ -921,7 +1667,7 @@ describe('Engine', () => {
 
         const engine = new Engine({
           adapter: mockAdapter,
-          trace,
+          trace: debugTrace,
           config: { model: 'test-model', maxOutputTokens: 1024 },
           conversationStore,
           yeaftDir,
@@ -938,7 +1684,12 @@ describe('Engine', () => {
         })) {
           events.push(event);
         }
+        await debugTrace.flush();
 
+        expect(events).toContainEqual(expect.objectContaining({
+          type: 'turn_open',
+          turnId: 'vp-turn-ui-1',
+        }));
         expect(events.map(e => e.type)).toContain('turn_end');
         const loaded = conversationStore.loadRecentBySession('session-turn-id', 10);
         expect(loaded).toHaveLength(1);
@@ -951,31 +1702,47 @@ describe('Engine', () => {
           responseKind: 'result',
           stopReason: 'end_turn',
         });
+        const debug = await debugTrace.fetchTurnDebug({
+          sessionId: 'session-turn-id',
+          turnId: loaded[0].turnId,
+        });
+        expect(debug.turns).toEqual([
+          expect.objectContaining({ turnId: 'vp-turn-ui-1', loopCount: 1 }),
+        ]);
+        expect(debug.loops).toEqual([
+          expect.objectContaining({ turnId: 'vp-turn-ui-1', loopNumber: 1, response: 'persisted reply' }),
+        ]);
+        await debugTrace.close();
       } finally {
         rmSync(yeaftDir, { recursive: true, force: true });
       }
     });
 
-    it('loads Dream session summary into the system prompt Memory section and debug event', async () => {
+    it('loads query-selected canonical content into the system prompt and debug event', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-dream-load-'));
-      await writeSummary(
+      await writeContent(
         { kind: 'session', id: 'g1' },
         'The user prefers concrete execution notes and wants Dream memory loaded into the prompt.\n<!-- dream-state -->\nlastDreamAt: 2026-07-17T00:00:00.000Z\n<!-- /dream-state -->',
         { root: join(yeaftDir, 'memory') },
       );
-      await writeSummary(
+      await writeContent(
         { kind: 'user' },
-        'User-level Dream summary should enter the prompt but not the dream_memory_loaded browser payload.',
+        'User-level canonical content should enter the prompt but not the dream_memory_loaded browser payload.',
         { root: join(yeaftDir, 'memory') },
       );
-      await writeSummary(
+      await writeContent(
         { kind: 'session-vp', sessionId: 'g1', id: 'vp1' },
-        'VP Dream summary should enter the prompt but not the session prompt-load payload.',
+        'VP canonical content should enter the prompt but not the session prompt-load payload.',
         { root: join(yeaftDir, 'memory') },
       );
       await writeSummary(
         { kind: 'session-topic', sessionId: 'g1', path: ['dream', 'recall'] },
-        `Topic Dream summary should enter the prompt through AMS Resident. ${'完整摘要细节'.repeat(800)}`,
+        'Catalog-only topic summary must not enter the prompt.',
+        { root: join(yeaftDir, 'memory') },
+      );
+      await writeContent(
+        { kind: 'session-topic', sessionId: 'g1', path: ['dream', 'recall'] },
+        `Canonical Dream content should enter the prompt. ${'完整正文细节'.repeat(800)}`,
         { root: join(yeaftDir, 'memory') },
       );
       mockAdapter.pushResponse([
@@ -989,6 +1756,23 @@ describe('Engine', () => {
         yeaftDir,
         sessionId: 'g1',
         config: { model: 'claude-test', maxOutputTokens: 2048, language: 'en' },
+        memoryIndex: {
+          search({ scopeFilter, requiredTag }) {
+            if (requiredTag !== 'canonical-content') return [];
+            const scopes = [
+              'user',
+              'sessions/g1',
+              'sessions/g1/vp/vp1',
+              'sessions/g1/vp/vp2',
+              'sessions/g1/topic/dream/recall',
+            ].filter(scope => scopeFilter.includes(scope));
+            return scopes.map((scope, index) => ({
+              id: `content-${index}`, scope, kind: 'context', tags: ['canonical-content'],
+              sourceMessages: [], body: 'Dream recall canonical evidence selector.', rank: -1 - index,
+              createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z',
+            }));
+          },
+        },
         amsRegistry: new AmsRegistry({ yeaftDir, config: {} }),
       });
 
@@ -1003,18 +1787,37 @@ describe('Engine', () => {
 
       expect(mockAdapter.callLog).toHaveLength(1);
       const system = mockAdapter.callLog[0].system;
-      expect(system).toContain('## Active Memory Set');
-      expect(system).toContain('### Resident');
+      expect(system).toContain('## Relevant Context');
+      expect(system).toContain('### Relevant Memory');
       expect(system).toContain('Dream memory loaded into the prompt');
-      expect(system).toContain('User-level Dream summary should enter the prompt');
-      expect(system).toContain('VP Dream summary should enter the prompt');
+      expect(system).toContain('User-level canonical content should enter the prompt');
+      expect(system).toContain('VP canonical content should enter the prompt');
       expect(system).toContain('**session**: The user prefers concrete execution notes and wants Dream memory loaded into the prompt.');
       expect(system).not.toContain('dream-state');
       expect(system).not.toContain('lastDreamAt:');
-      expect(system).toContain('**topic: dream/recall**: Topic Dream summary should enter the prompt through AMS Resident.');
+      expect(system).toContain('**topic: dream/recall**: Canonical Dream content should enter the prompt.');
       expect(system).not.toContain('**sessions/g1/topic/dream/recall**');
       expect(system).not.toContain('**sessions/g1**');
-      expect(system).toContain('Topic Dream summary should enter the prompt through AMS Resident.');
+      expect(system).not.toContain('Catalog-only topic summary');
+      expect(system).not.toContain('Dream recall canonical evidence selector.');
+
+      await writeContent(
+        { kind: 'session-vp', sessionId: 'g1', id: 'vp2' },
+        'SECOND_VP_CANONICAL must remain visible after vp1 populated the shared registry.',
+        { root: join(yeaftDir, 'memory') },
+      );
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'ok' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      for await (const _event of engine.query({
+        prompt: 'dream recall test',
+        sessionId: 'g1',
+        vpPersona: { vpId: 'vp2', name: 'VP Two' },
+      })) { /* exhaust */ }
+      const secondVpSystem = mockAdapter.callLog.at(-1).system;
+      expect(secondVpSystem).toContain('SECOND_VP_CANONICAL');
+      expect(secondVpSystem).not.toContain('VP canonical content should enter the prompt');
 
       const loaded = events.find(e => e.type === 'dream_memory_loaded');
       expect(loaded).toBeTruthy();
@@ -1029,13 +1832,235 @@ describe('Engine', () => {
         }),
         expect.objectContaining({
           scope: 'sessions/g1/topic/dream/recall',
-          source: 'resident-summary',
+          source: 'canonical-topic-content',
           truncated: false,
         }),
       ]));
       const topicLoaded = loaded.resident.find(entry => entry.scope === 'sessions/g1/topic/dream/recall');
-      expect(topicLoaded.summary).toContain('完整摘要细节'.repeat(800));
+      expect(topicLoaded.summary).toContain('完整正文细节');
+      expect(topicLoaded.summary).toContain('Additional canonical topic content omitted by prompt budget.');
+
+      const legacyDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-legacy-group-'));
+      const legacyMemoryRoot = join(legacyDir, 'memory');
+      await writeContent(
+        { kind: 'group', id: 'legacy-session' },
+        'LEGACY_ROOT uniquely selected from the group alias.',
+        { root: legacyMemoryRoot },
+      );
+      await writeContent(
+        { kind: 'group-vp', sessionId: 'legacy-session', id: 'vp1' },
+        'LEGACY_VP uniquely selected from the group alias.',
+        { root: legacyMemoryRoot },
+      );
+      await writeContent(
+        { kind: 'group-topic', sessionId: 'legacy-session', path: ['coexist'] },
+        'LEGACY_TOPIC uniquely selected from the group alias.',
+        { root: legacyMemoryRoot },
+      );
+      await writeContent(
+        { kind: 'session', id: 'legacy-session' },
+        'CURRENT_ROOT must not replace the selected legacy root.',
+        { root: legacyMemoryRoot },
+      );
+      await writeContent(
+        { kind: 'session-vp', sessionId: 'legacy-session', id: 'vp1' },
+        'CURRENT_VP must not replace the selected legacy VP.',
+        { root: legacyMemoryRoot },
+      );
+      await writeContent(
+        { kind: 'session-topic', sessionId: 'legacy-session', path: ['coexist'] },
+        'CURRENT_TOPIC must not replace the selected legacy topic.',
+        { root: legacyMemoryRoot },
+      );
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'ok' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const legacyEngine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        yeaftDir: legacyDir,
+        sessionId: 'legacy-session',
+        config: { model: 'claude-test', maxOutputTokens: 2048, language: 'en' },
+        memoryIndex: {
+          search({ scopeFilter, requiredTag }) {
+            if (requiredTag !== 'canonical-content') return [];
+            return [
+              'group/legacy-session',
+              'group/legacy-session/vp/vp1',
+              'group/legacy-session/topic/coexist',
+            ].filter(scope => scopeFilter.includes(scope)).map((scope, index) => ({
+              id: `legacy-content-${index}`, scope, kind: 'context',
+              tags: ['canonical-content'], sourceMessages: [], body: 'selector only', rank: -3 + index,
+              createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z',
+            }));
+          },
+        },
+        amsRegistry: new AmsRegistry({ yeaftDir: legacyDir, config: {} }),
+      });
+      for await (const _event of legacyEngine.query({
+        prompt: 'legacy recall',
+        sessionId: 'legacy-session',
+        vpPersona: { vpId: 'vp1', name: 'VP One' },
+      })) { /* exhaust */ }
+      const legacySystem = mockAdapter.callLog.at(-1).system;
+      expect(legacySystem).toContain('LEGACY_ROOT');
+      expect(legacySystem).toContain('LEGACY_VP');
+      expect(legacySystem).toContain('LEGACY_TOPIC');
+      expect(legacySystem).not.toContain('CURRENT_ROOT');
+      expect(legacySystem).not.toContain('CURRENT_VP');
+      expect(legacySystem).not.toContain('CURRENT_TOPIC');
+      rmSync(legacyDir, { recursive: true, force: true });
+
+      const debugYeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-memory-debug-'));
+      try {
+        const memoryRows = [
+          {
+            id: 'billing-work-item',
+            scope: 'sessions/g1',
+            kind: 'context',
+            tags: ['billing'],
+            body: 'Work Item #884: billing dashboard export is in progress and awaiting review.',
+            rank: 0,
+          },
+          ...Array.from({ length: 9 }, (_, index) => ({
+            id: `dream-relevance-${index + 1}`,
+            scope: 'sessions/g1',
+            kind: 'context',
+            tags: ['dream', 'memory'],
+            body: `Dream relevance loaded memory item ${index + 1}.`,
+            rank: index + 1,
+          })),
+        ];
+        const memoryIndex = {
+          search({ scopeFilter }) {
+            return memoryRows
+              .filter(row => scopeFilter.includes(row.scope))
+              .map(row => ({
+                ...row,
+                sourceMessages: [],
+                createdAt: '2026-07-01T00:00:00.000Z',
+                updatedAt: '2026-07-01T00:00:00.000Z',
+              }));
+          },
+        };
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'ok' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const debugEngine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          yeaftDir: debugYeaftDir,
+          sessionId: 'g1',
+          config: { model: 'claude-test', maxOutputTokens: 2048, language: 'en' },
+          memoryIndex,
+          amsRegistry: new AmsRegistry({ yeaftDir: debugYeaftDir, config: {} }),
+        });
+
+        const debugEvents = [];
+        for await (const event of debugEngine.query({
+          prompt: 'optimize Dream memory relevance',
+          sessionId: 'g1',
+          vpPersona: { vpId: 'vp1', name: 'VP One' },
+        })) {
+          debugEvents.push(event);
+        }
+
+        const debugSystem = mockAdapter.callLog.at(-1).system;
+        expect(debugSystem).not.toContain('Dream relevance loaded memory item 1.');
+        expect(debugSystem).not.toContain('billing dashboard export');
+
+        expect(debugEvents.find(e => e.type === 'memory_used')).toBeUndefined();
+      } finally {
+        rmSync(debugYeaftDir, { recursive: true, force: true });
+      }
+
+      mockAdapter.callLog.length = 0;
+      await verifyReadableContextWithoutPersistentAms();
     });
+
+    async function verifyReadableContextWithoutPersistentAms() {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-readable-context-'));
+      try {
+        await writeContent(
+          { kind: 'session', id: 'sibling-session' },
+          'Reusable release experience: verify origin/main and the remote tag target before publishing.',
+          { root: join(yeaftDir, 'memory'), language: 'zh' },
+        );
+        const memoryIndex = {
+          search({ scopeFilter, requiredTag }) {
+            if (requiredTag !== 'canonical-content' || !scopeFilter.includes('sessions/sibling-session')) return [];
+            return [{
+              id: 'timeout-memory',
+              scope: 'sessions/sibling-session',
+              kind: 'context',
+              tags: ['timeout'],
+              sourceMessages: [],
+              body: 'Timeout cleanup failures must return a tool result so the Engine can continue.',
+              rank: -1,
+              createdAt: '2026-08-01T00:00:00.000Z',
+              updatedAt: '2026-08-01T00:00:00.000Z',
+            }];
+          },
+        };
+        const taskManager = new TaskManager({ yeaftDir });
+        const task = taskManager.startTask({
+          sessionId: 'current-session',
+          ownerVpId: 'linus',
+          kind: 'sub_agent',
+          title: 'Review timeout recovery and verify Engine continuation',
+          runtime: { name: 'timeout-reviewer' },
+          logPath: '/private/sub-agent/events.jsonl',
+        });
+        taskManager.store.appendLog('current-session', task.id, '{"type":"sub_agent_status","status":"running"}\n');
+        taskManager.refreshTaskLog('current-session', task.id);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'ok' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          yeaftDir,
+          sessionId: 'current-session',
+          config: { model: 'claude-test', maxOutputTokens: 2048, language: 'zh' },
+          memoryIndex,
+          taskManager,
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: '检查 timeout cleanup failure',
+          sessionId: 'current-session',
+          projectSessionIds: ['sibling-session'],
+          vpPersona: { vpId: 'linus', name: 'Linus' },
+        })) {
+          events.push(event);
+        }
+
+        const system = mockAdapter.callLog.at(-1).system;
+        expect(system).toContain('## 相关上下文');
+        expect(system).toContain('### 过去 Session 的经验总结');
+        expect(system).toContain('**sibling-session**: Reusable release experience');
+        expect(system).not.toContain('### 相关记忆');
+        expect(system).not.toContain('Timeout cleanup failures must return a tool result');
+        expect(system).toContain('## 可能相关的任务');
+        expect(system).toContain('- 子 Agent timeout-reviewer (子 Agent，运行中)');
+        expect(system).not.toContain('Review timeout recovery and verify Engine continuation');
+        expect(system).not.toContain('<active_tasks>');
+        expect(system).not.toContain('/private/sub-agent/events.jsonl');
+        expect(system).not.toContain('sub_agent_status');
+        expect(events.find(event => event.type === 'memory_used')?.loaded).toEqual(expect.arrayContaining([
+          expect.objectContaining({ category: 'experience', scope: 'sessions/sibling-session' }),
+        ]));
+        expect(mockAdapter.callLog).toHaveLength(1);
+        expect(existsSync(join(yeaftDir, 'memory', 'sessions', 'current-session', 'ams.json'))).toBe(false);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    }
 
     it('should pass model and system prompt to adapter', async () => {
       mockAdapter.pushResponse([
@@ -1050,7 +2075,11 @@ describe('Engine', () => {
       });
 
       const events = [];
-      for await (const event of engine.query({ prompt: 'test' })) {
+      for await (const event of engine.query({
+        prompt: 'test',
+        projectLabel: 'Yeaft (project-123)',
+        projectInstruction: 'Run the shared Project verification before release.',
+      })) {
         events.push(event);
       }
 
@@ -1060,6 +2089,9 @@ describe('Engine', () => {
       expect(call.system).toContain('Session Participant');
       expect(call.system).not.toContain('Yeaft — AI');
       expect(call.system).toContain('work');
+      expect(call.system).toContain('[Project Instruction]');
+      expect(call.system).toContain('The current Session belongs to Project Yeaft (project-123). The unified instruction for this Project is:');
+      expect(call.system).toContain('Run the shared Project verification before release.');
       expect(call.maxTokens).toBe(2048);
       expect(call.messages).toHaveLength(1);
       expect(call.messages[0].role).toBe('user');
@@ -1127,6 +2159,191 @@ describe('Engine', () => {
       expect(secondCall.messages[1].toolCalls).toHaveLength(1);
       expect(secondCall.messages[2].role).toBe('tool');
       expect(secondCall.messages[2].toolCallId).toBe('call_1');
+
+      // A result-producing task can outlive the visible turn. If its terminal
+      // event is lost, the parent must eventually release same-turn ownership
+      // and finish; the task keeps running and its later completion can use the
+      // bridge's existing rescue-turn path.
+      const stalledTaskAdapter = new MockAdapter();
+      stalledTaskAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_stalled_task', name: 'launch_stalled_task', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      stalledTaskAdapter.pushResponse([
+        { type: 'text_delta', text: 'The delegated task is still running.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const stalledTaskEngine = new Engine({
+        adapter: stalledTaskAdapter,
+        trace,
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          asyncTaskWaitTimeoutMs: 20,
+        },
+      });
+      const deferredTasks = [];
+      stalledTaskEngine.setAsyncTaskCoordinator({
+        onDeferred(taskId) { deferredTasks.push(taskId); },
+      });
+      stalledTaskEngine.registerTool({
+        name: 'launch_stalled_task',
+        description: 'launch a task whose terminal event never arrives',
+        parameters: { type: 'object', properties: {} },
+        execute: async (_input, ctx) => {
+          ctx.registerAsyncTask('task_stalled');
+          return 'task started';
+        },
+      });
+
+      const stalledEvents = [];
+      await Promise.race([
+        (async () => {
+          for await (const event of stalledTaskEngine.query({ prompt: 'delegate this work' })) {
+            stalledEvents.push(event);
+          }
+        })(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('async task wait stayed pinned')), 500)),
+      ]);
+
+      expect(stalledEvents).toContainEqual(expect.objectContaining({
+        type: 'async_task_wait_end',
+        timedOut: true,
+        deferredTaskIds: ['task_stalled'],
+      }));
+      expect(stalledEvents).toContainEqual(expect.objectContaining({
+        type: 'turn_end',
+        stopReason: 'end_turn',
+        terminal: true,
+      }));
+      expect(stalledEvents.at(-1)).toMatchObject({ type: 'turn_close' });
+      expect(stalledTaskEngine.hasPendingAsyncTasks()).toBe(false);
+      expect(stalledTaskEngine.notifyAsyncTaskCompleted('task_stalled', 'late result')).toBe(false);
+      expect(deferredTasks).toEqual(['task_stalled']);
+
+      // Long-running child work is not itself a stall. TaskManager activity
+      // refreshes the silence deadline; a completion after the first timeout
+      // window must still resume in the same turn.
+      const activeTaskAdapter = new MockAdapter();
+      activeTaskAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_active_task', name: 'launch_active_task', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      activeTaskAdapter.pushResponse([
+        { type: 'text_delta', text: 'The delegated result was consumed.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const activeTaskEngine = new Engine({
+        adapter: activeTaskAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024, asyncTaskWaitTimeoutMs: 20 },
+        taskManager: {
+          getTask() {
+            return { status: 'running', updatedAt: new Date().toISOString() };
+          },
+          renderActiveTasksForPrompt() { return ''; },
+        },
+        sessionId: 'session-active-task',
+      });
+      activeTaskEngine.registerTool({
+        name: 'launch_active_task',
+        description: 'launch a task that keeps reporting activity',
+        parameters: { type: 'object', properties: {} },
+        execute: async (_input, ctx) => {
+          ctx.registerAsyncTask('task_active');
+          return 'task started';
+        },
+      });
+
+      const activeEvents = [];
+      let activeCompletionAccepted = null;
+      for await (const event of activeTaskEngine.query({ prompt: 'delegate active work' })) {
+        activeEvents.push(event);
+        if (event.type === 'async_task_wait_start') {
+          setTimeout(() => {
+            activeCompletionAccepted = activeTaskEngine.notifyAsyncTaskCompleted(
+              'task_active',
+              '<task-result id="task_active">done</task-result>',
+            );
+          }, 45);
+        }
+      }
+
+      expect(activeCompletionAccepted).toBe(true);
+      expect(activeEvents.find(event => event.type === 'async_task_wait_end')).toMatchObject({
+        timedOut: false,
+        deferredTaskIds: [],
+      });
+      expect(activeTaskAdapter.callLog).toHaveLength(3);
+
+      // Multiple owned tasks use independent silence leases. Expiring one stale
+      // child must not evict an active sibling; the active result remains in the
+      // same parent turn while only the stale task is deferred.
+      const mixedTaskAdapter = new MockAdapter();
+      mixedTaskAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_mixed_tasks', name: 'launch_mixed_tasks', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mixedTaskAdapter.pushResponse([
+        { type: 'text_delta', text: 'Waiting for the active task.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      mixedTaskAdapter.pushResponse([
+        { type: 'text_delta', text: 'The active task result was consumed.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const mixedTaskEngine = new Engine({
+        adapter: mixedTaskAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024, asyncTaskWaitTimeoutMs: 20 },
+        taskManager: {
+          getTask(_sessionId, taskId) {
+            return taskId === 'task_stale_sibling'
+              ? { status: 'running', updatedAt: new Date(0).toISOString() }
+              : { status: 'running', updatedAt: new Date().toISOString() };
+          },
+          renderActiveTasksForPrompt() { return ''; },
+        },
+        sessionId: 'session-mixed-tasks',
+      });
+      const mixedDeferredTasks = [];
+      mixedTaskEngine.setAsyncTaskCoordinator({
+        onDeferred(taskId) { mixedDeferredTasks.push(taskId); },
+      });
+      mixedTaskEngine.registerTool({
+        name: 'launch_mixed_tasks',
+        description: 'launch one stale task and one active task',
+        parameters: { type: 'object', properties: {} },
+        execute: async (_input, ctx) => {
+          ctx.registerAsyncTask('task_stale_sibling');
+          ctx.registerAsyncTask('task_active_sibling');
+          return 'tasks started';
+        },
+      });
+
+      const mixedEvents = [];
+      let mixedActiveAccepted = null;
+      for await (const event of mixedTaskEngine.query({ prompt: 'delegate mixed work' })) {
+        mixedEvents.push(event);
+        if (event.type === 'async_task_wait_start') {
+          setTimeout(() => {
+            mixedActiveAccepted = mixedTaskEngine.notifyAsyncTaskCompleted(
+              'task_active_sibling',
+              '<task-result id="task_active_sibling">done</task-result>',
+            );
+          }, 45);
+        }
+      }
+
+      expect(mixedDeferredTasks).toEqual(['task_stale_sibling']);
+      expect(mixedActiveAccepted).toBe(true);
+      expect(mixedTaskEngine.notifyAsyncTaskCompleted('task_stale_sibling', 'late')).toBe(false);
+      expect(mixedEvents.find(event => event.type === 'async_task_wait_end')).toMatchObject({
+        timedOut: true,
+        deferredTaskIds: ['task_stale_sibling'],
+        remainingTaskIds: [],
+      });
+      expect(mixedTaskAdapter.callLog).toHaveLength(3);
     });
 
     it('passes the active tool call identity to interactive AskUser hosts', async () => {
@@ -1287,8 +2504,460 @@ describe('Engine', () => {
 
       // Engine should still complete
       const lastTurnEnd = events.filter(e => e.type === 'turn_end').pop();
-      expect(lastTurnEnd.stopReason).toBe('end_turn');
-    });
+      expect(lastTurnEnd).toMatchObject({ stopReason: 'end_turn', terminal: true });
+
+      // A timed-out side-effecting tool cannot be replayed safely because its
+      // underlying promise may still be running. It must nevertheless produce
+      // a diagnostic terminal boundary instead of escaping query() after the
+      // tool_end event and leaving the VP half-open.
+      const timeoutAdapter = new MockAdapter();
+      timeoutAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_timeout', name: 'slow_side_effect', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      const timeoutRegistry = new ToolRegistry();
+      timeoutRegistry.register({
+        name: 'slow_side_effect',
+        description: 'Never settles',
+        parameters: {},
+        timeoutMs: 5,
+        sideEffectScope: 'external',
+        isReadOnly: () => false,
+        execute: async () => new Promise(() => {}),
+      });
+      const timeoutEngine = new Engine({
+        adapter: timeoutAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolRegistry: timeoutRegistry,
+      });
+      const timeoutEvents = [];
+      for await (const event of timeoutEngine.query({ prompt: 'run the slow tool' })) {
+        timeoutEvents.push(event);
+      }
+      expect(timeoutEvents.find(event => event.type === 'tool_end')).toMatchObject({
+        id: 'call_timeout',
+        isError: true,
+      });
+      expect(timeoutEvents.find(event => event.type === 'error')).toMatchObject({
+        retryable: false,
+        error: expect.objectContaining({ name: 'ToolExecutionTimeoutError' }),
+      });
+      expect(timeoutEvents.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+        turnNumber: 1,
+        stopReason: 'error',
+        terminal: true,
+        detail: expect.objectContaining({ errorName: 'ToolExecutionTimeoutError' }),
+      });
+
+      expect(bashTool.timeoutMs).toBe(0);
+
+      const systemdChild = new EventEmitter();
+      systemdChild.pid = 4344;
+      systemdChild.stdout = new PassThrough();
+      systemdChild.stderr = new PassThrough();
+      systemdChild.kill = () => true;
+      const systemdCalls = [];
+      const slowSystemctl = (_command, args) => {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+        systemdCalls.push(args.includes('kill')
+          ? args.find(arg => arg.startsWith('--signal='))
+          : 'show');
+        return args.includes('show')
+          ? { status: 0, stdout: 'active\n' }
+          : { status: 0 };
+      };
+      const ownedTimeoutBash = createBashTool({
+        runProcessImpl: (_command, _args, options) => {
+          expect(options.timeoutMs).toBe(600_000);
+          return runProcess('systemd-run', [], {
+            ...options,
+            timeoutMs: 1,
+            killGraceMs: 1,
+            forceSettleMs: 5,
+            platform: 'linux',
+            systemdScope: {
+              unit: 'yeaft-test.scope',
+              systemctlPath: '/usr/bin/systemctl',
+              env: {},
+            },
+            spawnProcess: () => systemdChild,
+            spawnProcessSync: slowSystemctl,
+          });
+        },
+      });
+      const ownedTimeoutRegistry = new ToolRegistry();
+      ownedTimeoutRegistry.register(ownedTimeoutBash);
+      const ownedTimeoutResult = await ownedTimeoutRegistry.execute('Bash', {
+        command: 'sleep 600',
+        timeout_ms: 600_000,
+      }, {
+        cwd: process.cwd(),
+        runtimePlatform: {
+          platform: 'linux',
+          isLinux: true,
+          isWindows: false,
+          shellFamily: 'posix',
+          defaultShell: '/bin/sh',
+        },
+      });
+      expect(ownedTimeoutResult).toContain('Exit code: 124');
+      expect(ownedTimeoutResult).toContain('Process tree did not exit within 5ms after SIGKILL: systemd-run');
+      expect(systemdCalls).toContain('--signal=SIGTERM');
+      expect(systemdCalls).toContain('--signal=SIGKILL');
+      expect(systemdCalls).toContain('show');
+      expect(systemdChild.listenerCount('close')).toBe(0);
+      expect(systemdChild.listenerCount('error')).toBe(0);
+      expect(systemdChild.stdout.listenerCount('data')).toBe(0);
+      expect(systemdChild.stderr.listenerCount('data')).toBe(0);
+
+      const barrierRequests = [];
+      const confirmedTimeoutOutput = await createBashTool({
+        runProcessImpl: async () => ({
+          stdout: '', stderr: '', code: 124, timedOut: true, terminationError: null,
+        }),
+      }).execute({ command: 'sleep 600', timeout_ms: 1000 }, {
+        cwd: process.cwd(),
+        requestToolBatchBarrier: reason => barrierRequests.push(reason),
+      });
+      const ordinaryFailureOutput = await createBashTool({
+        runProcessImpl: async () => ({
+          stdout: '', stderr: 'failed', code: 2, timedOut: false, terminationError: null,
+        }),
+      }).execute({ command: 'exit 2' }, {
+        cwd: process.cwd(),
+        requestToolBatchBarrier: reason => barrierRequests.push(reason),
+      });
+      expect(confirmedTimeoutOutput).toContain('Exit code: 124');
+      expect(ordinaryFailureOutput).toContain('Exit code: 2');
+      expect(barrierRequests).toEqual([
+        expect.objectContaining({ kind: 'owned_timeout' }),
+      ]);
+
+      const terminationChild = new EventEmitter();
+      terminationChild.pid = 4444;
+      terminationChild.stdout = new PassThrough();
+      terminationChild.stderr = new PassThrough();
+      terminationChild.kill = () => true;
+      const terminationCalls = [];
+      const recoveringBash = createBashTool({
+        runProcessImpl: (_command, _args, options) => {
+          terminationCalls.push({ signal: options.signal, timeoutMs: options.timeoutMs });
+          return runProcess('powershell.exe', [], {
+            ...options,
+            timeoutMs: 1,
+            forceSettleMs: 5,
+            platform: 'win32',
+            systemdScope: null,
+            spawnProcess: () => terminationChild,
+            spawnProcessSync: () => ({ status: 0 }),
+          });
+        },
+      });
+      const startedTasks = [];
+      const bashTaskManager = {
+        renderActiveTasksForPrompt: () => '',
+        startShellTask: input => {
+          startedTasks.push(input);
+          return { id: 'task_after_timeout', status: 'running', log: { path: '/tmp/task.log' } };
+        },
+      };
+      const recoveryAdapter = new MockAdapter();
+      recoveryAdapter.pushResponse([
+        {
+          type: 'tool_call',
+          id: 'call_unconfirmed_timeout',
+          name: 'Bash',
+          input: { command: 'Start-Sleep -Seconds 30', timeout_ms: 1000 },
+        },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      recoveryAdapter.pushResponse([
+        {
+          type: 'tool_call',
+          id: 'call_background_after_timeout',
+          name: 'Bash',
+          input: {
+            command: 'Start-Sleep -Seconds 30',
+            timeout_ms: 1000,
+            background: true,
+            taskTitle: 'continue in background',
+          },
+        },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      recoveryAdapter.pushResponse([
+        { type: 'text_delta', text: 'The foreground command timed out, so I moved it to a background task.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const recoveryRegistry = new ToolRegistry();
+      recoveryRegistry.register(recoveringBash);
+      const recoveryEngine = new Engine({
+        adapter: recoveryAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolRegistry: recoveryRegistry,
+        taskManager: bashTaskManager,
+      });
+      const recoveryEvents = [];
+      for await (const event of recoveryEngine.query({ prompt: 'run the long command' })) {
+        recoveryEvents.push(event);
+      }
+      expect(terminationCalls).toHaveLength(1);
+      expect(terminationCalls[0]).toMatchObject({ timeoutMs: 1000 });
+      expect(startedTasks).toHaveLength(1);
+      expect(startedTasks[0]).toMatchObject({
+        command: 'Start-Sleep -Seconds 30',
+        title: 'continue in background',
+      });
+      expect(recoveryAdapter.callLog).toHaveLength(3);
+      const timeoutToolMessage = recoveryAdapter.callLog[1].messages
+        .find(message => message.toolCallId === 'call_unconfirmed_timeout');
+      expect(timeoutToolMessage).toMatchObject({ isError: false });
+      expect(timeoutToolMessage.content).toContain('Exit code: 124');
+      expect(timeoutToolMessage.content).toContain('Process tree did not exit within 5ms after SIGKILL: powershell.exe');
+      expect(timeoutToolMessage.content).toContain('The command may still be running.');
+      expect(timeoutToolMessage.content).toContain('use background=true');
+      expect(recoveryAdapter.callLog[2].messages
+        .find(message => message.toolCallId === 'call_background_after_timeout')).toMatchObject({
+          isError: false,
+          content: expect.stringContaining('Started background task task_after_timeout'),
+        });
+      expect(recoveryEvents.filter(event => event.type === 'tool_end')).toHaveLength(2);
+      expect(recoveryEvents.find(event => event.type === 'error')).toBeUndefined();
+      expect(recoveryEvents.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+        stopReason: 'end_turn',
+        terminal: true,
+      });
+
+      const batchBarrierRoot = mkdtempSync(join(tmpdir(), 'yeaft-bash-batch-barrier-'));
+      const batchBarrierMarker = join(batchBarrierRoot, 'must-not-write.txt');
+      try {
+        const batchBarrierChild = new EventEmitter();
+        batchBarrierChild.pid = 4544;
+        batchBarrierChild.stdout = new PassThrough();
+        batchBarrierChild.stderr = new PassThrough();
+        batchBarrierChild.kill = () => true;
+        const batchBarrierBash = createBashTool({
+          runProcessImpl: (_command, _args, options) => runProcess('powershell.exe', [], {
+            ...options,
+            timeoutMs: 1,
+            forceSettleMs: 5,
+            platform: 'win32',
+            systemdScope: null,
+            spawnProcess: () => batchBarrierChild,
+            spawnProcessSync: () => ({ status: 0 }),
+          }),
+        });
+        const batchBarrierAdapter = new MockAdapter();
+        batchBarrierAdapter.pushResponse([
+          {
+            type: 'tool_call',
+            id: 'call_batch_timeout',
+            name: 'Bash',
+            input: { command: 'Start-Sleep -Seconds 30', timeout_ms: 1000 },
+          },
+          {
+            type: 'tool_call',
+            id: 'call_write_after_timeout',
+            name: 'FileWrite',
+            input: { file_path: batchBarrierMarker, content: 'must not be written' },
+          },
+          {
+            type: 'tool_call',
+            id: 'call_second_write_after_timeout',
+            name: 'FileWrite',
+            input: { file_path: `${batchBarrierMarker}.second`, content: 'must not be written either' },
+          },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        batchBarrierAdapter.pushResponse([
+          { type: 'text_delta', text: 'The write was skipped, so I will inspect the timed-out command first.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const batchBarrierRegistry = new ToolRegistry();
+        batchBarrierRegistry.register(batchBarrierBash);
+        batchBarrierRegistry.register(fileWriteTool);
+        const batchBarrierEngine = new Engine({
+          adapter: batchBarrierAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          toolRegistry: batchBarrierRegistry,
+        });
+        const batchBarrierEvents = [];
+        for await (const event of batchBarrierEngine.query({ prompt: 'run then write' })) {
+          batchBarrierEvents.push(event);
+        }
+
+        expect(existsSync(batchBarrierMarker)).toBe(false);
+        expect(existsSync(`${batchBarrierMarker}.second`)).toBe(false);
+        expect(batchBarrierAdapter.callLog).toHaveLength(2);
+        const barrierProviderMessages = batchBarrierAdapter.callLog[1].messages;
+        expect(barrierProviderMessages
+          .find(message => message.toolCallId === 'call_batch_timeout')).toMatchObject({
+            isError: false,
+            content: expect.stringContaining('The command may still be running.'),
+          });
+        expect(barrierProviderMessages
+          .find(message => message.toolCallId === 'call_write_after_timeout')).toMatchObject({
+            isError: true,
+            content: expect.stringContaining('This tool was not executed.'),
+          });
+        expect(barrierProviderMessages
+          .find(message => message.toolCallId === 'call_second_write_after_timeout')).toMatchObject({
+            isError: true,
+            content: expect.stringContaining('This tool was not executed.'),
+          });
+        expect(barrierProviderMessages.filter(message => message.toolCallId).map(message => message.toolCallId))
+          .toEqual([
+            'call_batch_timeout',
+            'call_write_after_timeout',
+            'call_second_write_after_timeout',
+          ]);
+        expect(batchBarrierEvents.filter(event => event.type === 'tool_start').map(event => event.name))
+          .toEqual(['Bash']);
+        expect(batchBarrierEvents.filter(event => event.type === 'tool_end')).toEqual([
+          expect.objectContaining({ id: 'call_batch_timeout', name: 'Bash', isError: false }),
+          expect.objectContaining({
+            id: 'call_write_after_timeout',
+            name: 'FileWrite',
+            isError: true,
+            skipped: true,
+          }),
+          expect.objectContaining({
+            id: 'call_second_write_after_timeout',
+            name: 'FileWrite',
+            isError: true,
+            skipped: true,
+          }),
+        ]);
+        expect(batchBarrierEvents.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+          stopReason: 'end_turn',
+          terminal: true,
+        });
+      } finally {
+        rmSync(batchBarrierRoot, { recursive: true, force: true });
+      }
+
+      if (process.platform === 'linux') {
+        const canary = `pr1483-${Date.now()}-${process.pid}`;
+        const probeRoot = mkdtempSync(join(tmpdir(), 'yeaft-systemd-payload-'));
+        const bashModuleUrl = new URL('../../../agent/yeaft/tools/bash.js', import.meta.url).href;
+        const probe = spawn(process.execPath, [
+          '--input-type=module',
+          '-e',
+          `import bashTool from ${JSON.stringify(bashModuleUrl)}; await bashTool.execute({ command: 'sleep 3' }, { cwd: ${JSON.stringify(probeRoot)} });`,
+        ], {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            YEAFT_DISABLE_SYSTEMD_SCOPE: '1',
+            PR1483_CANARY: canary,
+          },
+          stdio: ['ignore', 'ignore', 'pipe'],
+        });
+        let probeStderr = '';
+        probe.stderr.on('data', chunk => { probeStderr += chunk; });
+        try {
+          let systemdRunCmdline = '';
+          const deadline = Date.now() + 2000;
+          while (!systemdRunCmdline && Date.now() < deadline) {
+            let childPids = [];
+            try {
+              const children = readFileSync(`/proc/${probe.pid}/task/${probe.pid}/children`, 'utf8').trim();
+              childPids = children ? children.split(/\s+/).map(Number) : [];
+            } catch {}
+            for (const childPid of childPids) {
+              try {
+                const cmdline = readFileSync(`/proc/${childPid}/cmdline`).toString('utf8').replace(/\0/g, ' ');
+                if (cmdline.includes('systemd-run')) systemdRunCmdline = cmdline;
+              } catch {}
+            }
+            if (!systemdRunCmdline) await new Promise(resolve => setTimeout(resolve, 20));
+          }
+          expect(systemdRunCmdline).toContain('systemd-run');
+          expect(systemdRunCmdline).not.toContain(canary);
+          expect(systemdRunCmdline).not.toContain('--setenv=PR1483_CANARY');
+          const probeExit = await new Promise(resolve => probe.once('close', (code, signal) => resolve({ code, signal })));
+          expect(probeExit, probeStderr).toEqual({ code: 0, signal: null });
+        } finally {
+          if (probe.exitCode === null && probe.signalCode === null) probe.kill('SIGKILL');
+          rmSync(probeRoot, { recursive: true, force: true });
+        }
+
+        const priorDisableScope = process.env.YEAFT_DISABLE_SYSTEMD_SCOPE;
+        try {
+          for (const disableSystemdScope of [true, false]) {
+            if (disableSystemdScope) process.env.YEAFT_DISABLE_SYSTEMD_SCOPE = '1';
+            else delete process.env.YEAFT_DISABLE_SYSTEMD_SCOPE;
+            const bashRoot = mkdtempSync(join(tmpdir(), 'yeaft-bash-timeout-'));
+            const markerPath = join(bashRoot, 'survived');
+            const pidPath = join(bashRoot, 'pid');
+            const escapedMarker = JSON.stringify(markerPath);
+            const escapedPid = JSON.stringify(pidPath);
+            const bashAdapter = new MockAdapter();
+            bashAdapter.pushResponse([
+              {
+                type: 'tool_call',
+                id: 'call_bash_timeout',
+                name: 'Bash',
+                input: {
+                  command: `setsid env -i PATH="$PATH" sh -c 'trap "" TERM; sleep 3; printf survived > "$1"' sh ${escapedMarker} >/dev/null 2>&1 & echo $! > ${escapedPid}; wait`,
+                  timeout_ms: 1000,
+                },
+              },
+              { type: 'stop', stopReason: 'tool_use' },
+            ]);
+            bashAdapter.pushResponse([
+              { type: 'text_delta', text: 'The command timed out; use a background task for long-running work.' },
+              { type: 'stop', stopReason: 'end_turn' },
+            ]);
+            const bashRegistry = new ToolRegistry();
+            bashRegistry.register(bashTool);
+            const bashEngine = new Engine({
+              adapter: bashAdapter,
+              trace,
+              config: { model: 'test-model', maxOutputTokens: 1024 },
+              toolRegistry: bashRegistry,
+            });
+            const bashEvents = [];
+            try {
+              for await (const event of bashEngine.query({ prompt: 'run the command', workDir: bashRoot })) {
+                bashEvents.push(event);
+              }
+              expect(existsSync(markerPath)).toBe(false);
+              expect(bashEvents.find(event => event.type === 'tool_end')?.output)
+                .toContain('Exit code: 124');
+              const pid = Number.parseInt(readFileSync(pidPath, 'utf8'), 10);
+              expect(() => process.kill(pid, 0)).toThrow();
+              await new Promise(resolve => setTimeout(resolve, 2250));
+              expect(existsSync(markerPath)).toBe(false);
+              expect(bashAdapter.callLog).toHaveLength(2);
+              expect(bashAdapter.callLog[1].messages.find(message => message.role === 'tool')).toMatchObject({
+                toolCallId: 'call_bash_timeout',
+                isError: false,
+              });
+              expect(bashAdapter.callLog[1].messages.find(message => message.role === 'tool').content)
+                .toContain('Exit code: 124');
+              expect(bashEvents.find(event => event.type === 'tool_end')).toMatchObject({
+                id: 'call_bash_timeout',
+                isError: false,
+              });
+              expect(bashEvents.find(event => event.type === 'error')).toBeUndefined();
+              expect(bashEvents.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+                stopReason: 'end_turn',
+                terminal: true,
+              });
+            } finally {
+              rmSync(bashRoot, { recursive: true, force: true });
+            }
+          }
+        } finally {
+          if (priorDisableScope === undefined) delete process.env.YEAFT_DISABLE_SYSTEMD_SCOPE;
+          else process.env.YEAFT_DISABLE_SYSTEMD_SCOPE = priorDisableScope;
+        }
+      }
+    }, 30_000);
 
     it('should handle unknown tool gracefully', async () => {
       mockAdapter.pushResponse([
@@ -1320,7 +2989,903 @@ describe('Engine', () => {
   });
 
   describe('multiple tool calls in one turn', () => {
-    it('should execute multiple tools from a single response', async () => {
+    async function verifyIdenticalReadReuse() {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'read-1', name: 'read', input: { path: 'same.txt' } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'read-2', name: 'read', input: { path: 'same.txt' } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'done' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+      let executions = 0;
+      engine.registerTool({
+        name: 'read',
+        description: 'Read',
+        parameters: { type: 'object', properties: { path: { type: 'string' } } },
+        isReadOnly: () => true,
+        cacheWithinQuery: () => true,
+        execute: async () => { executions += 1; return 'file contents'; },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'read it' })) events.push(event);
+
+      expect(executions).toBe(1);
+      expect(events.filter(event => event.type === 'tool_exec').map(event => event.reused)).toEqual([undefined, true]);
+      expect(mockAdapter.callLog).toHaveLength(3);
+      expect(mockAdapter.callLog[2].messages.at(-1).content).toContain('file contents');
+    }
+
+    it('reuses identical deterministic reads and ends a plan-only control batch', async () => {
+      await verifyIdenticalReadReuse();
+      mockAdapter = new MockAdapter();
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'plan-1', name: 'StartPlan', input: { topic: 'inspect the issue' } },
+        { type: 'tool_call', id: 'todo-1', name: 'TodoWrite', input: {
+          todos: [{ content: 'Inspect the issue', status: 'in_progress', activeForm: 'Inspecting the issue' }],
+        } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+      engine.registerTool({
+        name: 'StartPlan',
+        description: 'Start plan',
+        parameters: { type: 'object' },
+        isReadOnly: () => true,
+        execute: async () => 'plan instruction',
+      });
+      engine.registerTool({
+        name: 'TodoWrite',
+        description: 'Write todos',
+        parameters: { type: 'object' },
+        isReadOnly: () => true,
+        execute: async () => '{"success":true}',
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'inspect the issue' })) events.push(event);
+
+      expect(mockAdapter.callLog).toHaveLength(1);
+      expect(events.find(event => event.type === 'turn_end' && event.stopReason === 'plan_recorded')).toMatchObject({ terminal: true });
+    });
+
+    it('invalidates cached reads before successful and failed workspace mutations', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-mutation-'));
+      const filePath = join(workDir, 'state.txt');
+      writeFileSync(filePath, 'before');
+      try {
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'tool_call', id: 'write', name: 'FileWrite', input: { file_path: 'state.txt', content: 'after' } },
+          { type: 'tool_call', id: 'read-after', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const registry = new ToolRegistry();
+        registry.register(fileReadTool).register(fileWriteTool);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          toolRegistry: registry,
+        });
+
+        const events = [];
+        for await (const event of engine.query({ prompt: 'update and reread the file', workDir })) events.push(event);
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        expect(toolStarts.find(event => event.id === 'read-after')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-before')?.output).toContain('before');
+        expect(toolEnds.find(event => event.id === 'read-after')?.output).toContain('after');
+        expect(readFileSync(filePath, 'utf8')).toBe('after');
+
+        let contents = 'before';
+        mockAdapter = new MockAdapter();
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before-failure', name: 'read', input: { path: 'state.txt' } },
+          { type: 'tool_call', id: 'write-and-fail', name: 'write', input: { path: 'state.txt' } },
+          { type: 'tool_call', id: 'read-after-failure', name: 'read', input: { path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const failingEngine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+        });
+        failingEngine.registerTool({
+          name: 'read',
+          description: 'Read state',
+          parameters: { type: 'object', properties: { path: { type: 'string' } } },
+          isReadOnly: () => true,
+          cacheWithinQuery: true,
+          execute: async () => contents,
+        });
+        failingEngine.registerTool({
+          name: 'write',
+          description: 'Write state',
+          parameters: { type: 'object', properties: { path: { type: 'string' } } },
+          isReadOnly: () => false,
+          execute: async () => {
+            contents = 'after';
+            throw new Error('write failed after changing state');
+          },
+        });
+
+        const failingEvents = [];
+        for await (const event of failingEngine.query({ prompt: 'update and reread the state' })) failingEvents.push(event);
+
+        const failingToolStarts = failingEvents.filter(event => event.type === 'tool_start');
+        const failingToolEnds = failingEvents.filter(event => event.type === 'tool_end');
+        expect(failingToolStarts.find(event => event.id === 'read-after-failure')?.reused).not.toBe(true);
+        expect(failingToolEnds.find(event => event.id === 'write-and-fail')).toMatchObject({
+          isError: true,
+          output: 'Error: write failed after changing state',
+        });
+        expect(failingToolEnds.find(event => event.id === 'read-after-failure')?.output).toBe('after');
+      } finally {
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
+    it('invalidates cached reads when a task result arrives during async wait', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-async-result-'));
+      const filePath = join(workDir, 'state.txt');
+      const taskId = 'task-read-cache-boundary';
+      writeFileSync(filePath, 'before');
+      try {
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before-async-result', name: 'read_state', input: {} },
+          { type: 'tool_call', id: 'wait-for-task-result', name: 'wait_for_state', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'Waiting for the state update.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-after-async-result', name: 'read_state', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'The state is current.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024, asyncTaskWaitTimeoutMs: 1_000 },
+        });
+        let readExecutions = 0;
+        engine.registerTool({
+          name: 'read_state',
+          description: 'Read state',
+          parameters: { type: 'object' },
+          isReadOnly: () => true,
+          cacheWithinQuery: true,
+          execute: async () => {
+            readExecutions += 1;
+            return readFileSync(filePath, 'utf8');
+          },
+        });
+        engine.registerTool({
+          name: 'wait_for_state',
+          description: 'Wait for a task result',
+          parameters: { type: 'object' },
+          // This tool only starts observation. It does not synchronously
+          // mutate the workspace, so the task-result synchronization boundary
+          // must invalidate a read cached before the async wait.
+          isReadOnly: () => true,
+          execute: async (_input, ctx) => {
+            ctx.registerAsyncTask(taskId);
+            return 'waiting';
+          },
+        });
+
+        const events = [];
+        let completionAccepted = false;
+        for await (const event of engine.query({ prompt: 'wait for the state update', workDir })) {
+          events.push(event);
+          if (event.type === 'async_task_wait_start') {
+            writeFileSync(filePath, 'after');
+            completionAccepted = engine.notifyAsyncTaskCompleted(taskId, 'state updated');
+          }
+        }
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        expect(completionAccepted).toBe(true);
+        expect(readExecutions).toBe(2);
+        expect(toolEnds.find(event => event.id === 'read-before-async-result')?.output).toBe('before');
+        expect(toolStarts.find(event => event.id === 'read-after-async-result')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-after-async-result')?.output).toBe('after');
+      } finally {
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
+    it('invalidates cached reads when completion arrives after the next provider stream starts', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-post-stream-completion-'));
+      const filePath = join(workDir, 'state.txt');
+      const taskId = 'task-read-cache-post-stream';
+      writeFileSync(filePath, 'before');
+      try {
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before-post-stream-completion', name: 'ReadState', input: {} },
+          { type: 'tool_call', id: 'start-async-state-update', name: 'StartAsync', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-after-post-stream-completion', name: 'ReadState', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'The updated state was read.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024, asyncTaskWaitTimeoutMs: 1_000 },
+        });
+        let readExecutions = 0;
+        engine.registerTool({
+          name: 'ReadState',
+          description: 'Read workspace state.',
+          parameters: { type: 'object' },
+          isReadOnly: () => true,
+          cacheWithinQuery: true,
+          execute: async () => {
+            readExecutions += 1;
+            return readFileSync(filePath, 'utf8');
+          },
+        });
+        engine.registerTool({
+          name: 'StartAsync',
+          description: 'Start an asynchronous state update.',
+          parameters: { type: 'object' },
+          // This only registers the detached task; its completion is the
+          // workspace mutation boundary under test.
+          isReadOnly: () => true,
+          execute: async (_input, ctx) => {
+            ctx.registerAsyncTask(taskId);
+            return 'state update started';
+          },
+        });
+
+        const baseStream = mockAdapter.stream.bind(mockAdapter);
+        let streamCalls = 0;
+        let completionAccepted = false;
+        mockAdapter.stream = async function* streamWithCompletionAfterStart(params) {
+          streamCalls += 1;
+          if (streamCalls === 2) {
+            // The Engine already completed its pre-stream task-result drain.
+            // Deliver the completion before this stream yields ReadState so
+            // the tool execution path must observe immediate invalidation.
+            writeFileSync(filePath, 'after');
+            completionAccepted = engine.notifyAsyncTaskCompleted(taskId, 'state updated');
+          }
+          yield* baseStream(params);
+        };
+
+        const events = [];
+        for await (const event of engine.query({ prompt: 'read then refresh state', workDir })) events.push(event);
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        expect(completionAccepted).toBe(true);
+        expect(streamCalls).toBe(3);
+        expect(readExecutions).toBe(2);
+        expect(toolEnds.find(event => event.id === 'read-before-post-stream-completion')?.output).toBe('before');
+        expect(toolStarts.find(event => event.id === 'read-after-post-stream-completion')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-after-post-stream-completion')?.output).toBe('after');
+        expect(readFileSync(filePath, 'utf8')).toBe('after');
+      } finally {
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists a late completion after T1 folding without restoring a raw tool arc', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-folded-async-completion-'));
+      const sessionId = 'session-folded-async-completion';
+      const vpTurnId = 'vp-turn-folded-async-completion';
+      const taskId = 'task-folded-async-completion';
+      const toolCallId = 'call-folded-async-completion';
+      const completion = 'late task output after the tool arc was folded';
+      const conversationStore = new ConversationStore(yeaftDir);
+      let completionAccepted = false;
+      try {
+        const makeToolCall = index => ({
+          type: 'tool_call',
+          id: index === 0 ? toolCallId : `call-fold-helper-${index}`,
+          name: 'FoldHelper',
+          input: { index },
+        });
+        mockAdapter.pushResponse([
+          ...Array.from({ length: 31 }, (_, index) => makeToolCall(index)),
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        // T1 reflection uses adapter.call(), which is recorded between the
+        // initial tool stream and the continuation stream.
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'Waiting for the late task result.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'Late result consumed.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: {
+            model: 'test-model',
+            maxOutputTokens: 1024,
+            asyncTaskWaitTimeoutMs: 1_000,
+            // Session reflection is pressure-gated. Make the 31-call batch
+            // exceed the threshold so this covers the durable T1 path.
+            maxContextTokens: 1,
+          },
+          conversationStore,
+          yeaftDir,
+        });
+        engine.registerTool({
+          name: 'FoldHelper',
+          description: 'Produce a foldable tool result.',
+          parameters: { type: 'object' },
+          execute: async (input, ctx) => {
+            if (input.index === 0) ctx.registerAsyncTask(taskId);
+            return `tool output ${input.index}`;
+          },
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'run enough tools to fold then wait for completion',
+          sessionId,
+          vpTurnId,
+        })) {
+          events.push(event);
+          if (event.type === 'async_task_wait_start') {
+            completionAccepted = engine.notifyAsyncTaskCompleted(taskId, completion);
+          }
+        }
+
+        expect(completionAccepted).toBe(true);
+        // stream #1, the synchronous T1 reflector call, stream #2 (which
+        // waits), then stream #3 carrying the continuation note.
+        expect(mockAdapter.callLog).toHaveLength(4);
+        const continuationMessages = mockAdapter.callLog[3].messages;
+        // The provider transcript retains the original folded tool result as
+        // historical context, but the late completion itself must be injected
+        // only as a continuation note rather than a reconstructed raw arc.
+        const lateCompletionTool = continuationMessages.find(message => (
+          message.role === 'tool'
+            && message.toolCallId === toolCallId
+            && String(message.content).includes(completion)
+        ));
+        expect(lateCompletionTool).toBeUndefined();
+        expect(continuationMessages.some(message => (
+          message.role === 'user'
+            && message._asyncTaskCompletion === true
+            && String(message.content).includes(completion)
+        ))).toBe(true);
+        expect(events.find(event => event.type === 'tool_result_update')).toMatchObject({
+          taskId,
+          toolCallId,
+          content: completion,
+        });
+
+        // Completion notes are internal control rows rather than reflections.
+        // Inspect the durable transcript directly; normal history deliberately
+        // hides engine-private control context from user-visible replay.
+        const storedAll = conversationStore.loadAll();
+        const storedCompletion = storedAll.find(message => message.role === 'user'
+            && message.internal === true
+            && message._asyncTaskCompletion === true
+            && String(message.content).includes(completion));
+        expect(storedCompletion).toMatchObject({
+          sessionId,
+          turnId: vpTurnId,
+          userAuthored: false,
+          internal: true,
+        });
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('bounds same-turn async completion content for the model while preserving durable output', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-async-completion-budget-'));
+      const sessionId = 'session-async-completion-budget';
+      const taskId = 'task-async-completion-budget';
+      const initialOutput = 'The task is running.';
+      const completion = `completed:\n${'界'.repeat(TOOL_RESULT_MAX_BYTES)}`;
+      const conversationStore = new ConversationStore(yeaftDir);
+      let completionAccepted = false;
+      try {
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'call_async_completion', name: 'WaitForCompletion', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'Waiting for completion.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'Completion consumed.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024, asyncTaskWaitTimeoutMs: 1_000 },
+          conversationStore,
+          yeaftDir,
+        });
+        engine.registerTool({
+          name: 'WaitForCompletion',
+          description: 'Wait for an asynchronous completion.',
+          parameters: { type: 'object' },
+          execute: async (_input, ctx) => {
+            ctx.registerAsyncTask(taskId);
+            return initialOutput;
+          },
+        });
+
+        const events = [];
+        for await (const event of engine.query({ prompt: 'wait for the task', sessionId })) {
+          events.push(event);
+          if (event.type === 'async_task_wait_start') {
+            completionAccepted = engine.notifyAsyncTaskCompleted(taskId, completion);
+          }
+        }
+
+        expect(completionAccepted).toBe(true);
+        expect(mockAdapter.callLog).toHaveLength(3);
+        const modelToolResult = mockAdapter.callLog[2].messages
+          .find(message => message.role === 'tool' && message.toolCallId === 'call_async_completion');
+        expect(modelToolResult.content).toContain('[truncated: WaitForCompletion returned');
+        expect(Buffer.byteLength(modelToolResult.content, 'utf8')).toBeLessThanOrEqual(TOOL_RESULT_MAX_BYTES);
+        expect(modelToolResult.content).toContain('completed:');
+
+        const durableToolResult = conversationStore.loadRecentBySession(sessionId, 10)
+          .find(message => message.role === 'tool' && message.toolCallId === 'call_async_completion');
+        expect(durableToolResult.content).toBe(`${initialOutput}\n\n${completion}`);
+        expect(Buffer.byteLength(durableToolResult.content, 'utf8')).toBeGreaterThan(TOOL_RESULT_MAX_BYTES);
+        expect(events.find(event => event.type === 'tool_result_update')?.content).toBe(completion);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not reuse reads after a background Bash task mutates the workspace', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-background-'));
+      const yeaftDir = join(workDir, '.yeaft');
+      const sessionId = 'session-background-read-cache';
+      const filePath = join(workDir, 'state.txt');
+      const releasePath = join(workDir, 'release');
+      const taskManager = new TaskManager({ yeaftDir });
+      let backgroundTaskId = null;
+      writeFileSync(filePath, 'before');
+      try {
+        const waitForReleaseScript = [
+          "const fs = require('fs');",
+          'const [releasePath, filePath] = process.argv.slice(1);',
+          'const timer = setInterval(() => {',
+          '  if (!fs.existsSync(releasePath)) return;',
+          '  clearInterval(timer);',
+          "  fs.writeFileSync(filePath, 'after');",
+          '}, 5);',
+        ].join(' ');
+        const backgroundCommand = process.platform === 'win32'
+          ? `& ${JSON.stringify(process.execPath)} -e ${JSON.stringify(waitForReleaseScript)} ${JSON.stringify(releasePath)} ${JSON.stringify(filePath)}`
+          : `${JSON.stringify(process.execPath)} -e ${JSON.stringify(waitForReleaseScript)} ${JSON.stringify(releasePath)} ${JSON.stringify(filePath)}`;
+        const baseStream = mockAdapter.stream.bind(mockAdapter);
+        let streamCalls = 0;
+        mockAdapter.stream = async function* streamAfterBackgroundWrite(params) {
+          streamCalls += 1;
+          if (streamCalls === 2) {
+            const task = taskManager.listActiveTasks(sessionId).find(item => item.kind === 'shell');
+            if (!task) throw new Error('background shell task did not start');
+            backgroundTaskId = task.id;
+            writeFileSync(releasePath, 'go');
+            const deadline = Date.now() + 2_000;
+            while (taskManager.getTask(sessionId, backgroundTaskId)?.status === 'running' && Date.now() < deadline) {
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            const completed = taskManager.getTask(sessionId, backgroundTaskId);
+            if (completed?.status !== 'succeeded') {
+              throw new Error(`background shell task did not complete successfully: ${completed?.status || 'missing'}`);
+            }
+          }
+          yield* baseStream(params);
+        };
+
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'start-background-write', name: 'Bash', input: {
+            command: backgroundCommand,
+            background: true,
+            taskTitle: 'Write state after release',
+          } },
+          { type: 'tool_call', id: 'read-before-release', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-after-background-write', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const registry = new ToolRegistry();
+        registry.register(bashTool).register(fileReadTool).register(fileWriteTool);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          toolRegistry: registry,
+          taskManager,
+          sessionId,
+        });
+
+        const events = [];
+        for await (const event of engine.query({ prompt: 'update and reread the file', workDir })) events.push(event);
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        expect(backgroundTaskId).toBeTruthy();
+        expect(toolEnds.find(event => event.id === 'read-before-release')?.output).toContain('before');
+        expect(toolStarts.find(event => event.id === 'read-after-background-write')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-after-background-write')?.output).toContain('after');
+        expect(readFileSync(filePath, 'utf8')).toBe('after');
+        expect(taskManager.getTask(sessionId, backgroundTaskId)?.status).toBe('succeeded');
+      } finally {
+        if (!existsSync(releasePath)) writeFileSync(releasePath, 'go');
+        const task = backgroundTaskId
+          ? taskManager.getTask(sessionId, backgroundTaskId)
+          : taskManager.listActiveTasks(sessionId).find(item => item.kind === 'shell');
+        if (task?.status === 'running') taskManager.cancelTask(sessionId, task.id);
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not reuse reads after a SpawnAgent writes the workspace', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-sub-agent-'));
+      const yeaftDir = join(workDir, '.yeaft');
+      const sessionId = 'session-sub-agent-read-cache';
+      const filePath = join(workDir, 'state.txt');
+      const taskManager = new TaskManager({ yeaftDir });
+      let childToolStarts = 0;
+      let spawnedAgentId = null;
+      writeFileSync(filePath, 'before');
+      try {
+        const childAdapter = {
+          async *stream() {
+            childToolStarts += 1;
+            if (childToolStarts === 1) {
+              yield { type: 'tool_call', id: 'child-write', name: 'FileWrite', input: {
+                file_path: 'state.txt',
+                content: 'after',
+              } };
+              yield { type: 'stop', stopReason: 'tool_use' };
+              return;
+            }
+            yield { type: 'text_delta', text: 'child wrote the state' };
+            yield { type: 'stop', stopReason: 'end_turn' };
+          },
+          async call() { return { text: 'ok', usage: {} }; },
+        };
+        const baseStream = mockAdapter.stream.bind(mockAdapter);
+        mockAdapter.stream = async function* streamAfterChildWrite(params) {
+          if (params.messages?.some(message => message.role === 'tool' && message.toolCallId === 'spawn-child-write')) {
+            const agent = spawnedAgentId ? getAgentRegistry().get(spawnedAgentId) : null;
+            if (!agent?.taskId) throw new Error('sub-agent task did not start');
+            const deadline = Date.now() + 2_000;
+            while (taskManager.getTask(sessionId, agent.taskId)?.status === 'running' && Date.now() < deadline) {
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            const completed = taskManager.getTask(sessionId, agent.taskId);
+            if (completed?.status !== 'succeeded') {
+              throw new Error(`sub-agent task did not complete successfully: ${completed?.status || 'missing'}`);
+            }
+          }
+          yield* baseStream(params);
+        };
+
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before-child-write', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'tool_call', id: 'spawn-child-write', name: 'SpawnAgent', input: {
+            name: 'cache-write-child',
+            mission: 'Write state.txt after the release file appears.',
+          } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-after-child-write', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const registry = new ToolRegistry();
+        registry.register(fileReadTool).register(fileWriteTool).register({
+          ...agentTool,
+          execute: (input, toolCtx) => agentTool.execute(input, {
+            ...toolCtx,
+            parentEngineDeps: {
+              ...toolCtx.parentEngineDeps,
+              adapter: childAdapter,
+              parentToolRegistry: registry,
+              subAgentLogDir: join(yeaftDir, 'sub-agent-logs'),
+            },
+          }),
+        });
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          toolRegistry: registry,
+          taskManager,
+          yeaftDir,
+          sessionId,
+          vpId: 'vp-owner',
+        });
+
+        const events = [];
+        const query = engine.query({
+          prompt: 'delegate the write and reread the file',
+          workDir,
+          sessionId,
+          senderVpId: 'vp-owner',
+          threadId: 'main',
+        });
+        for await (const event of query) {
+          events.push(event);
+          if (event.type === 'tool_end' && event.id === 'spawn-child-write') {
+            spawnedAgentId = JSON.parse(event.output).agentId;
+          }
+        }
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        const agent = getAgentRegistry().get(spawnedAgentId);
+        expect(spawnedAgentId).toBeTruthy();
+        expect(agent?.taskId).toBeTruthy();
+        expect(childToolStarts).toBe(2);
+        expect(toolEnds.find(event => event.id === 'read-before-child-write')?.output).toContain('before');
+        expect(toolStarts.find(event => event.id === 'read-after-child-write')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-after-child-write')?.output).toContain('after');
+        expect(readFileSync(filePath, 'utf8')).toBe('after');
+        expect(taskManager.getTask(sessionId, agent.taskId)?.status).toBe('succeeded');
+      } finally {
+        for (const agent of getAgentRegistry().values()) {
+          if (agent.parentSessionId !== sessionId || agent.status === 'completed') continue;
+          agent.abortController?.abort('test cleanup');
+          agent.status = 'closed';
+        }
+        _resetAgentRegistry();
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not reuse reads after a started Work Item writes the workspace', async () => {
+      const workDir = mkdtempSync(join(tmpdir(), 'yeaft-read-cache-work-item-'));
+      const sessionId = 'session-work-item-read-cache';
+      const filePath = join(workDir, 'state.txt');
+      const criterion = 'state.txt contains after';
+      let workCenter = null;
+      let releaseWorkItemWrite = null;
+      let resolveRunnerStarted = null;
+      let resolveWriteCompleted = null;
+      const runnerStarted = new Promise(resolve => { resolveRunnerStarted = resolve; });
+      const writeReleased = new Promise(resolve => { releaseWorkItemWrite = resolve; });
+      const writeCompleted = new Promise(resolve => { resolveWriteCompleted = resolve; });
+      writeFileSync(filePath, 'before');
+      try {
+        const runner = {
+          async run() {
+            resolveRunnerStarted();
+            await writeReleased;
+            writeFileSync(filePath, 'after');
+            resolveWriteCompleted();
+            return {
+              outcome: 'completed',
+              response: 'Action wrote the state.',
+              summary: 'State written.',
+              evidence: ['state.txt updated by the Work Item runner'],
+              acceptanceChecks: [{ criterion, status: 'passed', evidence: 'state.txt contains after' }],
+            };
+          },
+        };
+        let initialActionCreated = false;
+        const coordinator = {
+          ownerBootId: 'coordinator-owner',
+          advance(mailboxId, options = {}) {
+            if (initialActionCreated) return null;
+            initialActionCreated = true;
+            const claim = workCenter.store.claimCoordinatorMailbox(
+              options.workItemId, this.ownerBootId, 60_000,
+            );
+            if (!claim || claim.id !== mailboxId) return null;
+            const started = workCenter.store.beginDynamicCoordinatorTurn(mailboxId, {
+              ownerBootId: this.ownerBootId,
+              claimEpoch: claim.claim_epoch,
+            });
+            if (!started) return null;
+            const actionId = `cache-write-${started.turnId}`;
+            const detail = workCenter.store.completeCoordinatorTurn(started.turnId, {
+              reply: 'Starting the state update Action.',
+              decision: {
+                kind: 'create_actions', reason: 'The Work Item is actionable.',
+                contractPatch: null, guidance: [], actions: [],
+              },
+              mutation: {
+                createdActions: [{
+                  id: actionId,
+                  type: 'implement',
+                  stageId: actionId,
+                  assignmentPolicy: {
+                    mode: 'planned', capability: 'implement', candidateVpIds: ['omni'],
+                    fixedVpId: null, assignmentReason: 'Test executor', separateFromStageTypes: [],
+                  },
+                  modelPolicy: null,
+                  dependsOnStageIds: [],
+                  sourceActionIds: [],
+                  workspaceMode: 'shared',
+                  changesRequestedStageId: null,
+                  requiredRole: '',
+                  brief: {
+                    objective: 'Update state.txt for the cache invalidation test.',
+                    approach: 'Write the requested state after the Coordinator starts this Action.',
+                    expectedOutcome: 'state.txt contains after.',
+                  },
+                  context: [],
+                  maxAttempts: 2,
+                  instruction: 'Update state.txt to after.',
+                }],
+                supersedeActionIds: [],
+                contractPatch: null,
+                workItemType: 'state-write',
+              },
+            }, started.fence);
+            options.onUpdate?.('coordinator.advance_completed', detail);
+            return { detail, task: Promise.resolve(detail) };
+          },
+          shutdown: async () => {},
+        };
+        workCenter = new WorkCenterService({
+          yeaftDir: join(workDir, '.yeaft-work-center'),
+          runner,
+          coordinator,
+          pollIntervalMs: 5,
+          watcherOptions: { concurrencyProvider: () => 1 },
+          settingsReader: () => ({}),
+          listAvailableVpIds: () => ['omni'],
+        });
+        workCenter.start();
+        __testSetWorkCenterService(workCenter);
+        const baseStream = mockAdapter.stream.bind(mockAdapter);
+        mockAdapter.stream = async function* streamAfterWorkItemWrite(params) {
+          const hasStartedWorkItem = params.messages?.some(message => (
+            message.role === 'tool' && message.toolCallId === 'start-work-item'
+          ));
+          if (hasStartedWorkItem) {
+            let timer = null;
+            try {
+              await Promise.race([
+                runnerStarted,
+                new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Work Item runner did not start')), 2_000); }),
+              ]);
+            } finally {
+              if (timer) clearTimeout(timer);
+            }
+            releaseWorkItemWrite();
+            await writeCompleted;
+          }
+          yield* baseStream(params);
+        };
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-before-work-item', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'tool_call', id: 'start-work-item', name: 'CreateWorkItem', input: {
+            title: 'Write state',
+            goal: 'Update state.txt',
+            acceptanceCriteria: [criterion],
+            workDir,
+            start: true,
+          } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'read-after-work-item', name: 'FileRead', input: { file_path: 'state.txt' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'done' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const { default: createWorkItemTool } = await import('../../../agent/yeaft/tools/create-work-item.js');
+        const bridge = await import('../../../agent/yeaft/web-bridge.js');
+        bridge.__testSetSession({
+          conversationStore: { loadRecentBySession: () => [] },
+        });
+        const registry = new ToolRegistry();
+        registry.register(fileReadTool).register(createWorkItemTool);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          toolRegistry: registry,
+          sessionId,
+        });
+
+        const events = [];
+        for await (const event of engine.query({ prompt: 'start the work item and reread the state', workDir, sessionId })) {
+          events.push(event);
+        }
+
+        const toolStarts = events.filter(event => event.type === 'tool_start');
+        const toolEnds = events.filter(event => event.type === 'tool_end');
+        const created = JSON.parse(toolEnds.find(event => event.id === 'start-work-item')?.output || '{}');
+        expect(created.workItemId).toBeTruthy();
+        expect(toolEnds.find(event => event.id === 'read-before-work-item')?.output).toContain('before');
+        expect(toolStarts.find(event => event.id === 'read-after-work-item')?.reused).not.toBe(true);
+        expect(toolEnds.find(event => event.id === 'read-after-work-item')?.output).toContain('after');
+        expect(readFileSync(filePath, 'utf8')).toBe('after');
+        const deadline = Date.now() + 2_000;
+        while (!workCenter.store.getWorkItemDetail(created.workItemId)?.runs.some(run => (
+          run.response === 'Action wrote the state.' && run.status === 'completed'
+        )) && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(workCenter.store.getWorkItemDetail(created.workItemId)?.runs).toEqual(expect.arrayContaining([
+          expect.objectContaining({ response: 'Action wrote the state.', status: 'completed' }),
+        ]));
+      } finally {
+        releaseWorkItemWrite?.();
+        await workCenter?.shutdown();
+        __testSetWorkCenterService(null);
+        const bridge = await import('../../../agent/yeaft/web-bridge.js');
+        bridge.__testSetSession(null);
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    });
+
+    it('executes the complete tool batch before appending live user input', async () => {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'Searching both...' },
         { type: 'tool_call', id: 'call_1', name: 'search', input: { q: 'foo' } },
@@ -1329,9 +3894,25 @@ describe('Engine', () => {
       ]);
 
       mockAdapter.pushResponse([
-        { type: 'text_delta', text: 'Found both results.' },
+        { type: 'text_delta', text: 'Found both results and handled the update.' },
         { type: 'stop', stopReason: 'end_turn' },
       ]);
+
+      const pendingUserMessages = [];
+      const baseStream = mockAdapter.stream.bind(mockAdapter);
+      let appendedDuringStream = false;
+      mockAdapter.stream = async function* streamWithUserAppend(params) {
+        for await (const event of baseStream(params)) {
+          yield event;
+          if (!appendedDuringStream && event.type === 'tool_call' && event.id === 'call_2') {
+            appendedDuringStream = true;
+            pendingUserMessages.push({
+              content: 'Include the new requirement after both searches.',
+              preview: 'Include the new requirement after both searches.',
+            });
+          }
+        }
+      };
 
       const engine = new Engine({
         adapter: mockAdapter,
@@ -1347,7 +3928,10 @@ describe('Engine', () => {
       });
 
       const events = [];
-      for await (const event of engine.query({ prompt: 'search foo and bar' })) {
+      for await (const event of engine.query({
+        prompt: 'search foo and bar',
+        drainPendingUserMessages: () => pendingUserMessages.splice(0),
+      })) {
         events.push(event);
       }
 
@@ -1356,10 +3940,32 @@ describe('Engine', () => {
       expect(toolEnds[0].output).toBe('Results: foo');
       expect(toolEnds[1].output).toBe('Results: bar');
 
-      // Second call should have both tool results
+      expect(mockAdapter.callLog).toHaveLength(2);
       const secondCall = mockAdapter.callLog[1];
-      const toolMessages = secondCall.messages.filter(m => m.role === 'tool');
-      expect(toolMessages).toHaveLength(2);
+      expect(secondCall.messages.map(message => message.role)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+        'tool',
+        'user',
+      ]);
+      expect(secondCall.messages[1].toolCalls.map(call => call.id)).toEqual(['call_1', 'call_2']);
+      expect(secondCall.messages.slice(2, 4).map(message => message.toolCallId)).toEqual(['call_1', 'call_2']);
+      expect(secondCall.messages.at(-1)).toMatchObject({
+        role: 'user',
+        content: 'Include the new requirement after both searches.',
+      });
+
+      const appendEventIndex = events.findIndex(event => event.type === 'user_append');
+      const lastToolEndIndex = events.reduce(
+        (last, event, index) => event.type === 'tool_end' ? index : last,
+        -1,
+      );
+      expect(appendEventIndex).toBeGreaterThan(lastToolEndIndex);
+      expect(events.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+        stopReason: 'end_turn',
+        terminal: true,
+      });
     });
   });
 
@@ -1823,6 +4429,41 @@ describe('Engine', () => {
       expect(events).toContainEqual(expect.objectContaining({ type: 'text_delta', text: 'fallback ok' }));
     });
 
+    it('retries generic 403 with the dedicated schedule then exposes the final status', async () => {
+      const { LLMAuthError } = await import('../../../agent/yeaft/llm/adapter.js');
+      let attempts = 0;
+      const engine = new Engine({
+        adapter: {
+          async *stream() {
+            attempts += 1;
+            throw new LLMAuthError('LLM provider returned HTTP 403 (unknown_forbidden)', 403, {
+              reasonCode: 'unknown_forbidden',
+              temporary: true,
+            });
+          },
+        },
+        trace,
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          llmRetry: { forbiddenRetryDelaysMs: [0, 0] },
+        },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'hello' })) events.push(event);
+
+      expect(attempts).toBe(3);
+      expect(events.filter(e => e.type === 'llm_retry')).toEqual([
+        expect.objectContaining({ reason: 'temporary_forbidden', attempt: 1, maxRetries: 2, statusCode: 403 }),
+        expect.objectContaining({ reason: 'temporary_forbidden', attempt: 2, maxRetries: 2, statusCode: 403 }),
+      ]);
+      const finalError = events.find(e => e.type === 'error');
+      expect(finalError.error.statusCode).toBe(403);
+      expect(finalError.error.reasonCode).toBe('unknown_forbidden');
+      expect(finalError.retryable).toBe(false);
+    });
+
     it('does not retry on non-retryable error', async () => {
       const { LLMAuthError } = await import('../../../agent/yeaft/llm/adapter.js');
       let attempts = 0;
@@ -1850,8 +4491,38 @@ describe('Engine', () => {
       expect(events.filter(e => e.type === 'llm_retry')).toHaveLength(0);
       const errorEvents = events.filter(e => e.type === 'error');
       expect(errorEvents).toHaveLength(1);
-      // 401 is not in the retryable allow-list at the engine event boundary.
+      // Static credentials cannot self-heal; waiting would only delay the same failure.
       expect(errorEvents[0].retryable).toBe(false);
+      expect(errorEvents[0].error.statusCode).toBe(401);
+    });
+
+    it('does not retry a policy-denied 403', async () => {
+      const { LLMAuthError } = await import('../../../agent/yeaft/llm/adapter.js');
+      let attempts = 0;
+      const engine = new Engine({
+        adapter: {
+          async *stream() {
+            attempts += 1;
+            throw new LLMAuthError('LLM provider returned HTTP 403 (permission_denied)', 403, {
+              reasonCode: 'permission_denied',
+              temporary: false,
+            });
+          },
+        },
+        trace,
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          llmRetry: { forbiddenRetryDelaysMs: [0, 0] },
+        },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'hello' })) events.push(event);
+
+      expect(attempts).toBe(1);
+      expect(events.filter(e => e.type === 'llm_retry')).toHaveLength(0);
+      expect(events.find(e => e.type === 'error').error.reasonCode).toBe('permission_denied');
     });
 
     it('terminates on non-retryable in-band adapter error instead of normal end_turn', async () => {
@@ -2329,7 +5000,281 @@ describe('Engine', () => {
       expect(tools[0].tool_name).toBe('search');
       expect(tools[0].tool_output).toBe('results');
 
+      dbTrace.refreshConfig({ traceTextMaxBytes: 64 });
+      const boundedTurn = dbTrace.startTurn({ traceId: 'trace-bounded', turnNumber: 3 });
+      dbTrace.endTurn(boundedTurn, {
+        systemPrompt: 'system',
+        messages: [{ role: 'user', content: '😀'.repeat(200) }],
+        responseText: 'ok',
+        stopReason: 'end_turn',
+      });
+      await dbTrace.flush();
+      const bounded = await dbTrace.fetchRecentDebugHistory({ detailTurnId: 'trace-bounded' });
+      expect(Buffer.byteLength(JSON.stringify(bounded.loops[0]?.messages || []), 'utf8')).toBeLessThanOrEqual(64);
+
       await dbTrace.close();
+
+      const traceRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-raw-response-'));
+      const boundedTrace = new DebugTrace(traceRoot);
+      const rawResponse = {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        body: 'x'.repeat(420_000),
+        format: 'openai-responses',
+      };
+
+      try {
+        for (let i = 1; i <= 100; i += 1) {
+          const turnId = boundedTrace.startTurn({
+            traceId: 'long-tool-turn',
+            turnNumber: i,
+            sessionId: 's-long',
+            userPrompt: 'do long work',
+          });
+          boundedTrace.endTurn(turnId, {
+            responseText: '',
+            rawResponse,
+            stopReason: 'tool_use',
+            messages: [{ role: 'user', content: 'do long work' }],
+          });
+        }
+        await boundedTrace.close();
+
+        const requestRoot = join(traceRoot, 'sessions', 's-long', 'debug', 'requests');
+        const [requestDir] = readdirSync(requestRoot);
+        const eventFile = join(requestRoot, requestDir, 'events.jsonl');
+        const storedLoops = readFileSync(eventFile, 'utf8')
+          .trim()
+          .split('\n')
+          .map(line => JSON.parse(line))
+          .filter(event => event.type === 'loop')
+          .map(event => event.record);
+
+        expect(storedLoops).toHaveLength(100);
+        expect(storedLoops.every(loop => loop.rawResponse?.__truncated === true)).toBe(true);
+        expect(storedLoops.every(loop => loop.rawResponse?.maxBytes === 64 * 1024)).toBe(true);
+        expect(lstatSync(eventFile).size).toBeLessThan(8 * 1024 * 1024);
+
+        const reopened = new DebugTrace(traceRoot);
+        const detail = await reopened.fetchTurnDebug({ sessionId: 's-long', turnId: 'long-tool-turn' });
+        expect(detail.turns).toHaveLength(1);
+        expect(detail.loops).toHaveLength(100);
+        expect(detail.loops.at(-1)?.loopNumber).toBe(100);
+        await reopened.close();
+
+        appendFileSync(eventFile, '{"type":"loop"', 'utf8');
+        const afterTornTail = new DebugTrace(traceRoot);
+        const recovered = await afterTornTail.fetchTurnDebug({ sessionId: 's-long', turnId: 'long-tool-turn' });
+        expect(recovered.loops).toHaveLength(100);
+        await afterTornTail.close();
+
+        const longPrefix = 's'.repeat(120);
+        const firstLongSession = `${longPrefix}AAAA`;
+        const secondLongSession = `${longPrefix}BBBB`;
+        const isolated = new DebugTrace(traceRoot);
+        const secretTurn = isolated.startTurn({ traceId: 'same-turn', turnNumber: 1, sessionId: firstLongSession, userPrompt: 'SECRET' });
+        isolated.endTurn(secretTurn, { responseText: 'SECRET-X', stopReason: 'end_turn' });
+        const publicTurn = isolated.startTurn({ traceId: 'same-turn', turnNumber: 1, sessionId: secondLongSession, userPrompt: 'PUBLIC' });
+        isolated.endTurn(publicTurn, { responseText: 'PUBLIC-Y', stopReason: 'end_turn' });
+        await isolated.close();
+        const isolationReader = new DebugTrace(traceRoot);
+        const isolatedDetail = await isolationReader.fetchTurnDebug({ sessionId: secondLongSession, turnId: 'same-turn' });
+        expect(isolatedDetail.loops.map(loop => loop.response)).toEqual(['PUBLIC-Y']);
+        await isolationReader.close();
+
+        const continuationRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-continuation-'));
+        try {
+          const initial = new DebugTrace(continuationRoot);
+          const initialTurn = initial.startTurn({ traceId: 'continued-turn', turnNumber: 1, sessionId: 'continued-session' });
+          initial.endTurn(initialTurn, { responseText: 'loop-1', stopReason: 'tool_use' });
+          await initial.close();
+          const requests = join(continuationRoot, 'sessions', 'continued-session', 'debug', 'requests');
+          const [continuedRequestKey] = readdirSync(requests);
+          const continuedEvents = join(requests, continuedRequestKey, 'events.jsonl');
+          appendFileSync(continuedEvents, '{"type":"loop"', 'utf8');
+
+          const continued = new DebugTrace(continuationRoot);
+          await continued.fetchTurnDebug({ sessionId: 'continued-session', turnId: 'continued-turn' });
+          const secondTurn = continued.startTurn({ traceId: 'continued-turn', turnNumber: 2, sessionId: 'continued-session' });
+          continued.endTurn(secondTurn, { responseText: 'loop-2', stopReason: 'end_turn' });
+          await continued.close();
+          const continuationReader = new DebugTrace(continuationRoot);
+          const continuedDetail = await continuationReader.fetchTurnDebug({ sessionId: 'continued-session', turnId: 'continued-turn' });
+          expect(continuedDetail.loops.map(loop => loop.response)).toEqual(['loop-1', 'loop-2']);
+          await continuationReader.close();
+        } finally {
+          rmSync(continuationRoot, { recursive: true, force: true });
+        }
+
+        const legacyRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-legacy-'));
+        try {
+          const legacyRequestDir = join(legacyRoot, 'sessions', 'legacy-session', 'debug', 'requests', 'legacy-request');
+          mkdirSync(legacyRequestDir, { recursive: true });
+          writeFileSync(join(legacyRequestDir, 'trace.json'), JSON.stringify({
+            version: 2,
+            requestKey: 'legacy-request',
+            requestId: 'legacy-turn',
+            traceId: 'legacy-turn',
+            sessionId: 'legacy-session',
+            openedAt: 1,
+            updatedAt: 1,
+            active: true,
+            baseRequest: { systemPrompt: '', messages: [], rawRequest: null },
+            loops: [{ loopInstanceId: 'legacy-loop-1', turnRowId: 'legacy-loop-1', loopNumber: 1, response: 'legacy-1', requestDelta: { base: true, systemPrompt: '', messages: [] }, at: 1 }],
+            tools: [],
+          }), 'utf8');
+          const legacyWriter = new DebugTrace(legacyRoot);
+          await legacyWriter.fetchTurnDebug({ sessionId: 'legacy-session', turnId: 'legacy-turn' });
+          const legacyNext = legacyWriter.startTurn({ traceId: 'legacy-turn', turnNumber: 2, sessionId: 'legacy-session' });
+          legacyWriter.endTurn(legacyNext, { responseText: 'legacy-2', stopReason: 'end_turn' });
+          await legacyWriter.close();
+          const legacyReader = new DebugTrace(legacyRoot);
+          const legacyDetail = await legacyReader.fetchTurnDebug({ sessionId: 'legacy-session', turnId: 'legacy-turn' });
+          expect(legacyDetail.loops.map(loop => loop.response)).toEqual(['legacy-1', 'legacy-2']);
+          await legacyReader.close();
+        } finally {
+          rmSync(legacyRoot, { recursive: true, force: true });
+        }
+
+        const retentionRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-retention-'));
+        try {
+          const sessionId = `${'r'.repeat(120)}TAIL`;
+          const firstProcess = new DebugTrace(retentionRoot);
+          for (let i = 1; i <= 10; i += 1) {
+            const id = `retention-${i}`;
+            const rowId = firstProcess.startTurn({ traceId: id, turnNumber: 1, sessionId });
+            firstProcess.endTurn(rowId, { responseText: id, stopReason: 'end_turn' });
+          }
+          await firstProcess.close();
+          const currentRequests = join(retentionRoot, 'sessions', sessionId, 'debug', 'requests');
+          const currentTurns = join(retentionRoot, 'sessions', sessionId, 'debug', 'turns');
+          expect(readdirSync(currentRequests)).toHaveLength(10);
+          const firstLocator = readdirSync(currentTurns).find(name => name.startsWith('retention-1-'));
+          expect(firstLocator).toBeTruthy();
+
+          // Simulate coexistence with the old lossy directory mapping. The
+          // retained request is moved, not copied, so the unified timeline is
+          // still exactly ten requests before process B appends one.
+          const [firstRequestDir] = readdirSync(currentRequests).sort();
+          const legacyDebugDir = join(retentionRoot, 'sessions', sessionId.slice(0, 120), 'debug');
+          const legacyRequests = join(legacyDebugDir, 'requests');
+          const legacyTurns = join(legacyDebugDir, 'turns');
+          mkdirSync(legacyRequests, { recursive: true });
+          mkdirSync(legacyTurns, { recursive: true });
+          renameSync(join(currentRequests, firstRequestDir), join(legacyRequests, firstRequestDir));
+          renameSync(join(currentTurns, firstLocator), join(legacyTurns, firstLocator));
+
+          const secondProcess = new DebugTrace(retentionRoot);
+          const eleventh = secondProcess.startTurn({ traceId: 'retention-11', turnNumber: 1, sessionId });
+          secondProcess.endTurn(eleventh, { responseText: 'retention-11', stopReason: 'end_turn' });
+          await secondProcess.close();
+
+          const remainingCurrent = readdirSync(currentRequests);
+          const remainingLegacy = readdirSync(legacyRequests);
+          expect(remainingCurrent.length + remainingLegacy.length).toBe(10);
+          expect(remainingLegacy).toHaveLength(0);
+          expect(existsSync(join(currentTurns, firstLocator))).toBe(false);
+          expect(existsSync(join(legacyTurns, firstLocator))).toBe(false);
+          const retentionReader = new DebugTrace(retentionRoot);
+          const newest = await retentionReader.fetchTurnDebug({ sessionId, turnId: 'retention-11' });
+          expect(newest.loops.map(loop => loop.response)).toEqual(['retention-11']);
+          const pruned = await retentionReader.fetchTurnDebug({ sessionId, turnId: 'retention-1' });
+          expect(pruned.loops).toEqual([]);
+          await retentionReader.close();
+        } finally {
+          rmSync(retentionRoot, { recursive: true, force: true });
+        }
+
+        const duplicateRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-legacy-duplicate-'));
+        try {
+          const sessionId = `${'d'.repeat(120)}TAIL`;
+          const currentRequests = join(duplicateRoot, 'sessions', sessionId, 'debug', 'requests');
+          const legacyRequests = join(duplicateRoot, 'sessions', sessionId.slice(0, 120), 'debug', 'requests');
+          const normalWriter = new DebugTrace(duplicateRoot);
+          for (let i = 1; i <= 9; i += 1) {
+            const id = `normal-${i}`;
+            const rowId = normalWriter.startTurn({ traceId: id, turnNumber: 1, sessionId });
+            normalWriter.endTurn(rowId, { responseText: id, stopReason: 'end_turn' });
+          }
+          await normalWriter.close();
+          const legacyRequestDir = join(legacyRequests, 'legacy-active-request');
+          mkdirSync(legacyRequestDir, { recursive: true });
+          writeFileSync(join(legacyRequestDir, 'trace.json'), JSON.stringify({
+            version: 2,
+            requestKey: 'legacy-active-request',
+            requestId: 'legacy-active-turn',
+            traceId: 'legacy-active-turn',
+            sessionId,
+            openedAt: Date.now(),
+            updatedAt: Date.now(),
+            active: true,
+            baseRequest: { systemPrompt: '', messages: [], rawRequest: null },
+            loops: [{ loopInstanceId: 'legacy-active-1', turnRowId: 'legacy-active-1', loopNumber: 1, response: 'legacy-active-1', requestDelta: { base: true, systemPrompt: '', messages: [] }, at: Date.now() }],
+            tools: [],
+          }), 'utf8');
+
+          const migrationWriter = new DebugTrace(duplicateRoot);
+          await migrationWriter.fetchTurnDebug({ sessionId, turnId: 'legacy-active-turn' });
+          const migratedTurn = migrationWriter.startTurn({ traceId: 'legacy-active-turn', turnNumber: 2, sessionId });
+          migrationWriter.endTurn(migratedTurn, { responseText: 'legacy-active-2', stopReason: 'tool_use' });
+          await migrationWriter.flush();
+          expect(readdirSync(currentRequests)).toHaveLength(10);
+          expect(readdirSync(legacyRequests)).toHaveLength(0);
+
+          // A later loop must keep using the same live request after retention.
+          const nextTurn = migrationWriter.startTurn({ traceId: 'legacy-active-turn', turnNumber: 3, sessionId });
+          migrationWriter.endTurn(nextTurn, { responseText: 'legacy-active-3', stopReason: 'end_turn' });
+          await migrationWriter.close();
+          expect(readdirSync(currentRequests)).toHaveLength(10);
+          const duplicateReader = new DebugTrace(duplicateRoot);
+          const migratedDetail = await duplicateReader.fetchTurnDebug({ sessionId, turnId: 'legacy-active-turn' });
+          expect(migratedDetail.loops.map(loop => loop.response)).toEqual([
+            'legacy-active-1',
+            'legacy-active-2',
+            'legacy-active-3',
+          ]);
+          await duplicateReader.close();
+        } finally {
+          rmSync(duplicateRoot, { recursive: true, force: true });
+        }
+
+        const snapshotTraceRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-snapshot-budget-'));
+        const snapshotTrace = new DebugTrace(snapshotTraceRoot);
+        try {
+          const largeMessages = Array.from({ length: 2_000 }, (_, index) => ({
+            role: index % 2 === 0 ? 'user' : 'assistant',
+            content: `message ${index}: ${'x'.repeat(256)}`,
+          }));
+          const startedAt = Date.now();
+          const snapshotTurn = snapshotTrace.startTurn({
+            traceId: 'snapshot-budget-turn',
+            turnNumber: 1,
+            sessionId: 's-snapshot-budget',
+          });
+          snapshotTrace.endTurn(snapshotTurn, {
+            responseText: '',
+            messages: largeMessages,
+            stopReason: 'end_turn',
+          });
+          await snapshotTrace.close();
+          // The exact wall-clock threshold is intentionally generous for slow
+          // CI. This catches the old O(n²) prefix reserialization without
+          // turning normal host load into a flaky failure.
+          expect(Date.now() - startedAt).toBeLessThan(5_000);
+          const snapshotReader = new DebugTrace(snapshotTraceRoot);
+          const snapshotDetail = await snapshotReader.fetchTurnDebug({
+            sessionId: 's-snapshot-budget',
+            turnId: 'snapshot-budget-turn',
+          });
+          expect(Buffer.byteLength(JSON.stringify(snapshotDetail.loops[0]?.messages || []), 'utf8')).toBeLessThanOrEqual(256 * 1024);
+          await snapshotReader.close();
+        } finally {
+          rmSync(snapshotTraceRoot, { recursive: true, force: true });
+        }
+      } finally {
+        await boundedTrace.close();
+        rmSync(traceRoot, { recursive: true, force: true });
+      }
     });
   });
 
@@ -2507,17 +5452,18 @@ describe('Engine', () => {
       expect(call.system).not.toContain('session_members:');
       expect(call.system).not.toContain('session_topics:');
       expect(call.system).toContain('Session members: vp-omni, vp-martin, vp-linus');
-      expect(call.system).toContain('Current focus: Dream memory segment extraction and organization; current session context prompt rendering');
+      expect(call.system).not.toContain('Current focus:');
       expect(call.system).not.toContain('group: session_active');
       expect(call.system).not.toContain('\nvp: vp-linus');
       expect(call.system).not.toContain('\nmembers: vp-omni');
     });
 
-    it('loads session topics from memory topic scopes when not passed explicitly', async () => {
+    it('derives current focus only from query-selected canonical topic scopes', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-topics-'));
       try {
         mkdirSync(join(yeaftDir, 'memory', 'sessions', 'session_active', 'topic', 'dream', 'segments'), { recursive: true });
         writeFileSync(join(yeaftDir, 'memory', 'sessions', 'session_active', 'topic', 'dream', 'segments', 'memory.md'), 'segment memory');
+        writeFileSync(join(yeaftDir, 'memory', 'sessions', 'session_active', 'topic', 'dream', 'segments', 'content.md'), 'Canonical topic content.');
 
         mockAdapter.pushResponse([
           { type: 'text_delta', text: 'ok' },
@@ -2529,10 +5475,20 @@ describe('Engine', () => {
           trace,
           yeaftDir,
           config: { model: 'test-model', maxOutputTokens: 1024, language: 'en' },
+          memoryIndex: {
+            search({ scopeFilter, requiredTag }) {
+              const scope = 'sessions/session_active/topic/dream/segments';
+              return requiredTag === 'canonical-content' && scopeFilter.includes(scope) ? [{
+                id: 'topic-selector', scope, kind: 'context', tags: [], sourceMessages: [],
+                body: 'Canonical topic content.', rank: -1,
+                createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z',
+              }] : [];
+            },
+          },
         });
 
         for await (const _event of engine.query({
-          prompt: 'test',
+          prompt: 'inspect canonical segments',
           sessionId: 'session_active',
           sessionMembers: ['vp-linus'],
           vpPersona: { vpId: 'vp-linus', displayName: 'Linus' },
@@ -2550,7 +5506,7 @@ describe('Engine', () => {
   });
 
   describe('language in system prompt', () => {
-    it('should use English system prompt by default', async () => {
+    async function verifyEnglishSystemPrompt() {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'ok' },
         { type: 'stop', stopReason: 'end_turn' },
@@ -2570,9 +5526,11 @@ describe('Engine', () => {
       expect(call.system).toContain('Session Participant');
       expect(call.system).not.toContain('Yeaft — AI');
       expect(call.system).not.toContain('核心原则');
-    });
+    }
 
-    it('should use Chinese system prompt when language is zh', async () => {
+    it('uses English and Chinese system prompts with configured tool guidance', async () => {
+      await verifyEnglishSystemPrompt();
+      mockAdapter = new MockAdapter();
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'ok' },
         { type: 'stop', stopReason: 'end_turn' },
@@ -2595,40 +5553,65 @@ describe('Engine', () => {
       expect(call.system).toContain('核心原则');
       expect(call.system).not.toContain('统一模式');
       expect(call.system).not.toContain('你是一个持续伴随的 AI 伙伴');
-    });
+      mockAdapter = new MockAdapter();
 
-    it('should include configured tools and dependency-aware TodoWrite guidance', async () => {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'ok' },
         { type: 'stop', stopReason: 'end_turn' },
       ]);
 
-      const engine = new Engine({
+      const toolGuidanceEngine = new Engine({
         adapter: mockAdapter,
         trace,
         config: { model: 'test-model', maxOutputTokens: 1024, language: 'zh' },
       });
 
-      engine.registerTool({
+      toolGuidanceEngine.registerTool({
         name: 'search',
         description: 'Search',
         parameters: {},
         execute: async () => 'results',
       });
 
-      for await (const _event of engine.query({ prompt: 'test' })) {
+      for await (const _event of toolGuidanceEngine.query({ prompt: 'test' })) {
         // consume
       }
 
-      const call = mockAdapter.callLog[0];
-      expect(call.system).toContain('可用工具：search');
+      const toolGuidanceCall = mockAdapter.callLog[0];
+      expect(toolGuidanceCall.system).toContain('可用工具：search');
 
-      const enSystem = buildSystemPrompt({ language: 'en', toolNames: ['TodoWrite'] });
-      const zhSystem = buildSystemPrompt({ language: 'zh', toolNames: ['TodoWrite'] });
+      const enSystem = buildSystemPrompt({
+        language: 'en',
+        toolNames: ['TodoWrite'],
+        projectLabel: 'Yeaft (project-123)',
+        projectInstruction: 'Run the shared Project verification before release.',
+      });
+      const zhSystem = buildSystemPrompt({
+        language: 'zh',
+        projectLabel: 'Yeaft（project-123）',
+        projectInstruction: '发布前执行统一验证。',
+        toolNames: ['TodoWrite'],
+      });
 
+      expect(enSystem).toContain('[Project Instruction]');
+      expect(enSystem).toContain('The current Session belongs to Project Yeaft (project-123). The unified instruction for this Project is:');
+      expect(enSystem).toContain('Run the shared Project verification before release.');
+      expect(buildSystemPrompt({
+        language: 'en',
+        projectInstruction: 'Use the current Project instruction.',
+      })).toContain('The current Session belongs to the current Project. The unified instruction for this Project is:');
+      expect(buildSystemPrompt({
+        language: 'zh',
+        projectLabel: '   ',
+        projectInstruction: '使用当前 Project 指令。',
+      })).toContain('当前 Session 隶属于当前 Project。当前 Project 的统一 instruction 是：');
+      expect(buildSystemPrompt({ language: 'en', projectInstruction: '   ' }))
+        .not.toContain('[Project Instruction]');
       expect(enSystem).toContain('Avoid an intermediate `TodoWrite`-only model round');
       expect(enSystem).toMatch(/mark work completed only after\s+evidence/);
       expect(enSystem).toContain('A standalone `TodoWrite` remains valid');
+      expect(zhSystem).toContain('当前 Session 隶属于 Project Yeaft（project-123）。当前 Project 的统一 instruction 是：');
+      expect(zhSystem).toContain('发布前执行统一验证。');
       expect(zhSystem).toContain('不要让中间状态的 `TodoWrite` 单独占一个');
       expect(zhSystem).toContain('只有已有证据时才能把工作标记为完成');
       expect(zhSystem).toContain('`TodoWrite` 仍可单独调用');
@@ -2657,4 +5640,2231 @@ describe('Engine', () => {
       expect(zhPlan).toContain('只有第一步必须询问用户时才在计划后停下');
     });
   });
+});
+const managedCliTempDirs = [];
+
+function tempDir(name) {
+  const dir = mkdtempSync(join(tmpdir(), `yeaft-${name}-`));
+  managedCliTempDirs.push(dir);
+  return dir;
+}
+
+function tarArchive(path, content) {
+  const data = Buffer.from(content);
+  const header = Buffer.alloc(512);
+  header.write(path, 0, 100, 'utf8');
+  header.write('0000755\0', 100, 8, 'ascii');
+  header.write('0000000\0', 108, 8, 'ascii');
+  header.write('0000000\0', 116, 8, 'ascii');
+  header.write(`${data.length.toString(8).padStart(11, '0')}\0`, 124, 12, 'ascii');
+  header.fill(32, 148, 156);
+  header[156] = 48;
+  header.write('ustar\0', 257, 6, 'ascii');
+  const checksum = [...header].reduce((sum, byte) => sum + byte, 0);
+  header.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+  return gzipSync(Buffer.concat([
+    header,
+    data,
+    Buffer.alloc((512 - data.length % 512) % 512),
+    Buffer.alloc(1024),
+  ]));
+}
+
+function emptyPathEnv() {
+  return { ...process.env, PATH: '' };
+}
+
+function trustManagedCliFixtures(yeaftDir, names) {
+  const statePath = join(yeaftDir, 'managed-cli.json');
+  let state = {};
+  try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch {}
+  const installations = { ...(state.installations || {}) };
+  for (const name of names) {
+    const path = join(managedCliBinDir(yeaftDir), name);
+    const [assetFileName, archiveSha256] = managedCliToolSpecs[name].assets[
+      `${process.platform}-${process.arch}`
+    ];
+    installations[name] = {
+      version: managedCliToolSpecs[name].version,
+      platform: process.platform,
+      arch: process.arch,
+      assetFileName,
+      archiveSha256,
+      binarySha256: createHash('sha256').update(readFileSync(path)).digest('hex'),
+    };
+  }
+  writeFileSync(statePath, `${JSON.stringify({
+    ...state,
+    version: 2,
+    installations,
+  }, null, 2)}\n`);
+}
+
+function zipArchive(path, content) {
+  const name = Buffer.from(path);
+  const data = Buffer.from(content);
+  const local = Buffer.alloc(30 + name.length + data.length);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(0, 6);
+  local.writeUInt16LE(0, 8);
+  local.writeUInt32LE(data.length, 18);
+  local.writeUInt32LE(data.length, 22);
+  local.writeUInt16LE(name.length, 26);
+  name.copy(local, 30);
+  data.copy(local, 30 + name.length);
+
+  const central = Buffer.alloc(46 + name.length);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(0, 8);
+  central.writeUInt16LE(0, 10);
+  central.writeUInt32LE(data.length, 20);
+  central.writeUInt32LE(data.length, 24);
+  central.writeUInt16LE(name.length, 28);
+  name.copy(central, 46);
+
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length, 12);
+  end.writeUInt32LE(local.length, 16);
+  return Buffer.concat([local, central, end]);
+}
+
+afterEach(() => {
+  for (const dir of managedCliTempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe('managed CLI setup and fast tool integration', () => {
+  async function verifyProcessTermination() {
+    const preAborted = new AbortController();
+    preAborted.abort();
+    await expect(runProcess(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], {
+      signal: preAborted.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+
+    const crScript = "process.stdout.write('out\\r\\n'); process.stderr.write('err\\r\\n')";
+    await expect(runProcess(process.execPath, ['-e', crScript])).resolves.toMatchObject({
+      stdout: 'out\n',
+      stderr: 'err\n',
+    });
+    const replacementScript = "process.stdout.write('valid \\ufffd value')";
+    await expect(runProcess(process.execPath, ['-e', replacementScript])).resolves.toMatchObject({
+      stdout: 'valid \ufffd value',
+    });
+    await expect(runProcess(process.execPath, ['-e', crScript], {
+      preserveCarriageReturns: true,
+    })).resolves.toMatchObject({
+      stdout: 'out\r\n',
+      stderr: 'err\n',
+    });
+
+    if (process.platform !== 'win32') {
+      const termResistant = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)";
+      const startedAt = Date.now();
+      const timedOut = await runProcess(process.execPath, ['-e', termResistant], {
+        timeoutMs: 50,
+        killGraceMs: 25,
+      });
+      expect(timedOut).toMatchObject({ code: 124, timedOut: true });
+      expect(Date.now() - startedAt).toBeLessThan(1000);
+
+      const controller = new AbortController();
+      const pending = runProcess(process.execPath, ['-e', termResistant], {
+        signal: controller.signal,
+        killGraceMs: 25,
+      });
+      setTimeout(() => controller.abort(), 50);
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    }
+  }
+
+  async function verifyWindowsProcessTreeTermination() {
+    for (const taskkillFailure of ['nonzero', 'throw']) {
+      const calls = [];
+      const child = new EventEmitter();
+      child.pid = 4242;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = signal => {
+        calls.push(`proc.kill ${signal}`);
+        setImmediate(() => child.emit('close', 1));
+        return true;
+      };
+      const spawnProcess = () => child;
+      const spawnProcessSync = (command, args) => {
+        calls.push(`${command} ${args.join(' ')}`);
+        if (taskkillFailure === 'throw') throw new Error('taskkill unavailable');
+        return { status: 1 };
+      };
+
+      const result = await runProcess('ignored.exe', [], {
+        timeoutMs: 1,
+        platform: 'win32',
+        spawnProcess,
+        spawnProcessSync,
+      });
+      expect(result).toMatchObject({ code: 124, timedOut: true });
+      expect(calls).toEqual([
+        'taskkill /pid 4242 /t /f',
+        'proc.kill SIGKILL',
+      ]);
+      expect(child.listenerCount('close')).toBe(0);
+      expect(child.listenerCount('error')).toBe(0);
+      expect(child.stdout.listenerCount('data')).toBe(0);
+      expect(child.stderr.listenerCount('data')).toBe(0);
+    }
+
+    const child = new EventEmitter();
+    child.pid = 4343;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    const result = await runProcess('powershell.exe', [], {
+      timeoutMs: 1,
+      forceSettleMs: 5,
+      requireExitConfirmation: true,
+      platform: 'win32',
+      spawnProcess: () => child,
+      spawnProcessSync: () => ({ status: 0 }),
+    });
+    expect(result).toMatchObject({
+      code: 124,
+      timedOut: true,
+      terminationError: 'Process tree did not exit within 5ms after SIGKILL: powershell.exe',
+    });
+    expect(child.listenerCount('close')).toBe(0);
+    expect(child.listenerCount('error')).toBe(0);
+    expect(child.stdout.listenerCount('data')).toBe(0);
+    expect(child.stderr.listenerCount('data')).toBe(0);
+
+    const abortedChild = new EventEmitter();
+    abortedChild.pid = 4545;
+    abortedChild.stdout = new PassThrough();
+    abortedChild.stderr = new PassThrough();
+    abortedChild.kill = () => true;
+    const controller = new AbortController();
+    const aborted = runProcess('powershell.exe', [], {
+      signal: controller.signal,
+      timeoutMs: 1,
+      forceSettleMs: 20,
+      requireExitConfirmation: true,
+      platform: 'win32',
+      spawnProcess: () => abortedChild,
+      spawnProcessSync: () => ({ status: 0 }),
+    });
+    setTimeout(() => controller.abort(), 5);
+    await expect(aborted).rejects.toMatchObject({ name: 'AbortError' });
+    expect(abortedChild.listenerCount('close')).toBe(0);
+    expect(abortedChild.listenerCount('error')).toBe(0);
+    expect(abortedChild.stdout.listenerCount('data')).toBe(0);
+    expect(abortedChild.stderr.listenerCount('data')).toBe(0);
+
+    const overflowChild = new EventEmitter();
+    overflowChild.pid = 4646;
+    overflowChild.stdout = new PassThrough();
+    overflowChild.stderr = new PassThrough();
+    overflowChild.kill = () => true;
+    const overflowed = runProcess('powershell.exe', [], {
+      timeoutMs: 5,
+      forceSettleMs: 20,
+      maxBytes: 1,
+      requireExitConfirmation: true,
+      platform: 'win32',
+      spawnProcess: () => overflowChild,
+      spawnProcessSync: () => ({ status: 0 }),
+    });
+    overflowChild.stdout.write('too much output');
+    await expect(overflowed).rejects.toMatchObject({ name: 'ProcessTerminationError' });
+    expect(overflowChild.listenerCount('close')).toBe(0);
+    expect(overflowChild.listenerCount('error')).toBe(0);
+    expect(overflowChild.stdout.listenerCount('data')).toBe(0);
+    expect(overflowChild.stderr.listenerCount('data')).toBe(0);
+  }
+
+  function verifyGrepExactBudget() {
+    const marker = '\n\n[Output truncated]';
+    for (const finalSize of [32767, 32768]) {
+      const collector = createOutputCollector(32768);
+      const lastSize = finalSize - 24002;
+      expect(collector.add('x'.repeat(12000))).toBe(true);
+      expect(collector.add('x'.repeat(12000))).toBe(true);
+      expect(collector.add('x'.repeat(lastSize))).toBe(true);
+      expect(Buffer.byteLength(collector.toString())).toBe(finalSize);
+      expect(collector.toString()).not.toContain(marker);
+    }
+    const overflow = createOutputCollector(32768);
+    expect(overflow.add('x'.repeat(12000))).toBe(true);
+    expect(overflow.add('x'.repeat(12000))).toBe(true);
+    expect(overflow.add('x'.repeat(8767))).toBe(false);
+    expect(Buffer.byteLength(overflow.toString())).toBe(32768);
+    expect(overflow.toString().endsWith(marker)).toBe(true);
+    const settled = overflow.toString();
+    expect(overflow.add('late')).toBe(false);
+    expect(overflow.toString()).toBe(settled);
+
+    for (const maxBytes of [0, 1, Buffer.byteLength(marker) - 1, Buffer.byteLength(marker)]) {
+      const tiny = createOutputCollector(maxBytes);
+      expect(tiny.add('x'.repeat(maxBytes + 1))).toBe(false);
+      expect(Buffer.byteLength(tiny.toString())).toBe(maxBytes);
+      expect(tiny.toString()).not.toContain('\ufffd');
+    }
+
+    const unicode = createOutputCollector(16);
+    expect(unicode.add('界'.repeat(6))).toBe(false);
+    expect(Buffer.byteLength(unicode.toString())).toBe(16);
+    expect(unicode.toString()).not.toContain('\ufffd');
+  }
+
+  async function verifyRipgrepRecordFraming() {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => {};
+    const pending = runRipgrep('needle', process.cwd(), {
+      fixedStrings: true,
+      filesOnly: false,
+      maxResults: 10,
+      byteBudget: 32768,
+      cwd: process.cwd(),
+      structured: true,
+    }, () => child);
+    const raw = Buffer.from(
+      'C:/a.js\u00001:needle\nsrc/界\nbreak.js\u00002:needle\nsrc/a:12:b.js\u00003:needle\n',
+      'utf8',
+    );
+    for (const byte of raw) child.stdout.write(Buffer.from([byte]));
+    child.stdout.end();
+    child.stderr.end();
+    child.emit('close', 0);
+    await expect(pending).resolves.toMatchObject({
+      records: [
+        { path: 'C:/a.js', suffix: '1:needle', kind: 'match' },
+        { path: 'src/界\nbreak.js', suffix: '2:needle', kind: 'match' },
+        { path: 'src/a:12:b.js', suffix: '3:needle', kind: 'match' },
+      ],
+      resultCount: 3,
+      truncated: false,
+    });
+  }
+
+  async function verifyRipgrepFilteredLongLineFraming() {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    let killCalls = 0;
+    child.kill = () => { killCalls += 1; };
+    const pending = runRipgrep('needle', process.cwd(), {
+      fixedStrings: true,
+      filesOnly: false,
+      glob: '**/*.js',
+      maxResults: 10,
+      byteBudget: 32768,
+      cwd: process.cwd(),
+      structured: true,
+    }, () => child);
+    child.stdout.write(Buffer.from(`a.txt\u0000${'x'.repeat(17000)}`));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(killCalls).toBe(0);
+    child.stdout.write(Buffer.from('tail\nb.js\u00001:needle\n'));
+    child.stdout.end();
+    child.stderr.end();
+    child.emit('close', 0);
+    await expect(pending).resolves.toMatchObject({
+      records: [{ path: 'b.js', suffix: '1:needle', kind: 'match' }],
+      resultCount: 1,
+      truncated: false,
+    });
+    expect(killCalls).toBe(0);
+  }
+
+  async function verifyRipgrepLongLineStopsDuringCapture() {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    let killCalls = 0;
+    child.kill = () => { killCalls += 1; };
+    const pending = runRipgrep('needle', process.cwd(), {
+      fixedStrings: true,
+      filesOnly: false,
+      maxResults: 10,
+      byteBudget: 32768,
+      cwd: process.cwd(),
+      structured: true,
+    }, () => child);
+    child.stdout.write(Buffer.from(`src/a.js\u0000${'界'.repeat(7000)}`));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(killCalls).toBe(1);
+    child.stdout.end();
+    child.stderr.end();
+    child.emit('close', null);
+    const result = await pending;
+    expect(result.truncated).toBe(true);
+    expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(32768);
+    expect(result.output).toContain('[Output truncated]');
+    expect(result.output).not.toContain('\ufffd');
+  }
+
+  async function verifyRipgrepAbortReentry() {
+    for (const event of ['close', 'error']) {
+      const controller = new AbortController();
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      let killCalls = 0;
+      child.kill = () => {
+        killCalls += 1;
+        if (event === 'close') child.emit('close', 130);
+        else child.emit('error', new Error('sync process error'));
+      };
+      const pending = runRipgrep('needle', process.cwd(), {
+        fixedStrings: true,
+        filesOnly: true,
+        maxResults: 10,
+        byteBudget: 32768,
+        cwd: process.cwd(),
+        signal: controller.signal,
+      }, () => child);
+      controller.abort('user');
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      expect(killCalls).toBe(1);
+      child.emit('error', new Error('late process error'));
+      child.emit('close', 0);
+      expect(killCalls).toBe(1);
+    }
+  }
+
+  async function verifyRipgrepParity() {
+    if (process.platform === 'win32') return;
+    const root = tempDir('grep-semantic-parity');
+    const binDir = join(root, 'bin');
+    mkdirSync(join(root, '.hidden'), { recursive: true });
+    mkdirSync(join(root, 'node_modules'), { recursive: true });
+    mkdirSync(join(root, '.git'), { recursive: true });
+    mkdirSync(join(root, '.yeaft', 'worktrees', 'ignored'), { recursive: true });
+    mkdirSync(join(root, 'src', '.yeaft', 'worktrees', 'ignored'), { recursive: true });
+    mkdirSync(binDir);
+    writeFileSync(join(root, 'src', 'a.txt'), 'needle\n');
+    writeFileSync(join(root, '.hidden', 'h.txt'), 'needle\n');
+    writeFileSync(join(root, 'node_modules', 'n.txt'), 'needle\n');
+    writeFileSync(join(root, '.git', 'g.txt'), 'needle\n');
+    writeFileSync(join(root, '.yeaft', 'worktrees', 'ignored', 'w.txt'), 'needle\n');
+    writeFileSync(join(root, 'src', '.yeaft', 'worktrees', 'ignored', 'w.txt'), 'needle\n');
+    const rgPath = join(binDir, 'rg');
+    const capturedArgs = join(tmpdir(), `yeaft-rg-args-${process.pid}-${Date.now()}.txt`);
+    writeFileSync(rgPath, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(capturedArgs)}\nprintf 'src/a.txt\\000.hidden/h.txt\\000'\n`, { mode: 0o755 });
+    const options = {
+      caseInsensitive: false,
+      fixedStrings: true,
+      filesOnly: true,
+      count: false,
+      multiline: false,
+      maxResults: 50,
+      byteBudget: 32 * 1024,
+      cwd: root,
+    };
+    const fast = (await runRipgrep('needle', root, options, undefined, rgPath)).trim().split('\n').sort();
+    const fallback = (await nodeGrep('needle', root, options)).trim().split('\n').sort();
+    expect(fast).toEqual(fallback);
+    expect(fast).toEqual(['.hidden/h.txt', 'src/a.txt']);
+    const args = readFileSync(capturedArgs, 'utf8').trim().split('\n');
+    expect(args).toContain('--hidden');
+    expect(args).toContain('--no-ignore');
+    expect(args).toContain('!**/node_modules/**');
+    expect(args).toContain('!.yeaft/worktrees/**');
+    expect(args).toContain('!**/.yeaft/worktrees/**');
+    options.glob = '**/*.txt';
+    const filteredFallback = (await nodeGrep('needle', root, options)).trim().split('\n').sort();
+    expect(filteredFallback).toEqual(['.hidden/h.txt', 'src/a.txt']);
+    await runRipgrep('needle', root, options, undefined, rgPath);
+    const filteredArgs = readFileSync(capturedArgs, 'utf8').trim().split('\n');
+    expect(filteredArgs).not.toContain('**/*.txt');
+    expect(filteredArgs).toContain('!**/node_modules/**');
+    expect(filteredArgs).toContain('!.yeaft/worktrees/**');
+    expect(filteredArgs).toContain('!**/.yeaft/worktrees/**');
+    rmSync(capturedArgs, { force: true });
+  }
+
+  async function verifyManagedRgEnvironment() {
+    if (process.platform === 'win32') return;
+
+    const yeaftDir = tempDir('cli-rg-environment');
+    const binDir = managedCliBinDir(yeaftDir);
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'rg'), '#!/bin/sh\necho ripgrep 15.2.0\n', { mode: 0o755 });
+    writeFileSync(join(binDir, 'git'), '#!/bin/sh\necho UNTRUSTED-GIT\n', { mode: 0o755 });
+    writeFileSync(join(binDir, 'fd'), '#!/bin/sh\necho UNVERIFIED-FD\n', { mode: 0o755 });
+    trustManagedCliFixtures(yeaftDir, ['rg']);
+
+    const systemBin = join(yeaftDir, 'system-bin');
+    mkdirSync(systemBin);
+    writeFileSync(join(systemBin, 'git'), '#!/bin/sh\necho SYSTEM-GIT\n', { mode: 0o755 });
+    writeFileSync(join(systemBin, 'fd'), '#!/bin/sh\necho SYSTEM-FD\n', { mode: 0o755 });
+
+    let markReady;
+    const rgReady = new Promise(resolveReady => { markReady = resolveReady; });
+    const ready = Promise.resolve([]);
+    ready.toolReady = { rg: rgReady };
+    const originalPath = process.env.PATH;
+    process.env.PATH = [systemBin, '/usr/bin', '/bin'].join(delimiter);
+    try {
+      const pending = prepareManagedCliToolEnvironment(ready, 'rg', { yeaftDir });
+      await new Promise(resolveTick => setImmediate(resolveTick));
+      expect(process.env.PATH.split(delimiter)).not.toContain(binDir);
+
+      markReady({ name: 'rg', status: 'available', path: join(binDir, 'rg') });
+      const environment = await pending;
+      expect(environment).toMatchObject({ name: 'rg', activated: true });
+      expect(environment.command).toBe(join(environment.binDir, 'rg'));
+      expect(environment.binDir).not.toBe(binDir);
+      expect(readdirSync(environment.binDir)).toEqual(['rg']);
+      expect(process.env.PATH.split(delimiter)[0]).toBe(environment.binDir);
+      expect(process.env.PATH.split(delimiter)).not.toContain(binDir);
+      const inheritedPathBash = createBashTool({
+        runProcessImpl: async (_command, _args, options) => {
+          const result = spawnSync('/bin/sh', ['-c', 'rg --version; git --version; fd --version'], {
+            encoding: 'utf8',
+            env: options.env,
+          });
+          return {
+            code: result.status,
+            stdout: result.stdout.trim(),
+            stderr: result.stderr.trim(),
+            timedOut: false,
+            terminationError: null,
+          };
+        },
+      });
+      await expect(inheritedPathBash.execute({
+        command: 'rg --version',
+        cwd: yeaftDir,
+        timeout_ms: 5000,
+      }, {})).resolves.toBe('ripgrep 15.2.0\nSYSTEM-GIT\nSYSTEM-FD');
+    } finally {
+      process.env.PATH = originalPath;
+      cleanupManagedCliRuntimePaths();
+    }
+  }
+
+  async function verifyManagedRgSignalCleanup() {
+    if (process.platform === 'win32') return;
+
+    for (const signal of ['SIGTERM', 'SIGINT']) {
+      const cliDir = tempDir(`cli-rg-${signal.toLowerCase()}`);
+      const binDir = managedCliBinDir(cliDir);
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(join(binDir, 'rg'), '#!/bin/sh\necho ripgrep 15.2.0\n', { mode: 0o755 });
+      trustManagedCliFixtures(cliDir, ['rg']);
+      const tmpRoot = join(cliDir, 'tmp');
+      mkdirSync(tmpRoot);
+      const child = spawn(process.execPath, [
+        join(process.cwd(), 'agent', 'yeaft', 'cli.js'),
+        '--skip-mcp',
+        '--skip-skills',
+        '--input-format', 'stream-json',
+        '--output-format', 'stream-json',
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          TMPDIR: tmpRoot,
+          YEAFT_DIR: cliDir,
+          YEAFT_SKIP_MANAGED_CLI_INSTALLS: 'true',
+        },
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', chunk => { stdout += chunk; });
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      try {
+        for (let i = 0; i < 500; i += 1) {
+          if (readdirSync(tmpRoot).some(name => name.startsWith('yeaft-managed-cli-'))) break;
+          await new Promise(resolveDelay => setTimeout(resolveDelay, 10));
+        }
+        const runtimeDirectories = readdirSync(tmpRoot)
+          .filter(name => name.startsWith('yeaft-managed-cli-'));
+        expect(runtimeDirectories).toHaveLength(1);
+        for (let i = 0; i < 500; i += 1) {
+          if (stdout.includes('"subtype":"init"')) break;
+          await new Promise(resolveDelay => setTimeout(resolveDelay, 10));
+        }
+        const stdoutEvents = stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+        expect(stdoutEvents).toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: 'system', subtype: 'init' }),
+        ]));
+        child.kill(signal);
+        const outcome = await new Promise((resolveClose, rejectClose) => {
+          const timer = setTimeout(() => {
+            child.kill('SIGKILL');
+            rejectClose(new Error(`CLI did not preserve ${signal}; stdout=${stdout}; stderr=${stderr}`));
+          }, 10_000);
+          child.once('error', rejectClose);
+          child.once('close', (code, closeSignal) => {
+            clearTimeout(timer);
+            resolveClose({ code, signal: closeSignal });
+          });
+        });
+        expect(outcome).toEqual({ code: null, signal });
+        expect(readdirSync(tmpRoot)).toEqual([]);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      }
+    }
+  }
+
+  async function verifyManagedRgCleanupRetry() {
+    if (process.platform === 'win32') return;
+
+    const yeaftDir = tempDir('cli-rg-cleanup-retry');
+    const binDir = managedCliBinDir(yeaftDir);
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'rg'), '#!/bin/sh\necho ripgrep 15.2.0\n', { mode: 0o755 });
+    trustManagedCliFixtures(yeaftDir, ['rg']);
+    const runtimeRoot = join(yeaftDir, 'runtime-root');
+    mkdirSync(runtimeRoot);
+    const originalTmpDir = process.env.TMPDIR;
+    process.env.TMPDIR = runtimeRoot;
+    try {
+      const environment = await prepareManagedCliToolEnvironment(Promise.resolve([]), 'rg', {
+        yeaftDir,
+        env: { PATH: '/usr/bin:/bin' },
+      });
+      expect(existsSync(environment.binDir)).toBe(true);
+
+      chmodSync(runtimeRoot, 0o500);
+      cleanupManagedCliRuntimePaths();
+      expect(existsSync(environment.binDir)).toBe(true);
+
+      chmodSync(runtimeRoot, 0o700);
+      cleanupManagedCliRuntimePaths();
+      expect(existsSync(environment.binDir)).toBe(false);
+    } finally {
+      chmodSync(runtimeRoot, 0o700);
+      cleanupManagedCliRuntimePaths();
+      if (originalTmpDir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = originalTmpDir;
+    }
+  }
+
+  async function verifyManagedRgAgentShutdownOrder() {
+    if (process.platform === 'win32') return;
+
+    const yeaftDir = tempDir('cli-rg-agent-shutdown-order');
+    const binDir = managedCliBinDir(yeaftDir);
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'rg'), '#!/bin/sh\necho ripgrep 15.2.0\n', { mode: 0o755 });
+    trustManagedCliFixtures(yeaftDir, ['rg']);
+    const runtimeRoot = join(yeaftDir, 'runtime-root');
+    mkdirSync(runtimeRoot);
+    const originalTmpDir = process.env.TMPDIR;
+    process.env.TMPDIR = runtimeRoot;
+    try {
+      const environment = await prepareManagedCliToolEnvironment(Promise.resolve([]), 'rg', {
+        yeaftDir,
+        env: { PATH: '/usr/bin:/bin' },
+      });
+      expect(existsSync(environment.binDir)).toBe(true);
+
+      let laterShutdownStarted = false;
+      const laterShutdown = new Promise(() => {});
+      const shutdown = runAfterManagedCliRuntimeCleanup(() => {
+        laterShutdownStarted = true;
+        return laterShutdown;
+      });
+
+      expect(laterShutdownStarted).toBe(true);
+      expect(existsSync(environment.binDir)).toBe(false);
+      await expect(Promise.race([
+        shutdown.then(() => 'settled'),
+        new Promise(resolveDelay => setTimeout(() => resolveDelay('pending'), 25)),
+      ])).resolves.toBe('pending');
+    } finally {
+      cleanupManagedCliRuntimePaths();
+      if (originalTmpDir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = originalTmpDir;
+    }
+  }
+
+  async function verifyManagedRgNormalExitCleanup() {
+    if (process.platform === 'win32') return;
+
+    for (const scenario of [
+      { name: 'success', input: '', expectedCode: 0 },
+      { name: 'failure', input: 'not-json\n', expectedCode: 1 },
+    ]) {
+      const cliDir = tempDir(`cli-rg-normal-${scenario.name}`);
+      const binDir = managedCliBinDir(cliDir);
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(join(binDir, 'rg'), [
+        '#!/bin/sh',
+        `printf '%s' "$0" > "$YEAFT_DIR/runtime-command"`,
+        'echo ripgrep 15.2.0',
+        '',
+      ].join('\n'), { mode: 0o755 });
+      trustManagedCliFixtures(cliDir, ['rg']);
+      const tmpRoot = join(cliDir, 'tmp');
+      mkdirSync(tmpRoot);
+      const child = spawn(process.execPath, [
+        join(process.cwd(), 'agent', 'yeaft', 'cli.js'),
+        '--skip-mcp',
+        '--skip-skills',
+        '--input-format', 'stream-json',
+        '--output-format', 'stream-json',
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          TMPDIR: tmpRoot,
+          YEAFT_DIR: cliDir,
+          YEAFT_SKIP_MANAGED_CLI_INSTALLS: 'true',
+        },
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', chunk => { stdout += chunk; });
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      child.stdin.end(scenario.input);
+      const outcome = await new Promise((resolveClose, rejectClose) => {
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL');
+          rejectClose(new Error(`CLI ${scenario.name} timed out; stdout=${stdout}; stderr=${stderr}`));
+        }, 10_000);
+        child.once('error', rejectClose);
+        child.once('close', (code, signal) => {
+          clearTimeout(timer);
+          resolveClose({ code, signal });
+        });
+      });
+      expect(outcome).toEqual({ code: scenario.expectedCode, signal: null });
+      const runtimeCommand = readFileSync(join(cliDir, 'runtime-command'), 'utf8');
+      expect(runtimeCommand.startsWith(`${tmpRoot}${process.platform === 'win32' ? '\\' : '/'}`)).toBe(true);
+      expect(existsSync(runtimeCommand)).toBe(false);
+      expect(readdirSync(tmpRoot)).toEqual([]);
+      const stdoutEvents = stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      expect(stdoutEvents).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'system', subtype: 'init' }),
+      ]));
+      if (scenario.expectedCode !== 0) {
+        expect(stderr).toContain('Invalid stream-json input');
+      }
+    }
+  }
+
+  async function verifyUnverifiedManagedRgIsNotExposed() {
+    if (process.platform === 'win32') return;
+
+    const unverifiedDir = tempDir('cli-rg-unverified');
+    const unverifiedBin = managedCliBinDir(unverifiedDir);
+    mkdirSync(unverifiedBin, { recursive: true });
+    writeFileSync(join(unverifiedBin, 'rg'), '#!/bin/sh\necho unverified\n', { mode: 0o755 });
+    const unverifiedEnv = { PATH: '' };
+    await expect(prepareManagedCliToolEnvironment(Promise.resolve([]), 'rg', {
+      yeaftDir: unverifiedDir,
+      env: unverifiedEnv,
+    })).resolves.toEqual({ name: 'rg', activated: false, command: null });
+    expect(unverifiedEnv.PATH).toBe('');
+
+    const systemDir = tempDir('cli-rg-system');
+    const systemBin = join(systemDir, 'system-bin');
+    mkdirSync(systemBin);
+    const systemRg = join(systemBin, 'rg');
+    writeFileSync(systemRg, '#!/bin/sh\necho system rg\n', { mode: 0o755 });
+    const systemEnv = { PATH: systemBin };
+    await expect(prepareManagedCliToolEnvironment(Promise.resolve([]), 'rg', {
+      yeaftDir: systemDir,
+      env: systemEnv,
+    })).resolves.toEqual({ name: 'rg', activated: false, command: systemRg });
+    expect(systemEnv.PATH).toBe(systemBin);
+  }
+
+  it('keeps managed CLI filters, process, and fallback boundaries', async () => {
+    await verifyManagedRgEnvironment();
+    await verifyManagedRgSignalCleanup();
+    await verifyManagedRgCleanupRetry();
+    await verifyManagedRgAgentShutdownOrder();
+    await verifyManagedRgNormalExitCleanup();
+    await verifyUnverifiedManagedRgIsNotExposed();
+
+    const processResult = (overrides = {}) => ({
+      code: 0,
+      stdout: '',
+      stderr: '',
+      truncated: false,
+      timedOut: false,
+      ...overrides,
+    });
+
+    const fdRoot = tempDir('fd-pattern');
+    let fdCall;
+    const fdOutput = await listFilesWithFd('fd', fdRoot, 'src/**/*.{js,md}', undefined,
+      async (command, args, options) => {
+        fdCall = { command, args, options };
+        return processResult({
+          stdout: `src${process.platform === 'win32' ? '\\' : '/'}a.js\0`,
+        });
+      });
+    expect(fdOutput).toEqual([join('src', 'a.js')]);
+    expect(fdCall.args).toContain('--full-path');
+    expect(fdCall.args).toContain('--case-sensitive');
+    expect(fdCall.args.at(-1)).toBe('.');
+    const pushedPattern = fdCall.args.at(-2);
+    expect(new RegExp(pushedPattern).test(join(fdRoot, 'src', 'nested', 'a.js'))).toBe(true);
+    expect(new RegExp(pushedPattern).test(join(fdRoot, 'src', 'nested', 'a.txt'))).toBe(false);
+
+    const rgRoot = tempDir('rg-candidates');
+    mkdirSync(join(rgRoot, 'src'));
+    writeFileSync(join(rgRoot, 'src', 'hit.js'), 'needle\n');
+    writeFileSync(join(rgRoot, 'src', 'miss.js'), 'needle\n');
+    let rgCall;
+    const candidatePaths = await listRipgrepCandidatePaths('rg', rgRoot, {
+      pattern: 'needle', fixedStrings: true,
+    }, async (command, args, options) => {
+      rgCall = { command, args, options };
+      return processResult({
+        stdout: `src${process.platform === 'win32' ? '\\' : '/'}hit.js\0`,
+      });
+    });
+    expect(rgCall.args).toContain('--files-with-matches');
+    expect(rgCall.args).toContain('--max-filesize');
+    expect(rgCall.args).not.toContain('--sort');
+    const rgResult = await nodeGrep('needle', rgRoot, {
+      fixedStrings: true,
+      filesOnly: true,
+      count: false,
+      multiline: false,
+      maxResults: 10,
+      structured: true,
+      candidatePaths,
+    });
+    expect(rgResult.records.map(record => record.path)).toEqual(['src/hit.js']);
+
+    const dustRoot = tempDir('dust-limit');
+    let dustCall;
+    const dustRows = await runDust('dust', dustRoot, { depth: 2, limit: 5 },
+      async (command, args, options) => {
+        dustCall = { command, args, options };
+        return processResult({
+          stdout: JSON.stringify({
+            size: '10B',
+            name: dustRoot,
+            children: [{ size: '5B', name: join(dustRoot, 'child'), children: [] }],
+          }),
+        });
+      });
+    const lineLimit = dustCall.args.indexOf('--number-of-lines');
+    expect(lineLimit).toBeGreaterThanOrEqual(0);
+    expect(Number(dustCall.args[lineLimit + 1])).toBe(200);
+    expect(dustRows.map(row => row.path)).toEqual(['.', 'child']);
+
+    for (const invoke of [
+      runner => listFilesWithFd('fd', tempDir('fd-limit'), '**/*', undefined, runner),
+      runner => listRipgrepCandidatePaths('rg', tempDir('rg-limit'), {
+        pattern: 'needle', fixedStrings: true,
+      }, runner),
+      runner => runDust('dust', tempDir('dust-output-limit'), {
+        depth: 2, limit: 20,
+      }, runner),
+    ]) {
+      let calls = 0;
+      const runner = async () => {
+        calls += 1;
+        return processResult({ truncated: true });
+      };
+      await expect(invoke(runner)).rejects.toBeInstanceOf(SearchBackendLimitError);
+      expect(calls).toBe(1);
+    }
+
+    await verifyProcessTermination();
+    await verifyWindowsProcessTreeTermination();
+    verifyGrepExactBudget();
+    await verifyRipgrepRecordFraming();
+    await verifyRipgrepFilteredLongLineFraming();
+    await verifyRipgrepLongLineStopsDuringCapture();
+    await verifyRipgrepAbortReentry();
+    const yeaftDir = tempDir('cli-path');
+    const systemBin = join(yeaftDir, 'system-bin');
+    mkdirSync(systemBin);
+    const fdfind = join(systemBin, 'fdfind');
+    writeFileSync(fdfind, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const env = { PATH: systemBin };
+    const binDir = prependManagedCliBinToPath(yeaftDir, env);
+    prependManagedCliBinToPath(yeaftDir, env);
+    expect(env.PATH.split(delimiter)).toEqual([binDir, systemBin]);
+    const windowsEnv = { Path: systemBin };
+    prependManagedCliBinToPath(yeaftDir, windowsEnv, 'win32');
+    expect(windowsEnv.PATH).toBe(windowsEnv.Path);
+    expect(resolveManagedCliCommand('fd', { yeaftDir, env, platform: 'linux' })).toBe(fdfind);
+
+    const tar = tarArchive('ripgrep-15.2.0/rg', '#!/bin/sh\necho ripgrep 15.2.0\n');
+    expect(extractManagedCliBinary(tar, 'ripgrep.tar.gz', 'rg', 'linux').toString())
+      .toContain('ripgrep 15.2.0');
+    const zip = zipArchive('fd-v10.3.0/fd.exe', Buffer.from('MZ-test-binary'));
+    expect(extractManagedCliBinary(zip, 'fd.zip', 'fd', 'win32').toString())
+      .toBe('MZ-test-binary');
+
+    if (process.platform !== 'win32') {
+      const installDir = tempDir('cli-successful-install');
+      const archives = {
+        rg: tarArchive('package/rg', '#!/bin/sh\necho ripgrep 15.2.0\n'),
+        fd: tarArchive('package/fd', '#!/bin/sh\necho fd 10.3.0\n'),
+        dust: tarArchive('package/dust', '#!/bin/sh\necho Dust 1.2.4\n'),
+      };
+      const originalAssets = {};
+      const archiveByFileName = new Map();
+      for (const [name, archive] of Object.entries(archives)) {
+        originalAssets[name] = managedCliToolSpecs[name].assets['linux-x64'];
+        const fileName = originalAssets[name][0];
+        managedCliToolSpecs[name].assets['linux-x64'] = [
+          fileName,
+          createHash('sha256').update(archive).digest('hex'),
+        ];
+        archiveByFileName.set(fileName, archive);
+      }
+      try {
+        let successfulFetches = 0;
+        const installOptions = {
+          yeaftDir: installDir,
+          platform: 'linux',
+          arch: 'x64',
+          env: emptyPathEnv(),
+          force: true,
+          fetchFn: async url => {
+            successfulFetches += 1;
+            const fileName = String(url).split('/').at(-1);
+            return new Response(archiveByFileName.get(fileName));
+          },
+        };
+        const [firstInstall, joinedInstall] = await Promise.all([
+          ensureManagedCliTools(installOptions),
+          ensureManagedCliTools(installOptions),
+        ]);
+        expect(firstInstall).toEqual(joinedInstall);
+        expect(firstInstall.every(result => result.status === 'installed')).toBe(true);
+        expect(successfulFetches).toBe(3);
+        const installedState = JSON.parse(
+          readFileSync(join(installDir, 'managed-cli.json'), 'utf8'),
+        );
+        expect(Object.keys(installedState.installations).sort()).toEqual(['dust', 'fd', 'rg']);
+        for (const name of ['rg', 'fd', 'dust']) {
+          const installation = installedState.installations[name];
+          expect(installation).toMatchObject({
+            version: managedCliToolSpecs[name].version,
+            platform: 'linux',
+            arch: 'x64',
+            assetFileName: managedCliToolSpecs[name].assets['linux-x64'][0],
+            archiveSha256: managedCliToolSpecs[name].assets['linux-x64'][1],
+          });
+          expect(installation.binarySha256).toBe(
+            createHash('sha256')
+              .update(readFileSync(join(managedCliBinDir(installDir), name)))
+              .digest('hex'),
+          );
+        }
+        const available = await ensureManagedCliTools({
+          ...installOptions,
+          fetchFn: async () => { throw new Error('valid installs must not redownload'); },
+        });
+        expect(available.every(result => result.status === 'available')).toBe(true);
+      } finally {
+        for (const [name, asset] of Object.entries(originalAssets)) {
+          managedCliToolSpecs[name].assets['linux-x64'] = asset;
+        }
+      }
+
+      const windowsInstallDir = tempDir('cli-windows-install');
+      const windowsBinDir = managedCliBinDir(windowsInstallDir);
+      mkdirSync(windowsBinDir, { recursive: true });
+      writeFileSync(join(windowsBinDir, 'fd.exe'), 'old fd binary');
+      const windowsScripts = {
+        rg: '#!/bin/sh\necho ripgrep 15.2.0\n',
+        fd: '#!/bin/sh\necho fd 10.3.0\n',
+        dust: '#!/bin/sh\necho dust 1.2.4\n',
+      };
+      const windowsArchives = Object.fromEntries(Object.entries(windowsScripts).map(([name, script]) => [
+        name,
+        zipArchive(`package/${name}.exe`, script),
+      ]));
+      const originalWindowsAssets = {};
+      try {
+        const windowsArchiveByFileName = new Map();
+        for (const [name, archive] of Object.entries(windowsArchives)) {
+          originalWindowsAssets[name] = managedCliToolSpecs[name].assets['win32-x64'];
+          const fileName = originalWindowsAssets[name][0];
+          managedCliToolSpecs[name].assets['win32-x64'] = [
+            fileName,
+            createHash('sha256').update(archive).digest('hex'),
+          ];
+          windowsArchiveByFileName.set(fileName, archive);
+        }
+        const windowsInstall = await ensureManagedCliTools({
+          yeaftDir: windowsInstallDir,
+          platform: 'win32',
+          arch: 'x64',
+          env: emptyPathEnv(),
+          force: true,
+          fetchFn: async url => new Response(
+            windowsArchiveByFileName.get(String(url).split('/').at(-1)),
+          ),
+        });
+        expect(windowsInstall.map(result => [result.name, result.status])).toEqual([
+          ['rg', 'installed'],
+          ['fd', 'installed'],
+          ['dust', 'installed'],
+        ]);
+        for (const [name, script] of Object.entries(windowsScripts)) {
+          expect(readFileSync(join(windowsBinDir, `${name}.exe`), 'utf8')).toBe(script);
+        }
+
+        const rollbackDir = tempDir('cli-windows-rollback');
+        const rollbackBinDir = managedCliBinDir(rollbackDir);
+        mkdirSync(rollbackBinDir, { recursive: true });
+        const oldRg = 'old rg binary';
+        writeFileSync(join(rollbackBinDir, 'rg.exe'), oldRg);
+        const rollbackArchives = {
+          ...windowsArchives,
+          rg: zipArchive(
+            'package/rg.exe',
+            '#!/bin/sh\nrm -- "$0"\necho ripgrep 15.2.0\n',
+          ),
+        };
+        const rollbackArchiveByFileName = new Map();
+        for (const [name, archive] of Object.entries(rollbackArchives)) {
+          const fileName = originalWindowsAssets[name][0];
+          managedCliToolSpecs[name].assets['win32-x64'] = [
+            fileName,
+            createHash('sha256').update(archive).digest('hex'),
+          ];
+          rollbackArchiveByFileName.set(fileName, archive);
+        }
+        const rollbackInstall = await ensureManagedCliTools({
+          yeaftDir: rollbackDir,
+          platform: 'win32',
+          arch: 'x64',
+          env: emptyPathEnv(),
+          force: true,
+          fetchFn: async url => new Response(
+            rollbackArchiveByFileName.get(String(url).split('/').at(-1)),
+          ),
+        });
+        expect(rollbackInstall.find(result => result.name === 'rg')).toMatchObject({
+          status: 'failed',
+        });
+        expect(rollbackInstall.filter(result => result.name !== 'rg')
+          .every(result => result.status === 'installed')).toBe(true);
+        expect(readFileSync(join(rollbackBinDir, 'rg.exe'), 'utf8')).toBe(oldRg);
+        expect(readdirSync(rollbackBinDir).some(name => name.includes('.backup'))).toBe(false);
+      } finally {
+        for (const [name, asset] of Object.entries(originalWindowsAssets)) {
+          managedCliToolSpecs[name].assets['win32-x64'] = asset;
+        }
+      }
+    }
+
+    let unsupportedRequests = 0;
+    const unsupported = await ensureManagedCliTools({
+      yeaftDir: tempDir('cli-unsupported'),
+      platform: 'aix',
+      arch: 'ppc64',
+      env: emptyPathEnv(),
+      force: true,
+      fetchFn: async () => {
+        unsupportedRequests += 1;
+        throw new Error('must not download');
+      },
+    });
+    expect(unsupported.every(result => result.status === 'unsupported')).toBe(true);
+    expect(unsupportedRequests).toBe(0);
+
+    const flightDir = tempDir('cli-single-flight');
+    const flightBinDir = managedCliBinDir(flightDir);
+    mkdirSync(flightBinDir, { recursive: true });
+    for (const name of ['rg', 'fd', 'dust']) {
+      writeFileSync(join(flightBinDir, name), `#!/bin/sh\necho ${name} 0.0.0\n`, { mode: 0o755 });
+    }
+    let flightRequests = 0;
+    const flightOptions = {
+      yeaftDir: flightDir,
+      platform: 'linux',
+      arch: 'x64',
+      env: emptyPathEnv(),
+      force: true,
+      fetchFn: async () => {
+        flightRequests += 1;
+        await new Promise(resolve => setTimeout(resolve, 20));
+        return new Response(Buffer.from('invalid archive'));
+      },
+    };
+    const [left, right] = await Promise.all([
+      ensureManagedCliTools(flightOptions),
+      ensureManagedCliTools(flightOptions),
+    ]);
+    expect(left).toEqual(right);
+    expect(flightRequests).toBe(3);
+
+    const cooldownDir = tempDir('cli-cooldown');
+    let cooldownRequests = 0;
+    const cooldownOptions = {
+      yeaftDir: cooldownDir,
+      platform: 'linux',
+      arch: 'x64',
+      env: emptyPathEnv(),
+      now: () => 1000,
+      fetchFn: async () => {
+        cooldownRequests += 1;
+        return new Response(Buffer.from('not an official archive'));
+      },
+    };
+    const first = await ensureManagedCliTools({ ...cooldownOptions, force: true });
+    const second = await ensureManagedCliTools(cooldownOptions);
+    expect(first.every(result => result.status === 'failed')).toBe(true);
+    expect(second.every(result => result.status === 'cooldown')).toBe(true);
+    expect(cooldownRequests).toBe(3);
+
+    const busyDir = tempDir('cli-busy');
+    const busyBinDir = managedCliBinDir(busyDir);
+    mkdirSync(busyBinDir, { recursive: true });
+    for (const name of ['rg', 'fd', 'dust']) mkdirSync(join(busyBinDir, `.install-${name}.lock`));
+    const busyOptions = {
+      yeaftDir: busyDir,
+      platform: 'linux',
+      arch: 'x64',
+      env: emptyPathEnv(),
+      lockWaitMs: 0,
+      fetchFn: async () => { throw new Error('busy must not download'); },
+    };
+    const busyFirst = await ensureManagedCliTools(busyOptions);
+    const busySecond = await ensureManagedCliTools(busyOptions);
+    expect(busyFirst.every(result => result.status === 'busy')).toBe(true);
+    expect(busySecond.every(result => result.status === 'busy')).toBe(true);
+    expect(JSON.parse(readFileSync(join(busyDir, 'managed-cli.json'), 'utf8')).failures).toEqual({});
+
+    if (process.platform !== 'win32') {
+      const managedCliModuleUrl = new URL(
+        '../../../agent/yeaft/managed-cli.js',
+        import.meta.url,
+      ).href;
+      const runLockWatchdog = (yeaftDir, skipInstall = false) => {
+        const script = `
+          import { ensureManagedCliTools } from ${JSON.stringify(managedCliModuleUrl)};
+          let fetches = 0;
+          let timerFired = false;
+          setTimeout(() => { timerFired = true; }, 0);
+          const env = { ...process.env, PATH: '', YEAFT_SKIP_MANAGED_CLI_INSTALLS: ${skipInstall ? "'true'" : "'false'"} };
+          const results = await ensureManagedCliTools({
+            yeaftDir: ${JSON.stringify(yeaftDir)},
+            platform: 'linux',
+            arch: 'x64',
+            env,
+            force: true,
+            lockWaitMs: 0,
+            fetchFn: async () => {
+              fetches += 1;
+              throw new Error('lock watchdog must not download');
+            },
+          });
+          await new Promise(resolve => setTimeout(resolve, 0));
+          console.log(JSON.stringify({
+            fetches,
+            timerFired,
+            statuses: results.map(result => result.status),
+          }));
+        `;
+        const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+          cwd: process.cwd(),
+          encoding: 'utf8',
+          timeout: 1500,
+        });
+        expect(child.error).toBeUndefined();
+        expect(child.signal).toBeNull();
+        expect(child.status, child.stderr).toBe(0);
+        return JSON.parse(child.stdout.trim());
+      };
+
+      const danglingInstallDir = tempDir('cli-dangling-install-lock');
+      const danglingInstallBin = managedCliBinDir(danglingInstallDir);
+      mkdirSync(danglingInstallBin, { recursive: true });
+      const danglingInstallLocks = ['rg', 'fd', 'dust'].map(name => (
+        join(danglingInstallBin, `.install-${name}.lock`)
+      ));
+      for (const lockPath of danglingInstallLocks) {
+        symlinkSync(`${lockPath}.missing`, lockPath, 'dir');
+      }
+      expect(runLockWatchdog(danglingInstallDir)).toEqual({
+        fetches: 0,
+        timerFired: true,
+        statuses: ['busy', 'busy', 'busy'],
+      });
+      for (const lockPath of danglingInstallLocks) {
+        expect(() => lstatSync(lockPath)).toThrow();
+      }
+
+      const danglingStateDir = tempDir('cli-dangling-state-lock');
+      const danglingStateLock = join(danglingStateDir, '.managed-cli-state.lock');
+      symlinkSync(`${danglingStateLock}.missing`, danglingStateLock, 'dir');
+      expect(runLockWatchdog(danglingStateDir, true)).toEqual({
+        fetches: 0,
+        timerFired: true,
+        statuses: ['skipped', 'skipped', 'skipped'],
+      });
+      expect(() => lstatSync(danglingStateLock)).toThrow();
+
+      const directoryLockDir = tempDir('cli-directory-lock-watchdog');
+      const directoryLockBin = managedCliBinDir(directoryLockDir);
+      mkdirSync(directoryLockBin, { recursive: true });
+      for (const name of ['rg', 'fd', 'dust']) {
+        mkdirSync(join(directoryLockBin, `.install-${name}.lock`));
+      }
+      expect(runLockWatchdog(directoryLockDir)).toEqual({
+        fetches: 0,
+        timerFired: true,
+        statuses: ['busy', 'busy', 'busy'],
+      });
+    }
+
+    const identityDir = tempDir('cli-identity');
+    const identityBinDir = managedCliBinDir(identityDir);
+    mkdirSync(identityBinDir, { recursive: true });
+    for (const name of ['rg', 'fd', 'dust']) {
+      writeFileSync(join(identityBinDir, name), `#!/bin/sh\necho ${name} 0.0.0\n`, { mode: 0o755 });
+      expect(resolveManagedCliCommand(name, {
+        yeaftDir: identityDir, env: emptyPathEnv(), platform: 'linux',
+      })).toBeNull();
+    }
+    const identityEnv = emptyPathEnv();
+    prependManagedCliBinToPath(identityDir, identityEnv, 'linux');
+    expect(resolveManagedCliCommand('rg', {
+      yeaftDir: identityDir, env: identityEnv, platform: 'linux', arch: 'x64',
+    })).toBeNull();
+    const managedBinAlias = join(identityDir, 'bin-alias');
+    symlinkSync(identityBinDir, managedBinAlias, 'dir');
+    expect(resolveManagedCliCommand('rg', {
+      yeaftDir: identityDir,
+      env: { ...process.env, PATH: managedBinAlias },
+      platform: 'linux',
+      arch: 'x64',
+    })).toBeNull();
+    let identityFetches = 0;
+    const identityResults = await ensureManagedCliTools({
+      yeaftDir: identityDir,
+      platform: 'linux',
+      arch: 'x64',
+      env: identityEnv,
+      force: true,
+      fetchFn: async () => {
+        identityFetches += 1;
+        return new Response(Buffer.from('invalid repair archive'));
+      },
+    });
+    expect(identityResults.every(result => result.status === 'failed')).toBe(true);
+    expect(identityFetches).toBe(3);
+    trustManagedCliFixtures(identityDir, ['rg', 'fd', 'dust']);
+    expect(resolveManagedCliCommand('rg', {
+      yeaftDir: identityDir, env: emptyPathEnv(), platform: 'linux',
+    })).toBe(join(identityBinDir, 'rg'));
+    const identityStatePath = join(identityDir, 'managed-cli.json');
+    const oldVersionState = JSON.parse(readFileSync(identityStatePath, 'utf8'));
+    oldVersionState.installations.rg.version = '0.0.0';
+    writeFileSync(identityStatePath, `${JSON.stringify(oldVersionState, null, 2)}\n`);
+    expect(resolveManagedCliCommand('rg', {
+      yeaftDir: identityDir, env: emptyPathEnv(), platform: 'linux',
+    })).toBeNull();
+    trustManagedCliFixtures(identityDir, ['rg']);
+    writeFileSync(join(identityBinDir, 'rg'), '\n# bit flip\n', { flag: 'a' });
+    expect(resolveManagedCliCommand('rg', {
+      yeaftDir: identityDir, env: emptyPathEnv(), platform: 'linux',
+    })).toBeNull();
+
+    if (process.platform !== 'win32') {
+      const verifyRejectedManagedAliases = async (aliasKind, createAlias) => {
+        const aliasStateDir = tempDir(`cli-${aliasKind}-alias`);
+        const aliasManagedBin = managedCliBinDir(aliasStateDir);
+        const aliasBin = join(aliasStateDir, 'external-bin');
+        const corruptLog = join(aliasStateDir, 'corrupt.log');
+        mkdirSync(aliasManagedBin, { recursive: true });
+        mkdirSync(aliasBin);
+        for (const name of ['rg', 'fd', 'dust']) {
+          writeFileSync(
+            join(aliasManagedBin, name),
+            `#!/bin/sh\necho ${name} >> ${JSON.stringify(corruptLog)}\n${name === 'dust'
+              ? "printf '{\"size\":\"0B\",\"name\":\".\",\"children\":[]}'"
+              : 'exit 0'}\n`,
+            { mode: 0o755 },
+          );
+        }
+        for (const [alias, target] of [
+          ['rg', 'rg'],
+          ['fd', 'fd'],
+          ['fdfind', 'fd'],
+          ['dust', 'dust'],
+        ]) createAlias(join(aliasManagedBin, target), join(aliasBin, alias));
+
+        const aliasEnv = { ...process.env, PATH: aliasBin };
+        const processPathBeforeRepair = process.env.PATH;
+        for (const name of ['rg', 'fd', 'dust']) {
+          expect(resolveManagedCliCommand(name, {
+            yeaftDir: aliasStateDir,
+            env: aliasEnv,
+            platform: 'linux',
+            arch: 'x64',
+          })).toBeNull();
+        }
+        rmSync(join(aliasBin, 'fd'));
+        expect(resolveManagedCliCommand('fd', {
+          yeaftDir: aliasStateDir,
+          env: aliasEnv,
+          platform: 'linux',
+          arch: 'x64',
+        })).toBeNull();
+        createAlias(join(aliasManagedBin, 'fd'), join(aliasBin, 'fd'));
+
+        let offlineRepairFetches = 0;
+        const offlineRepair = await ensureManagedCliTools({
+          yeaftDir: aliasStateDir,
+          platform: 'linux',
+          arch: 'x64',
+          env: aliasEnv,
+          force: true,
+          fetchFn: async () => {
+            offlineRepairFetches += 1;
+            throw new Error('offline');
+          },
+        });
+        expect(offlineRepair.every(result => result.status === 'failed')).toBe(true);
+        expect(offlineRepairFetches).toBe(3);
+        expect(aliasEnv.PATH).toBe(aliasBin);
+        expect(process.env.PATH).toBe(processPathBeforeRepair);
+
+        const aliasSearchRoot = tempDir(`cli-${aliasKind}-alias-search`);
+        mkdirSync(join(aliasSearchRoot, 'src'));
+        writeFileSync(join(aliasSearchRoot, 'src', 'hit.js'), 'needle\n');
+        writeFileSync(join(aliasSearchRoot, 'src', 'data.bin'), Buffer.alloc(4096));
+        const aliasRegistry = createFullRegistry();
+        const aliasContext = {
+          cwd: aliasSearchRoot,
+          yeaftDir: aliasStateDir,
+          managedCliReady: Promise.resolve(offlineRepair),
+        };
+        const previousProcessPath = process.env.PATH;
+        process.env.PATH = aliasBin;
+        try {
+          expect(await aliasRegistry.execute('Grep', {
+            pattern: 'needle',
+            path: aliasSearchRoot,
+            output_mode: 'content',
+            fixed_strings: true,
+          }, aliasContext)).toBe('src/hit.js:1:needle');
+          expect(await aliasRegistry.execute('Glob', {
+            pattern: '**/*.js',
+            path: aliasSearchRoot,
+          }, aliasContext)).toBe('src/hit.js');
+          const aliasDiskUsage = await aliasRegistry.execute('DiskUsage', {
+            path: aliasSearchRoot,
+            depth: 1,
+            limit: 10,
+          }, aliasContext);
+          expect(aliasDiskUsage).toContain('src');
+          expect(aliasDiskUsage).not.toContain('0B  .');
+        } finally {
+          process.env.PATH = previousProcessPath;
+        }
+        expect(existsSync(corruptLog)).toBe(false);
+        return { aliasContext, aliasRegistry, aliasSearchRoot, aliasStateDir, offlineRepair };
+      };
+
+      await verifyRejectedManagedAliases(
+        'symlink',
+        (target, alias) => symlinkSync(target, alias, 'file'),
+      );
+      const hardLinkCase = await verifyRejectedManagedAliases('hard-link', linkSync);
+
+      const systemBin = join(hardLinkCase.aliasStateDir, 'system-bin');
+      const systemLog = join(hardLinkCase.aliasStateDir, 'system.log');
+      mkdirSync(systemBin);
+      writeFileSync(join(systemBin, 'rg'), `#!/bin/sh\necho rg >> ${JSON.stringify(systemLog)}\nprintf 'src/hit.js\\0'\n`, { mode: 0o755 });
+      writeFileSync(join(systemBin, 'fdfind'), `#!/bin/sh\necho fd >> ${JSON.stringify(systemLog)}\nprintf 'src/hit.js\\0'\n`, { mode: 0o755 });
+      writeFileSync(join(systemBin, 'dust'), `#!/bin/sh\necho dust >> ${JSON.stringify(systemLog)}\nprintf '{\"size\":\"4096B\",\"name\":${JSON.stringify(hardLinkCase.aliasSearchRoot)},\"children\":[{\"size\":\"4096B\",\"name\":${JSON.stringify(join(hardLinkCase.aliasSearchRoot, 'src'))},\"children\":[]}]}'\n`, { mode: 0o755 });
+      for (const [name, commandName] of [
+        ['rg', 'rg'],
+        ['fd', 'fdfind'],
+        ['dust', 'dust'],
+      ]) {
+        expect(resolveManagedCliCommand(name, {
+          yeaftDir: hardLinkCase.aliasStateDir,
+          env: { ...process.env, PATH: systemBin },
+          platform: 'linux',
+          arch: 'x64',
+        })).toBe(join(systemBin, commandName));
+      }
+      const previousProcessPath = process.env.PATH;
+      process.env.PATH = systemBin;
+      try {
+        expect(await hardLinkCase.aliasRegistry.execute('Grep', {
+          pattern: 'needle',
+          path: hardLinkCase.aliasSearchRoot,
+          output_mode: 'content',
+          fixed_strings: true,
+        }, hardLinkCase.aliasContext)).toBe('src/hit.js:1:needle');
+        expect(await hardLinkCase.aliasRegistry.execute('Glob', {
+          pattern: '**/*.js',
+          path: hardLinkCase.aliasSearchRoot,
+        }, hardLinkCase.aliasContext)).toBe('src/hit.js');
+        expect(await hardLinkCase.aliasRegistry.execute('DiskUsage', {
+          path: hardLinkCase.aliasSearchRoot,
+          depth: 1,
+          limit: 10,
+        }, hardLinkCase.aliasContext)).toContain('src');
+      } finally {
+        process.env.PATH = previousProcessPath;
+      }
+      expect(readFileSync(systemLog, 'utf8').trim().split('\n')).toEqual(['rg', 'fd', 'dust']);
+    }
+
+    const root = tempDir('fast-tools');
+    mkdirSync(join(root, 'large'));
+    mkdirSync(join(root, 'small'));
+    writeFileSync(join(root, 'large', 'a.bin'), Buffer.alloc(2048));
+    writeFileSync(join(root, 'small', 'b.bin'), Buffer.alloc(32));
+    const registry = createFullRegistry();
+    const fallbackOutput = await registry.execute('DiskUsage', { path: root, depth: 2, limit: 2 }, {
+      cwd: root,
+      yeaftDir: join(root, '.fallback'),
+      managedCliReady: Promise.resolve([]),
+    });
+    expect(registry.getToolNames()).toContain('DiskUsage');
+    expect(fallbackOutput).toContain('large');
+    expect(fallbackOutput.trim().split('\n')).toHaveLength(4);
+
+    if (process.platform !== 'win32') {
+      const toolDir = join(root, '.yeaft');
+      const toolBinDir = managedCliBinDir(toolDir);
+      const log = join(root, 'calls.log');
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(join(root, 'src', 'a.js'), 'needle\n');
+      mkdirSync(toolBinDir, { recursive: true });
+      writeFileSync(join(toolBinDir, 'rg'), `#!/bin/sh\necho rg >> ${JSON.stringify(log)}\nprintf 'src/a.js\\000'\n`, { mode: 0o755 });
+      writeFileSync(join(toolBinDir, 'fd'), `#!/bin/sh\necho fd >> ${JSON.stringify(log)}\nprintf 'src/a.js\\0src/b.txt\\0'\n`, { mode: 0o755 });
+      writeFileSync(join(toolBinDir, 'dust'), `#!/bin/sh\necho dust >> ${JSON.stringify(log)}\nprintf '{"size":"2080B","name":${JSON.stringify(root)},"children":[{"size":"2048B","name":${JSON.stringify(join(root, 'large'))},"children":[]}]}'\n`, { mode: 0o755 });
+      trustManagedCliFixtures(toolDir, ['rg', 'fd', 'dust']);
+      const neverReady = new Promise(() => {});
+      const ctx = { cwd: root, yeaftDir: toolDir, managedCliReady: neverReady };
+      expect(await Promise.race([
+        registry.execute('Grep', { pattern: 'needle', path: root }, ctx),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Grep waited for unrelated installs')), 500)),
+      ])).toContain('src/a.js');
+      const globOutput = await Promise.race([
+        registry.execute('Glob', { pattern: '**/*.js', path: root }, ctx),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Glob waited for unrelated installs')), 500)),
+      ]);
+      expect(globOutput).toContain('src/a.js');
+      expect(globOutput).not.toContain('b.txt');
+      const dustOutput = await Promise.race([
+        registry.execute('DiskUsage', { path: root, depth: 2, limit: 2 }, ctx),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('DiskUsage waited for unrelated installs')), 500)),
+      ]);
+      expect(dustOutput).toContain('large');
+      expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['rg', 'fd', 'dust']);
+
+      const rg = resolveManagedCliCommand('rg', { yeaftDir: toolDir, env: emptyPathEnv() });
+      expect(execFileSync(rg, ['--version'], { encoding: 'utf8' })).toContain('src/a.js');
+      expect(createHash('sha256').update(readFileSync(rg)).digest('hex')).toHaveLength(64);
+      expect(existsSync(rg)).toBe(true);
+    }
+    const parityRoot = tempDir('search-backend-parity');
+    mkdirSync(join(parityRoot, 'src', '.yeaft', 'worktrees', 'nested'), { recursive: true });
+    mkdirSync(join(parityRoot, '.yeaft', 'worktrees', 'root'), { recursive: true });
+    writeFileSync(join(parityRoot, 'root.txt'), 'needle\n');
+    writeFileSync(join(parityRoot, 'src', 'a.js'), 'needle\n');
+    writeFileSync(join(parityRoot, 'src', 'a.txt'), 'needle\n');
+    writeFileSync(join(parityRoot, 'src', '.yeaft', 'worktrees', 'nested', 'nested.js'), 'needle\n');
+    writeFileSync(join(parityRoot, '.yeaft', 'worktrees', 'root', 'root.js'), 'needle\n');
+    const realBinDir = managedCliBinDir(parityRoot);
+    mkdirSync(realBinDir, { recursive: true });
+    const realRg = process.env.YEAFT_TEST_RG;
+    const realFd = process.env.YEAFT_TEST_FD;
+    const realDust = process.env.YEAFT_TEST_DUST;
+    if (realRg && realFd) {
+      writeFileSync(join(realBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      writeFileSync(join(realBinDir, 'fd'), readFileSync(realFd), { mode: 0o755 });
+      trustManagedCliFixtures(parityRoot, ['rg', 'fd']);
+      const fastCtx = { cwd: parityRoot, yeaftDir: parityRoot, managedCliReady: Promise.resolve([]) };
+      const fallbackCtx = { cwd: parityRoot, yeaftDir: join(parityRoot, 'fallback'), managedCliReady: Promise.resolve([]) };
+      for (const filters of [
+        { glob: '**/*.txt', type: 'js' },
+        { glob: 'src/**', type: 'js' },
+        { glob: '*.{js,txt}' },
+        { glob: '**/*.txt' },
+      ]) {
+        const input = { pattern: 'needle', path: parityRoot, output_mode: 'files_with_matches', fixed_strings: true, ...filters };
+        const fast = (await registry.execute('Grep', input, fastCtx)).split('\n').sort();
+        const fallback = (await registry.execute('Grep', input, fallbackCtx)).split('\n').sort();
+        expect(fast).toEqual(fallback);
+      }
+
+      writeFileSync(join(parityRoot, 'src', 'a[0-9].js'), 'needle\n');
+      for (const directory of SEARCH_SKIP_DIRS) {
+        mkdirSync(join(parityRoot, directory), { recursive: true });
+        writeFileSync(join(parityRoot, directory, 'hit.js'), 'needle\n');
+      }
+      const skipInput = {
+        pattern: 'needle', path: parityRoot, glob: '**/*.js',
+        output_mode: 'files_with_matches', fixed_strings: true, head_limit: 50,
+      };
+      expect(await registry.execute('Grep', skipInput, fastCtx))
+        .toBe(await registry.execute('Grep', skipInput, fallbackCtx));
+      for (const directory of SEARCH_SKIP_DIRS) {
+        expect(await registry.execute('Grep', skipInput, fastCtx))
+          .not.toContain(`${directory}/hit.js`);
+      }
+      const literalBracketInput = {
+        pattern: 'needle', path: parityRoot, glob: 'a[0-9].js',
+        output_mode: 'files_with_matches', fixed_strings: true,
+      };
+      const literalBracketFast = await registry.execute('Grep', literalBracketInput, fastCtx);
+      const literalBracketFallback = await registry.execute('Grep', literalBracketInput, fallbackCtx);
+      expect(literalBracketFast).toBe('src/a[0-9].js');
+      expect(literalBracketFast).toBe(literalBracketFallback);
+
+      writeFileSync(join(parityRoot, 'src', 'line\nbreak.js'), 'needle\n');
+      mkdirSync(join(parityRoot, 'C:'));
+      writeFileSync(join(parityRoot, 'C:', 'a.js'), 'needle\n');
+      for (const outputMode of ['files_with_matches', 'count', 'content']) {
+        const input = {
+          pattern: 'needle', path: parityRoot, glob: '**/*.js',
+          output_mode: outputMode, fixed_strings: true, head_limit: 20,
+        };
+        const fast = await registry.execute('Grep', input, fastCtx);
+        const fallback = await registry.execute('Grep', input, fallbackCtx);
+        expect(fast).toBe(fallback);
+        expect(fast).toContain('C:/a.js');
+        expect(fast).toContain('src/line\nbreak.js');
+      }
+      writeFileSync(join(parityRoot, 'src', 'context.js'), 'zero\r\nneedle\r\ntwo\r\n');
+      for (const contextOptions of [{}, { context: 1 }, { before: 1 }, { after: 1 }]) {
+        const input = {
+          pattern: 'needle', path: parityRoot, glob: '**/*.js',
+          output_mode: 'content', fixed_strings: true, head_limit: 20,
+          ...contextOptions,
+        };
+        const fast = await registry.execute('Grep', input, fastCtx);
+        const fallback = await registry.execute('Grep', input, fallbackCtx);
+        expect(fast).toBe(fallback);
+        expect(fast).not.toContain('\r');
+      }
+      writeFileSync(join(parityRoot, 'src', 'count.js'), 'needle needle\nneedle\n');
+      const countInput = {
+        pattern: 'needle', path: parityRoot, glob: 'count.js',
+        output_mode: 'count', fixed_strings: true,
+      };
+      expect(await registry.execute('Grep', countInput, fastCtx)).toBe('src/count.js:3');
+      expect(await registry.execute('Grep', countInput, fastCtx))
+        .toBe(await registry.execute('Grep', countInput, fallbackCtx));
+
+      writeFileSync(join(parityRoot, 'src', 'multiline.js'), 'alpha\nbeta\nalpha\nbeta\n');
+      for (const outputMode of ['files_with_matches', 'count', 'content']) {
+        for (const search of [
+          { pattern: 'alpha.*beta', fixed_strings: false, expectedCount: 1 },
+          { pattern: 'alpha\nbeta', fixed_strings: true, expectedCount: 2 },
+        ]) {
+          const input = {
+            ...search, path: parityRoot, glob: 'multiline.js',
+            output_mode: outputMode, multiline: true, head_limit: 20,
+          };
+          const fast = await registry.execute('Grep', input, fastCtx);
+          const fallback = await registry.execute('Grep', input, fallbackCtx);
+          const expected = outputMode === 'files_with_matches'
+            ? 'src/multiline.js'
+            : outputMode === 'count'
+              ? `src/multiline.js:${search.expectedCount}`
+              : [1, 2, 3, 4]
+                  .map(line => `src/multiline.js:${line}:${line % 2 ? 'alpha' : 'beta'}`)
+                  .join('\n');
+          expect(fast).toBe(expected);
+          expect(fast).toBe(fallback);
+        }
+      }
+      writeFileSync(join(parityRoot, 'src', 'anchor.js'), 'alpha\nbeta\ngamma\n^beta$\n');
+      for (const pattern of ['^beta$', '(?m)^beta$']) {
+        for (const multiline of [false, true]) {
+          for (const outputMode of ['files_with_matches', 'count', 'content']) {
+            const input = {
+              pattern, path: parityRoot, glob: 'anchor.js',
+              output_mode: outputMode, multiline, head_limit: 20,
+            };
+            const expected = outputMode === 'files_with_matches'
+              ? 'src/anchor.js'
+              : outputMode === 'count'
+                ? 'src/anchor.js:1'
+                : 'src/anchor.js:2:beta';
+            const fast = await registry.execute('Grep', input, fastCtx);
+            const fallback = await registry.execute('Grep', input, fallbackCtx);
+            expect(fast).toBe(expected);
+            expect(fast).toBe(fallback);
+          }
+        }
+      }
+      for (const pattern of ['\\^beta\\$', 'beta[$]']) {
+        const input = {
+          pattern, path: parityRoot, glob: 'anchor.js',
+          output_mode: 'content', multiline: true, head_limit: 20,
+        };
+        const fast = await registry.execute('Grep', input, fastCtx);
+        const fallback = await registry.execute('Grep', input, fallbackCtx);
+        expect(fast).toBe('src/anchor.js:4:^beta$');
+        expect(fast).toBe(fallback);
+      }
+      const disabledAnchorInput = {
+        pattern: '(?-m)^beta$', path: parityRoot, glob: 'anchor.js',
+        output_mode: 'content', multiline: true, head_limit: 20,
+      };
+      expect(await registry.execute('Grep', disabledAnchorInput, fastCtx)).toBe('(no matches)');
+      expect(await registry.execute('Grep', disabledAnchorInput, fallbackCtx)).toBe('(no matches)');
+
+      for (const pattern of [
+        '(?-m:^beta$)',
+        '(?m:(?-m:^beta$)|^gamma$)',
+        '(?m:^beta(?-m:$))',
+      ]) {
+        for (const outputMode of ['files_with_matches', 'count', 'content']) {
+          const input = {
+            pattern, path: parityRoot, glob: 'anchor.js',
+            output_mode: outputMode, multiline: true, head_limit: 20,
+          };
+          const fast = await registry.execute('Grep', input, fastCtx);
+          const fallback = await registry.execute('Grep', input, fallbackCtx);
+          expect(fast).toBe(fallback);
+          if (process.version.startsWith('v20.')) expect(fast).toContain('Invalid regular expression');
+          else expect(fast).not.toContain('unsupported');
+        }
+      }
+
+      writeFileSync(join(parityRoot, 'src', 'multiline-crlf.js'), 'alpha\r\nbeta\r\n');
+      const scopedCrlfInput = {
+        pattern: '(?m:^beta$)', path: parityRoot, glob: 'multiline-crlf.js',
+        output_mode: 'content', multiline: false, head_limit: 20,
+      };
+      const scopedCrlfFast = await registry.execute('Grep', scopedCrlfInput, fastCtx);
+      expect(scopedCrlfFast).toBe(await registry.execute('Grep', scopedCrlfInput, fallbackCtx));
+      if (!process.version.startsWith('v20.')) expect(scopedCrlfFast).toBe('src/multiline-crlf.js:2:beta');
+      for (const multiline of [false, true]) {
+        const input = {
+          pattern: 'beta$', path: parityRoot, glob: 'multiline-crlf.js',
+          output_mode: 'content', multiline, head_limit: 20,
+        };
+        const fast = await registry.execute('Grep', input, fastCtx);
+        expect(fast).toBe('src/multiline-crlf.js:2:beta');
+        expect(fast).toBe(await registry.execute('Grep', input, fallbackCtx));
+      }
+      for (const fixedStrings of [false, true]) {
+        for (const outputMode of ['files_with_matches', 'count', 'content']) {
+          const input = {
+            pattern: 'alpha\nbeta', path: parityRoot, glob: 'multiline-crlf.js',
+            output_mode: outputMode, fixed_strings: fixedStrings,
+            multiline: true, head_limit: 20,
+          };
+          expect(await registry.execute('Grep', input, fastCtx)).toBe('(no matches)');
+          expect(await registry.execute('Grep', input, fallbackCtx)).toBe('(no matches)');
+        }
+      }
+
+      writeFileSync(join(parityRoot, 'src', 'isolated-cr.js'), 'alpha\rbeta\n');
+      for (const outputMode of ['files_with_matches', 'count', 'content']) {
+        const input = {
+          pattern: 'alpha.*beta', path: parityRoot, glob: 'isolated-cr.js',
+          output_mode: outputMode, multiline: true, head_limit: 20,
+        };
+        const expected = outputMode === 'files_with_matches'
+          ? 'src/isolated-cr.js'
+          : outputMode === 'count'
+            ? 'src/isolated-cr.js:1'
+            : 'src/isolated-cr.js:1:alpha\nsrc/isolated-cr.js:2:beta';
+        const fast = await registry.execute('Grep', input, fastCtx);
+        const fallback = await registry.execute('Grep', input, fallbackCtx);
+        expect(fast).toBe(expected);
+        expect(fast).toBe(fallback);
+      }
+
+      const zeroLengthRoot = tempDir('grep-zero-length');
+      mkdirSync(join(zeroLengthRoot, 'src'));
+      writeFileSync(join(zeroLengthRoot, 'src', 'empty.js'), '');
+      writeFileSync(join(zeroLengthRoot, 'src', 'only-newline.js'), '\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'middle.js'), 'alpha\n\nbeta\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'trailing.js'), 'alpha\nbeta\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'no-trailing.js'), 'alpha\nbeta');
+      writeFileSync(join(zeroLengthRoot, 'src', 'crlf-empty.js'), 'alpha\r\n\r\nbeta\r\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'regex-backref.js'), 'aa\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'regex-legacy.js'), 'Aalpha\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'regex-literal.js'), '(?x)^a b$\n');
+      writeFileSync(join(zeroLengthRoot, 'src', 'unicode-only.js'), '界\n');
+      const zeroLengthBinDir = managedCliBinDir(zeroLengthRoot);
+      mkdirSync(zeroLengthBinDir, { recursive: true });
+      writeFileSync(join(zeroLengthBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      trustManagedCliFixtures(zeroLengthRoot, ['rg']);
+      const zeroLengthContexts = [
+        { cwd: zeroLengthRoot, yeaftDir: zeroLengthRoot, managedCliReady: Promise.resolve([]) },
+        { cwd: zeroLengthRoot, yeaftDir: join(zeroLengthRoot, 'fallback'), managedCliReady: Promise.resolve([]) },
+      ];
+      for (const pattern of [
+        '(?m)^$', '(?m)^|$', '\\b', 'a*', 'a?', 'a{0}', 'a{00,2}',
+        '(?:alpha|)', '(?:a*)+', '(?<name>a*)', '(?=alpha)',
+      ]) {
+        for (const outputMode of ['files_with_matches', 'count', 'content']) {
+          const input = {
+            pattern, path: zeroLengthRoot, glob: '**/*.js',
+            output_mode: outputMode, multiline: true, head_limit: 50,
+          };
+          const outputs = await Promise.all(zeroLengthContexts.map(context => (
+            registry.execute('Grep', input, context)
+          )));
+          expect(outputs[0]).toBe(outputs[1]);
+          expect(outputs[0]).not.toContain('Grep failed');
+        }
+      }
+      for (const context of zeroLengthContexts) {
+        for (const pattern of ['(?P<name>alpha)', '(?x)^a b$']) {
+          expect(await registry.execute('Grep', {
+            pattern, path: zeroLengthRoot, glob: 'no-trailing.js',
+            output_mode: 'content', multiline: true,
+          }, context)).toContain('Invalid regular expression');
+        }
+        expect(await registry.execute('Grep', {
+          pattern: '(?x)^a b$', path: zeroLengthRoot, glob: 'regex-literal.js',
+          output_mode: 'content', multiline: true, fixed_strings: true,
+        }, context)).toBe('src/regex-literal.js:1:(?x)^a b$');
+      }
+      let managedCliLookupCount = 0;
+      const lookupProbeContext = {
+        cwd: zeroLengthRoot,
+        get yeaftDir() {
+          managedCliLookupCount += 1;
+          return zeroLengthRoot;
+        },
+        managedCliReady: Promise.resolve([]),
+      };
+      expect(await registry.execute('Grep', {
+        pattern: '(?=(a))\\1', path: zeroLengthRoot, glob: 'regex-backref.js',
+        output_mode: 'content', multiline: true,
+      }, lookupProbeContext)).toBe('src/regex-backref.js:1:aa');
+      expect(managedCliLookupCount).toBe(0);
+      expect(await registry.execute('Grep', {
+        pattern: 'alpha', path: zeroLengthRoot, glob: 'no-trailing.js',
+        output_mode: 'content', multiline: false,
+      }, lookupProbeContext)).toBe('src/no-trailing.js:1:alpha');
+      expect(managedCliLookupCount).toBeGreaterThan(0);
+      for (const pattern of ['\ud800', '\0', '\r', '\n']) {
+        managedCliLookupCount = 0;
+        await registry.execute('Grep', {
+          pattern, path: zeroLengthRoot, output_mode: 'content', fixed_strings: true,
+        }, lookupProbeContext);
+        expect(managedCliLookupCount).toBe(0);
+      }
+
+      const eligibilityRoot = tempDir('grep-file-eligibility');
+      mkdirSync(join(eligibilityRoot, 'src'));
+      writeFileSync(join(eligibilityRoot, 'src', 'large.txt'), `${'x'.repeat(1024 * 1024 + 1)}\nneedle\n`);
+      writeFileSync(join(eligibilityRoot, 'src', 'fake.pdf'), 'needle\n');
+      writeFileSync(join(eligibilityRoot, 'src', 'invalid.txt'), Buffer.concat([
+        Buffer.from('needle\n'), Buffer.from([0xff]),
+      ]));
+      writeFileSync(join(eligibilityRoot, 'src', 'replacement.txt'), 'x\ufffdy\n');
+      const eligibilityBinDir = managedCliBinDir(eligibilityRoot);
+      const eligibilityRgLog = join(tmpdir(), `yeaft-rg-candidate-${process.pid}-${Date.now()}.log`);
+      managedCliTempDirs.push(eligibilityRgLog);
+      mkdirSync(eligibilityBinDir, { recursive: true });
+      writeFileSync(join(eligibilityBinDir, 'rg'), `#!/bin/sh\nprintf 'env=%s\\n' "\${RIPGREP_CONFIG_PATH-unset}" >> ${JSON.stringify(eligibilityRgLog)}\nprintf 'arg=%s\\n' "$@" >> ${JSON.stringify(eligibilityRgLog)}\nexec ${JSON.stringify(realRg)} "$@"\n`, { mode: 0o755 });
+      trustManagedCliFixtures(eligibilityRoot, ['rg']);
+      const eligibilityContexts = [
+        { cwd: eligibilityRoot, yeaftDir: eligibilityRoot, managedCliReady: Promise.resolve([]) },
+        { cwd: eligibilityRoot, yeaftDir: join(eligibilityRoot, 'fallback'), managedCliReady: Promise.resolve([]) },
+      ];
+      const hostileRgConfig = join(eligibilityRoot, 'ripgrep.rc');
+      writeFileSync(hostileRgConfig, '--max-filesize=1\n--glob=!large.txt\n');
+      const previousRgConfig = process.env.RIPGREP_CONFIG_PATH;
+      process.env.RIPGREP_CONFIG_PATH = hostileRgConfig;
+      try {
+        const fast = await registry.execute('Grep', {
+          pattern: 'needle', path: eligibilityRoot, glob: 'large.txt',
+          output_mode: 'content', fixed_strings: true,
+        }, eligibilityContexts[0]);
+        const fallback = await registry.execute('Grep', {
+          pattern: 'needle', path: eligibilityRoot, glob: 'large.txt',
+          output_mode: 'content', fixed_strings: true,
+        }, eligibilityContexts[1]);
+        expect(fast).toBe('src/large.txt:2:needle');
+        expect(fast).toBe(fallback);
+        const candidateLog = readFileSync(eligibilityRgLog, 'utf8');
+        expect(candidateLog).toContain('env=unset');
+        expect(candidateLog).toContain('arg=--no-config');
+        expect(candidateLog).toContain('arg=--files-with-matches');
+      } finally {
+        if (previousRgConfig === undefined) delete process.env.RIPGREP_CONFIG_PATH;
+        else process.env.RIPGREP_CONFIG_PATH = previousRgConfig;
+      }
+      for (const input of [
+        { pattern: 'needle', fixed_strings: true },
+        { pattern: 'needl.', fixed_strings: false },
+      ]) {
+        for (const outputMode of ['files_with_matches', 'count', 'content']) {
+          const outputs = await Promise.all(eligibilityContexts.map(context => registry.execute('Grep', {
+            ...input, path: eligibilityRoot, output_mode: outputMode, head_limit: 50,
+          }, context)));
+          expect(outputs[0]).toBe(outputs[1]);
+          expect(outputs[0]).toContain('src/large.txt');
+          expect(outputs[0]).not.toContain('fake.pdf');
+          expect(outputs[0]).not.toContain('invalid.txt');
+        }
+      }
+      const surrogateOutputs = await Promise.all(eligibilityContexts.map(context => registry.execute('Grep', {
+        pattern: '\ud800', path: eligibilityRoot, output_mode: 'content', fixed_strings: true,
+      }, context)));
+      expect(surrogateOutputs).toEqual(['(no matches)', '(no matches)']);
+
+      for (const [file, content] of [
+        ['empty.txt', ''],
+        ['trailing.txt', 'alpha\n'],
+        ['crlf.txt', 'alpha\r\nbeta\r\n'],
+        ['cr.txt', 'alpha\rbeta\r'],
+        ['line-separators.txt', 'alpha\u2028beta\u2029'],
+      ]) writeFileSync(join(eligibilityRoot, 'src', file), content);
+      for (const [glob, pattern, expectedContent, expectedCount] of [
+        ['empty.txt', '(?m)^$', 'src/empty.txt:1:', 1],
+        ['trailing.txt', '(?m)^$', 'src/trailing.txt:2:', 1],
+        ['crlf.txt', '^beta$', 'src/crlf.txt:2:beta', 1],
+        ['cr.txt', '^beta$', 'src/cr.txt:2:beta', 1],
+        ['line-separators.txt', '^beta$', 'src/line-separators.txt:2:beta', 1],
+      ]) {
+        for (const outputMode of ['files_with_matches', 'count', 'content']) {
+          const outputs = await Promise.all(eligibilityContexts.map(context => registry.execute('Grep', {
+            pattern, path: eligibilityRoot, glob, output_mode: outputMode, multiline: true,
+          }, context)));
+          const expected = outputMode === 'files_with_matches'
+            ? `src/${glob}`
+            : outputMode === 'count' ? `src/${glob}:${expectedCount}` : expectedContent;
+          expect(outputs).toEqual([expected, expected]);
+        }
+      }
+      for (const context of eligibilityContexts) {
+        for (const [outputMode, expected] of [
+          ['files_with_matches', 'large.txt'],
+          ['count', 'large.txt:1'],
+          ['content', 'large.txt:2:needle'],
+        ]) {
+          expect(await registry.execute('Grep', {
+            pattern: 'needle', path: join(eligibilityRoot, 'src', 'large.txt'),
+            output_mode: outputMode, fixed_strings: true,
+          }, context)).toBe(expected);
+        }
+      }
+      const linkPath = join(eligibilityRoot, 'src', 'large-link.txt');
+      symlinkSync(join(eligibilityRoot, 'src', 'large.txt'), linkPath);
+      for (const context of eligibilityContexts) {
+        expect(await registry.execute('Grep', {
+          pattern: 'needle', path: linkPath, output_mode: 'content', fixed_strings: true,
+        }, context)).toBe('(no matches)');
+      }
+      const zeroWidthCounts = await Promise.all(eligibilityContexts.map(context => registry.execute('Grep', {
+        pattern: '(?:)', path: eligibilityRoot, glob: 'trailing.txt',
+        output_mode: 'count', multiline: true,
+      }, context)));
+      expect(zeroWidthCounts).toEqual(['src/trailing.txt:7', 'src/trailing.txt:7']);
+      for (const [pattern, outputMode, expected] of [
+        ['(?:)', 'count', 'src/crlf.txt:14'],
+        ['(?:)', 'content', 'src/crlf.txt:1:alpha\nsrc/crlf.txt:2:beta\nsrc/crlf.txt:3:'],
+        ['(?m)^$', 'count', 'src/crlf.txt:3'],
+        ['(?m)^$', 'content', 'src/crlf.txt:2:\nsrc/crlf.txt:3:'],
+        ['$', 'count', 'src/crlf.txt:5'],
+        ['$', 'content', 'src/crlf.txt:1:alpha\nsrc/crlf.txt:2:beta\nsrc/crlf.txt:3:'],
+      ]) {
+        const outputs = await Promise.all(eligibilityContexts.map(context => registry.execute('Grep', {
+          pattern, path: eligibilityRoot, glob: 'crlf.txt',
+          output_mode: outputMode, multiline: true,
+        }, context)));
+        expect(outputs).toEqual([expected, expected]);
+      }
+
+      const safeRegexCases = [
+        { pattern: '(?i)(?m)^BETA$', glob: 'no-trailing.js', expected: 'src/no-trailing.js:2:beta' },
+        { pattern: '(?:alpha|beta)+', glob: 'no-trailing.js', expected: 'src/no-trailing.js:1:alpha' },
+        { pattern: '(?:alpha)?beta', glob: 'no-trailing.js', expected: 'src/no-trailing.js:2:beta' },
+        { pattern: '(?:alpha|beta){1,2}', glob: 'no-trailing.js', expected: 'src/no-trailing.js:1:alpha' },
+        { pattern: '(?<name>alpha)', glob: 'no-trailing.js', expected: 'src/no-trailing.js:1:alpha' },
+        { pattern: '(?=alpha)alpha', glob: 'no-trailing.js', expected: 'src/no-trailing.js:1:alpha' },
+        { pattern: '(?=(a))\\1', glob: 'regex-backref.js', expected: 'src/regex-backref.js:1:aa' },
+        { pattern: '(?<=(a))\\1', glob: 'regex-backref.js', expected: 'src/regex-backref.js:1:aa' },
+        { pattern: '(?<letter>a)\\k<letter>', glob: 'regex-backref.js', expected: 'src/regex-backref.js:1:aa' },
+        { pattern: '\\Aalpha', glob: 'regex-legacy.js', expected: 'src/regex-legacy.js:1:Aalpha' },
+        { pattern: '^\\w+$', glob: 'unicode-only.js', expected: '(no matches)' },
+        { pattern: '\\b界', glob: 'unicode-only.js', expected: '(no matches)' },
+        { pattern: '[a*]+', glob: 'no-trailing.js', expected: 'src/no-trailing.js:1:alpha' },
+        { pattern: '\\^', glob: 'no-trailing.js', expected: '(no matches)' },
+      ];
+      for (const { pattern, glob, expected } of safeRegexCases) {
+        const input = {
+          pattern, path: zeroLengthRoot, glob,
+          output_mode: 'content', multiline: true, head_limit: 50,
+        };
+        const outputs = await Promise.all(zeroLengthContexts.map(context => (
+          registry.execute('Grep', input, context)
+        )));
+        expect(outputs[0].split('\n')[0]).toBe(expected);
+        expect(outputs[0]).toBe(outputs[1]);
+      }
+
+      for (const headLimit of [1, 2]) {
+        const input = {
+          pattern: 'needle', path: parityRoot, glob: '**/*.js',
+          output_mode: 'files_with_matches', fixed_strings: true, head_limit: headLimit,
+        };
+        const fast = await registry.execute('Grep', input, fastCtx);
+        const fallback = await registry.execute('Grep', input, fallbackCtx);
+        expect(fast).toBe(fallback);
+        expect(fast).toContain('(more results omitted)');
+      }
+
+      const contextLimitRoot = tempDir('grep-context-limit');
+      for (const name of ['a.txt', 'b.txt']) {
+        writeFileSync(join(contextLimitRoot, name), `${name}-0\n${name}-1\nHIT\n${name}-3\n${name}-4\n`);
+      }
+      const contextLimitBin = managedCliBinDir(contextLimitRoot);
+      mkdirSync(contextLimitBin, { recursive: true });
+      writeFileSync(join(contextLimitBin, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      trustManagedCliFixtures(contextLimitRoot, ['rg']);
+      const contextLimitContexts = [
+        { cwd: contextLimitRoot, yeaftDir: contextLimitRoot, managedCliReady: Promise.resolve([]) },
+        { cwd: contextLimitRoot, yeaftDir: join(contextLimitRoot, 'fallback'), managedCliReady: Promise.resolve([]) },
+      ];
+      for (const contextOptions of [{ before: 2 }, { after: 2 }, { context: 2 }]) {
+        for (const headLimit of [1, 2]) {
+          const outputs = await Promise.all(contextLimitContexts.map(context => registry.execute('Grep', {
+            pattern: 'HIT', path: contextLimitRoot, output_mode: 'content', fixed_strings: true,
+            head_limit: headLimit, ...contextOptions,
+          }, context)));
+          expect(outputs[0]).toBe(outputs[1]);
+          expect(outputs[0].split('\n').filter(line => line.endsWith(':3:HIT'))).toHaveLength(headLimit);
+          expect(outputs[0]).toContain('a.txt:3:HIT');
+          if (headLimit === 2) expect(outputs[0]).toContain('b.txt:3:HIT');
+        }
+      }
+      writeFileSync(join(contextLimitRoot, 'adjacent.txt'), 'HIT\nHIT\nafter\n');
+      for (const context of contextLimitContexts) {
+        const output = await registry.execute('Grep', {
+          pattern: 'HIT', path: contextLimitRoot, glob: 'adjacent.txt',
+          output_mode: 'content', fixed_strings: true, after: 2, head_limit: 1,
+        }, context);
+        expect(output.split('\n').filter(line => line.includes(':HIT'))).toHaveLength(1);
+        expect(output).toContain('adjacent.txt:1:HIT');
+        expect(output).toContain('adjacent.txt-3-after');
+        expect(output).toContain('(more results omitted)');
+      }
+      rmSync(join(contextLimitRoot, 'adjacent.txt'));
+      writeFileSync(join(contextLimitRoot, 'a.txt'), `${'界'.repeat(6000)}\nHIT\n`);
+      writeFileSync(join(contextLimitRoot, 'b.txt'), `${'界'.repeat(6000)}\nHIT\n`);
+      for (const context of contextLimitContexts) {
+        const output = await registry.execute('Grep', {
+          pattern: 'HIT', path: contextLimitRoot, output_mode: 'content', fixed_strings: true,
+          before: 1, head_limit: 2,
+        }, context);
+        expect(output).toContain('a.txt:2:HIT');
+        expect(output).toContain('b.txt:2:HIT');
+        expect(Buffer.byteLength(output)).toBeLessThanOrEqual(32 * 1024);
+      }
+
+      const orderingRoot = tempDir('search-order-parity');
+      mkdirSync(join(orderingRoot, 'a'));
+      writeFileSync(join(orderingRoot, 'z1.js'), 'needle\n');
+      writeFileSync(join(orderingRoot, 'z2.js'), 'needle\n');
+      writeFileSync(join(orderingRoot, 'z3.js'), 'needle\n');
+      writeFileSync(join(orderingRoot, 'a', 'a.js'), 'needle\n');
+      const orderingBinDir = managedCliBinDir(orderingRoot);
+      mkdirSync(orderingBinDir, { recursive: true });
+      writeFileSync(join(orderingBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      trustManagedCliFixtures(orderingRoot, ['rg']);
+      const orderingInput = {
+        pattern: 'needle', path: orderingRoot, glob: '**/*.js',
+        output_mode: 'files_with_matches', fixed_strings: true, head_limit: 1,
+      };
+      const orderingFast = await registry.execute('Grep', orderingInput, {
+        cwd: orderingRoot, yeaftDir: orderingRoot, managedCliReady: Promise.resolve([]),
+      });
+      const orderingFallback = await registry.execute('Grep', orderingInput, {
+        cwd: orderingRoot, yeaftDir: join(orderingRoot, 'fallback'), managedCliReady: Promise.resolve([]),
+      });
+      expect(orderingFast).toBe('a/a.js\n\n... (more results omitted)');
+      expect(orderingFast).toBe(orderingFallback);
+      const budgetRoot = tempDir('grep-render-budget');
+      mkdirSync(join(budgetRoot, 'src'));
+      const exactFirstMatch = `${'界'.repeat(5455)}aa`;
+      const exactSecondMatch = `${'界'.repeat(5455)}a`;
+      writeFileSync(join(budgetRoot, 'src', 'a.js'), `needle${exactFirstMatch}\n`);
+      writeFileSync(join(budgetRoot, 'src', 'b.js'), `needle${exactSecondMatch}\n`);
+      const budgetBinDir = managedCliBinDir(budgetRoot);
+      mkdirSync(budgetBinDir, { recursive: true });
+      writeFileSync(join(budgetBinDir, 'rg'), readFileSync(realRg), { mode: 0o755 });
+      trustManagedCliFixtures(budgetRoot, ['rg']);
+      const budgetInput = {
+        pattern: 'needle', path: budgetRoot, glob: '**/*.js',
+        output_mode: 'content', fixed_strings: true, head_limit: 2,
+      };
+      const budgetContexts = [budgetRoot, join(budgetRoot, 'fallback')];
+      for (const yeaftDir of budgetContexts) {
+        const output = await registry.execute('Grep', budgetInput, {
+          cwd: budgetRoot, yeaftDir, managedCliReady: Promise.resolve([]),
+        });
+        expect(Buffer.byteLength(output)).toBe(32768);
+        expect(output).not.toContain('[Output truncated]');
+        expect(output).not.toContain('\ufffd');
+      }
+
+      const longMatch = '界'.repeat(5451);
+      writeFileSync(join(budgetRoot, 'src', 'a.js'), `needle${longMatch}\n`);
+      writeFileSync(join(budgetRoot, 'src', 'b.js'), `needle${longMatch}\n`);
+      writeFileSync(join(budgetRoot, 'src', 'c.js'), 'needle\n');
+      for (const yeaftDir of budgetContexts) {
+        const output = await registry.execute('Grep', budgetInput, {
+          cwd: budgetRoot, yeaftDir, managedCliReady: Promise.resolve([]),
+        });
+        expect(Buffer.byteLength(output)).toBe(32768);
+        expect(output).toContain('[Output truncated]');
+        expect(output).not.toContain('\ufffd');
+      }
+      const fastGlob = await registry.execute('Glob', { pattern: '**/*.js', path: parityRoot }, fastCtx);
+      const fallbackGlob = await registry.execute('Glob', { pattern: '**/*.js', path: parityRoot }, fallbackCtx);
+      expect(fastGlob).toBe(fallbackGlob);
+      expect(fastGlob).toContain('src/a.js');
+      expect(fastGlob).not.toContain('.yeaft/worktrees');
+
+      const equalMtimeRoot = tempDir('glob-equal-mtime');
+      for (const name of ['c.js', 'b.js', 'a.js']) writeFileSync(join(equalMtimeRoot, name), 'value\n');
+      const equalTime = new Date('2026-08-01T00:00:00.000Z');
+      for (const name of ['c.js', 'b.js', 'a.js']) utimesSync(join(equalMtimeRoot, name), equalTime, equalTime);
+      const equalMtimeBin = managedCliBinDir(equalMtimeRoot);
+      mkdirSync(equalMtimeBin, { recursive: true });
+      writeFileSync(join(equalMtimeBin, 'fd'), '#!/bin/sh\nprintf "c.js\\0b.js\\0a.js\\0"\n', { mode: 0o755 });
+      trustManagedCliFixtures(equalMtimeRoot, ['fd']);
+      for (const limit of [1, 2]) {
+        const input = { pattern: '*.js', path: equalMtimeRoot, limit };
+        const fast = await registry.execute('Glob', input, {
+          cwd: equalMtimeRoot, yeaftDir: equalMtimeRoot, managedCliReady: Promise.resolve([]),
+        });
+        const fallback = await registry.execute('Glob', input, {
+          cwd: equalMtimeRoot, yeaftDir: join(equalMtimeRoot, 'fallback'), managedCliReady: Promise.resolve([]),
+        });
+        expect(fast).toBe(fallback);
+        expect(fast).toBe(limit === 1 ? 'a.js' : 'a.js\nb.js');
+      }
+
+      const specialPathRoot = tempDir('glob-special-paths');
+      mkdirSync(join(specialPathRoot, 'src'));
+      writeFileSync(join(specialPathRoot, 'src', 'car\rriage.js'), 'value\n');
+      writeFileSync(join(specialPathRoot, 'src', 'line\nbreak.js'), 'value\n');
+      const specialPathBinDir = managedCliBinDir(specialPathRoot);
+      mkdirSync(specialPathBinDir, { recursive: true });
+      writeFileSync(join(specialPathBinDir, 'fd'), readFileSync(realFd), { mode: 0o755 });
+      trustManagedCliFixtures(specialPathRoot, ['fd']);
+      for (const expected of ['src/car\rriage.js', 'src/line\nbreak.js']) {
+        const input = { pattern: expected, path: specialPathRoot };
+        const fast = await registry.execute('Glob', input, {
+          cwd: specialPathRoot, yeaftDir: specialPathRoot, managedCliReady: Promise.resolve([]),
+        });
+        const fallback = await registry.execute('Glob', input, {
+          cwd: specialPathRoot, yeaftDir: join(specialPathRoot, 'fallback'), managedCliReady: Promise.resolve([]),
+        });
+        expect(fast).toBe(expected);
+        expect(fast).toBe(fallback);
+      }
+
+      if (realDust) {
+        const equalSizeDiskRoot = tempDir('disk-usage-equal-size');
+        for (const name of ['A', 'a', 'Z', 'z', 'ä', 'é']) {
+          mkdirSync(join(equalSizeDiskRoot, name));
+          writeFileSync(join(equalSizeDiskRoot, name, 'data.bin'), Buffer.alloc(16));
+        }
+        const equalSizeDiskBin = managedCliBinDir(equalSizeDiskRoot);
+        mkdirSync(equalSizeDiskBin, { recursive: true });
+        writeFileSync(join(equalSizeDiskBin, 'dust'), readFileSync(realDust), { mode: 0o755 });
+        trustManagedCliFixtures(equalSizeDiskRoot, ['dust']);
+        for (const limit of [2, 3, 6]) {
+          const input = { path: equalSizeDiskRoot, depth: 1, limit };
+          const fast = await registry.execute('DiskUsage', input, {
+            cwd: equalSizeDiskRoot, yeaftDir: equalSizeDiskRoot, managedCliReady: Promise.resolve([]),
+          });
+          const fallback = await registry.execute('DiskUsage', input, {
+            cwd: equalSizeDiskRoot, yeaftDir: join(equalSizeDiskRoot, 'fallback'), managedCliReady: Promise.resolve([]),
+          });
+          expect(fast).toBe(fallback);
+        }
+
+        const diskConcurrencyRoot = tempDir('disk-usage-concurrency');
+        let diskLevel = [diskConcurrencyRoot];
+        for (let level = 0; level < 3; level += 1) {
+          const next = [];
+          for (const parent of diskLevel) {
+            for (let index = 0; index < 8; index += 1) {
+              const child = join(parent, `d${index}`);
+              mkdirSync(child);
+              next.push(child);
+            }
+          }
+          diskLevel = next;
+        }
+        let activeFs = 0;
+        let maxActiveFs = 0;
+        const wrapFs = operation => async (...args) => {
+          activeFs += 1;
+          maxActiveFs = Math.max(maxActiveFs, activeFs);
+          await new Promise(resolve => setTimeout(resolve, 1));
+          try { return await operation(...args); } finally { activeFs -= 1; }
+        };
+        await nodeDiskUsage(diskConcurrencyRoot, 3, 20, undefined, {
+          lstat: wrapFs(lstatAsync),
+          readdir: wrapFs(readdirAsync),
+          stat: wrapFs(statAsync),
+        });
+        expect(maxActiveFs).toBeLessThanOrEqual(16);
+        expect(activeFs).toBe(0);
+
+        const diskAbort = new AbortController();
+        activeFs = 0;
+        const abortingFs = operation => async (...args) => {
+          activeFs += 1;
+          await new Promise(resolve => setTimeout(resolve, 5));
+          try { return await operation(...args); } finally { activeFs -= 1; }
+        };
+        const abortedScan = nodeDiskUsage(diskConcurrencyRoot, 3, 20, diskAbort.signal, {
+          lstat: abortingFs(lstatAsync),
+          readdir: abortingFs(readdirAsync),
+          stat: abortingFs(statAsync),
+        });
+        setImmediate(() => diskAbort.abort('user'));
+        await expect(abortedScan).rejects.toMatchObject({ name: 'AbortError' });
+        expect(activeFs).toBe(0);
+
+        const symlinkRoot = tempDir('disk-usage-symlink');
+        mkdirSync(join(symlinkRoot, 'target'));
+        writeFileSync(join(symlinkRoot, 'target', 'data.bin'), Buffer.alloc(16));
+        writeFileSync(join(symlinkRoot, 'target-file.bin'), Buffer.alloc(8));
+        symlinkSync('target', join(symlinkRoot, 'linkdir'), 'dir');
+        symlinkSync('target-file.bin', join(symlinkRoot, 'filelink'), 'file');
+        symlinkSync('missing-target', join(symlinkRoot, 'broken'));
+        const symlinkBinDir = managedCliBinDir(symlinkRoot);
+        mkdirSync(symlinkBinDir, { recursive: true });
+        writeFileSync(join(symlinkBinDir, 'dust'), readFileSync(realDust), { mode: 0o755 });
+        trustManagedCliFixtures(symlinkRoot, ['dust']);
+        const diskInput = { path: symlinkRoot, depth: 2, limit: 20 };
+        const fast = await registry.execute('DiskUsage', diskInput, {
+          cwd: symlinkRoot, yeaftDir: symlinkRoot, managedCliReady: Promise.resolve([]),
+        });
+        const fallback = await registry.execute('DiskUsage', diskInput, {
+          cwd: symlinkRoot, yeaftDir: join(symlinkRoot, 'fallback'), managedCliReady: Promise.resolve([]),
+        });
+        const fastLinkRow = fast.split('\n').find(line => line.endsWith('  linkdir'));
+        const fallbackLinkRow = fallback.split('\n').find(line => line.endsWith('  linkdir'));
+        expect(fastLinkRow).toBeDefined();
+        expect(fallbackLinkRow).toBe(fastLinkRow);
+        for (const nonDirectoryLink of ['filelink', 'broken']) {
+          expect(fast.split('\n').some(line => line.endsWith(`  ${nonDirectoryLink}`))).toBe(false);
+          expect(fallback.split('\n').some(line => line.endsWith(`  ${nonDirectoryLink}`))).toBe(false);
+        }
+        for (const { depth, limit } of [
+          { depth: 0, limit: 1 },
+          { depth: 1, limit: 2 },
+          { depth: 2, limit: 20 },
+        ]) {
+          const boundedInput = { path: symlinkRoot, depth, limit };
+          const boundedFast = await registry.execute('DiskUsage', boundedInput, {
+            cwd: symlinkRoot, yeaftDir: symlinkRoot, managedCliReady: Promise.resolve([]),
+          });
+          const boundedFallback = await registry.execute('DiskUsage', boundedInput, {
+            cwd: symlinkRoot, yeaftDir: join(symlinkRoot, 'fallback'), managedCliReady: Promise.resolve([]),
+          });
+          expect(boundedFast).toBe(boundedFallback);
+        }
+
+        const regularFileInput = { path: join(symlinkRoot, 'target-file.bin'), depth: 2, limit: 20 };
+        for (const yeaftDir of [symlinkRoot, join(symlinkRoot, 'fallback')]) {
+          expect(await registry.execute('DiskUsage', regularFileInput, {
+            cwd: symlinkRoot, yeaftDir, managedCliReady: Promise.resolve([]),
+          })).toContain('path must be a directory or a directory symlink');
+        }
+
+        const rootLink = join(symlinkRoot, 'rootlink');
+        symlinkSync(join(symlinkRoot, 'target'), rootLink, 'dir');
+        const rootInput = { path: rootLink, depth: 2, limit: 20 };
+        const fastRoot = await registry.execute('DiskUsage', rootInput, {
+          cwd: symlinkRoot, yeaftDir: symlinkRoot, managedCliReady: Promise.resolve([]),
+        });
+        const fallbackRoot = await registry.execute('DiskUsage', rootInput, {
+          cwd: symlinkRoot, yeaftDir: join(symlinkRoot, 'fallback'), managedCliReady: Promise.resolve([]),
+        });
+        const fastRootRow = fastRoot.split('\n').find(line => line.endsWith('  .'));
+        const fallbackRootRow = fallbackRoot.split('\n').find(line => line.endsWith('  .'));
+        expect(fastRootRow).toBeDefined();
+        expect(fallbackRootRow).toBe(fastRootRow);
+      }
+    }
+
+    for (const name of ['Grep', 'Glob', 'DiskUsage']) {
+      const controller = new AbortController();
+      controller.abort();
+      const input = name === 'Grep'
+        ? { pattern: 'needle', path: parityRoot }
+        : name === 'Glob' ? { pattern: '**/*', path: parityRoot } : { path: parityRoot };
+      await expect(registry.execute(name, input, {
+        cwd: parityRoot,
+        yeaftDir: join(parityRoot, 'fallback'),
+        managedCliReady: Promise.resolve([]),
+        signal: controller.signal,
+      })).rejects.toMatchObject({ name: 'AbortError' });
+    }
+
+    const fallbackAbortDir = tempDir('search-fallback-mid-abort');
+    for (let dir = 0; dir < 32; dir += 1) {
+      const dirPath = join(fallbackAbortDir, `d${dir}`);
+      mkdirSync(dirPath);
+      for (let file = 0; file < 16; file += 1) {
+        writeFileSync(join(dirPath, `f${file}.txt`), 'needle\n');
+      }
+    }
+    for (const name of ['Grep', 'Glob', 'DiskUsage']) {
+      const controller = new AbortController();
+      const input = name === 'Grep'
+        ? { pattern: 'needle', path: fallbackAbortDir }
+        : name === 'Glob' ? { pattern: '**/*.txt', path: fallbackAbortDir } : { path: fallbackAbortDir };
+      const pending = registry.execute(name, input, {
+        cwd: fallbackAbortDir,
+        yeaftDir: join(fallbackAbortDir, 'missing'),
+        managedCliReady: Promise.resolve([]),
+        signal: controller.signal,
+      });
+      setImmediate(() => controller.abort('user'));
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    }
+
+    if (process.platform !== 'win32') {
+      const abortDir = tempDir('search-mid-abort');
+      const abortBinDir = managedCliBinDir(abortDir);
+      mkdirSync(abortBinDir, { recursive: true });
+      for (const name of ['rg', 'fd', 'dust']) {
+        writeFileSync(join(abortBinDir, name), '#!/bin/sh\ntrap "exit 130" TERM\nwhile :; do :; done\n', { mode: 0o755 });
+      }
+      trustManagedCliFixtures(abortDir, ['rg', 'fd', 'dust']);
+      for (const name of ['Grep', 'Glob', 'DiskUsage']) {
+        const controller = new AbortController();
+        const input = name === 'Grep'
+          ? { pattern: 'needle', path: abortDir }
+          : name === 'Glob' ? { pattern: '**/*', path: abortDir } : { path: abortDir };
+        const pending = registry.execute(name, input, {
+          cwd: abortDir,
+          yeaftDir: abortDir,
+          managedCliReady: Promise.resolve([]),
+          signal: controller.signal,
+        });
+        setTimeout(() => controller.abort('user'), 20);
+        await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      }
+    }
+    await verifyRipgrepParity();
+  }, 120_000);
 });

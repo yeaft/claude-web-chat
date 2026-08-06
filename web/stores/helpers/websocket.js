@@ -133,6 +133,21 @@ export function connect(store) {
     return;
   }
 
+  // Agent and Session inventories belong to the socket that delivered them.
+  // Invalidate both before replacing the socket so the UI cannot render a
+  // stale empty/content state while the new authenticated snapshot is pending.
+  clearTimeout(store._legacyYeaftSessionHydrateTimer);
+  store._legacyYeaftSessionHydrateTimer = null;
+  store._hasHandledAgentList = false;
+  store._hasHandledYeaftSessionHydrate = false;
+  store.yeaftSessionInventoryCompleteSupported = null;
+  store.yeaftSessionHydrateRequestId = null;
+  store.yeaftSessionHydrateSlices = [];
+  store.yeaftSessionHydrateError = null;
+  store._yeaftSessionInventorySocketQuarantined = false;
+  store.pendingAgentSelection = null;
+  store.agentSwitching = false;
+
   if (store.ws) {
     store.ws.onopen = null;
     store.ws.onmessage = null;
@@ -148,6 +163,15 @@ export function connect(store) {
   store.serverEncryptionRequired = true;
   store.chatHistoryRequestIdSupported = null;
   store.chatHistoryConnectionGeneration = Number(store.chatHistoryConnectionGeneration || 0) + 1;
+  for (const [requestId, request] of Object.entries(store.projectMutationRequests || {})) {
+    request?.resolve?.({
+      ok: false,
+      requestId,
+      error: { code: 'connection_changed' },
+    });
+  }
+  store.projectMutationRequests = {};
+  store.sessionProjects = [];
   for (const [catalogKey, request] of Object.entries(store.chatHistoryRequests || {})) {
     if (!request?.loading) continue;
     store.chatHistoryRequests[catalogKey] = {
@@ -160,6 +184,9 @@ export function connect(store) {
   const pendingCatalogMutations = Object.values(store.sessionCatalogMutationRequests || {});
   if (pendingCatalogMutations.length > 0) {
     store.sessionCatalog = pendingCatalogMutations[0].previousCatalog;
+    if (Array.isArray(pendingCatalogMutations[0].previousHiddenCatalog)) {
+      store.hiddenSessionCatalog = pendingCatalogMutations[0].previousHiddenCatalog;
+    }
     store.sessionCatalogMutationRequests = {};
   }
   // Catalog support is a capability of the current Server connection. Reset
@@ -167,6 +194,7 @@ export function connect(store) {
   // restores the legacy sidebar instead of showing a stale prior snapshot.
   store.sessionCatalogLoaded = false;
   store.sessionCatalog = [];
+  store.hiddenSessionCatalog = [];
   store.activeCatalogKey = null;
   console.log(`[WS] Connecting... (attempt ${store.reconnectAttempts + 1})`);
 
@@ -223,6 +251,16 @@ export function connect(store) {
     }
     console.log('[WS] Disconnected:', event.code, event.reason);
     store.authenticated = false;
+    clearTimeout(store._legacyYeaftSessionHydrateTimer);
+    store._legacyYeaftSessionHydrateTimer = null;
+    store._hasHandledAgentList = false;
+    store._hasHandledYeaftSessionHydrate = false;
+    store.yeaftSessionInventoryCompleteSupported = null;
+    store.yeaftSessionHydrateRequestId = null;
+    store.yeaftSessionHydrateSlices = [];
+    store.yeaftSessionHydrateError = null;
+    store.pendingAgentSelection = null;
+    store.agentSwitching = false;
     const wasUpdating = store.connectionState === 'updating';
     store.connectionState = wasUpdating ? 'updating' : 'disconnected';
     store.stopHeartbeat();
@@ -236,13 +274,11 @@ export function connect(store) {
       return;
     }
 
-    // Mark that the NEXT agent_list (after reconnect) should run a single
-    // Yeaft history catch-up. The socket genuinely dropped here, so we may
-    // have missed messages while offline. handleAgentList consumes and
-    // clears this one-shot flag — routine agent_list broadcasts (with no
-    // preceding close) leave it false and therefore skip the catch-up,
-    // which is what keeps yeaft_load_history / yeaft_vp_subscribe from
-    // looping on every status echo.
+    // Mark that the NEXT online agent_list (after reconnect) should run the
+    // bounded Yeaft history and visible Work Center catch-up. The socket
+    // genuinely dropped here, so the browser may have missed messages/events
+    // while offline. handleAgentList consumes and clears this one-shot flag;
+    // routine agent_list broadcasts leave it false and skip those requests.
     store._yeaftReconnectCatchUpPending = true;
 
     if (wasUpdating) {

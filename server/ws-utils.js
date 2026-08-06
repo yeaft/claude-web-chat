@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import { CONFIG } from './config.js';
 import { encrypt, decrypt, isEncrypted, encodeKey } from './encryption.js';
-import { sessionDb, yeaftSessionDb, sessionUiMetadataDb } from './database.js';
+import { sessionDb, yeaftProjectDb, yeaftSessionDb, sessionUiMetadataDb } from './database.js';
 import { projectSessionCatalog } from './session-catalog.js';
 import { agents, webClients, directoryCache, DIR_CACHE_TTL, DIR_CACHE_MAX_SIZE, trackMessageBytesSent } from './context.js';
 
@@ -100,7 +100,7 @@ export function verifyPersistedAgentOwnership(agentId, userId, role = null) {
     || yeaftSessionDb.getByUser(userId).some(row => row.agentId === agentId);
 }
 
-export function buildSessionCatalog(userId, role = null) {
+function catalogProjectionInputs(userId, role = null) {
   const chatSessions = sessionDb.getActiveByUser(userId).filter((session) => {
     if (CONFIG.skipAuth || session.user_id === userId) return true;
     if (session.user_id != null) return false;
@@ -108,12 +108,25 @@ export function buildSessionCatalog(userId, role = null) {
     // offline. This same predicate protects catalog mutations.
     return verifyPersistedAgentOwnership(session.agent_id, userId, role);
   });
-  return projectSessionCatalog({
+  const yeaftSessions = yeaftSessionDb.getByUser(userId);
+  const metadata = sessionUiMetadataDb.getByUser(userId);
+  return {
     chatSessions,
-    yeaftSessions: yeaftSessionDb.getByUser(userId),
-    metadata: sessionUiMetadataDb.getByUser(userId),
+    yeaftSessions,
+    metadata,
     onlineAgentIds: onlineAgentIdsForUser(userId, role),
-  });
+  };
+}
+
+export function buildSessionCatalog(userId, role = null) {
+  return projectSessionCatalog(catalogProjectionInputs(userId, role));
+}
+
+export function buildHiddenSessionCatalog(userId, role = null) {
+  return projectSessionCatalog({
+    ...catalogProjectionInputs(userId, role),
+    includeHidden: true,
+  }).filter(row => row.hidden === true);
 }
 
 // Broadcast the owner-scoped read model after canonical Session state changes.
@@ -126,6 +139,9 @@ export async function broadcastSessionCatalog(userId) {
       await sendToWebClient(client, {
         type: 'session_catalog_snapshot',
         catalog: buildSessionCatalog(userId, client.role),
+        hiddenCatalog: buildHiddenSessionCatalog(userId, client.role),
+        projects: yeaftProjectDb.list(userId),
+        projectsAuthoritative: true,
       });
     } catch (e) {
       console.warn('[Server] session catalog projection failed:', e?.message || e);
@@ -187,6 +203,9 @@ export async function broadcastAgentList() {
         await sendToWebClient(client, {
           type: 'session_catalog_snapshot',
           catalog: buildSessionCatalog(client.userId, client.role),
+          hiddenCatalog: buildHiddenSessionCatalog(client.userId, client.role),
+          projects: yeaftProjectDb.list(client.userId),
+          projectsAuthoritative: true,
         });
       } catch (e) {
         console.warn('[Server] session catalog projection failed:', e?.message || e);

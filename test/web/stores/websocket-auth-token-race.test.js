@@ -3,16 +3,39 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const originalLocation = globalThis.location;
 const originalWebSocket = globalThis.WebSocket;
 const originalPinia = globalThis.Pinia;
+const originalLocalStorage = globalThis.localStorage;
+
+function installMemoryLocalStorage() {
+  const values = new Map();
+  globalThis.localStorage = {
+    getItem: key => values.get(String(key)) ?? null,
+    setItem: (key, value) => values.set(String(key), String(value)),
+    removeItem: key => values.delete(String(key)),
+    clear: () => values.clear(),
+  };
+}
 
 async function loadWebsocketHelpers(authStore) {
   vi.resetModules();
+  const stores = new Map();
   globalThis.Pinia = {
-    defineStore: () => () => ({}),
+    defineStore: (id, options = {}) => () => {
+      if (stores.has(id)) return stores.get(id);
+      const store = { ...(typeof options.state === 'function' ? options.state() : {}) };
+      for (const [name, action] of Object.entries(options.actions || {})) {
+        store[name] = action.bind(store);
+      }
+      stores.set(id, store);
+      return store;
+    },
   };
   vi.doMock('../../../web/stores/auth.js', () => ({
     useAuthStore: () => authStore,
   }));
-  return import('../../../web/stores/helpers/websocket.js');
+  return {
+    ...await import('../../../web/stores/helpers/websocket.js'),
+    ...await import('../../../web/stores/chat.js'),
+  };
 }
 
 function createStore() {
@@ -22,6 +45,11 @@ function createStore() {
     reconnectAttempts: 0,
     connectionState: 'disconnected',
     authenticated: false,
+    _hasHandledAgentList: true,
+    _hasHandledYeaftSessionHydrate: true,
+    yeaftSessionInventoryCompleteSupported: true,
+    yeaftSessionHydrateRequestId: 'old-inventory',
+    _yeaftSessionInventorySocketQuarantined: true,
     serverEncryptionRequired: false,
     chatHistoryRequestIdSupported: true,
     chatHistoryConnectionGeneration: 4,
@@ -75,15 +103,26 @@ afterEach(() => {
   globalThis.location = originalLocation;
   globalThis.WebSocket = originalWebSocket;
   globalThis.Pinia = originalPinia;
+  if (originalLocalStorage === undefined) delete globalThis.localStorage;
+  else globalThis.localStorage = originalLocalStorage;
 });
 
 describe('websocket auth token races', () => {
   it('ignores 1008 close events from an older token after a newer login wins', async () => {
     const authStore = createRaceAuthStore();
     const sockets = installFakeWebSocket();
+    installMemoryLocalStorage();
     globalThis.location = { protocol: 'https:', host: 'example.test' };
-    const { connect } = await loadWebsocketHelpers(authStore);
+    const { connect, useChatStore } = await loadWebsocketHelpers(authStore);
     const store = createStore();
+    const resolveProjectMutation = vi.fn();
+    store.projectMutationRequests = {
+      staleProjectMutation: { resolve: resolveProjectMutation },
+    };
+    store.sessionProjects = [{
+      id: 'server-p',
+      members: [{ agentId: 'agent-a', sessionId: 'server-session' }],
+    }];
     store.sessionCatalogLoaded = true;
     store.sessionCatalog = [{ catalogKey: 'chat:stale' }];
     store.activeCatalogKey = 'chat:stale';
@@ -97,9 +136,33 @@ describe('websocket auth token races', () => {
     };
 
     connect(store);
+    expect(store._hasHandledAgentList).toBe(false);
+    expect(store._hasHandledYeaftSessionHydrate).toBe(false);
+    expect(store.yeaftSessionInventoryCompleteSupported).toBeNull();
+    expect(store.yeaftSessionHydrateRequestId).toBeNull();
+    expect(store._yeaftSessionInventorySocketQuarantined).toBe(false);
     expect(store.serverEncryptionRequired).toBe(true);
     expect(store.chatHistoryRequestIdSupported).toBe(null);
     expect(store.chatHistoryConnectionGeneration).toBe(5);
+    expect(resolveProjectMutation).toHaveBeenCalledWith({
+      ok: false,
+      requestId: 'staleProjectMutation',
+      error: { code: 'connection_changed' },
+    });
+    expect(store.projectMutationRequests).toEqual({});
+    expect(store.sessionProjects).toEqual([]);
+    const chatStore = useChatStore();
+    chatStore.sessionCatalog = [];
+    chatStore.sessionProjects = store.sessionProjects;
+    chatStore.applyLegacyProjectSnapshot([{
+      id: 'local-p',
+      name: 'Local project',
+      sessionIds: ['local-session'],
+    }], 'agent-a');
+    expect(chatStore.sessionProjects.map(project => project.id)).toEqual(['agent-a\u001flocal-p']);
+    expect(chatStore.sessionProjects.flatMap(project => project.members)).toEqual([
+      { agentId: 'agent-a', sessionId: 'local-session' },
+    ]);
     expect(store.chatHistoryRequests['chat:stale']).toMatchObject({
       loading: false,
       cancelled: true,
@@ -116,6 +179,10 @@ describe('websocket auth token races', () => {
     expect(sockets[0].url).toContain('token=old-token');
     expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'old-token', 1);
     expect(authStore.token).toBe('new-token');
+    expect(store._hasHandledAgentList).toBe(false);
+    expect(store._hasHandledYeaftSessionHydrate).toBe(false);
+    expect(store.yeaftSessionInventoryCompleteSupported).toBeNull();
+    expect(store.yeaftSessionHydrateRequestId).toBeNull();
   });
 
   it('restores encrypted outbound mode before reconnecting to a legacy Server', async () => {

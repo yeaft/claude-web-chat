@@ -90,9 +90,9 @@ export function handleAgentList(store, msg) {
 
   // Agent-restart detection. When the agent PROCESS restarts (deploy/update
   // or crash), the web↔server websocket never drops, so the onclose-based
-  // _yeaftReconnectCatchUpPending latch never fires and the Yeaft session is
-  // left un-reloaded. Detect the restart edge here and arm the SAME one-shot
-  // latch the reconnect-restore branch below already consumes.
+  // _yeaftReconnectCatchUpPending latch never fires and visible Yeaft/Work
+  // Center state is left stale. Detect the restart edge here and arm the SAME
+  // one-shot latch the reconnect-restore branch below already consumes.
   //
   // We diff against a PERSISTED snapshot (`_yeaftAgentSeen`), not the
   // one-frame-old store.agents, because the server deletes an agent on
@@ -109,7 +109,9 @@ export function handleAgentList(store, msg) {
       ? store._yeaftAgentSeen
       : null;
     const nextRec = msg.agents.find(a => a.id === trackedAgentId) || null;
-    if (store.currentView === 'yeaft' && detectYeaftAgentRestart(seen, nextRec)) {
+    const needsReconnectCatchUp = store.currentView === 'yeaft'
+      || (store.workCenterOpen && store.workCenterAgentId === trackedAgentId);
+    if (needsReconnectCatchUp && detectYeaftAgentRestart(seen, nextRec)) {
       store._yeaftReconnectCatchUpPending = true;
     }
     // Update the snapshot every frame so the absent→present gap is bridged.
@@ -302,6 +304,23 @@ export function handleAgentList(store, msg) {
         store.sendWsMessage({ type: 'select_agent', agentId: store.currentAgent, silent: true });
       }
 
+      // Work Center events are intentionally bounded while the browser is
+      // offline, so the first inventory frame after a genuine reconnect or
+      // Agent restart must reconcile the currently visible board from its
+      // durable list. Keep this on the same online-restore edge as selection:
+      // routine latency/status agent_list broadcasts must not reload the board.
+      if (shouldRestoreAgent && store.workCenterOpen
+          && store.workCenterAgentId === store.currentAgent
+          && typeof store.listWorkItems === 'function') {
+        const filters = store._workCenterListFiltersByAgent?.[store.workCenterAgentId] || {};
+        store.listWorkItems(store.workCenterAgentId, filters).catch(() => {});
+      }
+
+      // Consume the browser-reconnect latch at the shared online boundary even
+      // when Work Center is covering Chat. Yeaft below uses the captured edge;
+      // a later explicit Yeaft entry runs its own forced bootstrap.
+      store._yeaftReconnectCatchUpPending = false;
+
       if (store.currentView === 'yeaft' && typeof store.requestYeaftSessionBootstrap === 'function') {
         // Only catch up history on a GENUINE reconnect/restart. agent_list
         // arrives frequently (status flips, turn_completed, latency pings);
@@ -313,7 +332,6 @@ export function handleAgentList(store, msg) {
         // the websocket onclose handler (server/network drop) OR the
         // agent-restart detection at the top of this function (agent process
         // updated/restarted — the socket stays up, so onclose never fires).
-        store._yeaftReconnectCatchUpPending = false;
         // A real reconnect/restart edge needs a fresh session_ready too: the
         // restarted agent has a new engine + conversationId, so the cached
         // yeaftSessionReady/model/status are stale even though they're still
@@ -412,6 +430,24 @@ export function handleAgentList(store, msg) {
  */
 export function handleAgentSelected(store, msg) {
   console.log('[agent_selected] Switching to agent:', msg.agentId);
+  const pending = store.pendingAgentSelection || null;
+  if (pending) {
+    const matchesRequest = typeof msg.requestId === 'string' && msg.requestId
+      ? msg.requestId === pending.requestId
+      : msg.agentId === pending.agentId;
+    if (!matchesRequest) return false;
+    store.pendingAgentSelection = null;
+    if (msg.ok === false) {
+      store.agentSwitching = false;
+      return false;
+    }
+  } else if (msg.requestId) {
+    return false;
+  } else if (store.currentAgent && msg.agentId !== store.currentAgent) {
+    // A delayed response from a legacy Server has no request identity. With no
+    // pending target, only the already-active Agent is safe to re-affirm.
+    return false;
+  }
   store.agentSwitching = false;
   const isSameAgent = store.currentAgent === msg.agentId;
   const agentInfo = {
@@ -524,28 +560,35 @@ export function handleAgentSelected(store, msg) {
     }
   }
 
-  if (isSameAgent && store.currentConversation) {
-    const currentConv = store.conversations.find(c => c.id === store.currentConversation);
-    store.currentWorkDir = currentConv?.workDir || store.currentWorkDir || msg.workDir;
-    console.log('[Reconnect] Restoring conversation selection:', store.currentConversation);
-    clearSessionLoading(store);
-    store.sendWsMessage({
-      type: 'select_conversation',
-      conversationId: store.currentConversation
-    });
+  // A Yeaft conversation id belongs to the Agent bridge, not the ordinary
+  // Chat conversation registry. Re-affirm the Agent catalog without mutating
+  // hidden Chat selection, workDir or history state.
+  if (store.currentView !== 'yeaft') {
+    if (isSameAgent && store.currentConversation) {
+      const currentConv = store.conversations.find(c => c.id === store.currentConversation);
+      store.currentWorkDir = currentConv?.workDir || store.currentWorkDir || msg.workDir;
+      console.log('[Reconnect] Restoring conversation selection:', store.currentConversation);
+      clearSessionLoading(store);
+      store.sendWsMessage({
+        type: 'select_conversation',
+        conversationId: store.currentConversation
+      });
 
-  } else {
-    store.activeConversations = [];
-    store.currentWorkDir = msg.workDir;
+    } else {
+      store.activeConversations = [];
+      store.currentWorkDir = msg.workDir;
 
-    const lastViewed = store.lastViewedConversation || localStorage.getItem('lastViewedConversation');
-    if (lastViewed && store.conversations.find(c => c.id === lastViewed)) {
-      console.log('[AutoRestore] Restoring last viewed conversation:', lastViewed);
-      store.autoRestoreConversation(lastViewed);
-      store.pendingRecovery = null;
+      const lastViewed = store.lastViewedConversation || localStorage.getItem('lastViewedConversation');
+      if (lastViewed && store.conversations.find(c => c.id === lastViewed)) {
+        console.log('[AutoRestore] Restoring last viewed conversation:', lastViewed);
+        store.autoRestoreConversation(lastViewed);
+        store.pendingRecovery = null;
+      }
     }
-  }
 
-  // ★ Restore split-screen panels from localStorage (independent of conversation restore)
-  restorePanels(store);
+    // Split panels are ordinary Chat state. Restoring them during a Yeaft ACK
+    // would reintroduce Chat conversations and history into the Yeaft view.
+    restorePanels(store);
+  }
+  return true;
 }

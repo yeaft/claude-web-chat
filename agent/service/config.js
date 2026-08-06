@@ -98,6 +98,10 @@ export function resolveRuntimeIdentity(fileConfig = {}, env = process.env) {
   return { agentName, instanceId };
 }
 
+export function shouldLoadLegacyLocalConfig(env = process.env) {
+  return !String(env.YEAFT_AGENT_INSTANCE || '').trim();
+}
+
 export function resolveServiceInstanceId(args = [], env = process.env, options = {}) {
   const { deprecatedInstanceId, explicitName } = readIdentityArgs(args);
   if (explicitName) return explicitName;
@@ -106,6 +110,19 @@ export function resolveServiceInstanceId(args = [], env = process.env, options =
   if (options.management) return DEFAULT_INSTANCE_ID;
   if (env.AGENT_NAME) return validateInstanceId(env.AGENT_NAME);
   return validateInstanceId(options.fallbackName || getDefaultAgentName());
+}
+
+/** Resolve the CLI/env/default Yeaft data root for one Agent instance. */
+export function resolveYeaftDir(args = [], env = process.env, instanceId = DEFAULT_INSTANCE_ID) {
+  let explicitYeaftDir = null;
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== '--yeaft-dir') continue;
+    const value = args[index + 1];
+    if (!value || value.startsWith('-')) throw new Error('--yeaft-dir requires a value');
+    explicitYeaftDir = value;
+    index += 1;
+  }
+  return explicitYeaftDir || env.YEAFT_DIR || getDefaultYeaftDir(instanceId);
 }
 
 /** Legacy alias for resolveServiceInstanceId(). */

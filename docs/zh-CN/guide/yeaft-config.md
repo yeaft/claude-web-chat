@@ -1,16 +1,18 @@
 # Yeaft 引擎配置
 
-要运行 **Yeaft Code Agent**，需要让原生引擎知道**用哪些 LLM provider** + **用哪个 model 当 primary / fast**。这一切都写在 `~/.yeaft/config.json`。这是集成 other provider 的主入口：Anthropic、OpenAI Responses、GitHub Copilot 动态凭证、Azure/OpenAI-compatible gateway、本地 proxy 都可以共存。本章是**字段级**的填法指南。
+要运行 **Yeaft Code Agent**，需要让原生引擎知道**用哪些 LLM provider** + **用哪个 model 当 primary / fast**。这些配置属于一个 Agent instance。Default instance 使用 `~/.yeaft/config.json`；named `<name>` 默认使用 `~/.yeaft/instances/<name>/config.json`，除非 override 了 Yeaft directory。Anthropic、OpenAI Responses、GitHub Copilot 动态凭证、Azure/OpenAI-compatible gateway 和本地 proxy 可以共存在同一 instance config。
 
 > 想看完整 schema、所有可选字段、Agent 端 `.env`，去 [配置文件参考](./reference/config-reference.md)。
 
 ## 文件位置
 
-```
-~/.yeaft/config.json
-```
+| Agent instance | 默认 config path |
+| --- | --- |
+| Default service instance | `~/.yeaft/config.json` |
+| Named instance `<name>` | `~/.yeaft/instances/<name>/config.json` |
+| 显式 Yeaft directory | `<yeaftDir>/config.json` |
 
-Agent 启动时读它。**不存在或没 provider** → 引擎可启动但任何调用都会 fail with `"No LLM adapter configured"`。
+`yeaft-agent local` 的默认 `<name>` 是经过清理的计算机 hostname；需要可预测路径时传 `--name`。`yeaft-agent llm` subcommand 不会推断该 instance，named/custom instance 必须传 `--config <path>`。如果 instance config 不存在或没有 provider，引擎可启动，但调用会以 `"No LLM adapter configured"` 失败。
 
 ## 最小可用配置
 
@@ -218,7 +220,7 @@ Agent 启动时读它。**不存在或没 provider** → 引擎可启动但任�
 
 ## 热 reload
 
-Agent 在每个 turn 开始时会重新读取 `~/.yeaft/config.json`，所以 **model 和 provider 的改动通常不需要重启** — 改完文件，下一轮对话直接生效。
+Agent 在每个 turn 开始时重新读取其解析出的 instance `config.json`，所以 **model 和 provider 的改动通常不需要重启** —— 修改正确的 instance file，下一轮直接生效。
 
 需要**重启**才生效的改动：
 - `language` / `debug`

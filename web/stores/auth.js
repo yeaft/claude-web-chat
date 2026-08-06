@@ -2,8 +2,46 @@
  * Authentication store for managing login state
  */
 import { decodeKey } from '../utils/encryption.js';
+import {
+  bindWorkCenterBrowserOwner,
+  clearWorkCenterBrowserOwner,
+} from './helpers/work-center-browser-state.js';
+import {
+  bindYeaftHistoryBrowserOwner,
+  clearYeaftHistoryBrowserOwner,
+  currentYeaftHistoryBrowserFence,
+} from './helpers/yeaft-history-browser-cache.js';
 
 const { defineStore } = Pinia;
+
+function clearYeaftHistoryMemory() {
+  try {
+    const chatStore = globalThis.Pinia?.useChatStore?.();
+    chatStore?.clearYeaftHistoryMemory?.();
+  } catch {
+    // The auth store can reset before the chat store is installed.
+  }
+}
+
+function normalizeOwnerId(value) {
+  const normalized = String(value || '').trim();
+  return normalized || null;
+}
+
+function transitionYeaftHistoryOwner(ownerId, transition) {
+  const previousOwnerId = normalizeOwnerId(currentYeaftHistoryBrowserFence()?.ownerId);
+  const nextOwnerId = normalizeOwnerId(ownerId);
+  if (previousOwnerId !== nextOwnerId) clearYeaftHistoryMemory();
+  return transition(nextOwnerId);
+}
+
+function bindYeaftHistoryOwner(ownerId) {
+  return transitionYeaftHistoryOwner(ownerId, bindYeaftHistoryBrowserOwner);
+}
+
+function clearYeaftHistoryOwner() {
+  return transitionYeaftHistoryOwner(null, () => clearYeaftHistoryBrowserOwner());
+}
 
 const SESSION_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 
@@ -33,6 +71,7 @@ export const useAuthStore = defineStore('auth', {
     isAuthenticated: false,
     token: null,
     sessionKey: null, // Uint8Array for encryption
+    userId: null,
     role: null, // 'admin' | 'pro'
 
     // Login flow state
@@ -98,7 +137,10 @@ export const useAuthStore = defineStore('auth', {
         );
 
         if (this.skipAuth) {
-          // In skip auth mode, we're automatically authenticated
+          // In skip auth mode, one local browser owner is the complete auth boundary.
+          this.userId = 'skip-auth';
+          bindWorkCenterBrowserOwner(this.userId);
+          bindYeaftHistoryOwner(this.userId);
           this.authGeneration += 1;
           this.isAuthenticated = true;
           this.loginStep = 'authenticated';
@@ -157,6 +199,9 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.userId = data.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
+        bindYeaftHistoryOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -238,6 +283,9 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.userId = data.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
+        bindYeaftHistoryOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -293,6 +341,9 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.userId = data.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
+        bindYeaftHistoryOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -348,6 +399,9 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.userId = data.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
+        bindYeaftHistoryOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -388,6 +442,9 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.userId = data.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
+        bindYeaftHistoryOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -552,6 +609,9 @@ export const useAuthStore = defineStore('auth', {
             this.token = data.token;
             this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
             this.role = data.role || 'pro';
+            this.userId = data.userId || null;
+            bindWorkCenterBrowserOwner(this.userId);
+            bindYeaftHistoryOwner(this.userId);
             this.authGeneration += 1;
             this.isAuthenticated = true;
             this.loginStep = 'authenticated';
@@ -647,10 +707,14 @@ export const useAuthStore = defineStore('auth', {
       const token = params.get('token');
       const sessionKey = params.get('sessionKey');
       const role = params.get('role');
+      const userId = params.get('userId');
       if (!token) return false;
       this.token = token;
       this.sessionKey = sessionKey ? decodeKey(sessionKey) : null;
       this.role = role || 'pro';
+      this.userId = userId || null;
+      bindWorkCenterBrowserOwner(this.userId);
+      bindYeaftHistoryOwner(this.userId);
       this.authGeneration += 1;
       this.isAuthenticated = true;
       this.loginStep = 'authenticated';
@@ -723,6 +787,9 @@ export const useAuthStore = defineStore('auth', {
         if (!res.ok) return false;
 
         const profile = await res.json().catch(() => ({}));
+        if (requestGeneration !== this.authGeneration || this.token !== requestToken) {
+          return this.isAuthenticated;
+        }
         const freshToken = res.headers?.get?.('X-New-Token');
         const storedToken = localStorage.getItem('authToken');
         if (freshToken && this.token === requestToken && (!storedToken || storedToken === requestToken)) {
@@ -730,6 +797,9 @@ export const useAuthStore = defineStore('auth', {
           localStorage.setItem('authToken', freshToken);
         }
         if (profile?.role) this.role = profile.role;
+        this.userId = profile?.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
+        bindYeaftHistoryOwner(this.userId);
         return true;
       } catch (err) {
         console.warn('[Auth] Session refresh failed:', err.message || err);
@@ -782,13 +852,14 @@ export const useAuthStore = defineStore('auth', {
         console.error('Logout error:', err);
       }
 
-      this.clearStoredSession();
+      await this.clearStoredSession();
     },
 
     clearStoredSession(error = null) {
-      this.reset();
+      const historyCleanup = this.reset();
       localStorage.removeItem('authToken');
       if (error) this.error = error;
+      return historyCleanup;
     },
 
     getActiveToken() {
@@ -823,7 +894,9 @@ export const useAuthStore = defineStore('auth', {
       if (failedGeneration !== this.authGeneration) return false;
       const activeToken = this.token || localStorage.getItem('authToken') || null;
       if (failedToken !== activeToken) return false;
-      this.clearStoredSession(error);
+      void this.clearStoredSession(error).catch((cleanupError) => {
+        console.error('Browser history cleanup failed:', cleanupError);
+      });
       return false;
     },
 
@@ -854,10 +927,14 @@ export const useAuthStore = defineStore('auth', {
         if (requestGeneration !== this.authGeneration) return this.isAuthenticated;
         const headerToken = res.headers?.get?.('X-New-Token');
         const activeToken = this.getActiveToken();
+        if (activeToken !== token) return this.isAuthenticated;
         const freshToken = headerToken && (!activeToken || activeToken === token) ? headerToken : activeToken || token;
         this.token = freshToken;
         if (freshToken && freshToken !== token) localStorage.setItem('authToken', freshToken);
         this.role = profile?.role || 'pro';
+        this.userId = profile?.userId || null;
+        bindWorkCenterBrowserOwner(this.userId);
+        bindYeaftHistoryOwner(this.userId);
         this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
@@ -959,7 +1036,7 @@ export const useAuthStore = defineStore('auth', {
           return { success: false, error: data.error || 'Failed to delete account' };
         }
         // Clear local state — server already revoked the browser session.
-        this.clearStoredSession();
+        await this.clearStoredSession();
         return { success: true };
       } catch (err) {
         return { success: false, error: err.message || 'Network error' };
@@ -970,11 +1047,14 @@ export const useAuthStore = defineStore('auth', {
      * Reset state
      */
     reset() {
+      clearWorkCenterBrowserOwner();
+      const historyCleanup = clearYeaftHistoryOwner();
       this.authGeneration += 1;
       this.stopSessionRefresh();
       this.isAuthenticated = false;
       this.token = null;
       this.sessionKey = null;
+      this.userId = null;
       this.role = null;
       this.loginStep = 'credentials';
       this.tempToken = null;
@@ -984,6 +1064,7 @@ export const useAuthStore = defineStore('auth', {
       this.qrCode = null;
       this.error = null;
       this.loading = false;
+      return historyCleanup;
     }
   }
 });

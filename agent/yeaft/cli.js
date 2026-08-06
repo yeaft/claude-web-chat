@@ -38,7 +38,14 @@ import { ConversationStore } from './conversation/persist.js';
 import { snapshotSessions } from './sessions/session-crud.js';
 import { loadSessionConfig, resolveSessionConfig } from './sessions/session-config.js';
 import { validateSessionId } from './sessions/ids.js';
-import { createJsonlWriter, JsonlInput, runStreamTurn } from './stdio-protocol.js';
+import { createJsonlWriter, JsonlInput, runStreamTurn, runStreamSessionTurn } from './stdio-protocol.js';
+import { createCliSessionRunner } from './cli-session-runner.js';
+import {
+  cleanupManagedCliRuntimePaths,
+  ensureManagedCliTools,
+  prepareManagedCliToolEnvironment,
+  summarizeManagedCliResults,
+} from './managed-cli.js';
 
 // ─── Argument parsing ──────────────────────────────────────────
 
@@ -64,6 +71,7 @@ export function parseArgs(argv) {
     outputFormat: 'text',
     print: false,
     prompt: null,
+    managedCliReady: Promise.resolve([]),
   };
 
   const rest = argv.slice(2);
@@ -333,16 +341,29 @@ function handleDeleteGroup(config, sessionId) {
 // ─── REPL ──────────────────────────────────────────────────────
 
 async function runREPL(config, args) {
-  // Use loadSession() to wire all subsystems
+  const workDir = resolve(args.workDir || process.cwd());
+  const persisted = args.sessionId ? loadSessionConfig(config.dir, args.sessionId) : {};
+  const effectiveConfig = resolveSessionConfig(config, persisted);
   const session = await loadSession({
-    model: args.model || config.model,
-    language: args.language || config.language,
-    debug: args.debug || config.debug,
+    dir: config.dir,
+    workDir,
+    model: args.model || effectiveConfig.model,
+    language: args.language || effectiveConfig.language,
+    debug: args.debug || effectiveConfig.debug,
     skipMCP: args.skipMCP,
     skipSkills: args.skipSkills,
+    configOverrides: effectiveConfig,
+    managedCliReady: args.managedCliReady,
   });
 
   const { engine, conversationStore, trace, skillManager, mcpManager, toolRegistry } = session;
+  const sessionRunner = args.sessionId
+    ? createCliSessionRunner({ loaded: session, sessionId: args.sessionId, workDir })
+    : null;
+  if (args.sessionId && !sessionRunner) {
+    await session.shutdown();
+    throw new Error(`Session not found: ${args.sessionId}`);
+  }
 
   // Load persisted conversation as initial messages. `loadRecent` is now
   // turn-based (one user round-trip = one turn; multi-VP fan-out collapses
@@ -376,12 +397,28 @@ async function runREPL(config, args) {
     prompt: `yeaft> `,
   });
 
+  let closeRequested = false;
+  let lineQueue = Promise.resolve();
+  let shutdownPromise = null;
+  let acceptedLineSequence = 0;
+  let exitLineSequence = Number.POSITIVE_INFINITY;
+  const isExitLine = line => {
+    const input = line.trim();
+    if (!input.startsWith('/')) return false;
+    const [command] = input.slice(1).split(/\s+/);
+    return command === 'quit' || command === 'exit' || command === 'q';
+  };
+  const promptIfOpen = () => {
+    if (!closeRequested) rl.prompt();
+  };
+
   rl.prompt();
 
-  rl.on('line', async (line) => {
+  const handleLine = async (line, lineSequence) => {
+    if (lineSequence > exitLineSequence) return;
     const input = line.trim();
     if (!input) {
-      rl.prompt();
+      promptIfOpen();
       return;
     }
 
@@ -645,19 +682,39 @@ async function runREPL(config, args) {
         case 'quit':
         case 'exit':
         case 'q':
-          rl.close(); // close handler does shutdown + process.exit()
-          return; // don't call rl.prompt() below
+          closeRequested = true;
+          rl.close();
+          return;
 
         default:
           console.log(`Unknown command: /${cmd}. Type /help for commands.`);
       }
-      rl.prompt();
+      promptIfOpen();
       return;
     }
 
-    // Regular input → engine.query
+    // Regular input → Session fan-out or legacy single Engine.
     try {
       let responseText = '';
+      if (sessionRunner) {
+        const outcome = await sessionRunner.run(input, {
+          modelEffort: args.modelEffort || session.config.modelEffort || null,
+          onEvent: ({ vpId, event }) => {
+            if (event.type === 'text_delta') {
+              responseText += event.text || '';
+              process.stdout.write(`\n[${vpId}] ${event.text || ''}`);
+            } else if (event.type === 'tool_start') {
+              process.stderr.write(`\n[${vpId}] ${event.name}...\n`);
+            } else if (event.type === 'error') {
+              process.stderr.write(`\n[${vpId}] Error: ${event.error?.message || event.error}\n`);
+            }
+          },
+        });
+        console.log();
+        if (outcome.results.some(result => result.error)) process.exitCode = 1;
+        promptIfOpen();
+        return;
+      }
 
       for await (const event of engine.query({
         prompt: input,
@@ -698,6 +755,7 @@ async function runREPL(config, args) {
             break;
           case 'error':
             process.stderr.write(`\nError: ${event.error.message}\n`);
+            process.exitCode = 1;
             break;
           case 'turn_start':
             if (session.config.debug && event.turnNumber > 1) {
@@ -716,15 +774,44 @@ async function runREPL(config, args) {
       }
     } catch (err) {
       console.error(`Error: ${err.message}`);
+      process.exitCode = 1;
     }
-    rl.prompt();
+    promptIfOpen();
+  };
+
+  rl.on('line', line => {
+    if (closeRequested) return;
+    const lineSequence = ++acceptedLineSequence;
+    const exitsRepl = isExitLine(line);
+    if (exitsRepl) {
+      exitLineSequence = lineSequence;
+      closeRequested = true;
+    }
+    lineQueue = lineQueue.then(() => handleLine(line, lineSequence)).catch(error => {
+      console.error(`Error: ${error.message}`);
+      process.exitCode = 1;
+    });
+    if (exitsRepl) rl.close();
   });
 
-  rl.on('close', async () => {
-    await session.shutdown();
-    console.log('\nBye!');
-    process.exit(0);
+  rl.on('close', () => {
+    closeRequested = true;
+    if (!shutdownPromise) {
+      shutdownPromise = lineQueue.catch(error => {
+        console.error(`Error: ${error.message}`);
+        process.exitCode = 1;
+      }).then(async () => {
+        await sessionRunner?.close();
+        await session.shutdown();
+        console.log('\nBye!');
+      }).catch(error => {
+        console.error(`Error: ${error.message}`);
+        process.exitCode = 1;
+      });
+    }
   });
+  await new Promise(resolve => rl.once('close', resolve));
+  await shutdownPromise;
 }
 
 // ─── Structured stdio handler ──────────────────────────────────
@@ -764,8 +851,10 @@ async function runStreamJson(config, args) {
       ...effectiveConfig,
       ...(effectiveConfig.modelEffort ? { modelEffort: effectiveConfig.modelEffort } : {}),
     },
+    managedCliReady: args.managedCliReady,
   });
   const { engine, conversationStore, skillManager, toolRegistry } = loaded;
+  const sessionRunner = createCliSessionRunner({ loaded, sessionId, workDir });
   const todoState = { value: [] };
 
   write({
@@ -788,8 +877,7 @@ async function runStreamJson(config, args) {
       ...(message.toolCallId && { toolCallId: message.toolCallId }),
       ...(message.toolCalls && { toolCalls: message.toolCalls }),
     }));
-    return runStreamTurn({
-      engine,
+    const turnOptions = {
       prompt,
       messages: priorMessages,
       sessionId,
@@ -800,32 +888,40 @@ async function runStreamJson(config, args) {
       write,
       getCurrentTodos: () => todoState.value.slice(),
       setCurrentTodos: todos => { todoState.value = Array.isArray(todos) ? todos.slice() : []; },
-    });
+    };
+    return sessionRunner
+      ? runStreamSessionTurn({ runner: sessionRunner, ...turnOptions })
+      : runStreamTurn({ engine, ...turnOptions });
   };
 
-  let lastResult = null;
+  let hadError = false;
+  const recordResult = (result) => {
+    hadError ||= result?.is_error === true;
+    return result;
+  };
   try {
     if (args.prompt) {
-      lastResult = await runPrompt(args.prompt);
+      recordResult(await runPrompt(args.prompt));
     } else if (input) {
       for (;;) {
         const item = await input.nextPrompt();
         if (!item) break;
-        lastResult = await runPrompt(item.prompt);
+        recordResult(await runPrompt(item.prompt));
       }
     } else {
       let prompt = '';
       for await (const chunk of process.stdin) prompt += chunk;
-      if (prompt.trim()) lastResult = await runPrompt(prompt.trim());
+      if (prompt.trim()) recordResult(await runPrompt(prompt.trim()));
     }
   } finally {
     input?.close();
+    await sessionRunner?.close();
     await loaded.shutdown();
     console.log = originalConsole.log;
     console.info = originalConsole.info;
     console.debug = originalConsole.debug;
   }
-  if (lastResult?.is_error) process.exitCode = 1;
+  if (hadError) process.exitCode = 1;
 }
 
 // ─── One-shot handler ──────────────────────────────────────────
@@ -836,18 +932,43 @@ async function runOnce(config, args) {
     return;
   }
 
-  // Use loadSession() to wire all subsystems
+  const workDir = resolve(args.workDir || process.cwd());
+  const persisted = args.sessionId ? loadSessionConfig(config.dir, args.sessionId) : {};
+  const effectiveConfig = resolveSessionConfig(config, persisted);
   const session = await loadSession({
-    model: args.model || config.model,
-    language: args.language || config.language,
-    debug: args.debug || config.debug,
+    dir: config.dir,
+    workDir,
+    model: args.model || effectiveConfig.model,
+    language: args.language || effectiveConfig.language,
+    debug: args.debug || effectiveConfig.debug,
     skipMCP: args.skipMCP,
     skipSkills: args.skipSkills,
+    configOverrides: effectiveConfig,
+    managedCliReady: args.managedCliReady,
   });
 
   const { engine, conversationStore } = session;
+  const sessionRunner = args.sessionId
+    ? createCliSessionRunner({ loaded: session, sessionId: args.sessionId, workDir })
+    : null;
 
   try {
+    if (args.sessionId && !sessionRunner) {
+      throw new Error(`Session not found: ${args.sessionId}`);
+    }
+    if (sessionRunner) {
+      const outcome = await sessionRunner.run(args.prompt, {
+        modelEffort: args.modelEffort || session.config.modelEffort || null,
+        onEvent: ({ vpId, event }) => {
+          if (event.type === 'text_delta') process.stdout.write(`\n[${vpId}] ${event.text || ''}`);
+          else if (event.type === 'tool_start') process.stderr.write(`\n[${vpId}] ${event.name}...\n`);
+          else if (event.type === 'error') process.stderr.write(`\n[${vpId}] Error: ${event.error?.message || event.error}\n`);
+        },
+      });
+      console.log();
+      if (outcome.results.some(result => result.error)) process.exitCode = 1;
+      return;
+    }
     // Load recent conversation as context
     const priorMessages = conversationStore.loadRecent(20).map(m => ({
       role: m.role,
@@ -856,6 +977,7 @@ async function runOnce(config, args) {
       ...(m.toolCalls && { toolCalls: m.toolCalls }),
     }));
 
+    let terminalEngineError = null;
     for await (const event of engine.query({
       prompt: args.prompt,
       messages: priorMessages,
@@ -892,6 +1014,11 @@ async function runOnce(config, args) {
           break;
         case 'error':
           process.stderr.write(`\nError: ${event.error.message}\n`);
+          if (!terminalEngineError) {
+            terminalEngineError = event.error instanceof Error
+              ? event.error
+              : new Error(String(event.error?.message || event.error || 'Engine query failed'));
+          }
           break;
         case 'turn_start':
           if (args.verbose && event.turnNumber > 1) {
@@ -902,12 +1029,34 @@ async function runOnce(config, args) {
     }
     // Final newline after streaming text
     console.log();
+    if (terminalEngineError) process.exitCode = 1;
   } finally {
+    await sessionRunner?.close();
     await session.shutdown();
   }
 }
 
 // ─── Main ──────────────────────────────────────────────────────
+
+function installManagedCliSignalCleanup() {
+  if (process.platform === 'win32') return () => {};
+  const signals = ['SIGINT', 'SIGTERM'];
+  const handlers = new Map();
+  const dispose = () => {
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+    handlers.clear();
+  };
+  for (const signal of signals) {
+    const handler = () => {
+      cleanupManagedCliRuntimePaths();
+      dispose();
+      process.kill(process.pid, signal);
+    };
+    handlers.set(signal, handler);
+    process.once(signal, handler);
+  }
+  return dispose;
+}
 
 async function main() {
   const args = parseArgs(process.argv);
@@ -931,7 +1080,6 @@ async function main() {
     language: args.language,
     debug: args.debug || undefined,
   });
-
   // Handle --trace queries (no LLM needed, no session needed)
   if (args.trace) {
     await handleTraceQuery(args, config);
@@ -948,8 +1096,27 @@ async function main() {
     return;
   }
 
+  const prepareManagedCli = async () => {
+    args.managedCliReady = ensureManagedCliTools({ yeaftDir: config.dir });
+    args.managedCliReady.then(results => {
+      if (results.some(result => result.status === 'installed')) {
+        console.error(`[Yeaft] managed CLI tools: ${summarizeManagedCliResults(results)}`);
+      }
+    }).catch(error => {
+      console.error(`[Yeaft] managed CLI setup failed; using built-in fallbacks: ${error?.message || error}`);
+    });
+    try {
+      await prepareManagedCliToolEnvironment(args.managedCliReady, 'rg', {
+        yeaftDir: config.dir,
+      });
+    } catch (error) {
+      console.error(`[Yeaft] managed rg environment setup failed; using built-in fallback: ${error?.message || error}`);
+    }
+  };
+
   // Handle interactive mode
   if (args.interactive) {
+    await prepareManagedCli();
     await runREPL(config, args);
     return;
   }
@@ -961,6 +1128,7 @@ async function main() {
     if (!args.prompt && args.inputFormat !== 'stream-json' && process.stdin.isTTY) {
       throw new Error('stream-json output requires a prompt, piped stdin, or --input-format stream-json');
     }
+    await prepareManagedCli();
     await runStreamJson(config, args);
     return;
   }
@@ -970,6 +1138,7 @@ async function main() {
 
   // Handle prompt (from args or stdin)
   if (args.prompt) {
+    await prepareManagedCli();
     await runOnce(config, args);
     return;
   }
@@ -982,6 +1151,7 @@ async function main() {
     }
     args.prompt = input.trim();
     if (args.prompt) {
+      await prepareManagedCli();
       await runOnce(config, args);
       return;
     }
@@ -1021,8 +1191,14 @@ async function main() {
 
 const isDirectRun = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isDirectRun) {
+  const disposeSignalCleanup = installManagedCliSignalCleanup();
+  const cleanupManagedCli = () => {
+    disposeSignalCleanup();
+    cleanupManagedCliRuntimePaths();
+  };
   main().catch(err => {
     console.error(err);
+    cleanupManagedCli();
     process.exit(1);
-  });
+  }).finally(cleanupManagedCli);
 }

@@ -1,7 +1,7 @@
 /**
  * dream/snapshot.js.
  *
- * Pre-Apply backup of memory.md + summary.md to
+ * Pre-Apply backup of content.md + memory.md + summary.md to
  * `~/.yeaft/memory/.dream-bak/<ts>/<scope-path>/`. The runner takes a
  * snapshot once per merged target before Apply mutates it; that snapshot
  * is the unit of rollback in case of LLM error or write failure.
@@ -29,7 +29,7 @@ export function tsForBackup(d = new Date()) {
 }
 
 /**
- * Snapshot a single scope's memory.md + summary.md into
+ * Snapshot a single scope's content.md + memory.md + summary.md into
  * `<root>/.dream-bak/<ts>/<scopeRelDir>/`. Missing source files are
  * skipped silently; the destination dir is always created so that an
  * absent snapshot is still distinguishable from "didn't run".
@@ -45,7 +45,7 @@ export async function snapshotScope(root, ts, scopeRelDir) {
   const dstDir = join(root, BACKUP_DIRNAME, ts, scopeRelDir);
   await fsp.mkdir(dstDir, { recursive: true });
   const copied = [];
-  for (const name of ['memory.md', 'summary.md']) {
+  for (const name of ['content.md', 'memory.md', 'summary.md', 'summary.zh.md']) {
     const s = join(srcDir, name);
     if (!existsSync(s)) continue;
     const d = join(dstDir, name);

@@ -23,9 +23,12 @@ import { readWorkCenterSettings, writeWorkCenterSettings } from './settings.js';
 import {
   defaultWorkCenterStageInstructions,
   listWorkItemTypeTemplates,
-  resolvePlanningWorkflowSnapshot,
-  resolveWorkflowSnapshot,
 } from './workflow.js';
+import {
+  DYNAMIC_COORDINATION_MODE,
+  DYNAMIC_EXECUTION_SCHEMA_VERSION,
+  resolveDynamicActionPolicySnapshot,
+} from './dynamic-coordination.js';
 
 function requiredString(value, name) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required`);
@@ -58,6 +61,14 @@ function parseBoardCursor(value) {
   } catch {
     return null;
   }
+}
+
+function removeUnpersistedAttachmentFiles(root, workItemId, addedAttachments, detail) {
+  if (!Array.isArray(addedAttachments) || addedAttachments.length === 0) return;
+  const persistedIds = new Set((Array.isArray(detail?.attachments) ? detail.attachments : [])
+    .map(attachment => attachment?.id).filter(Boolean));
+  const unpersisted = addedAttachments.filter(attachment => !persistedIds.has(attachment?.id));
+  if (unpersisted.length > 0) removeWorkItemAttachmentFiles(root, workItemId, unpersisted);
 }
 
 function listBoardItems(store, payload) {
@@ -106,6 +117,7 @@ export class WorkCenterService {
       listAvailableVpIds: options.listAvailableVpIds,
     });
     this.coordinator = options.coordinator || null;
+    if (this.coordinator) this.coordinator.ownerBootId = this.ownerBootId;
     this.onEvent = typeof options.onEvent === 'function' ? options.onEvent : () => {};
     this.recoveryTasks = new Map();
     this.recoveryQueue = new Map();
@@ -113,6 +125,7 @@ export class WorkCenterService {
       ? Number(options.pollIntervalMs)
       : 2_000;
     this.recoveryTimer = null;
+    this.dynamicCoordinatorTasks = new Map();
     this.shuttingDown = false;
     this.watcher = new WorkItemWatcher({
       store: this.store,
@@ -218,14 +231,8 @@ export class WorkCenterService {
       }
       case 'create': {
         const settings = this.settingsReader(this.yeaftDir);
-        const explicitWorkflow = requestContext.trustedProducer === true
-          && typeof payload.workflowTemplate === 'string' && payload.workflowTemplate.trim()
-          ? payload.workflowTemplate.trim()
-          : null;
-        const workflowTemplate = explicitWorkflow || 'ai-planned';
-        const workflowSnapshot = explicitWorkflow
-          ? resolveWorkflowSnapshot(settings, explicitWorkflow, payload.stageOverrides)
-          : resolvePlanningWorkflowSnapshot(settings, payload.workItemType);
+        const workflowTemplate = 'coordinator-driven';
+        const workflowSnapshot = resolveDynamicActionPolicySnapshot(settings, payload.workItemType);
         const runtime = !Object.hasOwn(payload, 'workDir') && !settings.defaultWorkDir
           ? await this.runtimeInfo()
           : null;
@@ -239,6 +246,7 @@ export class WorkCenterService {
             root: this.attachmentRoot,
             workItemId,
           });
+          const shouldStart = payload.start === undefined ? settings.startImmediately : payload.start !== false;
           this.controller.create({
             id: workItemId,
             title: requiredString(payload.title, 'title'),
@@ -248,6 +256,8 @@ export class WorkCenterService {
               : [],
             workflowTemplate,
             workflowSnapshot,
+            coordinationMode: DYNAMIC_COORDINATION_MODE,
+            executionSchemaVersion: DYNAMIC_EXECUTION_SCHEMA_VERSION,
             workDir,
             reuseMemory: payload.reuseMemory !== false,
             origin: payload.origin && typeof payload.origin === 'object'
@@ -265,9 +275,13 @@ export class WorkCenterService {
               ? normalizeSessionContextSnapshot(payload.sessionContext)
               : [],
             attachments,
-            start: payload.start === undefined ? settings.startImmediately : payload.start !== false,
+            start: false,
           });
-          const detail = this.#requiredItem(workItemId);
+          let detail = this.#requiredItem(workItemId);
+          if (shouldStart) {
+            detail = this.controller.start(workItemId);
+            this.#queueDynamicCoordinatorWake(workItemId);
+          }
           this.#emit({ type: 'work_item.created', workItem: detail });
           return detail;
         } catch (error) {
@@ -279,11 +293,17 @@ export class WorkCenterService {
         const id = requiredString(payload.id, 'id');
         const detail = this.controller.update(id, payload.patch || {});
         this.watcher.abortInvalidWorkItemRuns(id);
+        if (detail.coordinationMode === DYNAMIC_COORDINATION_MODE) {
+          this.#queueDynamicCoordinatorWake(id);
+        }
         this.#emit({ type: 'work_item.updated', workItem: detail });
         return detail;
       }
       case 'start': {
         const detail = this.controller.start(requiredString(payload.id, 'id'));
+        if (detail.coordinationMode === DYNAMIC_COORDINATION_MODE) {
+          this.#queueDynamicCoordinatorWake(detail.id);
+        }
         this.#emit({ type: 'work_item.started', workItem: detail });
         return detail;
       }
@@ -298,6 +318,9 @@ export class WorkCenterService {
         const id = requiredString(payload.id, 'id');
         const detail = this.controller.resume(id, { revision: payload.revision });
         this.watcher.abortInvalidWorkItemRuns(id);
+        if (detail.coordinationMode === DYNAMIC_COORDINATION_MODE) {
+          this.#queueDynamicCoordinatorWake(id);
+        }
         this.#emit({ type: 'work_item.resumed', workItem: detail });
         return detail;
       }
@@ -314,6 +337,52 @@ export class WorkCenterService {
         }
         this.#emit({ type: 'work_item.deleted', workItem: { id, revision: deleted.revision } });
         return { id, deleted: true, cleanupWarning };
+      }
+      case 'post_work_item_message': {
+        const clientMessageId = requiredString(payload.clientMessageId, 'clientMessageId');
+        const target = payload.target && typeof payload.target === 'object' ? payload.target : {};
+        if (target.kind === 'coordinator') {
+          const receipt = this.store.getCoordinatorClientMessageReceipt(payload.id, clientMessageId);
+          if (receipt) return { accepted: true, turnId: receipt.turnId || null, duplicate: true };
+          return this.handle('work_item_message', { ...payload, clientMessageId }, requestContext);
+        }
+        if (target.kind === 'action') {
+          if (this.store.hasActionInputClientMessage(payload.id, target.actionId, clientMessageId)) {
+            return this.store.getWorkItemDetail(payload.id);
+          }
+          return this.handle('action_input', {
+            ...payload,
+            clientMessageId,
+            actionId: target.actionId,
+            generation: target.generation,
+          }, requestContext);
+        }
+        if (target.kind === 'request') {
+          const id = requiredString(payload.id, 'id');
+          const workItem = this.#requiredItem(id);
+          const action = this.#requiredAction(workItem, target.actionId);
+          if (action.status === 'failed' && !String(payload.text || '').trim()
+              && (!Array.isArray(payload.files) || payload.files.length === 0)) {
+            const detail = this.controller.retry(id, {
+              expected: {
+                actionId: action.id,
+                revision: payload.revision,
+                generation: target.generation,
+                statuses: ['failed'],
+              },
+            });
+            this.watcher.abortInvalidWorkItemRuns(id);
+            this.#emit({ type: 'action.retried', workItem: detail });
+            return detail;
+          }
+          return this.handle('action_input', {
+            ...payload,
+            clientMessageId,
+            actionId: target.actionId,
+            generation: target.generation,
+          }, requestContext);
+        }
+        throw new Error('WorkItem message target is invalid');
       }
       case 'work_item_message': {
         if (!this.coordinator) throw new Error('Work Center Coordinator is unavailable');
@@ -332,12 +401,19 @@ export class WorkCenterService {
             planRevision: payload.planRevision,
             ledgerRevision: payload.ledgerRevision,
             coordinatorRevision: payload.coordinatorRevision,
+            clientMessageId: typeof payload.clientMessageId === 'string' ? payload.clientMessageId : null,
+            quote: payload.quote,
             addedAttachments,
             attachments: [...(workItem.attachments || []), ...addedAttachments],
           }, {
             onUpdate: (type, nextWorkItem) => {
               this.watcher.abortInvalidWorkItemRuns(id);
-              this.#emit({ type, workItem: nextWorkItem });
+              this.#emit({
+                type,
+                clientMessageId: typeof payload.clientMessageId === 'string'
+                  ? payload.clientMessageId : null,
+                workItem: nextWorkItem,
+              });
             },
           });
         } catch (error) {
@@ -350,6 +426,7 @@ export class WorkCenterService {
           } catch {}
           throw error;
         }
+        removeUnpersistedAttachmentFiles(this.attachmentRoot, id, addedAttachments, turn.detail);
         turn.task.catch(() => {});
         return { accepted: true, turnId: turn.detail.messages?.at(-1)?.turnId || null };
       }
@@ -387,6 +464,8 @@ export class WorkCenterService {
             actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
             revision: payload.revision,
             generation,
+            clientMessageId: typeof payload.clientMessageId === 'string' ? payload.clientMessageId : null,
+            quote: payload.quote,
             addedAttachmentCount: addedAttachments.length,
             addedAttachments,
             attachments: [...(workItem.attachments || []), ...addedAttachments],
@@ -401,9 +480,15 @@ export class WorkCenterService {
           } catch {}
           throw error;
         }
+        removeUnpersistedAttachmentFiles(this.attachmentRoot, id, addedAttachments, detail);
         this.watcher.abortInvalidWorkItemRuns(id);
         this.watcher.notifyActionInput(id, payload.actionId);
-        this.#emit({ type: 'action.input_added', workItem: detail });
+        this.#emit({
+          type: 'action.input_added',
+          actionId: payload.actionId,
+          clientMessageId: typeof payload.clientMessageId === 'string' ? payload.clientMessageId : null,
+          workItem: detail,
+        });
         return detail;
       }
       case 'guide': {
@@ -500,6 +585,10 @@ export class WorkCenterService {
 
   #emit(event) {
     try { this.onEvent(event); } catch {}
+    if (event?.workItem?.coordinationMode === DYNAMIC_COORDINATION_MODE) {
+      this.#queueDynamicCoordinatorWake(event.workItem.id);
+      return;
+    }
     if (['run.finished', 'coordinator.turn_completed'].includes(event?.type)) {
       for (const action of event.workItem?.actions || []) {
         if (action.status !== 'failed') continue;
@@ -512,6 +601,56 @@ export class WorkCenterService {
     }
   }
 
+  #queueDynamicCoordinatorWake(workItemId) {
+    if (this.shuttingDown || !this.coordinator || !workItemId
+        || this.dynamicCoordinatorTasks.has(workItemId)) return;
+    this.dynamicCoordinatorTasks.set(workItemId, null);
+    queueMicrotask(() => {
+      if (this.dynamicCoordinatorTasks.get(workItemId) === null) {
+        this.dynamicCoordinatorTasks.delete(workItemId);
+        this.#drainDynamicCoordinatorWakes(workItemId);
+      }
+    });
+  }
+
+  #scanDynamicCoordinatorWakes() {
+    if (this.shuttingDown || !this.coordinator) return;
+    for (const entry of this.store.listPendingDynamicCoordinatorWakes()) {
+      this.#queueDynamicCoordinatorWake(entry.workItemId);
+    }
+  }
+
+  #drainDynamicCoordinatorWakes(workItemId) {
+    if (this.shuttingDown || !this.coordinator || this.dynamicCoordinatorTasks.has(workItemId)) return null;
+    const entries = this.store.listPendingDynamicCoordinatorWakes()
+      .filter(candidate => candidate.workItemId === workItemId);
+    const entry = entries.find(candidate => candidate.payload?.turnId) || entries[0];
+    if (!entry) return null;
+    const detail = this.store.getWorkItemDetail(workItemId);
+    if (detail?.actions?.some(action => action.status === 'running')) return null;
+    let turn;
+    try {
+      turn = this.coordinator.advance(entry.id, {
+        workItemId,
+        onUpdate: (type, workItem) => this.#emit({ type, workItem }),
+      });
+    } catch (error) {
+      this.#emit({
+        type: 'coordinator.advance_schedule_failed',
+        workItem: this.store.getWorkItemDetail(workItemId),
+        error: error?.message || String(error),
+      });
+      return null;
+    }
+    if (!turn) return null;
+    const task = turn.task.finally(() => {
+      this.dynamicCoordinatorTasks.delete(workItemId);
+    });
+    this.dynamicCoordinatorTasks.set(workItemId, task);
+    task.catch(() => {});
+    return task;
+  }
+
   #recoveryKey(entry) {
     return `${entry.workItemId}:${entry.actionId}:${entry.actionGeneration}`;
   }
@@ -521,6 +660,37 @@ export class WorkCenterService {
     const key = this.#recoveryKey(entry);
     this.recoveryQueue.set(key, entry);
     this.#drainFailureRecoveryQueue();
+  }
+
+  #scanCoordinatorProviderRecoveries() {
+    if (this.shuttingDown || !this.coordinator) return;
+    this.store.recoverCoordinatorProviderTurns();
+    this.store.recoverCoordinatorMailbox();
+    for (const recoverable of this.store.getRecoverableCoordinatorTurns?.() || []) {
+      const claim = this.store.claimCoordinatorTurn(
+        recoverable.workItemId, recoverable.turnId, this.ownerBootId,
+      );
+      if (!claim) continue;
+      const started = this.store.resumeCoordinatorTurn(
+        recoverable.workItemId, recoverable.turnId, claim,
+      );
+      if (!started) continue;
+      const turn = this.coordinator.resume(started, {
+        text: recoverable.text || '',
+        recovery: Boolean(recoverable.recovery),
+        addedAttachments: Array.isArray(recoverable.addedAttachments)
+          ? recoverable.addedAttachments : [],
+        quote: recoverable.quote || null,
+        onUpdate: (type, detail) => this.#emit({ type, workItem: detail }),
+      });
+      turn?.task?.catch?.(() => {});
+    }
+  }
+
+  #scanRecoveries() {
+    this.#scanCoordinatorProviderRecoveries();
+    this.#scanDynamicCoordinatorWakes();
+    this.#scanFailureRecoveries();
   }
 
   #scanFailureRecoveries() {
@@ -584,10 +754,10 @@ export class WorkCenterService {
   }
 
   start() {
-    this.#scanFailureRecoveries();
+    this.#scanRecoveries();
     if (!this.recoveryTimer) {
       this.recoveryTimer = setInterval(
-        () => this.#scanFailureRecoveries(),
+        () => this.#scanRecoveries(),
         this.recoveryPollIntervalMs,
       );
       this.recoveryTimer.unref?.();
@@ -600,8 +770,12 @@ export class WorkCenterService {
     if (this.recoveryTimer) clearInterval(this.recoveryTimer);
     this.recoveryTimer = null;
     await this.coordinator?.shutdown?.();
-    await Promise.allSettled([...this.recoveryTasks.values()]);
+    await Promise.allSettled([
+      ...this.recoveryTasks.values(),
+      ...[...this.dynamicCoordinatorTasks.values()].filter(Boolean),
+    ]);
     this.recoveryTasks.clear();
+    this.dynamicCoordinatorTasks.clear();
     this.recoveryQueue.clear();
     await this.watcher.stop();
     try { await this.watcher.runner?.shutdown?.(); } catch {}

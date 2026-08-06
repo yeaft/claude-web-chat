@@ -923,7 +923,7 @@
 }
 
 .unread-dot {
-  background: var(--error);
+  background: var(--success);
 }
 
 .pane-active-dot {
@@ -993,7 +993,7 @@
   display: block;
 }
 
-/* Session dots button — ⋮ menu trigger */
+/* Session dots button — horizontal menu trigger */
 .session-dots-btn {
   width: 24px;
   height: 24px;
@@ -1047,6 +1047,8 @@
   position: fixed;
   right: auto;
   margin-top: 0;
+  min-width: 0;
+  overflow-y: auto;
   z-index: 1000;
 }
 
@@ -1068,6 +1070,24 @@
 
 .session-menu-item:hover {
   background: var(--sidebar-hover);
+}
+
+.session-menu-parent {
+  justify-content: space-between;
+}
+
+.session-menu-parent.active {
+  background: var(--sidebar-hover);
+}
+
+.session-submenu {
+  overflow-y: auto;
+}
+
+.session-menu-empty {
+  padding: 8px 12px;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .session-menu-item svg {
@@ -1943,7 +1963,7 @@
 }
 
 .messages {
-  max-width: 60%;
+  max-width: var(--session-content-width);
   width: 100%;
   margin: 0 auto;
   padding: 0 24px;
@@ -2060,20 +2080,38 @@
   background: var(--bg-user-msg-subtle);
 }
 
-.message-user-footer {
+.message-user-attachments,
+.message-user-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 4px 6px;
+}
+
+.message-user-attachments {
   margin-top: 5px;
+}
+
+.message-user-actions {
+  min-height: 23px;
+  margin: 2px 8px 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.message.user:hover .message-user-actions,
+.message.user:focus-within .message-user-actions {
+  opacity: 1;
 }
 
 .message-action-btn {
   display: inline-flex;
+  width: 24px;
+  height: 24px;
   align-items: center;
-  gap: 4px;
-  padding: 2px 7px;
+  justify-content: center;
+  padding: 0;
   border: none;
   border-radius: 4px;
   background: transparent;
@@ -2081,7 +2119,6 @@
   cursor: pointer;
   font: inherit;
   font-size: 11px;
-  white-space: nowrap;
 }
 
 .message-action-btn:hover,

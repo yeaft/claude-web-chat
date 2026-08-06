@@ -1,208 +1,154 @@
-# Yeaft Engine
+# Native Yeaft Engine
 
-Yeaft's own AI engine runs in `agent/yeaft/` and depends on **no external CLI** (neither Claude nor Copilot is required). It has its own query loop, memory system, tool registry, and LLM router. This chapter covers its **core architecture** and **turn lifecycle**.
+The native engine lives in `agent/yeaft/`. It does not require Claude Code or GitHub Copilot CLI. It owns its LLM adapters, Session/VP orchestration, tool loop, memory, persistence, sub-agents, background jobs, and Work Center runner integration.
 
-> Audience: developers who want to **read or modify the Yeaft engine**. For the end-user view see [Yeaft Code Agent](../user/yeaft-group.md).
+> This page is for developers. For the product behavior, read [Yeaft Sessions and Projects](../user/yeaft-session.md) and [Work Center](../user/work-center.md).
 
-## Module Layout
+## Main modules
 
-```
+```text
 agent/yeaft/
-  engine.js        — main query loop (turn-based)
-  session.js       — Session orchestrator (loadSession wires up all subsystems)
-  config.js        — reads ~/.yeaft/config.json
-  prompts.js       — bilingual system prompt builder
-  models.js        — Model registry (context window, output limit, provider inference)
-
-  sessions/        — Session orchestration (coordinator, roster, store, pre-flow)
-  routing/         — turn-level routing + loop guard
-  router/          — continuity / thinking routing strategies
-  memory/          — H2-AMS memory subsystem (see yeaft-memory.md)
-  llm/             — LLM adapter layer (see yeaft-llm.md)
-  tools/           — built-in tool registry
-  templates/       — system prompt templates
-  conversation/    — message persistence + search
-  dream/        — background memory maintenance
-  compact/         — context compaction strategy
-  eval/            — evaluation scripts
-
-  web-bridge.js    — Engine events → claude_output envelope translator
+  engine.js             query/tool loop, retries, folding, persistence
+  session.js            loads one engine context and supporting subsystems
+  web-bridge.js         Web Session/VP and event bridge
+  cli-session-runner.js transport-neutral multi-VP CLI Session runner
+  sessions/             roster, store, coordinator, pre-flow, CRUD
+  projects/             Agent-side Project context store
+  vp/                   VP library, persona loader, defaults, registry
+  llm/                  adapter router, Anthropic, OpenAI Responses, credentials
+  memory/               H2-AMS, FTS index, scopes, summaries, segments
+  conversation/         durable message persistence and search
+  tools/                33 built-in tool definitions and registry
+  sub-agent/            child-agent runner, logs, liveness, notifications
+  tasks/                persistent background shell jobs
+  work-center/          WorkItem/Action/Run planner, store, watcher, runner
+  tool-folding/         turn reflection and long tool-arc folding
+  compact/              context compaction
+  dream/                background memory maintenance
+  archive/              large/raw turn and tool-result archive helpers
+  templates/            bilingual base, unified, dream, plan, persona prompts
 ```
 
-## Engine Query Loop (core turn cycle)
+## One native turn
 
-`engine.js` is the engine's main loop. For each user turn:
+A normal VP turn follows this shape:
 
-```
-1. Pre-query
-   - preflow.recall(scopes) — FTS recall over user/vp/group/feature scopes
-   - inject into system prompt
-   - AMS (Active Memory Set) three-layer cache (Resident summary / Recent / OnDemand) attached
+1. **Pre-query** — resolve Agent/Session/VP/Project identity, project instructions, runtime platform, pending child-agent notifications, project docs, and H2-AMS recall.
+2. **Build context** — combine the system prompt, VP persona, compact summary, budgeted history, current user content, and supported attachments.
+3. **Stream LLM** — select the configured provider/model and call either the Anthropic Messages or OpenAI Responses adapter.
+4. **Execute tools** — run allowed calls through `ToolRegistry`, append result blocks, and continue streaming.
+5. **Fold long arcs** — periodically reflect tool batches and summarize long turns while retaining raw output in persistence/debug paths.
+6. **Finish** — persist messages, usage, traces, task state, and terminal result; acknowledge injected notifications; then trigger AMS adjustment, Dream, or compact checks.
+7. **Recover** — auto-continue `max_tokens` responses within the configured limit, force compact on context errors, and use an eligible fallback model for classified retryable failures.
 
-2. Build messages array
-   - system: template + memory + persona + tool-guidance + project doc
-   - history: thread history (with compact summary if any)
-   - current user message
+An abort signal is threaded through the adapter and tools. The engine distinguishes user aborts, auth errors, rate limits, server failures, idle timeouts, and context failures instead of treating every stop as a generic error.
 
-3. adapter.stream({ model, system, messages, tools, signal })
-   - Collect text_delta / thinking_delta / tool_call / usage / stop events
-   - Push to frontend in real time via web-bridge
+## Session and VP orchestration
 
-4. tool_call event received
-   - ToolRegistry.execute(name, input, ctx) — run the tool
-   - Append result to messages (role: 'tool')
-   - Loop back to step 3
-
-5. stop event received
-   - stop_reason === 'end_turn' → persist messages → check if consolidation needed → finish turn
-   - stop_reason === 'max_tokens' → auto-continue (max 3 times)
-   - stop_reason === 'tool_use' → already handled in step 4
-
-6. Error handling
-   - LLMContextError → force compact → retry
-   - retryable error + fallbackModel configured → switch model → retry
-   - non-retryable error → terminate turn, propagate to user
-```
-
-## Turn Lifecycle Diagram
-
-```
-                  ┌─────────────────────────┐
-   user message → │ runVpTurn(group, vp)    │
-                  └────────────┬────────────┘
-                               ↓
-                  ┌─────────────────────────┐
-                  │ preflow.recall(scopes)  │  ← FTS over user/vp/group/feature
-                  │ → memory hits            │
-                  └────────────┬────────────┘
-                               ↓
-                  ┌─────────────────────────┐
-                  │ buildSystemPrompt()     │  ← templates + persona + memory + tool guidance
-                  └────────────┬────────────┘
-                               ↓
-                  ┌─────────────────────────┐
-                  │ Engine.query(messages)  │  ← the loop
-                  └────────────┬────────────┘
-              ┌────────────────┴────────────────┐
-              ↓                                 ↓
-      ┌──────────────┐                  ┌──────────────┐
-      │ adapter.stream → events          │ tool_call event
-      └──────┬───────┘                   └──────┬───────┘
-             ↓                                  ↓
-       text_delta / thinking_delta       ToolRegistry.execute
-        → web-bridge → frontend           → append tool result
-                                          → re-stream
-             ↓
-       stop event (end_turn)
-             ↓
-      ┌──────────────────────┐
-      │ persist messages     │
-      │ trigger consolidate? │  ← if yes, schedule dream maintenance
-      │ adjust AMS (max 1×)  │
-      └──────┬───────────────┘
-             ↓
-        turn complete → web-bridge emits 'result' envelope
-```
-
-## Session & VP Orchestration
-
-### Session
-`session.js`'s `loadSession()` wires up all subsystems:
+The Session coordinator resolves recipients from the roster:
 
 ```js
-const session = await loadSession({ conversationId, userId, agentId });
-// → { engine, memory, tools, llm, ... }
+const recipients = resolveVps(mentions, roster, defaultVpId);
+await Promise.all(recipients.map(vp => runVpTurn(session, vp, input)));
 ```
 
-A session contains:
-- one `Engine` instance
-- Session state, roster, active VPs, and per-VP turn state
-- shared `memory` / `tools` / `llm` subsystems
+The actual API has additional identity, attachments, quoting, routing, and persistence fields; this pseudocode only shows fan-out. The important rules are:
 
-### Session fan-out
-`sessions/coordinator.js` on receiving `yeaft_session_send` (legacy alias: `yeaft_session_chat`):
+- one canonical user message is persisted for the turn;
+- no mention targets the default VP;
+- explicit mentions target the matching roster members;
+- each selected VP has independent engine/persona/memory context;
+- VP events retain `sessionId`, `vpId`, turn/thread identity, and source order;
+- peer handoff uses the `RouteForward` tool and loop guards, not text mentions.
 
-```js
-async ingest({ sessionId, text, mentions, attachments }) {
-  const vps = roster.resolveVps(mentions);  // @mention → VPs (no mentions → default VP)
-  await Promise.all(vps.map(vp => runVpTurn(session, vp, text)));
-}
-```
+The Web path uses `web-bridge.js`. The direct `yeaft` CLI uses the transport-neutral Session runner so Session ID and multi-VP semantics stay aligned.
 
-VPs run `runVpTurn` in parallel, each with its own `Engine.query()`. Completion times differ; events fan out per-VP.
+## Prompt construction
 
-### Routing & Loop Guard
-`routing/` handles turn-level routing (VP→VP `route_forward`) and a loop guard. `routing/loop-guard.js` detects rapid ping-pong between two VPs and forces termination.
+`prompts.js` combines:
 
-## System Prompt Templates
+- `templates/base.md`, `identity-yeaft.md`, and `common-rules.md`;
+- the single interactive `mode-unified.md` contract;
+- Dream or plan instructions when those operations run;
+- the selected persona and VP metadata;
+- runtime platform/tool guidance;
+- project docs and Project instruction;
+- the rendered H2-AMS memory block;
+- optional harness-level instructions.
 
-`templates/` has the core templates:
+Historical interactive modes have been folded into the unified contract. Dream remains a specialized memory-maintenance operation, not a user-facing Session mode.
 
-| Template | Purpose |
-| --- | --- |
-| `base.md` | Core identity + principles (bilingual EN/zh) |
-| `identity-yeaft.md` | Yeaft identity + brand instructions |
-| `common-rules.md` | Common behavior rules (don't lie, don't fake lookups…) |
-| `mode-unified.md` | The single current run mode (covers Session collaboration instructions) |
-| `mode-dream.md` | Dream mode: prompt for memory maintenance |
-| `plan-instruction.md` | Extra instructions for the plan phase |
-| `tool-guidance.md` | Tool usage best practices |
-| `personas/` | Jobs / Torvalds / Fowler / Rams / Beck preset personas |
-| `harness/` | Harness-level instructions (env info, etc.) |
+## LLM adapters
 
-`prompts.js`'s `buildSystemPrompt()` composes the final prompt from current VP config + current mode + memory + project doc.
+`AdapterRouter` resolves provider and protocol from config:
 
-> Historical templates (`mode-chat.md` / `mode-worker.md` / `mode-coordinator.md`) have been folded into `mode-unified.md` + `personas/` — they no longer exist as standalone files.
+1. per-model protocol override;
+2. provider protocol;
+3. model-ID heuristic;
+4. OpenAI Responses fallback.
 
-## Web Bridge
+Supported protocols are `anthropic` and `openai-responses`. Provider entries may use static `apiKey` values or supported dynamic credential providers. Context/output limits come from model overrides, the bundled catalog, or conservative defaults. Model effort is translated to Anthropic thinking/output effort or OpenAI reasoning effort where supported.
 
-`web-bridge.js` translates Engine events into `claude_output` envelopes pushed to the server:
+See [Native LLM layer](./yeaft-llm.md).
 
-```
-Engine emits:                Web bridge emits:
-─────────────────────────────────────────────────────────────
-text_delta                   { type: 'assistant', message: { content: [{ type: 'text', text }] } }
-thinking_delta               { type: 'assistant', ... thinking block }
-tool_call                    { type: 'assistant', ... tool_use block }
-tool_result                  { type: 'user',      ... tool_result block }
-usage / stop                 { type: 'result',    subtype, ... }
-```
+## Tool system
 
-This is why the Yeaft engine reuses the Claude rendering pipeline — the frontend `MessageList` / `AssistantTurn` doesn't know the upstream is Yeaft vs Claude CLI.
+`createFullRegistry()` currently registers 33 built-in tools:
 
-## Tool System
+- files and patches;
+- grep/glob/directory/disk/history search;
+- foreground/background shell jobs and task logs;
+- Git worktree entry/exit;
+- Web search/fetch, local image viewing, and image generation;
+- JavaScript REPL and notebook editing;
+- planning, visible todos, and user questions;
+- persistent WorkItem creation;
+- sub-agent spawn/prompt/wait/list/close and explicit VP routing;
+- Skills.
 
-`tools/registry.js` is the tool registry:
+MCP tools are added at runtime. Registry policy can deny tools for the current execution context. Dream maintenance is not given the same broad side-effect contract as an interactive Session turn.
 
-```js
-const registry = createFullRegistry({ scope, mode, allowedTools });
-const result = await registry.execute(toolName, input, ctx);
-```
+Tool events and raw results are persisted for audit/debug. The context-facing representation is separately budgeted and can be folded or replaced by archive stubs; UI truncation does not mean the raw record was discarded.
 
-Tools are filtered by mode: `unified` mode gets the full 30+ tool set; `dream` mode only gets memory-maintenance-related tools.
+## H2-AMS memory
 
-Tool implementations are split by category — see [Yeaft Code Agent](../user/yeaft-group.md) for the full list.
+Before each turn, pre-flow maps authorized scopes to the current Agent's memory store, extracts query keywords, and retrieves FTS hits. The Active Memory Set combines:
 
-## Memory / LLM / Group Subsystems
+- resident scope summaries;
+- recent items;
+- on-demand full-text segments.
 
-Each has its own chapter:
-- Memory → [Yeaft Memory System (H2-AMS)](./yeaft-memory.md)
-- LLM → [Yeaft LLM Layer](./yeaft-llm.md)
-- Wire protocol → [WebSocket Protocol](./wire-protocol.md)
+Dream maintenance extracts durable segments and regenerates summaries. Scope ownership is explicit: user, VP, nested VP, Session, related Project-Session, and compatibility scopes do not become one shared transcript.
 
-## Tests
+See [H2-AMS memory](./yeaft-memory.md).
 
-- `test/agent/yeaft-phase5.test.js` — engine core
-- `test/agent/yeaft-phase6.test.js` — multi-VP / group orchestration
-- `test/agent/yeaft-eval.test.js` — end-to-end eval
+## Background tasks and sub-agents
 
-> Test files keep the historical "yeaft" prefix; they actually cover what's now called the Yeaft engine.
+- `Bash` with `background=true` creates a persistent Session task with a log.
+- `ListTasks`, `ReadTaskLog`, and `CancelTask` operate on that record.
+- An Agent restart marks unresolved process handles orphaned instead of pretending they are still controllable.
+- Sub-agents have their own output log, liveness counters, optional budgets, and terminal/idle notifications.
+- Terminal notifications are parent re-entry control context, not new user-authored semantic memory.
 
-## Key Files
+## Work Center integration
 
-- `agent/yeaft/engine.js` — main query loop
-- `agent/yeaft/session.js` — Session orchestrator
-- `agent/yeaft/sessions/coordinator.js` — Multi-VP fan-out within a session
-- `agent/yeaft/prompts.js` — System prompt builder
-- `agent/yeaft/web-bridge.js` — Event → wire translator
-- `agent/yeaft/tools/registry.js` — Tool registry
+Work Center reuses `Engine.query()` through a runner adapter. It does not implement a second LLM/tool loop. The Run freezes Action, VP, model/effort, tool-policy, workspace, and attempt identity. A structured completion tool submits `completed`, `waiting`, `retryable`, or `failed`; a normal model `turn_end` alone cannot advance the Action.
+
+The Coordinator uses the same model infrastructure but a restricted decision contract without file/shell/external side-effect tools.
+
+## Persistence and compatibility
+
+Agent-local Session metadata, history, memory, tasks, and Work Center data live under the resolved Yeaft directory. A Session `workDir` is project context only.
+
+Older wire aliases, payload identifiers, and storage scope prefixes remain where changing them would break deployed clients or data. New code uses Session/Yeaft terminology and the canonical Session memory layout is `sessions/<id>`. Readers may still handle legacy `session/<id>` and `group/<id>` aliases during migration.
+
+## Verification map
+
+The test tree is organized by subsystem rather than historical phase files:
+
+- `test/agent/yeaft/` covers compact, conversation, memory, Sessions, sub-agents, tasks, tool folding, Work Center, and related modules;
+- `test/agent/yeaft-*.test.js` covers cross-module native-engine behavior;
+- `test/server/yeaft-*.test.js` and `test/web/yeaft-*.test.js` cover relay and UI integration;
+- `e2e/` covers browser-visible flows.
+
+Use `npm test`, `npm run test:e2e`, and `npm run release:guard` for the current repository-wide gates.

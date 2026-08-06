@@ -10,6 +10,20 @@ export function yeaftSessionIdentityKey(agentId, sessionId) {
   return `${agentId}${SESSION_IDENTITY_SEPARATOR}${sessionId}`;
 }
 
+/**
+ * Read a persisted Session identity. Values without the separator are legacy
+ * bare Session ids and intentionally retain no Agent authority.
+ */
+export function parseYeaftSessionIdentity(value) {
+  const normalized = typeof value === 'string' ? value : String(value || '');
+  if (!normalized) return { agentId: null, sessionId: null };
+  const separatorIndex = normalized.indexOf(SESSION_IDENTITY_SEPARATOR);
+  if (separatorIndex < 0) return { agentId: null, sessionId: normalized };
+  const agentId = normalized.slice(0, separatorIndex) || null;
+  const sessionId = normalized.slice(separatorIndex + SESSION_IDENTITY_SEPARATOR.length) || null;
+  return { agentId, sessionId };
+}
+
 export function yeaftAgentSessionIdentityPrefix(agentId) {
   return agentId ? `${agentId}${SESSION_IDENTITY_SEPARATOR}` : '';
 }

@@ -29,8 +29,10 @@
  * without also updating the test.
  */
 import VpAvatar from './VpAvatar.js';
+import ModernSelect from './ModernSelect.js';
 import { getLastPathSegment, formatResumeDate } from '../utils/path-segments.js';
 import { buildVpDomainSections } from '../utils/vp-domains.js';
+import { yeaftSessionIdentityKey } from '../stores/helpers/yeaft-session-identity.js';
 import { folderPickerData, folderPickerMethods } from './mixins/folder-picker-mixin.js';
 
 const OMNI_VP_ID = 'omni';
@@ -71,9 +73,10 @@ export function resolveVpRosterPopupLayout(anchorRect, boundaryRect, viewportRec
 
 export default {
   name: 'SessionCreateModal',
-  components: { VpAvatar },
+  components: { VpAvatar, ModernSelect },
   props: {
     initialProvider: { type: String, default: 'yeaft' },
+    initialAgentId: { type: String, default: null },
   },
   emits: ['close', 'created'],
   template: `
@@ -93,20 +96,22 @@ export default {
           <div class="yeaft-session-create-fields">
             <div class="resume-control-row">
             <label class="resume-control-label">{{ $t('yeaft.session.create.agentLabel') }}</label>
-            <select v-model="form.agentId" class="resume-input">
-              <option v-for="a in agentOptions" :key="a.id" :value="a.id" :disabled="!a.online">
-                {{ a.name || a.id }}{{ a.online ? '' : ' (offline)' }}
-              </option>
-            </select>
+            <ModernSelect
+              v-model="form.agentId"
+              :options="agentSelectOptions"
+              :aria-label="$t('yeaft.session.create.agentLabel')"
+              menu-class="yeaft-session-create-select-menu"
+            />
           </div>
 
           <div class="resume-control-row">
             <label class="resume-control-label">{{ $t('modal.newConv.provider') }}</label>
-            <select v-model="form.provider" class="resume-input">
-              <option value="yeaft">Yeaft</option>
-              <option value="copilot">{{ $t('provider.copilot') }}</option>
-              <option value="claude-code">{{ $t('provider.claudeCode') }}</option>
-            </select>
+            <ModernSelect
+              v-model="form.provider"
+              :options="providerOptions"
+              :aria-label="$t('modal.newConv.provider')"
+              menu-class="yeaft-session-create-select-menu"
+            />
           </div>
 
           <!-- Name (optional — only consulted on Create; ignored when
@@ -147,7 +152,6 @@ export default {
               </button>
             </div>
             </div>
-          </div>
 
           <!-- VP roster (yeaft-specific) — collapsed-by-default picker.
                Trigger shows the current selection summary (names if ≤3, else
@@ -158,6 +162,12 @@ export default {
             <div class="yeaft-roster" ref="vpRosterRoot">
               <div v-if="vpList.length === 0 && vpLibraryEmpty" class="yeaft-roster-empty">
                 {{ $t('yeaft.session.create.rosterEmpty') }}
+              </div>
+              <div v-else-if="vpList.length === 0 && vpLibraryError" class="yeaft-roster-empty yeaft-roster-error" role="alert">
+                <span>{{ $t('yeaft.session.create.rosterError') }}</span>
+                <button type="button" class="btn-secondary yeaft-roster-retry" @click="retryVpSnapshot">
+                  {{ $t('yeaft.session.create.rosterRetry') }}
+                </button>
               </div>
               <div v-else-if="vpList.length === 0" class="yeaft-roster-empty">
                 {{ $t('yeaft.session.create.rosterLoading') }}
@@ -236,10 +246,30 @@ export default {
               </template>
             </div>
           </div>
+          </div>
         </div>
 
-        <!-- Content area: folders or existing sessions for the chosen workDir -->
+        <!-- Content area: hidden Sessions, folders, or existing Sessions for the chosen workDir -->
         <div class="resume-modal-content">
+          <div v-if="hiddenSessions.length > 0" class="resume-panel">
+            <div class="resume-panel-header">
+              <span>{{ $t('sidebar.sessions.hidden') }}</span>
+            </div>
+            <div class="resume-panel-list">
+              <div
+                v-for="session in hiddenSessions"
+                :key="session.catalogKey"
+                class="resume-list-item session-item-compact"
+                :class="{ 'is-busy': restoringHiddenKey === session.catalogKey, 'is-disabled': restoringHiddenKey && restoringHiddenKey !== session.catalogKey }"
+                :aria-disabled="restoringHiddenKey && restoringHiddenKey !== session.catalogKey ? 'true' : undefined"
+                @click="restoreHiddenSession(session)"
+              >
+                <div class="item-name">{{ session.title }}</div>
+                <div class="item-time">{{ session.workDir || session.agentName || session.routeRef.agentId }}</div>
+              </div>
+            </div>
+          </div>
+
           <!-- Folder aggregation (workDir empty) -->
           <div class="resume-panel" v-if="!form.workDir">
             <div class="resume-panel-header">
@@ -330,8 +360,8 @@ export default {
         </div>
 
         <!-- Folder picker -->
-        <div class="folder-picker-overlay" v-if="folderPickerOpen" @click.self="closeFolderPicker">
-          <div class="folder-picker-dialog">
+        <div class="folder-picker-overlay yeaft-folder-picker-overlay" v-if="folderPickerOpen" @click.self="closeFolderPicker">
+          <div class="folder-picker-dialog yeaft-folder-picker-dialog">
             <div class="folder-picker-header">
               <span>{{ $t('modal.folderPicker.title') }}</span>
               <button class="wb-btn-sm" type="button" @click="closeFolderPicker">&times;</button>
@@ -378,10 +408,11 @@ export default {
         defaultVpId: null,
         workDir: '',
         // Which agent owns the new session — populated in mounted().
-        agentId: null,
+        agentId: this.initialAgentId || null,
       },
       busy: false,
       submitError: '',
+      restoringHiddenKey: null,
       // Folder picker state — extracted to a shared mixin (originally
       // so SessionRestoreModal could reuse it; that modal has been
       // folded back in, but the mixin shape is preserved for future
@@ -415,6 +446,7 @@ export default {
       restoreScanning: false,
       restoring: null,
       restoreError: '',
+      vpSnapshotTimer: null,
     };
   },
   computed: {
@@ -437,21 +469,48 @@ export default {
       return null;
     },
     isYeaftProvider() { return this.form.provider === 'yeaft'; },
-    vpList() { return this.vpStore?.vpList || []; },
+    vpLibraryReady() {
+      const s = this.vpStore;
+      return !!(s
+        && s.snapshotStatus === 'ready'
+        && s.snapshotAgentId === this.form.agentId
+        && s.lastVpSnapshotAgentId === this.form.agentId);
+    },
+    vpList() { return this.vpLibraryReady ? (this.vpStore?.vpList || []) : []; },
     vpDomainSections() { return buildVpDomainSections(this.vpList); },
     vpListSignature() {
       return (this.vpList || []).map(vp => vp && vp.vpId).filter(Boolean).join(',');
     },
     vpLibraryEmpty() {
       const s = this.vpStore;
-      if (!s) return false;
+      if (!s || !this.vpLibraryReady) return false;
       if (s.emptyLibrary === true) return true;
       return !!(s.lastSnapshotAt && s.lastSnapshotAt > 0 && (s.vpOrder?.length || 0) === 0);
+    },
+    vpLibraryError() {
+      const s = this.vpStore;
+      if (!s || s.snapshotStatus !== 'error') return false;
+      return !s.snapshotAgentId || s.snapshotAgentId === this.form.agentId;
     },
     agentOptions() {
       const s = this.chat;
       if (!s || !Array.isArray(s.agents)) return [];
       return s.agents.map(a => ({ id: a.id, name: a.name, online: !!a.online, workDir: a.workDir || '' }));
+    },
+    agentSelectOptions() {
+      return this.agentOptions.map(agent => ({
+        value: agent.id,
+        label: agent.name || agent.id,
+        sublabel: agent.online ? '' : this.$t('settings.dashboard.offline'),
+        disabled: !agent.online,
+      }));
+    },
+    providerOptions() {
+      return [
+        { value: 'yeaft', label: 'Yeaft' },
+        { value: 'copilot', label: this.$t('provider.copilot') },
+        { value: 'claude-code', label: this.$t('provider.claudeCode') },
+      ];
     },
     // Identity+online signature of the agent roster. We watch THIS (not
     // agentOptions.length) to re-seed form.agentId: the UI keeps offline
@@ -475,6 +534,10 @@ export default {
     },
     allSessions() {
       return this.sessionsStore?.sessionList || [];
+    },
+    hiddenSessions() {
+      return (this.chat?.hiddenSessionCatalog || [])
+        .filter(row => row?.routeRef?.agentId && row?.routeRef?.sessionId);
     },
     // Sessions owned by the agent the user picked IN THIS MODAL
     // (form.agentId) — NOT the globally-active agent (chat.currentAgent /
@@ -514,13 +577,20 @@ export default {
       return Array.from(map.values()).sort((a, b) => a.path.localeCompare(b.path));
     },
     sessionsInDir() {
-      const inSidebar = new Set(
-        (this.sessionsStore?.sessionList || []).map(s => s && s.id).filter(Boolean)
-      );
+      const selectedAgentId = this.form.agentId || null;
       const list = Array.isArray(this.scannedSessions) ? this.scannedSessions : [];
       return list
         .filter(s => s && s.id)
-        .map(s => ({ ...s, inSidebar: inSidebar.has(s.id) }));
+        .map((session) => {
+          const agentId = session.agentId || selectedAgentId;
+          const sessionKey = yeaftSessionIdentityKey(agentId, session.id);
+          const inSidebar = !!(sessionKey && this.sessionsStore?.sessions?.[sessionKey]);
+          return {
+            ...session,
+            ...(agentId ? { agentId } : {}),
+            inSidebar,
+          };
+        });
     },
     chatFolderRows() {
       return (this.chat?.folders || []).map(folder => ({
@@ -541,7 +611,7 @@ export default {
       }));
     },
     canSubmit() {
-      if (this.isYeaftProvider && this.form.vpIds.length === 0) return false;
+      if (this.isYeaftProvider && (!this.vpLibraryReady || this.form.vpIds.length === 0)) return false;
       if (!this.form.agentId) return false;
       const a = this.agentOptions.find(x => x.id === this.form.agentId);
       return !!(a && a.online);
@@ -669,6 +739,7 @@ export default {
     document.removeEventListener('click', this.handleOutsideRosterClick, true);
     if (this._vpRosterLayoutFrame) cancelAnimationFrame(this._vpRosterLayoutFrame);
     if (this._folderPickerTimer) clearTimeout(this._folderPickerTimer);
+    if (this.vpSnapshotTimer) clearTimeout(this.vpSnapshotTimer);
   },
   methods: {
     toggleVpRoster() {
@@ -764,25 +835,67 @@ export default {
      * If nothing resolves, we WARN loudly — silent failure is what made
      * the original bug a multi-file root-cause hunt.
      */
-    subscribeVpsFor(agentId) {
+    subscribeVpsFor(agentId, { force = false } = {}) {
       const chat = this.chat;
-      if (!chat || typeof chat.sendWsMessage !== 'function') return;
-      const target = agentId || chat.currentAgent || null;
-      if (!target) {
-        console.warn(
-          '[SessionCreateModal] cannot subscribe to VP library — no agent resolved'
-          + ' (form.agentId / chat.currentAgent all null)'
-        );
-        return;
-      }
+      const target = agentId || chat?.currentAgent || null;
       const vp = this.vpStore;
-      // Skip re-subscribing when we already have a fresh snapshot from the
-      // exact agent we're targeting. `lastVpSnapshotAgentId` is `null` on
-      // legacy single-agent paths, so we re-subscribe in that case too.
-      if (vp && vp.lastSnapshotAt > 0 && vp.lastVpSnapshotAgentId === target) {
-        return;
+      if (!chat || typeof chat.sendWsMessage !== 'function' || !target) {
+        const requestId = `vp_snapshot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        vp?.beginSnapshot?.(target, requestId);
+        vp?.failSnapshot?.(target, requestId, 'No online Agent is available.');
+        return false;
       }
-      chat.sendWsMessage({ type: 'yeaft_vp_subscribe', agentId: target });
+      // The only reusable roster is the current ready scope. Historical source
+      // metadata is insufficient: after A→B, `lastVpSnapshotAgentId === A` may
+      // still be true while B owns the pending request.
+      const reusable = !force
+        && vp?.snapshotStatus === 'ready'
+        && vp.snapshotAgentId === target
+        && vp.lastVpSnapshotAgentId === target;
+      if (reusable) {
+        if (this.vpSnapshotTimer) clearTimeout(this.vpSnapshotTimer);
+        this.vpSnapshotTimer = null;
+        return true;
+      }
+      const requestId = `vp_snapshot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      vp?.beginSnapshot?.(target, requestId);
+      const sent = chat.sendWsMessage({ type: 'yeaft_vp_subscribe', agentId: target, requestId });
+      if (sent === false) {
+        vp?.failSnapshot?.(target, requestId, 'WebSocket is not connected.');
+        return false;
+      }
+      if (this.vpSnapshotTimer) clearTimeout(this.vpSnapshotTimer);
+      this.vpSnapshotTimer = setTimeout(() => {
+        this.vpSnapshotTimer = null;
+        if (vp?.snapshotStatus === 'loading' && vp.snapshotRequestId === requestId) {
+          vp.failSnapshot(target, requestId, 'VP library request timed out.');
+        }
+      }, 10_000);
+      return true;
+    },
+    retryVpSnapshot() {
+      this.subscribeVpsFor(this.form.agentId, { force: true });
+    },
+    async restoreHiddenSession(session) {
+      if (!session?.catalogKey || this.restoringHiddenKey) return;
+      const chat = this.chat;
+      if (!chat || typeof chat.restoreCatalogSession !== 'function') return;
+      this.restoringHiddenKey = session.catalogKey;
+      try {
+        const restored = chat.restoreCatalogSession(session);
+        if (!restored) return;
+        const { runtimeProvider, agentId, sessionId } = session.routeRef;
+        if (runtimeProvider === 'yeaft') {
+          chat.enterYeaft?.(agentId, { deferBootstrap: true });
+          chat.setActiveSessionFilter?.(sessionId, { agentId, force: true });
+        } else {
+          if (chat.currentView === 'yeaft') chat.leaveYeaft?.();
+          chat.selectConversation?.(sessionId, agentId);
+        }
+        this.$emit('close');
+      } finally {
+        this.restoringHiddenKey = null;
+      }
     },
     loadProviderSessions() {
       if (this.isYeaftProvider) return this.loadRestoreCandidates();
@@ -898,14 +1011,14 @@ export default {
           // Mirror resumeExisting / onSubmit: pin currentAgent +
           // sessionsStore.active + chat filter to the restored session so
           // the user doesn't get bounced back to whatever was active.
-          const owner = restored && restored.agentId;
+          const owner = restored?.agentId || session.agentId || agentId;
           if (owner && chat.currentAgent !== owner
               && typeof chat.selectAgent === 'function') {
             chat.selectAgent(owner);
           }
-          if (this.sessionsStore) this.sessionsStore.setActive(restored.id || session.id);
+          if (this.sessionsStore) this.sessionsStore.setActive(restored.id || session.id, owner);
           if (typeof chat.setActiveSessionFilter === 'function') {
-            chat.setActiveSessionFilter(restored.id || session.id, { force: true });
+            chat.setActiveSessionFilter(restored.id || session.id, { agentId: owner, force: true });
           }
           this.$emit('created', restored);
           this.$emit('close');
@@ -995,23 +1108,24 @@ export default {
     resumeExisting(session) {
       if (!session || !session.id) return;
       const chat = this.chat;
+      const owner = session.agentId || this.form.agentId || null;
       // 1. Cross-agent route — if the session belongs to a different
       //    agent than the one currently selected, switch first so any
       //    subsequent CRUD/messaging hits the owning agent. Mirrors
       //    YeaftSidebar.onSelectGroup.
-      if (session.agentId && chat && chat.currentAgent !== session.agentId
+      if (owner && chat && chat.currentAgent !== owner
           && typeof chat.selectAgent === 'function') {
-        chat.selectAgent(session.agentId);
+        chat.selectAgent(owner);
       }
       // 2. UI pointer (which session the main pane shows).
-      if (this.sessionsStore) this.sessionsStore.setActive(session.id);
+      if (this.sessionsStore) this.sessionsStore.setActive(session.id, owner);
       // 3. The action that actually fires `yeaft_load_history` and
       //    sets `yeaftActiveSessionFilter`. Without this, the modal
       //    closes but the main pane stays empty — that's the bug
       //    users reported as "resume doesn't work". `force: true` so
       //    it re-fires even when re-picking the currently-active id.
       if (chat && typeof chat.setActiveSessionFilter === 'function') {
-        chat.setActiveSessionFilter(session.id, { force: true });
+        chat.setActiveSessionFilter(session.id, { agentId: owner, force: true });
       }
       this.$emit('close');
     },
@@ -1111,15 +1225,15 @@ export default {
           const chat = this.chat;
           const created = res.session || res.group || null;
           const id = created && created.id;
-          const owner = created && created.agentId;
+          const owner = created?.agentId || this.form.agentId || null;
           if (id) {
             if (owner && chat && chat.currentAgent !== owner
                 && typeof chat.selectAgent === 'function') {
               chat.selectAgent(owner);
             }
-            if (this.sessionsStore) this.sessionsStore.setActive(id);
+            if (this.sessionsStore) this.sessionsStore.setActive(id, owner);
             if (chat && typeof chat.setActiveSessionFilter === 'function') {
-              chat.setActiveSessionFilter(id, { force: true });
+              chat.setActiveSessionFilter(id, { agentId: owner, force: true });
             }
           }
           this.$emit('created', created);

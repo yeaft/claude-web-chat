@@ -1,47 +1,107 @@
 # Getting Started
 
-Yeaft has two components:
+Yeaft has a browser/server control plane and one or more Agents. The Agent runs where the code lives and owns execution. The native Yeaft engine is bundled with the npm package; Claude Code and GitHub Copilot CLIs are optional runtimes.
 
-1. **Server** — central hub (Express + WebSocket), runs once per deployment.
-2. **Agent** — runs on each machine you want to drive (your laptop, a VPS, a sandbox container). The native Yeaft Code Agent engine is **bundled** in the agent; the Claude / Copilot CLIs are **optional** depending on which backends you want.
+## Requirements
 
-## Option A: npm (Agent only)
+- Node.js `>=22.5.0` on the server and Agent machine
+- a modern browser
+- at least one native LLM provider for Yeaft Sessions, or an installed/authenticated vendor CLI for that conversation path
+- Docker for the recommended production server deployment
 
-If you already have a server running, just install the agent:
+## Fastest path: local mode
+
+Local mode starts the bundled Web UI, Server, and Agent on `127.0.0.1`:
 
 ```bash
-# Install the agent globally
 npm install -g @yeaft/webchat-agent
-
-# Connect to a server
-yeaft-agent --server wss://your-server.com --name my-worker --secret your-secret
-
-# Upgrade to latest
-yeaft-agent upgrade
+yeaft-agent local --name local
 ```
 
-The Yeaft engine starts working out of the box once you create `~/.yeaft/config.json` with at least one LLM provider (see [Yeaft Engine Config](./yeaft-config.md)). For Claude Code / Copilot chat modes, install the corresponding CLI on the agent machine and authenticate — the agent will auto-detect them at startup. See [Agent Setup](./deploy-agent.md) for the full table.
+Open `http://127.0.0.1:6868`.
 
-## Option B: Full development setup
+Local mode uses no Web authentication and listens on loopback. It is intended for a trusted single-machine evaluation, not direct public exposure. The explicit `--name local` selects the Agent instance and its default Yeaft directory, `~/.yeaft/instances/local/`.
+
+In another shell, configure the same instance. The `llm` subcommand does not infer a named instance, so pass its config file:
 
 ```bash
-git clone https://github.com/yeaft/claude-web-chat.git
-cd claude-web-chat
+YEAFT_CONFIG="$HOME/.yeaft/instances/local/config.json"
+yeaft-agent llm setup --config "$YEAFT_CONFIG"
+```
 
-# Install all dependencies
+For GitHub Copilot-backed native models:
+
+```bash
+yeaft-agent llm use github-copilot --config "$YEAFT_CONFIG" \
+  --model claude-sonnet-4.5 \
+  --fast gpt-4.1
+```
+
+The native credential provider uses the local device/`gh auth` credential flow and does not write the token itself to config. The default service instance uses `~/.yeaft/config.json`; a custom `YEAFT_DIR` / `--yeaft-dir` uses `<yeaftDir>/config.json`.
+
+## Connect to an existing server
+
+```bash
+npm install -g @yeaft/webchat-agent
+yeaft-agent --server wss://your-server.example --name my-worker --secret your-agent-secret
+```
+
+Install a managed service for reboot persistence:
+
+```bash
+yeaft-agent install --server wss://your-server.example --name my-worker --secret your-agent-secret
+yeaft-agent status --name my-worker
+```
+
+Each `--name` is also the Agent instance identity. Separate instances resolve separate Agent-local Yeaft directories unless explicitly configured otherwise.
+
+## Run from source
+
+```bash
+git clone https://github.com/yeaft/yeaft-web-code-agent.git
+cd yeaft-web-code-agent
 npm install
-
-# Start server + agent in dev mode (no auth)
 npm run dev
 ```
 
-Then open `http://localhost:3456` in your browser.
+Open `http://localhost:3456`.
 
-## Next Steps
+Useful verification commands:
 
-- [Choose a Code Agent Path](./user/choose-backend.md) — Claude Code vs Copilot vs Yeaft Code Agent
-- [Deploy the Server (Docker)](./deploy-server.md) — Production deployment guide
-- [Set up an Agent](./deploy-agent.md) — Connect a worker machine
-- [Yeaft Engine Config](./yeaft-config.md) — `~/.yeaft/config.json` schema
-- [Chat (Claude Code)](./user/chat-mode.md) — Start using the chat interface
-- [Yeaft Code Agent](./user/yeaft-group.md) — Multi-VP collaboration
+```bash
+npm test
+npm run test:e2e
+npm run release:guard
+npm run build
+npm run docs:build
+```
+
+## Create your first native Session
+
+1. Confirm the Agent is online.
+2. Choose **New chat** in the unified sidebar.
+3. Select **Yeaft** and the target Agent.
+4. Choose a working directory.
+5. Select one or more VPs and a default VP.
+6. Create the Session.
+7. After creation, choose model/effort in the composer and edit the announcement in Session settings, then send a message.
+
+Use one VP for a conventional coding-assistant workflow. Add more VPs only when independent roles are useful; use `@mentions` to select who handles each turn.
+
+## Try Work Center
+
+Open **Work Center** from the sidebar, or create a WorkItem from the Yeaft Session composer. Give it a concrete goal, acceptance criteria, and working directory. Work Center persists its own Coordinator conversation and planned Action graph on the selected Agent.
+
+## Optional CLI runtimes
+
+To create Claude Code or GitHub Copilot conversations, install and authenticate the matching CLI on the Agent machine. The Agent detects supported runtimes and exposes them in the creation UI. Native Yeaft Sessions do not require either vendor CLI.
+
+## Next steps
+
+- [Choose a code agent path](./user/choose-backend.md)
+- [Yeaft Sessions and Projects](./user/yeaft-session.md)
+- [Work Center](./user/work-center.md)
+- [Agent and native CLI reference](./agent-cli.md)
+- [Provider/model configuration](./yeaft-config.md)
+- [Deploy the server](./deploy-server.md)
+- [Install Agents](./deploy-agent.md)

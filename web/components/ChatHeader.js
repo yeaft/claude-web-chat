@@ -249,11 +249,8 @@ export default {
 
     const canRefresh = Vue.computed(() => {
       if (!effectiveConvId.value) return false;
-      // task-712: refresh is allowed even while a turn is streaming.
-      // The user wants "刷历史,不动正在 streaming 的 turn" — handled in
-      // refreshSession by skipping the destructive messagesMap blank
-      // when a turn is in flight. Sync results dedup by dbMessageId,
-      // and the streaming partial has none, so it survives the merge.
+      // Refresh is allowed even while a turn is streaming. The existing pane
+      // remains visible and sync results reconcile persisted rows by stable id.
       return !store.isRefreshingSession(effectiveConvId.value);
     });
 
@@ -261,13 +258,10 @@ export default {
       if (store.isRefreshingSession(effectiveConvId.value) || !effectiveConvId.value) return;
       store.setRefreshingSession(effectiveConvId.value, true);
       store.startRefreshTimeout(effectiveConvId.value);
-      // Mid-turn: keep the in-memory partial so streaming text isn't wiped.
-      // sync_messages_result dedups by dbMessageId (orphans are reconciled by
-      // content). Idle: blank for a clean reload.
-      if (!store.processingConversations[effectiveConvId.value]) {
-        store.messagesMap[effectiveConvId.value] = [];
-      }
-      store.requestChatHistory(effectiveConvId.value, { mode: 'recent', turns: 5 });
+      // Refresh is stale-while-revalidate. Keep the current pane visible for
+      // idle and streaming turns alike; the response merges by stable ids.
+      const requestId = store.requestChatHistory(effectiveConvId.value, { mode: 'recent', turns: 5 });
+      if (!requestId) store.setRefreshingSession(effectiveConvId.value, false);
     };
 
     const compactContext = () => {

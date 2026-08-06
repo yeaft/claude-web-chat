@@ -28,6 +28,7 @@ export default {
     const search = Vue.ref('');
     const triggerEl = Vue.ref(null);
     const menuEl = Vue.ref(null);
+    const listEl = Vue.ref(null);
     const searchEl = Vue.ref(null);
     const activeIdx = Vue.ref(-1);
     const instanceId = `modern-select-${++modernSelectId}`;
@@ -54,7 +55,8 @@ export default {
     function positionMenu() {
       const trigger = triggerEl.value;
       const menu = menuEl.value;
-      if (!trigger || !menu) return;
+      const list = listEl.value;
+      if (!trigger || !menu || !list) return;
       const gap = 6;
       const viewportPadding = 8;
       const triggerRect = trigger.getBoundingClientRect();
@@ -64,7 +66,12 @@ export default {
         Math.max(triggerRect.width, props.menuMinWidth),
         Math.max(0, viewportWidth - viewportPadding * 2),
       );
-      const desiredHeight = Math.min(menu.scrollHeight, 304);
+      // Measure immutable content height, not the menu box that the previous
+      // positioning pass already constrained. Scroll events bubble from the
+      // list into the window capture listener; reading menu.scrollHeight there
+      // feeds the old max-height back into the next pass and shrinks repeatedly.
+      const chromeHeight = props.searchable ? 58 : 12;
+      const desiredHeight = Math.min(list.scrollHeight + chromeHeight, 304);
       const below = Math.max(0, viewportHeight - triggerRect.bottom - gap - viewportPadding);
       const above = Math.max(0, triggerRect.top - gap - viewportPadding);
       const placeAbove = below < desiredHeight && above > below;
@@ -99,9 +106,21 @@ export default {
     }
     function close() { open.value = false; }
     function pick(opt) {
+      if (!opt || opt.disabled) return;
       emit('update:modelValue', opt.value);
       emit('change', opt.value);
       close();
+    }
+    function moveActive(step) {
+      if (!filtered.value.length) return;
+      let next = activeIdx.value;
+      for (let count = 0; count < filtered.value.length; count += 1) {
+        next = (next + step + filtered.value.length) % filtered.value.length;
+        if (!filtered.value[next]?.disabled) {
+          activeIdx.value = next;
+          return;
+        }
+      }
     }
     function onKey(e) {
       if (!open.value) {
@@ -109,8 +128,8 @@ export default {
         return;
       }
       if (e.key === 'Escape') { e.preventDefault(); close(); return; }
-      if (e.key === 'ArrowDown') { e.preventDefault(); activeIdx.value = Math.min(filtered.value.length - 1, activeIdx.value + 1); }
-      else if (e.key === 'ArrowUp') { e.preventDefault(); activeIdx.value = Math.max(0, activeIdx.value - 1); }
+      if (e.key === 'ArrowDown') { e.preventDefault(); moveActive(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); moveActive(-1); }
       else if (e.key === 'Enter') {
         e.preventDefault();
         const opt = filtered.value[activeIdx.value];
@@ -138,7 +157,7 @@ export default {
 
     return {
       open, search, triggerEl, menuEl, searchEl, activeIdx, selected, filtered,
-      menuId, menuStyle, optionId, activeOptionId, toggle, close, pick, onKey,
+      menuId, menuStyle, listEl, optionId, activeOptionId, toggle, close, pick, onKey,
     };
   },
   template: `
@@ -186,18 +205,19 @@ export default {
                 @keydown="onKey"
               >
             </div>
-            <div class="modern-select-list">
+            <div class="modern-select-list" ref="listEl">
               <div v-if="loading" class="modern-select-empty">…</div>
               <div v-else-if="!filtered.length" class="modern-select-empty">{{ emptyText }}</div>
               <div
                 v-for="(opt, i) in filtered"
                 :key="opt.value"
                 class="modern-select-option"
-                :class="{ 'is-active': i === activeIdx, 'is-selected': opt.value === modelValue }"
+                :class="{ 'is-active': i === activeIdx, 'is-selected': opt.value === modelValue, 'is-disabled': opt.disabled }"
                 role="option"
                 :id="optionId(i)"
                 :aria-selected="opt.value === modelValue ? 'true' : 'false'"
-                @mouseenter="activeIdx = i"
+                :aria-disabled="opt.disabled ? 'true' : 'false'"
+                @mouseenter="!opt.disabled && (activeIdx = i)"
                 @click="pick(opt)"
               >
                 <div class="modern-select-option-main">

@@ -4,6 +4,7 @@ import { CONFIG } from './config.js';
 import { verifyAgent } from './auth.js';
 import { encodeKey } from './encryption.js';
 import { agents, pendingAgentConnections } from './context.js';
+import { userDb } from './database.js';
 import {
   parseMessage, broadcastAgentList, clearAgentDirCache
 } from './ws-utils.js';
@@ -25,60 +26,45 @@ function buildAgentMapKey(ownerId, agentName) {
   return `${prefix}:${agentName}`;
 }
 
+let nextAgentConnectionGeneration = 0;
+// Keep the latest generation as a tombstone while an older auth may still arrive.
+const latestAgentConnectionGenerations = new Map();
+
+function claimAgentConnection(agentId, generation) {
+  const latestGeneration = latestAgentConnectionGenerations.get(agentId);
+  if (latestGeneration !== undefined && latestGeneration > generation) return false;
+  latestAgentConnectionGenerations.set(agentId, generation);
+  return true;
+}
+
+function pruneAgentConnectionGenerations() {
+  for (const [agentId, generation] of latestAgentConnectionGenerations) {
+    if (agents.has(agentId)) continue;
+    const hasPotentiallyOlderConnection = [...pendingAgentConnections.values()].some(pending => {
+      if (pending.connectionGeneration >= generation) return false;
+      return pending.skipAgentAuth ? pending.agentId === agentId : true;
+    });
+    if (!hasPotentiallyOlderConnection) latestAgentConnectionGenerations.delete(agentId);
+  }
+}
+
 export function handleAgentConnection(ws, url) {
   const clientAgentId = url.searchParams.get('id') || randomUUID();
   const agentName = url.searchParams.get('name') || `Agent-${clientAgentId.slice(0, 8)}`;
   const instanceId = url.searchParams.get('instanceId') || clientAgentId;
   const workDir = url.searchParams.get('workDir') || '';
 
-  // In development mode (SKIP_AUTH), register immediately
-  if (CONFIG.skipAuth) {
-    // Dev mode: no owner isolation, use clientAgentId as-is for backward compat
-    const capabilities = (url.searchParams.get('capabilities') || '').split(',').filter(Boolean);
-    completeAgentRegistration(ws, clientAgentId, agentName, workDir, null, capabilities, null, null, null, instanceId);
+  // Both authenticated and SKIP_AUTH connections use the existing auth frame
+  // for registration metadata. Released Agents already send their version there;
+  // SKIP_AUTH only bypasses secret validation and owner scoping.
+  const skipAgentAuth = CONFIG.skipAuth;
+  const urlCapabilities = (url.searchParams.get('capabilities') || '').split(',').filter(Boolean);
+  const connectionGeneration = ++nextAgentConnectionGeneration;
 
-    ws.on('message', async (data) => {
-      const agent = agents.get(clientAgentId);
-      if (!agent || agent.ws !== ws) {
-        if (!agent) console.error(`[Agent] No agent found for id: ${clientAgentId}`);
-        return;
-      }
-      markAgentHeartbeatSeen(agent);
-      const msg = await parseMessage(data, agent.sessionKey);
-      if (msg) {
-        console.log(`[Agent] Received message from ${clientAgentId}: ${msg.type}`);
-        if (msg.perfTraceId) {
-          recordPerfTraceEvent({
-            traceId: msg.perfTraceId,
-            source: 'server',
-            phase: 'websocket.agent_received',
-            at: Date.now(),
-            agentId: clientAgentId,
-            sessionId: msg.sessionId || null,
-            vpId: msg.vpId || null,
-            turnId: msg.turnId || null,
-            threadId: msg.threadId || null,
-            messageType: msg.type,
-            bytes: data.length || 0,
-          });
-        }
-        handleAgentMessage(clientAgentId, msg, ws);
-      } else {
-        console.error(`[Agent] Failed to parse message from ${clientAgentId}`);
-      }
-    });
+  // SKIP_AUTH has a complete identity at connect time. Authenticated connections
+  // can only claim an owner-scoped identity after their secret is verified.
+  if (skipAgentAuth) claimAgentConnection(clientAgentId, connectionGeneration);
 
-    ws.on('close', () => {
-      handleAgentDisconnect(clientAgentId, agentName, ws);
-    });
-
-    ws.on('error', (err) => {
-      console.error(`Agent error (${agentName}):`, err.message);
-    });
-    return;
-  }
-
-  // In production mode, wait for auth message with secret
   const tempId = randomUUID();
   // Mutable: will be updated to the owner-scoped key after auth succeeds
   let resolvedAgentId = null;
@@ -86,6 +72,7 @@ export function handleAgentConnection(ws, url) {
   const authTimeout = setTimeout(() => {
     console.log(`Agent auth timeout: ${agentName}`);
     pendingAgentConnections.delete(tempId);
+    pruneAgentConnectionGenerations();
     ws.close(1008, 'Authentication timeout');
   }, 30000);
 
@@ -95,10 +82,12 @@ export function handleAgentConnection(ws, url) {
     agentName,
     instanceId,
     workDir,
+    skipAgentAuth,
+    connectionGeneration,
     timeout: authTimeout
   });
 
-  // Request authentication
+  // Request the existing registration frame. SKIP_AUTH ignores its secret.
   ws.send(JSON.stringify({
     type: 'auth_required',
     tempId
@@ -114,22 +103,53 @@ export function handleAgentConnection(ws, url) {
           clearTimeout(pending.timeout);
           pendingAgentConnections.delete(tempId);
 
-          const authResult = verifyAgent(msg.secret);
+          const authResult = skipAgentAuth
+            ? { valid: true, sessionKey: null, userId: null, username: null }
+            : verifyAgent(msg.secret);
           if (!authResult.valid) {
+            pruneAgentConnectionGenerations();
             console.log(`Agent auth failed: ${agentName}`);
             ws.close(1008, 'Invalid agent secret');
             return;
           }
 
-          const capabilities = msg.capabilities || [];
+          const capabilities = Array.isArray(msg.capabilities) ? msg.capabilities : urlCapabilities;
           const agentVersion = msg.version || null;
-          // Build owner-scoped key to prevent cross-user collision. New agents
-          // identify local service instances separately from display names;
-          // old agents keep using their name as the stable id.
-          resolvedAgentId = buildAgentMapKey(authResult.userId, pending.instanceId || pending.agentId || pending.agentName);
-          completeAgentRegistration(ws, resolvedAgentId, pending.agentName, pending.workDir, authResult.sessionKey, capabilities, authResult.userId, authResult.username, agentVersion, pending.instanceId || pending.agentId || pending.agentName);
+          // Local no-auth mode still has one durable browser owner. This makes
+          // the server-side Session catalog persistent without changing generic
+          // development-server behavior, which remains ownerless.
+          const localOwner = skipAgentAuth && process.env.YEAFT_LOCAL_RUN === 'true'
+            ? userDb.getOrCreate('dev-user')
+            : null;
+          const ownerId = localOwner?.id || authResult.userId;
+          const ownerUsername = localOwner?.username || authResult.username;
+          // Authenticated Agents use an owner-scoped key. SKIP_AUTH preserves
+          // its historical unscoped id while still receiving version metadata.
+          resolvedAgentId = skipAgentAuth
+            ? clientAgentId
+            : buildAgentMapKey(ownerId, pending.instanceId || pending.agentId || pending.agentName);
+          if (!claimAgentConnection(resolvedAgentId, connectionGeneration)) {
+            resolvedAgentId = null;
+            pruneAgentConnectionGenerations();
+            ws.close(1008, 'Superseded by a newer Agent connection');
+            return;
+          }
+          completeAgentRegistration(
+            ws,
+            resolvedAgentId,
+            pending.agentName,
+            pending.workDir,
+            authResult.sessionKey,
+            capabilities,
+            ownerId,
+            ownerUsername,
+            agentVersion,
+            pending.instanceId || pending.agentId || pending.agentName,
+          );
+          pruneAgentConnectionGenerations();
         }
       } catch (e) {
+        pruneAgentConnectionGenerations();
         console.error('Failed to parse agent auth message:', e.message);
       }
     } else {
@@ -171,6 +191,7 @@ export function handleAgentConnection(ws, url) {
     if (pending) {
       clearTimeout(pending.timeout);
       pendingAgentConnections.delete(tempId);
+      pruneAgentConnectionGenerations();
     }
     // Use resolvedAgentId if auth completed, otherwise nothing to clean
     if (resolvedAgentId) {
@@ -199,6 +220,7 @@ function handleAgentDisconnect(agentId, agentName, ws) {
   }
   // Remove agent entirely — eliminates zombie agents from broadcastAgentList
   agents.delete(agentId);
+  pruneAgentConnectionGenerations();
   console.log(`Agent disconnected: ${agentName}`);
   broadcastAgentList();
 }

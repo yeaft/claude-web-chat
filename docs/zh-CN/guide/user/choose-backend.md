@@ -1,66 +1,64 @@
 # 选择代码 Agent 路径
 
-Yeaft Web Code Agent 把三条执行路径放在同一个 Web UI 里。它们**不互斥**：同一台已连接 Agent 可以同时运行 Claude Code 会话、Copilot 会话和 Yeaft 原生 Code Agent Session。
+Yeaft 在同一个浏览器中提供三条执行路径。一台已连接 Agent 可以同时运行三者，但每条路径保留自己的 runtime 与兼容边界。
 
-| 路径 | 适合场景 | 不适合场景 |
+| 路径 | 最适合 | Runtime / 边界 |
 | --- | --- | --- |
-| **Claude Code Chat** | 长项目协作、复杂代码理解、Claude Code `/skills` 和 MCP 工具 | 没装 Claude Code CLI；必须避免 vendor CLI 依赖的工作流 |
-| **Copilot 模式** | 已有 GitHub Copilot 订阅、通过 ACP 切 GPT/Claude/Gemini、需要 per-call 权限弹窗 | 需要 `/compact`；依赖 Claude-only skill 行为 |
-| **Yeaft Code Agent** | 原生多 provider 编码、1..N 个 VP、持久记忆、自定义工具策略、混用 provider | 必须完全复刻 Claude Code CLI 行为的场景 |
+| **Claude Code** | 精确的 Claude Code 工具、skills、MCP、compact/clear 命令、sub-agent event 和 resume 行为 | 每个 conversation 一个本机已安装并登录的 Claude Code CLI 进程 |
+| **GitHub Copilot** | Copilot entitlement、ACP 工具权限确认和 Copilot model catalog | 每个 conversation 一个本机已安装并登录的 `copilot --acp` 进程 |
+| **Yeaft Code Agent** | 原生 provider routing、1..N 个 VP、33 个内置工具、scoped memory、Project、sub-agent 和 Work Center | `yeaft-agent` 内的原生 engine；不模拟所有 vendor CLI command |
 
-## 本质区别
+## Claude Code
 
-### Claude Code Chat
+当 Claude Code CLI 兼容性比 provider neutrality 更重要时选择 Claude Code。
 
-- 每个 chat session 对应一个 Claude Code CLI 子进程。
-- 全套 Claude Code 能力：skills、MCP、subagents、`/compact`、`/clear`、`/btw`。
-- 工具调用走 Claude Code stream-json 协议。
-- 会话历史存在 `~/.claude/projects/` 下，可以恢复。
+- Agent 启动 CLI conversation，并把 stream-json event 归一化给 Web UI。
+- Claude Code 拥有自己的 CLI session 与 command semantics。
+- Yeaft Web UI 可以显示 provider 暴露的 streaming text、tools、files、sub-agent、context action 和 resume history。
+- Expert Panel 是 Claude Code conversation helper，不是原生多 VP Session system。
 
-### Copilot 模式
+## GitHub Copilot
 
-- 每个 chat session 对应一个 `copilot --acp` 子进程。
-- 可用模型由你的 GitHub Copilot 权益决定。
-- 工具权限通过 ask-user 弹窗逐次确认；UI 也可开启 "Allow all tools"。
-- 会话历史存在 `~/.copilot/session-store.db`，可以恢复。
+当 Agent 机器已有可用 Copilot 环境，并且需要 ACP 行为时选择 Copilot。
 
-### Yeaft Code Agent
+- Agent 启动 `copilot --acp`，并将 ACP event 转换到共享 browser renderer。
+- 可用 model 取决于 live Copilot catalog 和本机账号 entitlement。
+- Tool call 可以要求 allow once、allow always 或 deny。
+- Copilot persistence 与不支持的命令遵循已安装 CLI，不等同于 Claude Code 行为。
 
-- 不依赖任何外部 CLI。原生引擎、记忆、工具和 LLM router 都随 `yeaft-agent` 打包。
-- 一个 Session 可以放一个或多个 **VP（Virtual Person）**。每个 VP 都有自己的人格、模型、记忆和工具 allowlist。
-- 一条用户消息可以并行 fan-out 给多个 VP。
-- **H2-AMS 持久记忆**跨任务保留 user / VP / Session / feature scope。
-- 多 provider LLM 路由通过 `~/.yeaft/config.json` 支持 Anthropic、OpenAI Responses、GitHub Copilot 动态凭证、Azure/OpenAI-compatible gateway 和本地 proxy。
+## Yeaft Code Agent
 
-## UI 上怎么选
+当你需要产品级编排，而不是精确 CLI 兼容时选择原生引擎。
 
-### Claude Code Chat 或 Copilot 模式
+- Session 包含 1..N 个可复用 VP 和一条持久 timeline。
+- `@mention` 可以把一个 turn fan-out 给多个 VP；`RouteForward` 记录明确 peer handoff。
+- H2-AMS 召回 scoped user、VP、Session 和相关 Project-Session memory。
+- 原生 provider 通过 Anthropic Messages 或 OpenAI Responses adapter 路由，也支持已实现的 GitHub Copilot dynamic credential 与 compatible gateway。
+- 当前 built-in registry 有 33 个工具；Skills 与 MCP 可以继续增加。
+- Session 可以创建 Agent-level WorkItem，用于持久、可规划、可恢复的工作。
 
-侧边栏 `+` 会打开 session config modal：
+## 如何创建
 
-1. 选 **Agent**（机器）。
-2. 选 **Provider**：`Claude Code` 或 `Copilot`。
-3. 选 **工作目录**。
-4. 如果选 Copilot，会出现模型和权限选项。
+在统一侧栏使用 **新建聊天**：
 
-### Yeaft Code Agent
+1. 选择拥有目标目录的 Agent。
+2. 选择 **Claude Code**、**Copilot** 或 **Yeaft**。
+3. 输入工作目录和 runtime-specific options。
+4. 对 Yeaft，选择 Session roster/default VP；创建后在 composer 选择 model/effort，在 Session settings 编辑公告。
 
-侧边栏顶部切到 **Yeaft**，再用 `+` 创建 Session：
+侧栏 catalog 可以展示多台 Agent 的 conversation。Runtime identity 始终包含 Agent；两台 Agent 上相同 Session ID 并不是同一个 Session。
 
-1. 输入 Session 名称。
-2. 从 roster 里选择可复用 VP。
-3. 选择默认 VP。
-4. 发送消息；用 `@VPName` 定向给部分 VP。
+## 常见选择
 
-## 我应该用哪个？
+- 精确 Claude Code workflow 或 Claude-specific skills → **Claude Code**。
+- 已有 Copilot subscription，需要 ACP permission flow → **GitHub Copilot**。
+- 一个带记忆、provider-neutral 的代码 Agent → **只有 1 个 VP 的 Yeaft Session**。
+- 并行 developer/reviewer/research 角色 → **多个 VP 的 Yeaft Session**。
+- 需要 Action planning、等待、重试或恢复的持久目标 → **Work Center**，通常可以从 Yeaft Session 创建。
 
-- **每天用 Claude Code，需要精确 Claude 行为** → Claude Code Chat。
-- **有 Copilot Enterprise，或想要 ACP 权限弹窗 / Copilot 模型目录** → Copilot 模式。
-- **想让 PM + Dev + Reviewer 带长期记忆并行思考** → Yeaft Code Agent。
-- **想在同一个任务上比较 Anthropic、OpenAI、Copilot 或 proxy** → 多 VP 的 Yeaft Code Agent。
+## 相关页面
 
-下一步：
-
-- [Claude Code Chat](./chat-mode.md)
-- [Copilot 模式](./copilot-mode.md)
-- [Yeaft Code Agent](./yeaft-group.md)
+- [Claude Code conversation](./chat-mode.md)
+- [GitHub Copilot conversation](./copilot-mode.md)
+- [Yeaft Session 与 Project](./yeaft-session.md)
+- [Work Center](./work-center.md)

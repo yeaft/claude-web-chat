@@ -152,10 +152,11 @@
   flex: 1 1 auto;
 }
 
-/* Topbar — model selector + mode toggle + actions */
+/* Topbar — folder + Session title + actions */
 
 .yeaft-topbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   padding: 4px 16px;
@@ -182,33 +183,102 @@
   color: var(--text-primary);
 }
 
-/* ── Model Selector (topbar compact dropdown) ── */
+/* ── Header folder + composer model selector ── */
 
-.yeaft-topbar-model {
-  display: flex;
+.yeaft-topbar-context {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  padding: 5px 10px;
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  position: relative;
-  background: var(--bg-input-wrapper);
-  transition: background 0.15s, border-color 0.15s;
+  min-width: 0;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  pointer-events: none;
 }
 
-.yeaft-topbar-model:hover {
+.yeaft-topbar-folder {
+  grid-column: 1;
+  justify-self: start;
+  width: 100%;
+  pointer-events: auto;
+  flex: 0 1 var(--yeaft-header-folder-max-width);
+  min-width: 0;
+  max-width: var(--yeaft-header-folder-max-width);
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--yeaft-header-folder-font-size);
+}
+
+.yeaft-topbar-folder-path {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.yeaft-composer-model-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sidebar-section-toggle-gap);
+  min-width: 0;
+}
+
+.yeaft-composer-choice {
+  position: relative;
+  min-width: 0;
+}
+
+.yeaft-composer-model-choice {
+  flex: 0 1 auto;
+}
+
+.yeaft-composer-model,
+.yeaft-composer-effort {
+  display: flex;
+  align-items: center;
+  gap: var(--sidebar-section-toggle-gap);
+  min-width: 0;
+  height: var(--chat-composer-control-size);
+  padding: 0 var(--sidebar-section-toggle-gap);
+  border: 0;
+  border-radius: var(--sidebar-section-toggle-radius);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--yeaft-composer-model-font-size);
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.yeaft-composer-model {
+  max-width: var(--yeaft-composer-model-max-width);
+}
+
+.yeaft-composer-model:hover,
+.yeaft-composer-model:focus-visible,
+.yeaft-composer-effort:hover,
+.yeaft-composer-effort:focus-visible,
+.yeaft-composer-choice.is-open > button {
   background: var(--sidebar-hover);
-  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+.yeaft-composer-model:focus-visible,
+.yeaft-composer-effort:focus-visible {
+  outline: var(--sidebar-focus-ring-width) solid var(--accent-blue);
+  outline-offset: var(--sidebar-focus-ring-offset);
 }
 
 .yeaft-topbar-title-group {
-  flex: 1 1 auto;
+  grid-column: 2;
   min-width: 0;
   overflow: hidden;
   display: flex;
   justify-content: center;
   text-align: center;
+  pointer-events: auto;
 }
 
 .yeaft-topbar-session-title {
@@ -245,11 +315,12 @@
   padding: 20px;
 }
 
-.yeaft-topbar-model-name {
-  font-size: 13px;
+.yeaft-composer-model-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: var(--yeaft-composer-model-font-size);
   font-weight: 500;
-  color: var(--text-primary);
-  max-width: 220px;
+  color: inherit;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -270,40 +341,41 @@
   transform: rotate(180deg);
 }
 
-.yeaft-topbar-model-dropdown {
+.yeaft-composer-model-dropdown,
+.yeaft-composer-effort-dropdown {
   position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  right: auto;
-  min-width: 280px;
-  width: min(320px, calc(100vw - 32px));
-  max-width: min(320px, calc(100vw - 32px));
-  z-index: 1300;
-}
-
-.yeaft-model-selector-body {
+  right: 0;
+  bottom: calc(100% + var(--chat-composer-gap));
+  min-width: min(var(--yeaft-model-menu-width), calc(100vw - var(--chat-composer-padding) * 2));
+  width: min(var(--yeaft-model-menu-width), calc(100vw - var(--chat-composer-padding) * 2));
+  max-width: min(var(--yeaft-model-menu-width), calc(100vw - var(--chat-composer-padding) * 2));
+  max-height: var(--yeaft-model-menu-max-height);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  overflow: hidden;
+  z-index: var(--yeaft-model-menu-layer);
+}
+
+.yeaft-composer-effort-dropdown {
+  min-width: min(var(--yeaft-effort-menu-width), calc(100vw - var(--chat-composer-padding) * 2));
+  width: min(var(--yeaft-effort-menu-width), calc(100vw - var(--chat-composer-padding) * 2));
+}
+
+.yeaft-composer-model-dropdown .yeaft-model-list {
+  max-height: 320px;
+}
+
+.yeaft-composer-effort-option {
+  align-items: center;
+  cursor: pointer;
 }
 
 .yeaft-model-list {
+  flex: 1 1 auto;
   min-width: 0;
+  min-height: 0;
   max-height: 320px;
   overflow-y: auto;
-}
-
-.yeaft-model-fixed-controls {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.yeaft-model-dropdown-separator {
-  height: 1px;
-  background: var(--border-light);
-  margin: 4px 0;
 }
 
 .yeaft-model-config-option {
@@ -362,10 +434,6 @@
   transition: background 0.12s;
 }
 
-.yeaft-model-option-with-effort {
-  align-items: center;
-}
-
 .yeaft-model-option:hover {
   background: var(--sidebar-hover);
 }
@@ -374,10 +442,6 @@
   color: var(--text-primary);
   font-weight: 500;
   background: var(--session-active);
-}
-
-.yeaft-model-option.current:not(.active) {
-  color: var(--text-primary);
 }
 
 .yeaft-model-check {
@@ -434,65 +498,16 @@
   opacity: 0.75;
 }
 
-.yeaft-model-effort-list {
-  flex-shrink: 0;
-  align-self: center;
-  display: inline-flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 4px;
-}
-
-.yeaft-model-effort-chip {
-  border: 1px solid var(--border-color);
-  border-radius: 999px;
-  padding: 3px 8px;
-  font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.2;
-  color: var(--text-secondary);
-  background: var(--bg-input-wrapper);
-  cursor: pointer;
-}
-
-.yeaft-model-effort-chip:hover,
-.yeaft-model-effort-chip.active {
-  border-color: var(--accent-blue);
-  color: var(--text-primary);
-  background: var(--session-active);
-}
-
-@media (max-width: 640px) {
-  .yeaft-topbar-model {
-    position: static;
+@media (max-width: 768px) {
+  .yeaft-composer-model {
+    max-width: var(--yeaft-composer-model-mobile-max-width);
   }
 
-  .yeaft-topbar-model-dropdown {
+  .yeaft-composer-model-dropdown,
+  .yeaft-composer-effort-dropdown {
     position: fixed;
-    left: 12px;
-    right: 12px;
-    top: calc(52px + env(safe-area-inset-top, 0px));
-    bottom: auto;
-    min-width: 0;
-    width: auto;
-    max-width: none;
-    max-height: min(72dvh, calc(100dvh - 64px));
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  .yeaft-model-selector-body {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .yeaft-model-list {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
+    right: var(--chat-composer-padding);
+    bottom: calc(var(--chat-composer-control-size) + var(--chat-composer-padding) * 2 + env(safe-area-inset-bottom, 0px));
   }
 
   .yeaft-model-option {
@@ -576,6 +591,13 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.yeaft-topbar-right {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
+  z-index: 1;
 }
 
 .yeaft-topbar-right :where(
@@ -1022,6 +1044,39 @@
   opacity: 0.55;
 }
 
+.yeaft-reload-btn.is-loading svg {
+  animation: yeaft-history-refresh-spin 0.8s linear infinite;
+}
+
+@keyframes yeaft-history-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+
+.yeaft-conversation-bootstrap-loading {
+  flex: 1;
+  min-height: 0;
+}
+
+.yeaft-history-load-error {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.yeaft-history-load-error.has-messages {
+  flex: 0 0 auto;
+  min-height: auto;
+  flex-direction: row;
+  padding: 8px 16px;
+}
+
 /* ── Right Detail Panel ── */
 
 .yeaft-detail {
@@ -1207,6 +1262,34 @@
   flex: 1;
   overflow-y: auto;
   padding: 4px 12px 16px;
+}
+
+/* Turn-level debug: context strip identifying the trace currently shown. */
+.yeaft-debug-turn-context {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.yeaft-debug-turn-context-label {
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.yeaft-debug-turn-context-id,
+.yeaft-debug-turn-context-session {
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, monospace);
+  background: var(--bg-input);
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  padding: 1px 6px;
+  color: var(--text-secondary);
 }
 
 .yeaft-debug-empty {
@@ -1792,12 +1875,11 @@
   cursor: not-allowed;
 }
 
-/* ── Yeaft Conversation Width Overrides ── */
-/* Shared .messages and .input-wrapper default to max-width: 60%.
-   In Yeaft, we want wider content — the sidebar already eats horizontal space. */
+/* ── Yeaft Conversation Spacing Overrides ── */
+/* Content width is shared across messages, the composer, and its previews.
+   Yeaft only uses tighter horizontal padding. */
 
 .yeaft-page .messages {
-  max-width: 90%;
   padding: 0 16px;
 }
 
@@ -1806,17 +1888,12 @@
   padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
 }
 
-.yeaft-page .input-wrapper {
-  max-width: 90%;
-}
-
+.yeaft-session-input > .input-wrapper.chat-composer,
 .yeaft-page .input-quote-preview,
-.yeaft-page .attachments-preview {
-  max-width: 90%;
-}
-
-.yeaft-page .turn-footer {
-  opacity: 1;
+.yeaft-page .attachments-preview,
+.yeaft-page .expert-chips-bar {
+  width: 100%;
+  max-width: var(--session-content-width);
 }
 
 /* ── Mobile Sidebar Overlay ── */
@@ -1929,6 +2006,46 @@
     max-width: 38%;
   }
 
+  .yeaft-topbar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .yeaft-topbar-sidebar-toggle {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .yeaft-topbar-context {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    align-content: center;
+  }
+
+  .yeaft-topbar-title-group {
+    grid-column: 1;
+    grid-row: 1;
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  .yeaft-topbar-folder {
+    grid-column: 1;
+    grid-row: 2;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .yeaft-topbar-right {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
   /* Yeaft conversation: narrower padding on mobile */
   .yeaft-page .messages {
     max-width: 100%;
@@ -1940,12 +2057,11 @@
     padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
   }
 
-  .yeaft-page .input-wrapper {
-    max-width: 100%;
-  }
-
+  .yeaft-session-input > .input-wrapper.chat-composer,
   .yeaft-page .input-quote-preview,
-  .yeaft-page .attachments-preview {
+  .yeaft-page .attachments-preview,
+  .yeaft-page .expert-chips-bar {
+    width: 100%;
     max-width: 100%;
   }
 
@@ -1985,10 +2101,6 @@
   }
   /* On mobile, fully hide the icon bar too — sidebar slides off-screen. */
   .yeaft-sidebar.collapsed .sidebar-collapsed-bar {
-    display: none;
-  }
-
-  .yeaft-topbar-model-name {
     display: none;
   }
 
@@ -2578,7 +2690,14 @@
 }
 
 .yeaft-debug-mem-list li {
-  padding: 2px 0;
+  padding: 6px 0;
+}
+
+.yeaft-debug-mem-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .yeaft-debug-mem-list code {
@@ -2591,9 +2710,28 @@
 }
 
 .yeaft-debug-mem-meta {
-  margin-left: 8px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+.yeaft-debug-mem-body {
+  margin: 4px 0 0 0;
+  padding: 8px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--code-bg, var(--bg-input-wrapper));
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.yeaft-debug-mem-tags {
+  display: inline-block;
+  margin-top: 4px;
+  color: var(--text-muted);
 }
 
 /* Error body — render as a code block, not flowing text. Long JSON
@@ -4054,7 +4192,8 @@
     padding: 4px 8px;
   }
 
-  .yeaft-topbar-model,
+  .yeaft-composer-model,
+  .yeaft-topbar-folder,
   .yeaft-topbar-group {
     min-width: 0;
   }

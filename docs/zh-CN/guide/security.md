@@ -1,77 +1,88 @@
 # 安全
 
-Yeaft 有三层独立的凭证模型，要分开理解：
+Yeaft 有三层彼此独立的凭证：
 
-1. **Web 用户认证** —— 真人怎么登录 Web UI
-2. **Agent 认证** —— agent 进程怎么证明自己有权连服务器
-3. **Yeaft 引擎凭证** —— agent 端 Yeaft 引擎怎么调三方 LLM API
+1. **Web 用户认证** —— 真人如何登录 Web UI。
+2. **Agent 认证** —— Agent 如何证明自己可以连接，以及哪个 owner 可以使用它。
+3. **原生 Yeaft provider credential** —— Agent 如何调用第三方 LLM API。
 
-它们不共享密钥，也不互相 fallback。
+它们不共享 secret，也不会互相 fallback。
 
 ## Web 用户认证
 
-1. **用户名 + 密码**（bcrypt 哈希）
-2. **TOTP 双因素认证**（可选，支持 Google/Microsoft Authenticator）
-3. **邮箱验证码**（可选，需配置 SMTP）
+- bcrypt password hash；
+- 可选 TOTP；
+- 配置 SMTP 后可选邮件验证；
+- 后续 REST 与 WebSocket authorization 使用 JWT；
+- 部署启用时可使用配置的 SSO provider。
 
-登录后签发 JWT token，后续 REST + WebSocket 调用都用它。
+Production startup 会拒绝默认 `JWT_SECRET`。如果尚无用户，Server 会告警，operator 必须创建第一个管理员。
 
-## 生产模式要求
+## Agent 认证与所有权
 
-服务器在生产模式（`SKIP_AUTH=false`）下会检查：
-- `JWT_SECRET` 必须修改为非默认值
+- Agent 在 WebSocket message 中认证，secret 不放在 URL。
+- 用户级 Agent secret 将 Agent 绑定给一个 owner，并对该用户优先生效。
+- 全局 `AGENT_SECRET` 是 administrative fallback。
+- Server 在中继 Browser request 或 Agent output 前执行 owner/access check。
 
-如果未配置用户，服务器会启动但输出警告 — 通过 `docker compose exec` 创建首个用户即可。
+Authentication 与 authorization 本身不提供 transport confidentiality；它们证明身份并限制路由。
 
-## Agent 认证
+## WebSocket transport confidentiality
 
-- Agent 通过 WebSocket 消息认证（密钥不在 URL 中传输）
-- **用户级 Agent 密钥**：Agent 绑定到特定用户，仅该用户可见 —— 在 **设置 → 安全** 创建，对该用户的会话优先生效
-- **全局 AGENT_SECRET**：环境变量方式，仅 admin 可见
-- 每个连接生成独立会话密钥用于加密（TweetNaCl XSalsa20-Poly1305）
+当前 Web 和 Agent peer 会明确协商 **plaintext JSON WebSocket payload**：
 
-## Yeaft 引擎凭证
+- Web client 发送 `client_hello { plaintextOk: true }`；
+- 当前 Agent 声明 `plaintext-ok` capability；
+- Server 随后对这个 peer 关闭 per-frame TweetNaCl payload encryption。
 
-Agent 跑 Yeaft Code Agent 时会直接调你在 `~/.yeaft/config.json` 里列出的 LLM provider。每个 provider 条目 **二选一** 用一种凭证模式：
+因此 production deployment 必须在 Server 或可信 reverse proxy 终止 **HTTPS/WSS**。Plain `ws://` 只适用于 loopback 或已经受保护的可信 transport。
+
+TweetNaCl XSalsa20-Poly1305 payload encryption 只作为 **legacy-peer compatibility fallback** 保留：旧 peer 未协商 plaintext 时才使用。它不是当前 Web + Server + Agent 组合的默认保密层。不要把当前 relay 描述为端到端加密：WSS endpoint 之后，Server 路由普通 plaintext JSON，并能读取 message body。
+
+| 路径 | 当前 confidentiality boundary |
+| --- | --- |
+| Browser ↔ Server | Production 使用 HTTPS/WSS TLS；application payload 在该 transport 内是 plaintext JSON |
+| Agent ↔ Server | Production 使用 WSS TLS；application payload 在该 transport 内是 plaintext JSON |
+| Legacy peer fallback | Peer 未声明 plaintext capability 时使用 TweetNaCl per-frame payload encryption |
+| Agent ↔ LLM provider | Provider HTTPS/TLS |
+
+## 原生 Yeaft provider credential
+
+原生 Yeaft 从 Agent 直接调用配置的 LLM provider。Config path 属于 Agent instance：
+
+- default service instance：`~/.yeaft/config.json`；
+- named instance `<name>`：默认 `~/.yeaft/instances/<name>/config.json`，除非通过 `YEAFT_DIR` / `--yeaft-dir` override。
+
+Provider entry 使用以下两种 credential mode 之一：
 
 | 模式 | 字段 | 行为 |
 | --- | --- | --- |
-| **静态 API key** | `apiKey: "sk-..."` | 每次请求直接拿去用 |
-| **动态凭证** | `credentialProvider: "github-copilot"` | 请求时由引擎向 credential provider 现取短期 token。当前支持 `github-copilot`（用你已登录的 GitHub OAuth，换出 Copilot API token） |
+| Static API key | `apiKey` | 保存在 instance config，重复用于 request |
+| Dynamic credential | `credentialProvider: "github-copilot"` | 从本机 GitHub credential flow 获取短期 Copilot API credential |
 
-**安全后果：**
+安全后果：
 
-- `apiKey` 是明文写在 `~/.yeaft/config.json` 里的 —— `chmod 600` 保护，别 commit
-- `credentialProvider` 在硬盘上不留长效 secret；token 只在内存里，按需刷新
-- Yeaft 凭证 **服务器看不见** —— 只有 agent 用。服务器从不代理 LLM 调用
-- **双因素效果**：用 Yeaft 跑 Copilot 时既需要 agent 密钥（服务端门禁）也需要 GitHub OAuth token（provider 端门禁）
-
-## 加密
-
-| 层 | 算法 | 密钥来源 |
-| --- | --- | --- |
-| Web ↔ Server WebSocket | TweetNaCl XSalsa20-Poly1305 | 每连接独立 session key（连接时 Diffie-Hellman 协商） |
-| Agent ↔ Server WebSocket | TweetNaCl XSalsa20-Poly1305 | 每连接独立 session key |
-| LLM API 流量 | TLS（标准 HTTPS） | provider TLS 证书 |
-
-端到端加密指的是 web ↔ agent 路径 *穿过* 服务器 —— 服务器只做路由转发，看不到消息明文。
+- 静态 `apiKey` 以明文保存在 Agent 磁盘；限制文件权限，绝不能 commit config；
+- dynamic provider token 留在进程内并按需 refresh；
+- Server 不代理原生 LLM request，也不拥有 provider credential；
+- raw provider trace、prompt、tool input/output、attachment、memory 和 project file 都是敏感 Agent 数据。
 
 ## 角色与权限
 
-所有注册用户默认为 **Pro** 角色。通过 CLI 创建的第一个用户为 **Admin**。
+所有注册用户当前默认为 Pro；通过 CLI 创建的第一个用户是 Admin。
 
 | 功能 | `pro` | `admin` |
-|---|:---:|:---:|
-| 聊天 | ✓ | ✓ |
-| 自有 Agent（用户级密钥） | ✓ | ✓ |
-| 全局 Agent（AGENT_SECRET） | - | ✓ |
-| 工作台（终端、Git、文件） | ✓ | ✓ |
-| 端口代理 | ✓ | ✓ |
-| 邀请码管理 | - | ✓ |
-| 管理员仪表板 | - | ✓ |
+| --- | :---: | :---: |
+| Conversation 与自有 Agent | 是 | 是 |
+| 全局 secret Agent | - | 是 |
+| Workbench 与 port proxy | 是 | 是 |
+| Invitation administration | - | 是 |
+| Admin dashboard | - | 是 |
 
-## 威胁模型 —— Yeaft 不防什么
+## Threat model：Yeaft 不防什么
 
-- **Agent 机器被攻陷**：拿到 root 的攻击者可以读 `~/.yeaft/config.json`、拦截 Yeaft 凭证、抓走 `~/.yeaft/memory/**` 记忆文件、tail 在跑的 CLI 进程。**只在可信机器上跑 agent。**
-- **恶意服务器运营者**：加密保护路由穿透中的消息正文，但服务器仍能看到元数据（谁连了哪个 agent、时序、消息大小）。怀有恶意的服务器还能给客户端发改过的 web JS。
-- **浏览器端 XSS**：Web 客户端把 agent 输出渲染成 HTML/Markdown。渲染器会做 sanitize，但如果你连了一个不可信的 agent，那个 agent 能构造消息去试探 sanitizer 漏洞。**别连不可信的 agent。**
+- **Agent 机器被攻陷：** 有足够本机权限的攻击者可以读取 instance config、project file、memory、trace 和 process data。
+- **恶意或被攻陷的 Server：** 当前 Server 可以在 TLS termination 后看到中继的 plaintext message body，也能提供被修改的 Web JavaScript。不要把它当成看不到正文的 encrypted relay。
+- **缺少 TLS：** 公网 `ws://` 上的 authentication 不保护 message confidentiality，必须使用 WSS。
+- **Browser 侧 compromise/XSS：** 被攻陷的 client 能读取该用户可见的一切内容。
+- **不安全的 Agent tool：** Authentication 不会 sandbox shell、Git、file、provider 或 external side effect；tool/repository policy 仍是安全边界的一部分。

@@ -7,7 +7,10 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/agent/router-per-model-protocol.test.js',
   'test/agent/sub-agent/sub-agent-reliability.test.js',
   'test/agent/terminal-routing.test.js',
+  'test/agent/windows-upgrade-handoff.test.js',
   'test/agent/yeaft/conversation/persist.test.js',
+  'test/agent/yeaft/config-api-debug.test.js',
+  'test/agent/yeaft/deepseek-effort.test.js',
   'test/agent/yeaft/engine.test.js',
   'test/agent/yeaft/llm-adapter-errors.test.js',
   'test/agent/yeaft/llm-auth-headers.test.js',
@@ -20,6 +23,7 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/agent/yeaft/tasks/manager.test.js',
   'test/agent/yeaft/web-bridge-fast-history.test.js',
   'test/agent/yeaft/work-center/core.test.js',
+  'test/agent/yeaft/work-center/dynamic-coordination.test.js',
   'test/agent/yeaft/work-center/mainline-projection.test.js',
   'test/agent/yeaft/work-center/runner-policy.test.js',
   'test/agent/yeaft/work-center/store-migration.test.js',
@@ -45,12 +49,14 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/web/stores/load-more-yeaft-history.test.js',
   'test/web/stores/session-cookie-auth.test.js',
   'test/web/stores/websocket-auth-token-race.test.js',
+  'test/web/stores/yeaft-debug-panel.test.js',
   'test/web/stores/yeaft-history-outline-state.test.js',
   'test/web/virtual-transcript-dom.test.js',
   'test/web/virtual-transcript.test.js',
   'test/web/yeaft-history-reveal-dom.test.js',
   'test/web/yeaft-history-search-ui.test.js',
   'test/web/yeaft-page-setup.test.js',
+  'test/web/turn-debug-eyes.test.js',
 ]);
 
 export function normalizeTestPath(filePath) {

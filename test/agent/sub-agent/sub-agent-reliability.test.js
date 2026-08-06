@@ -75,6 +75,7 @@ import {
   getAgentRegistry,
   tickAgent,
 } from '../../../agent/yeaft/tools/agent.js';
+import { startSubAgent } from '../../../agent/yeaft/sub-agent/runner.js';
 import agentTool from '../../../agent/yeaft/tools/agent.js';
 import sendMessage from '../../../agent/yeaft/tools/send-message.js';
 import waitAgent from '../../../agent/yeaft/tools/wait-agent.js';
@@ -85,6 +86,7 @@ import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import { defineTool } from '../../../agent/yeaft/tools/types.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { TaskManager } from '../../../agent/yeaft/tasks/manager.js';
+import { writeContent } from '../../../agent/yeaft/memory/store.js';
 
 // -------------------------------------------------------------------------
 // Shared scripted adapter + helpers
@@ -313,6 +315,31 @@ describe('wait-agent envelope shape', () => {
     expect(listed.agents.map(a => a.id)).toEqual(['agent-owned-b']);
     const ownWait = JSON.parse(await waitAgent.execute({ agent_id: 'agent-owned-b' }, ctxB));
     expect(ownWait.result).toBe('visible result');
+
+    const rollbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yeaft-runner-startup-'));
+    const partialAgent = {
+      id: 'agent-partial-startup',
+      name: 'partial-startup',
+      mission: 'fail after output log creation',
+      status: STATUS.CREATED,
+    };
+    const partialDeps = mkDeps(new TextAdapter(), { subAgentLogDir: rollbackDir });
+    Object.defineProperty(partialDeps, 'language', {
+      configurable: true,
+      get() { throw new Error('preamble setup failed'); },
+    });
+    expect(() => startSubAgent(partialAgent, partialDeps)).toThrow('preamble setup failed');
+    const partialLogPath = path.join(rollbackDir, 'agent-partial-startup.log');
+    expect(fs.existsSync(partialLogPath)).toBe(true);
+    expect(fs.readFileSync(partialLogPath, 'utf8')).toContain('sub_agent_spawned');
+    expect(partialAgent).toMatchObject({
+      __driverStarted: false,
+      subEngine: null,
+      subVpPersona: null,
+      outputLog: null,
+      outputFile: null,
+    });
+    fs.rmSync(rollbackDir, { recursive: true, force: true });
   });
 
   it('sessionless scoped tools still isolate different parent VPs', async () => {
@@ -339,6 +366,145 @@ describe('wait-agent envelope shape', () => {
     expect(denied.error).toMatch(/not found/i);
     const listed = JSON.parse(await listAgents.execute({}, ctxB));
     expect(listed.agents.map(a => a.id)).toEqual(['agent-vp-b']);
+
+    // A retained child must use the Project snapshot attached to each queued
+    // continuation, not the Project context captured when it was spawned.
+    _resetAgentRegistry();
+    const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yeaft-project-context-runner-'));
+    const adapter = new TextAdapter('done');
+    const scopeFilters = [];
+    const memoryRoot = path.join(logDir, 'memory');
+    await writeContent(
+      { kind: 'session', id: 'old-sibling' },
+      'Old sibling experience should be visible only on the initial sub-agent turn.',
+      { root: memoryRoot },
+    );
+    await writeContent(
+      { kind: 'session', id: 'new-sibling' },
+      'New sibling experience should replace the old Project context.',
+      { root: memoryRoot },
+    );
+    await writeContent(
+      { kind: 'session', id: 'session-live' },
+      'Sub-agent recall must survive the single AMS render outlet.',
+      { root: memoryRoot },
+    );
+    const memoryIndex = {
+      search({ scopeFilter }) {
+        scopeFilters.push([...scopeFilter]);
+        if (!scopeFilter.includes('sessions/session-live')) return [];
+        const scopes = [
+          'sessions/session-live',
+          ...['sessions/old-sibling', 'sessions/new-sibling']
+            .filter(scope => scopeFilter.includes(scope)),
+        ];
+        return scopes.map((scope, index) => ({
+          id: `canonical-${index}`,
+          scope,
+          kind: 'context',
+          tags: ['canonical-content', 'project'],
+          sourceMessages: [],
+          body: 'Canonical content selector only.',
+          rank: -1 - index,
+          createdAt: '2026-08-01T00:00:00.000Z',
+          updatedAt: '2026-08-01T00:00:00.000Z',
+        }));
+      },
+    };
+    const agent = {
+      id: 'agent-project-context',
+      name: 'project-context',
+      mission: 'initial project policy',
+      status: STATUS.CREATED,
+      messages: [],
+      result: null,
+      lastResult: '',
+      partial_output: '',
+      diagnostics: [],
+      usage: { tokens: 0, turns: 0, startedAt: Date.now() },
+      createdAt: Date.now(),
+      trace: [],
+      liveness: makeLiveness(),
+      outputFile: null,
+      parentVpId: 'vp-test',
+      parentSessionId: 'session-live',
+      parentThreadId: 'main',
+      abortController: new AbortController(),
+    };
+    const ownerContext = {
+      parentEngineDeps: {
+        parentSessionId: 'session-live',
+        parentVpId: 'vp-test',
+        parentThreadId: 'main',
+      },
+    };
+    getAgentRegistry().set(agent.id, agent);
+
+    try {
+      startSubAgent(agent, mkDeps(adapter, {
+        memoryIndex,
+        parentSessionId: 'session-live',
+        parentThreadId: 'main',
+        projectSessionIds: ['old-sibling'],
+        projectInstruction: 'OLD PROJECT INSTRUCTION MUST DISAPPEAR',
+        yeaftDir: logDir,
+        subAgentLogDir: logDir,
+        idleAbandonMs: 10_000,
+      }));
+      await settle(agent);
+      expect(agent.status).toBe(STATUS.IDLE);
+      expect(adapter.streamCalls).toHaveLength(1);
+      expect(adapter.streamCalls[0].system).toContain('OLD PROJECT INSTRUCTION MUST DISAPPEAR');
+      expect(adapter.streamCalls[0].system).toContain('Old sibling experience should be visible');
+      expect(adapter.streamCalls[0].system).toContain('Sub-agent recall must survive the single AMS render outlet.');
+      expect(scopeFilters[0]).toContain('sessions/old-sibling');
+
+      const updated = JSON.parse(await sendMessage.execute({
+        agent_id: agent.id,
+        message: 'updated project policy',
+      }, {
+        parentEngineDeps: {
+          ...ownerContext.parentEngineDeps,
+          projectSessionIds: ['new-sibling'],
+          projectInstruction: 'NEW PROJECT INSTRUCTION',
+        },
+      }));
+      expect(updated.success).toBe(true);
+      await settle(agent);
+      expect(agent.status).toBe(STATUS.IDLE);
+      expect(adapter.streamCalls).toHaveLength(2);
+      expect(adapter.streamCalls[1].system).toContain('NEW PROJECT INSTRUCTION');
+      expect(adapter.streamCalls[1].system).toContain('New sibling experience should replace the old Project context.');
+      expect(adapter.streamCalls[1].system).not.toContain('Old sibling experience should be visible');
+      expect(adapter.streamCalls[1].system).not.toContain('OLD PROJECT INSTRUCTION MUST DISAPPEAR');
+      expect(scopeFilters[1]).toContain('sessions/new-sibling');
+      expect(scopeFilters[1]).not.toContain('sessions/old-sibling');
+
+      const cleared = JSON.parse(await sendMessage.execute({
+        agent_id: agent.id,
+        message: 'cleared project policy',
+      }, {
+        parentEngineDeps: {
+          ...ownerContext.parentEngineDeps,
+          projectSessionIds: [],
+          projectInstruction: '',
+        },
+      }));
+      expect(cleared.success).toBe(true);
+      await settle(agent);
+      expect(agent.status).toBe(STATUS.IDLE);
+      expect(adapter.streamCalls).toHaveLength(3);
+      expect(adapter.streamCalls[2].system).not.toContain('OLD PROJECT INSTRUCTION MUST DISAPPEAR');
+      expect(adapter.streamCalls[2].system).not.toContain('NEW PROJECT INSTRUCTION');
+      expect(adapter.streamCalls[2].system).not.toContain('Old sibling experience should be visible');
+      expect(adapter.streamCalls[2].system).not.toContain('New sibling experience should replace');
+      expect(scopeFilters[2]).not.toContain('sessions/old-sibling');
+      expect(scopeFilters[2]).not.toContain('sessions/new-sibling');
+    } finally {
+      await closeAgent.execute({ agent_id: agent.id }, ownerContext);
+      await new Promise(resolve => setTimeout(resolve, 80));
+      fs.rmSync(logDir, { recursive: true, force: true });
+    }
   });
 
 

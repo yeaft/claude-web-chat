@@ -147,6 +147,11 @@ export const useVpStore = defineStore('vp', {
     vpOrder: [],      // insertion order
     emptyLibrary: false,
     lastSnapshotAt: 0,
+    /** @type {'idle'|'loading'|'ready'|'error'} */
+    snapshotStatus: 'idle',
+    snapshotAgentId: null,
+    snapshotRequestId: null,
+    snapshotError: '',
     /**
      * fix-session-restore-modal-unify: which agent the last snapshot came
      * from. Multi-agent deployments need this so callers (e.g.
@@ -263,18 +268,62 @@ export const useVpStore = defineStore('vp', {
      *   so consumers can detect when their cached roster is from a
      *   *different* agent than the one currently being targeted.
      */
-    applySnapshot(payload, agentId = null) {
+    applySnapshot(payload, agentId = null, requestId = null) {
+      const activeAgentId = this.snapshotAgentId || null;
+      if (activeAgentId && agentId && agentId !== activeAgentId) return false;
+      // New Agents echo requestId. Old Agents omit it; accept that response only
+      // when its envelope still belongs to the active Agent scope.
+      if (requestId && this.snapshotRequestId && requestId !== this.snapshotRequestId) return false;
+      const arr = (payload && Array.isArray(payload.vps)) ? payload.vps : [];
+      this._setActiveSnapshot({
+        vps: arr,
+        emptyLibrary: !!(payload && payload.emptyLibrary),
+        agentId: agentId || activeAgentId || null,
+        requestId: requestId || this.snapshotRequestId || null,
+        receivedAt: Date.now(),
+      });
+      return true;
+    },
+
+    beginSnapshot(agentId, requestId) {
+      // The flat collection is the active Agent view. Clear it on every scope
+      // transition so stale rows can neither render nor become a submit roster.
       this.vps = {};
       this.vpOrder = [];
-      const arr = (payload && Array.isArray(payload.vps)) ? payload.vps : [];
-      for (const vp of arr) this._upsertInternal(vp);
-      this.emptyLibrary = !!(payload && payload.emptyLibrary);
-      this.lastSnapshotAt = Date.now();
+      this.emptyLibrary = false;
+      this.lastVpSnapshotAgentId = null;
+      this.snapshotStatus = 'loading';
+      this.snapshotAgentId = agentId || null;
+      this.snapshotRequestId = requestId || null;
+      this.snapshotError = '';
+    },
+
+    failSnapshot(agentId, requestId, error = '') {
+      if (!this.snapshotRequestId || !requestId || requestId !== this.snapshotRequestId) return false;
+      if (agentId && this.snapshotAgentId && agentId !== this.snapshotAgentId) return false;
+      this.snapshotStatus = 'error';
+      this.snapshotAgentId = agentId || this.snapshotAgentId || null;
+      this.snapshotRequestId = requestId || this.snapshotRequestId || null;
+      this.snapshotError = String(error || 'VP library request failed');
+      return true;
+    },
+
+    _setActiveSnapshot({ vps, emptyLibrary, agentId, requestId, receivedAt }) {
+      this.vps = {};
+      this.vpOrder = [];
+      for (const vp of vps || []) this._upsertInternal(vp);
+      this.emptyLibrary = !!emptyLibrary;
+      this.lastSnapshotAt = receivedAt || Date.now();
       this.lastVpSnapshotAgentId = agentId || null;
+      this.snapshotStatus = 'ready';
+      this.snapshotAgentId = agentId || null;
+      this.snapshotRequestId = requestId || null;
+      this.snapshotError = '';
     },
 
     /** Insert or merge a single VP record (live-diff — 334h). */
-    upsert(vp, reason = null) {
+    upsert(vp, reason = null, agentId = null) {
+      if (agentId && this.snapshotAgentId && agentId !== this.snapshotAgentId) return false;
       this._upsertInternal(vp);
       if (vp && vp.vpId) {
         this.lastChange = {
@@ -284,11 +333,13 @@ export const useVpStore = defineStore('vp', {
           at: Date.now(),
         };
       }
+      return true;
     },
 
     /** Remove a VP by id (live-diff — 334h). */
-    remove(vpId, reason = null) {
-      if (!vpId) return;
+    remove(vpId, reason = null, agentId = null) {
+      if (agentId && this.snapshotAgentId && agentId !== this.snapshotAgentId) return false;
+      if (!vpId) return false;
       delete this.vps[vpId];
       this.vpOrder = this.vpOrder.filter(id => id !== vpId);
       this.lastChange = {
@@ -297,6 +348,7 @@ export const useVpStore = defineStore('vp', {
         reason: reason || 'file.removed',
         at: Date.now(),
       };
+      return true;
     },
 
     _upsertInternal(vp) {

@@ -3,11 +3,11 @@ layout: home
 
 hero:
   name: Yeaft
-  text: Yeaft Web Code Agent
-  tagline: Web 端代码 Agent 平台：Claude Code、GitHub Copilot、Yeaft 原生多 provider Code Agent
+  text: 运行在自有机器上的 Web Code Agent
+  tagline: 一个浏览器统一使用原生多 provider Session、持久 Work Center、Claude Code CLI 与 GitHub Copilot CLI
   image:
-    src: /images/zh-CN/hero.jpg
-    alt: Yeaft
+    src: /images/zh-CN/session.png
+    alt: Light theme 下的 Yeaft 多 VP Session
   actions:
     - theme: brand
       text: 在线体验
@@ -16,36 +16,26 @@ hero:
       text: 快速开始
       link: /zh-CN/guide/getting-started
     - theme: alt
-      text: 在 GitHub 查看
-      link: https://github.com/yeaft/claude-web-chat
+      text: GitHub
+      link: https://github.com/yeaft/yeaft-web-code-agent
 
 features:
-  - icon: 💬
-    title: Chat（Claude Code）
-    details: ChatGPT 风格 1:1 对话，跑 Claude Code CLI 全套工具 — 流式输出、斜杠命令、文件附件、Sub-Agent 监控。
-    link: /zh-CN/guide/user/chat-mode
-  - icon: 🪄
-    title: Copilot 模式
-    details: 用 GitHub Copilot CLI 当后端（ACP 协议）— 同一界面，可挑 Claude / GPT 系任意 model。
-    link: /zh-CN/guide/user/copilot-mode
-  - icon: 👥
-    title: Yeaft Code Agent
-    details: 原生多 provider 代码 Agent — 1..N 个 VP，持久记忆，30+ 工具，provider/model 路由。
-    link: /zh-CN/guide/user/yeaft-group
-  - icon: 🖥️
-    title: 分屏模式
-    details: 最多 3 个面板并排打开 — 跨后端混搭（一个 Claude + 一个 Copilot + 一个原生 Yeaft Session）。
-    link: /zh-CN/guide/user/split-screen
-  - icon: 🧠
-    title: 帮帮团（Expert Panel）
-    details: AI 专家团队侧边面板辅助主对话 — 选团队，获取多视角建议，不打断主线。
-    link: /zh-CN/guide/user/expert-panel
-  - icon: 🛠️
-    title: Workbench 工作台
-    details: 终端 / Git / 文件 / 端口代理一站式 — Agent 机器上的开发环境直接接到浏览器。
+  - title: 原生 Yeaft Session
+    details: 1 个 VP 做专注编码，或同时点名多个 VP 并行实现、审查、调研和明确交接。
+    link: /zh-CN/guide/user/yeaft-session
+  - title: 持久 Work Center
+    details: 将目标保存为 WorkItem，规划经过校验的 Action graph，分配 VP、保留 Run 证据，并在断开或重启后恢复。
+    link: /zh-CN/guide/user/work-center
+  - title: 多 provider LLM routing
+    details: 原生请求通过 Anthropic Messages 或 OpenAI Responses provider 路由，也支持已实现的 GitHub Copilot 动态凭据和 compatible gateway。
+    link: /zh-CN/guide/yeaft-config
+  - title: Scoped persistent memory
+    details: H2-AMS 在明确的 user、VP、Session 与相关 Project-Session scope 中组合 resident summary、recent context 和全文召回。
+    link: /zh-CN/guide/tech/yeaft-memory
+  - title: Claude Code 与 Copilot CLI
+    details: 需要 vendor CLI 行为时继续使用对应 runtime；Browser 只共享导航和可兼容的 event rendering，不掩盖行为差异。
+    link: /zh-CN/guide/user/choose-backend
+  - title: 本地开发工作区
+    details: 在已连接 Agent 上使用 terminal、Git、files、port proxy、33 个原生工具、Skills、MCP、后台任务和 sub-agent。
     link: /zh-CN/guide/user/workbench
-  - icon: 🔒
-    title: 安全
-    details: TweetNaCl 端到端加密，多层认证（密码 + TOTP + 邮箱），用户级 Agent 密钥 + Yeaft credential 双因素。
-    link: /zh-CN/guide/security
 ---

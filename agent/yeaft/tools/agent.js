@@ -341,6 +341,10 @@ use it as the default workflow or call it repeatedly in a loop.`,
   },
   isConcurrencySafe: () => false,
   isReadOnly: () => false,
+  // The child driver is fire-and-forget and inherits writable workspace
+  // tools. A parent query therefore cannot safely reuse filesystem snapshots
+  // after a SpawnAgent call returns.
+  mayMutateWorkspaceAfterReturn: () => true,
   async execute(input, ctx) {
     // NB: every envelope below puts `next_steps` (or `error_next_steps`) at
     // the FIRST position because `agent/yeaft/tools/registry.js` caps tool
@@ -440,6 +444,14 @@ use it as the default workflow or call it repeatedly in a loop.`,
         }
         startSubAgent(agent, deps);
       } catch (err) {
+        if (agent.taskId && ctx?.taskManager?.completeTask) {
+          try {
+            ctx.taskManager.completeTask(callerScope.sessionId || ctx?.sessionId || 'default', agent.taskId, {
+              status: 'failed',
+              error: err && err.message ? err.message : String(err),
+            });
+          } catch { /* task terminal delivery is best-effort */ }
+        }
         agent.status = STATUS.FAILED;
         agent.error = err && err.message ? err.message : String(err);
         agent.diagnostics.push({ type: 'spawn_error', error: agent.error, at: Date.now() });

@@ -1,15 +1,13 @@
 /**
  * memory/ams.js — DESIGN-H2-AMS §5. Active Memory Set.
  *
- * Per-group session state. Three layers:
+ * Per-Session prompt state. The data structure retains three compatible
+ * layers, but normal query flow now rebuilds only `resident` from ranked,
+ * canonical `content.md` files. `recent` and `onDemand` segment membership is
+ * cleared before rendering because `memory.md` is evidence, not prompt prose.
  *
- *   resident   summaries of all relevant scopes — always-on, high precision
- *   recent     LRU of segments touched in last N turns — warm cache
- *   onDemand   segments the pre-flow FTS pulled in this turn — hot recall
- *
- * AMS is in-memory; it's rebuilt at session start. The disk source of
- * truth is `<scope>/memory.md` + `<scope>/summary.md`. AMS itself
- * doesn't write to disk — that's Dream's job.
+ * AMS is in-memory and does not write to disk; Dream owns canonical content,
+ * catalog summaries, and evidence persistence.
  *
  * Privacy: `vp/<other>` scopes are ALWAYS filtered out
  * for any worker that isn't `<other>`. The owning code passes its own
@@ -29,14 +27,14 @@ const RECENT_DEFAULT_CAPACITY = 64;
 
 /**
  * @typedef {object} AmsLayers
- * @property {Map<string, string>}                resident
+ * @property {Map<string, { summary: string, category?: string }>} resident
  * @property {Array<{ id: string, seg: import('./segment.js').Segment, ts: number }>} recent
  * @property {Map<string, import('./segment.js').Segment>} onDemand
  */
 
 /**
  * @typedef {object} AmsSnapshot
- * @property {Array<{ scope: string, summary: string }>} resident
+ * @property {Array<{ scope: string, summary: string, category?: string }>} resident
  * @property {import('./segment.js').Segment[]} recent
  * @property {import('./segment.js').Segment[]} onDemand
  * @property {{ resident: number, recent: number, onDemand: number, total: number }} usage
@@ -55,8 +53,8 @@ export class ActiveMemorySet {
     this.ownVpId = opts.ownVpId || null;
     this.budget = opts.budget;
     this.recentCapacity = opts.recentCapacity || RECENT_DEFAULT_CAPACITY;
-    /** @type {Map<string, string>} */
-    this._resident = new Map();          // scope → summaryText
+    /** @type {Map<string, { summary: string, category?: string }>} */
+    this._resident = new Map();          // scope → prompt-facing summary metadata
     /** @type {Map<string, { seg: import('./segment.js').Segment, ts: number }>} */
     this._recent = new Map();            // segId → entry (insertion-order is LRU order)
     /** @type {Map<string, import('./segment.js').Segment>} */
@@ -69,7 +67,7 @@ export class ActiveMemorySet {
    * Replace the resident layer with a fresh set of scope→summary
    * pairs. Foreign VP scopes are silently dropped.
    *
-   * @param {Array<{ scope: string, summary: string }>} entries
+   * @param {Array<{ scope: string, summary: string, category?: string }>} entries
    */
   setResident(entries) {
     this._resident.clear();
@@ -77,7 +75,10 @@ export class ActiveMemorySet {
       if (this._isForeignVp(e.scope)) continue;
       const summary = cleanMemoryPromptText(e.summary);
       if (!summary) continue;
-      this._resident.set(e.scope, summary);
+      this._resident.set(e.scope, {
+        summary,
+        ...(typeof e.category === 'string' && e.category ? { category: e.category } : {}),
+      });
     }
   }
 
@@ -142,6 +143,16 @@ export class ActiveMemorySet {
     for (const id of ids) this._onDemand.delete(id);
   }
 
+  /**
+   * Clear persisted segment membership before prompt assembly. Segment ids are
+   * retained on disk for migration/debug compatibility, but canonical content
+   * is now the only prompt-facing representation.
+   */
+  clearSegmentLayers() {
+    this._recent.clear();
+    this._onDemand.clear();
+  }
+
   // ────────────────────────── snapshot ──────────────────────────
 
   /**
@@ -157,10 +168,17 @@ export class ActiveMemorySet {
     const seenPromptText = new Set();
 
     // Resident: pack scopes by priority order (caller provides via insert
-    // order — current group's own vp first, then user, etc.).
+    // order — current Session's own VP first, then user, etc.).
     const { picked: resPicked, cost: resCost } = pickMemoryItems({
-      items: [...this._resident.entries()].map(([scope, summary]) => ({
-        scope, summary: filterMemoryPromptTextForPrompt(summary, userMsg),
+      items: [...this._resident.entries()].map(([scope, entry]) => ({
+        scope,
+        // Related-Session summaries are explicitly historical context. Keep the
+        // bounded prose intact and label it as experience instead of dropping
+        // the whole paragraph because it mentions an old PR/tag/task state.
+        summary: entry.category === 'experience'
+          ? cleanMemoryPromptText(entry.summary)
+          : filterMemoryPromptTextForPrompt(entry.summary, userMsg),
+        ...(entry.category ? { category: entry.category } : {}),
       })),
       budget: this.budget.resident,
       seen: seenPromptText,

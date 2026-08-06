@@ -61,6 +61,7 @@ select option:checked {
   --bg-main: #fafaf8;
   --bg-sidebar: #f3f3f0;
   --session-sidebar-width: 260px;
+  --session-content-width: 90%;
   --bg-workbench: #f6f5f3;
   --bg-user-msg: #eeeee9;
   --bg-user-msg-subtle: #f4f3ef;
@@ -98,6 +99,30 @@ select option:checked {
   --session-active: #e2e0db;
   --modal-overlay-bg: rgba(28, 28, 28, 0.62);
   --modal-shadow: 0 18px 72px rgba(28, 28, 28, 0.28);
+  --image-preview-control-size: 44px;
+  --image-preview-control-offset: 16px;
+  --image-preview-control-radius: 10px;
+  --image-preview-close-font-size: 24px;
+  --image-preview-navigation-icon-size: 22px;
+  --image-preview-position-min-height: 30px;
+  --image-preview-position-padding: 6px 10px;
+  --image-preview-position-font-size: 12px;
+  --image-preview-focus-ring-width: 2px;
+  --image-preview-focus-ring-offset: 2px;
+  --image-preview-mobile-gutter: 16px;
+  --image-preview-mobile-reserved-height: 112px;
+  --sidebar-section-heading-padding: 0 6px 0 4px;
+  --sidebar-section-toggle-gap: 5px;
+  --sidebar-section-toggle-height: 34px;
+  --sidebar-section-toggle-padding: 0 6px;
+  --sidebar-section-toggle-radius: 8px;
+  --sidebar-section-chevron-size: 14px;
+  --sidebar-project-icon-width: 15px;
+  --sidebar-project-icon-height: 18px;
+  --sidebar-project-count-font-size: 10px;
+  --sidebar-drag-indicator-width: 2px;
+  --sidebar-focus-ring-width: 2px;
+  --sidebar-focus-ring-offset: -2px;
   --inline-code-bg: rgba(0, 0, 0, 0.05);
   /* Fallback colors (8 slots) */
 
@@ -197,10 +222,30 @@ select option:checked {
   --terminal-bg-bright-magenta: #e1d0eb;
   --terminal-bg-bright-cyan: #cfe4e8;
   --terminal-bg-bright-white: #fafaf8;
-  /* Work Center conversation geometry */
-  --work-center-conversation-column-width: 1200px;
-  --work-center-conversation-gutter: clamp(20px, 3vw, 40px);
-  --work-center-conversation-gutter-compact: 16px;
+  /* Work Center follows the same content geometry as Session. */
+  --work-center-conversation-column-width: var(--session-content-width);
+  --work-center-conversation-gutter: 16px;
+  --work-center-conversation-gutter-compact: 10px;
+  --work-center-actions-pane-width: 400px;
+  /* Chat composer geometry */
+  --chat-composer-gap: 8px;
+  --chat-composer-control-gap: 8px;
+  --chat-composer-padding: 12px;
+  --chat-composer-radius: 18px;
+  --chat-composer-focus-ring-width: 2px;
+  --chat-composer-textarea-min-height: 4.5em;
+  --chat-composer-textarea-mobile-height: 3em;
+  --chat-composer-control-size: 32px;
+  --yeaft-composer-model-max-width: 260px;
+  --yeaft-composer-model-mobile-max-width: 46vw;
+  --yeaft-composer-model-font-size: 12px;
+  --yeaft-composer-model-border-width: 1px;
+  --yeaft-model-menu-width: 280px;
+  --yeaft-effort-menu-width: 180px;
+  --yeaft-model-menu-max-height: 72dvh;
+  --yeaft-model-menu-layer: 1300;
+  --yeaft-header-folder-max-width: 280px;
+  --yeaft-header-folder-font-size: 12px;
   /* Fonts */
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
@@ -247,6 +292,30 @@ select option:checked {
   --session-active: #302e2c;
   --modal-overlay-bg: rgba(8, 8, 8, 0.72);
   --modal-shadow: 0 18px 72px rgba(0, 0, 0, 0.48);
+  --image-preview-control-size: 44px;
+  --image-preview-control-offset: 16px;
+  --image-preview-control-radius: 10px;
+  --image-preview-close-font-size: 24px;
+  --image-preview-navigation-icon-size: 22px;
+  --image-preview-position-min-height: 30px;
+  --image-preview-position-padding: 6px 10px;
+  --image-preview-position-font-size: 12px;
+  --image-preview-focus-ring-width: 2px;
+  --image-preview-focus-ring-offset: 2px;
+  --image-preview-mobile-gutter: 16px;
+  --image-preview-mobile-reserved-height: 112px;
+  --sidebar-section-heading-padding: 0 6px 0 4px;
+  --sidebar-section-toggle-gap: 5px;
+  --sidebar-section-toggle-height: 34px;
+  --sidebar-section-toggle-padding: 0 6px;
+  --sidebar-section-toggle-radius: 8px;
+  --sidebar-section-chevron-size: 14px;
+  --sidebar-project-icon-width: 15px;
+  --sidebar-project-icon-height: 18px;
+  --sidebar-project-count-font-size: 10px;
+  --sidebar-drag-indicator-width: 2px;
+  --sidebar-focus-ring-width: 2px;
+  --sidebar-focus-ring-offset: -2px;
   --inline-code-bg: rgba(255, 255, 255, 0.07);
   /* Diff colors - warm muted style */
   --diff-add-bg: rgba(120, 170, 120, 0.10);
@@ -336,6 +405,25 @@ select option:checked {
   --status-online: #7ab87e;
   --status-busy:   #cda284;
   --status-error:  #d09090;
+  /* Chat composer geometry */
+  --chat-composer-gap: 8px;
+  --chat-composer-control-gap: 8px;
+  --chat-composer-padding: 12px;
+  --chat-composer-radius: 18px;
+  --chat-composer-focus-ring-width: 2px;
+  --chat-composer-textarea-min-height: 4.5em;
+  --chat-composer-textarea-mobile-height: 3em;
+  --chat-composer-control-size: 32px;
+  --yeaft-composer-model-max-width: 260px;
+  --yeaft-composer-model-mobile-max-width: 46vw;
+  --yeaft-composer-model-font-size: 12px;
+  --yeaft-composer-model-border-width: 1px;
+  --yeaft-model-menu-width: 280px;
+  --yeaft-effort-menu-width: 180px;
+  --yeaft-model-menu-max-height: 72dvh;
+  --yeaft-model-menu-layer: 1300;
+  --yeaft-header-folder-max-width: 280px;
+  --yeaft-header-folder-font-size: 12px;
 }
 
 .terminal-output {

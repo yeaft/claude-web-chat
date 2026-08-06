@@ -1,4 +1,4 @@
-import { sessionDb, messageDb } from '../database.js';
+import { sessionDb, messageDb, sessionUiMetadataDb } from '../database.js';
 import {
   broadcastAgentList, notifyConversationUpdate, forwardToClients
 } from '../ws-utils.js';
@@ -313,16 +313,36 @@ export async function handleAgentConversation(agentId, agent, msg) {
       }
       break;
 
-    case 'conversation_deleted':
+    case 'conversation_deleted': {
+      // The event came from an authenticated Agent, but the conversation id
+      // alone is not an ownership proof: a stale Agent can still hold an id
+      // after the Session was moved. Always preserve the established delete
+      // lifecycle (deactivate it), but only clear sidebar metadata when the
+      // exact persisted owner-scoped Agent/user route matches.
+      const persistedSession = sessionDb.get(msg.conversationId);
+      const metadataOwnerId = persistedSession?.user_id || null;
+      const canClearMetadata = !!persistedSession
+        && persistedSession.agent_id === agentId
+        && !!agent.ownerId
+        && metadataOwnerId === agent.ownerId;
+
       agent.conversations.delete(msg.conversationId);
       try {
         sessionDb.setActive(msg.conversationId, false);
+        if (canClearMetadata) {
+          sessionUiMetadataDb.deleteForRoute(metadataOwnerId, {
+            runtimeProvider: persistedSession.provider || 'claude-code',
+            agentId,
+            sessionId: msg.conversationId,
+          });
+        }
       } catch (e) {
-        console.error('Failed to update session in database:', e.message);
+        console.error('Failed to update deleted conversation metadata:', e.message);
       }
       await notifyConversationUpdate(agentId, msg);
       await broadcastAgentList();
       break;
+    }
 
     case 'history_sessions_list':
     case 'folders_list':

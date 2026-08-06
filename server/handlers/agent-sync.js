@@ -359,19 +359,17 @@ export async function handleAgentSync(agentId, agent, msg) {
     // Agent-level plugin selection. The Agent owns config.json; the server
     // only stamps ownership and relays request-scoped replies to the UI.
     case 'yeaft_plugins':
-    case 'yeaft_plugins_updated': {
+    case 'yeaft_plugins_updated':
+    // Local telemetry settings relay. Only bounded config is forwarded;
+    // trace payloads stay on the Agent.
+    case 'telemetry_settings':
+    case 'telemetry_settings_updated': {
       for (const [, client] of webClients) {
         if (client.authenticated && (CONFIG.skipAuth ||
           (agent.ownerId && client.userId === agent.ownerId) ||
           (!agent.ownerId && client.role === 'admin')
         )) {
-          await sendToWebClient(client, {
-            type: msg.type,
-            agentId,
-            requestId: msg.requestId || null,
-            plugins: msg.plugins || {},
-            error: msg.error || null,
-          });
+          await sendToWebClient(client, { ...msg, agentId });
         }
       }
       break;

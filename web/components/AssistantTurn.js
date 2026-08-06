@@ -54,11 +54,15 @@ export default {
       default: ''
     },
     sessionActions: { type: Boolean, default: false },
-    quoteAuthor: { type: String, default: '' }
+    quoteAuthor: { type: String, default: '' },
+    // VpTurnBlock opts into the turn-scoped debug action. Keeping this
+    // opt-in preserves the legacy Chat footer unchanged.
+    showDebugAction: { type: Boolean, default: false },
+    debugActionTitle: { type: String, default: '' }
   },
-  emits: ['update-actions-expanded', 'update-tool-expanded', 'toggle-response-collapse', 'quote'],
+  emits: ['update-actions-expanded', 'update-tool-expanded', 'toggle-response-collapse', 'quote', 'open-debug'],
   template: `
-    <div class="assistant-turn" ref="turnRef" :class="{ streaming: turn.isStreaming, 'has-vp-speaker': !!turn.speakerVpId }">
+    <div class="assistant-turn" ref="turnRef" :class="{ streaming: turn.isStreaming, 'has-vp-speaker': !!turn.speakerVpId, 'has-turn-debug-action': showDebugAction }">
       <!-- 0. task-334-ui-b: VP speaker header — only when a speakerVpId is
            bound AND the upstream consecutive-collapse decided this turn
            should show the attribution. Legacy 1:1 chat turns leave
@@ -193,40 +197,46 @@ export default {
       </div>
 
       <!-- 6. Response footer actions (visible on hover) -->
-      <div class="turn-footer" v-if="(turn.textContent || responseCollapsible || (sessionActions && (turn.todoMsg || turn.toolMsgs?.length || turn.toolSummaryCount))) && !turn.isStreaming">
+      <div class="turn-footer" v-if="(turn.textContent || responseCollapsible || showDebugAction || (sessionActions && (turn.todoMsg || turn.toolMsgs?.length || turn.toolSummaryCount))) && !turn.isStreaming">
         <span
           v-if="turnTime && !turn.speakerVpId"
           class="turn-time"
           :title="turnTimeFull"
           :aria-label="$t('yeaft.message.timeAria', { time: turnTimeFull })"
         >{{ turnTime }}</span>
-        <button v-if="sessionActions" type="button" class="message-action-btn" @click="$emit('quote', assistantQuote)" :title="$t('message.quote')">
-          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>
-          <span>{{ $t('message.quote') }}</span>
+        <button
+          v-if="showDebugAction"
+          type="button"
+          class="message-action-btn debug-turn-action-btn"
+          @click="$emit('open-debug')"
+          :title="debugActionTitle"
+          :aria-label="debugActionTitle"
+        >
+          <svg class="debug-turn-action-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 2 1.88 1.88"/><path d="M14.12 3.88 16 2"/><path d="M9 7.13v-1a3 3 0 0 1 6 0v1"/><path d="M12 20a6 6 0 0 0 6-6v-3a6 6 0 0 0-12 0v3a6 6 0 0 0 6 6Z"/><path d="M12 20v-9"/><path d="M8 13H2"/><path d="M18 13h4"/><path d="M8 17H2"/><path d="M18 17h4"/></svg>
         </button>
-        <button v-if="turn.textContent" class="screenshot-btn" @click="screenshotContent" :title="screenshotting ? $t('message.screenshotting') : $t('message.screenshot')">
+        <button v-if="sessionActions" type="button" class="message-action-btn" @click="$emit('quote', assistantQuote)" :title="$t('message.quote')" :aria-label="$t('message.quote')">
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>
+        </button>
+        <button v-if="turn.textContent" class="screenshot-btn" @click="screenshotContent" :title="screenshotting ? $t('message.screenshotting') : $t('message.screenshot')" :aria-label="screenshotting ? $t('message.screenshotting') : $t('message.screenshot')">
           <svg v-if="!screenshotting" viewBox="0 0 24 24" width="14" height="14">
             <path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/>
           </svg>
           <svg v-else class="screenshot-spinner" viewBox="0 0 24 24" width="14" height="14">
             <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" fill="none" stroke-dasharray="30 70" />
           </svg>
-          <span class="screenshot-label">{{ screenshotting ? $t('message.screenshotting') : $t('message.screenshot') }}</span>
         </button>
-        <button v-if="turn.textContent" class="export-md-btn" @click="exportMarkdown" :title="$t('message.exportMd')">
+        <button v-if="turn.textContent" class="export-md-btn" @click="exportMarkdown" :title="$t('message.exportMd')" :aria-label="$t('message.exportMd')">
           <svg viewBox="0 0 24 24" width="14" height="14">
             <path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
           </svg>
-          <span class="export-md-label">{{ $t('message.exportMd') }}</span>
         </button>
-        <button v-if="turn.textContent" class="copy-full-btn" @click="copyFullResponse" :title="fullCopied ? $t('message.copied') : $t('message.copyAll')">
+        <button v-if="turn.textContent" class="copy-full-btn" @click="copyFullResponse" :title="fullCopied ? $t('message.copied') : $t('message.copyAll')" :aria-label="fullCopied ? $t('message.copied') : $t('message.copyAll')">
           <svg v-if="!fullCopied" viewBox="0 0 24 24" width="14" height="14">
             <path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
           </svg>
           <svg v-else viewBox="0 0 24 24" width="14" height="14">
             <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
           </svg>
-          <span class="copy-full-label">{{ fullCopied ? $t('message.copied') : $t('message.copyAll') }}</span>
         </button>
         <button
           v-if="responseCollapsible"
@@ -241,7 +251,6 @@ export default {
             <path v-if="responseCollapsed" fill="currentColor" d="M7 10l5 5 5-5z"/>
             <path v-else fill="currentColor" d="M7 14l5-5 5 5z"/>
           </svg>
-          <span class="response-collapse-label">{{ responseToggleLabel }}</span>
         </button>
         <!-- H2.f.6: Fork-from-here button removed (single-conversation model). -->
       </div>
@@ -558,12 +567,28 @@ export default {
       failedImages.add(image?.assetId || image?.id);
     };
 
+    const previewableImages = Vue.computed(() => (
+      (Array.isArray(props.turn?.imageMsgs) ? props.turn.imageMsgs : [])
+        .map(image => ({
+          image,
+          src: imageSrc(image),
+          alt: image?.filename || t('message.imagePreview'),
+        }))
+        .filter(entry => entry.src && !failedImages.has(entry.image?.assetId || entry.image?.id))
+    ));
+
     const previewImage = (image, trigger) => {
-      const src = imageSrc(image);
-      if (!src) return;
-      openImagePreview(src, {
-        alt: image?.filename || t('message.imagePreview'),
+      const images = previewableImages.value;
+      const initialIndex = images.findIndex(entry => entry.image === image);
+      if (initialIndex < 0) return;
+      openImagePreview(images[initialIndex].src, {
+        alt: images[initialIndex].alt,
         closeLabel: t('common.close'),
+        previousLabel: t('message.previousImage'),
+        nextLabel: t('message.nextImage'),
+        positionLabel: (current, total) => t('message.imagePosition', { current, total }),
+        gallery: images.map(({ src, alt }) => ({ src, alt })),
+        initialIndex,
         trigger,
       });
     };

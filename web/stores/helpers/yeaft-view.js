@@ -59,6 +59,7 @@ export function persistPreferredConversationView(view, storage = globalThis.loca
  *   currentView: 'chat' | 'yeaft',
  *   _yeaftTransitionActive: boolean,
  *   _savedActiveConversations: string[] | null,
+ *   _savedChatIdentity: { agentId: string | null, agentInfo: object | null, workDir: string | null } | null,
  *   _pendingChatRestoreConversationId: string | null,
  * }}
  */
@@ -69,6 +70,7 @@ export function createInitialConversationViewState(storage = globalThis.localSto
       currentView,
       _yeaftTransitionActive: false,
       _savedActiveConversations: null,
+      _savedChatIdentity: null,
       _pendingChatRestoreConversationId: null,
     };
   }
@@ -88,31 +90,41 @@ export function createInitialConversationViewState(storage = globalThis.localSto
     currentView,
     _yeaftTransitionActive: true,
     _savedActiveConversations: null,
+    _savedChatIdentity: null,
     _pendingChatRestoreConversationId: pendingChatRestoreConversationId,
   };
 }
 
 /**
- * Apply the entering-Yeaft side of the chat ↔ yeaft transition. Mutates
- * `store.activeConversations` and `store._savedActiveConversations` in
- * place, idempotently — calling this multiple times while already in
- * Yeaft is safe and preserves the original Chat snapshot.
+ * Capture the Chat identity before any Agent switch starts. Calling this again
+ * during the same Yeaft visit preserves the original snapshot.
  *
  * @param {{
  *   activeConversations: string[],
+ *   currentAgent: string | null,
+ *   currentAgentInfo: object | null,
+ *   currentWorkDir: string | null,
  *   _yeaftTransitionActive: boolean,
  *   _savedActiveConversations: string[] | null,
- *   yeaftConversationId: string,
+ *   _savedChatIdentity: { agentId: string | null, agentInfo: object | null, workDir: string | null } | null,
  * }} store — minimal store-shaped object
- * @returns {boolean} true if this call took a fresh snapshot; false if it was
- *   a redundant call during the same runtime Yeaft transition.
+ * @returns {boolean} true if this call took a fresh snapshot
  */
+export function beginYeaftTransition(store) {
+  if (store._yeaftTransitionActive) return false;
+  store._savedActiveConversations = [...store.activeConversations];
+  store._savedChatIdentity = {
+    agentId: store.currentAgent || null,
+    agentInfo: store.currentAgentInfo ? { ...store.currentAgentInfo } : null,
+    workDir: store.currentWorkDir || null,
+  };
+  store._yeaftTransitionActive = true;
+  return true;
+}
+
+/** Swap the visible conversation after the Yeaft Agent target is known. */
 export function applyEnterYeaftTransition(store) {
-  const enteringFresh = !store._yeaftTransitionActive;
-  if (enteringFresh) {
-    store._savedActiveConversations = [...store.activeConversations];
-    store._yeaftTransitionActive = true;
-  }
+  const enteringFresh = beginYeaftTransition(store);
   store.activeConversations = [store.yeaftConversationId];
   return enteringFresh;
 }
@@ -124,13 +136,26 @@ export function applyEnterYeaftTransition(store) {
  *
  * @param {{
  *   activeConversations: string[],
+ *   currentAgent: string | null,
+ *   currentAgentInfo: object | null,
+ *   currentWorkDir: string | null,
  *   _yeaftTransitionActive: boolean,
  *   _savedActiveConversations: string[] | null,
+ *   _savedChatIdentity: { agentId: string | null, agentInfo: object | null, workDir: string | null } | null,
  * }} store
+ * @returns {{ agentId: string | null, agentInfo: object | null, workDir: string | null } | null}
  */
 export function applyLeaveYeaftTransition(store) {
-  if (!store._yeaftTransitionActive) return;
+  if (!store._yeaftTransitionActive) return null;
+  const chatIdentity = store._savedChatIdentity || null;
   store.activeConversations = store._savedActiveConversations || [];
+  if (chatIdentity) {
+    store.currentAgent = chatIdentity.agentId;
+    store.currentAgentInfo = chatIdentity.agentInfo;
+    store.currentWorkDir = chatIdentity.workDir;
+  }
   store._savedActiveConversations = null;
+  store._savedChatIdentity = null;
   store._yeaftTransitionActive = false;
+  return chatIdentity;
 }

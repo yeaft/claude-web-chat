@@ -30,7 +30,7 @@
 
 /* Structured Session quote above the composer. */
 .input-quote-preview {
-  max-width: 60%;
+  max-width: var(--session-content-width);
   margin: 0 auto 10px;
   display: flex;
   gap: 10px;
@@ -104,7 +104,7 @@
 
 /* Attachments Preview */
 .attachments-preview {
-  max-width: 60%;
+  max-width: var(--session-content-width);
   margin: 0 auto 12px;
   display: flex;
   flex-wrap: wrap;
@@ -201,7 +201,7 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  max-width: 60%;
+  max-width: var(--session-content-width);
   margin: 0 auto 4px;
   gap: 8px;
   font-size: 12px;
@@ -213,7 +213,7 @@
 
 .input-wrapper {
   position: relative;
-  max-width: 60%;
+  max-width: var(--session-content-width);
   margin: 0 auto;
   display: flex;
   align-items: center;
@@ -227,6 +227,59 @@
 
 .input-wrapper:focus-within {
   box-shadow: 0 0 0 2px var(--text-secondary);
+}
+
+.input-wrapper.chat-composer {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--chat-composer-gap);
+  padding: var(--chat-composer-padding);
+  border-radius: var(--chat-composer-radius);
+}
+
+.input-wrapper.chat-composer:focus-within {
+  box-shadow: 0 0 0 var(--chat-composer-focus-ring-width) var(--focus-ring);
+}
+
+.chat-composer > .textarea-wrapper {
+  flex: none;
+  width: 100%;
+  min-width: 0;
+}
+
+.chat-composer textarea {
+  display: block;
+  min-height: var(--chat-composer-textarea-min-height);
+}
+
+.input-wrapper.chat-composer textarea.is-scrollable {
+  overflow-y: auto;
+}
+
+.chat-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--chat-composer-gap);
+  min-width: 0;
+}
+
+.chat-composer-actions-start,
+.chat-composer-actions-end {
+  display: flex;
+  align-items: center;
+  gap: var(--chat-composer-control-gap);
+  min-width: 0;
+}
+
+.chat-composer-actions-end {
+  margin-left: auto;
+}
+
+.chat-composer .attach-btn,
+.chat-composer .send-btn {
+  width: var(--chat-composer-control-size);
+  height: var(--chat-composer-control-size);
 }
 
 .input-wrapper textarea,
@@ -412,38 +465,41 @@
   height: 36px;
   border: none;
   border-radius: 50%;
-  background: var(--text-primary);
+  background: var(--accent);
+  color: var(--accent-fg);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: opacity 0.15s;
+  transition: background-color 0.15s, color 0.15s;
   flex-shrink: 0;
 }
 
 .send-btn:hover:not(:disabled) {
-  opacity: 0.8;
+  background: var(--accent-hover);
 }
 
 .send-btn:disabled {
-  opacity: 0.3;
+  background: var(--border-color);
+  color: var(--text-muted);
   cursor: not-allowed;
 }
 
 .send-btn svg {
   width: 18px;
   height: 18px;
-  fill: var(--bg-main);
+  fill: currentColor;
 }
 
 /* Stop Button */
 .send-btn.stop-btn {
-  background: var(--error);
+  background: var(--accent);
+  color: var(--accent-fg);
   position: relative;
 }
 
 .send-btn.stop-btn:hover {
-  opacity: 0.8;
+  background: var(--accent-hover);
 }
 
 .send-btn.stop-btn svg {
@@ -460,7 +516,13 @@
   .input-quote-preview,
   .input-hints,
   .input-wrapper {
-    max-width: 90%;
+    max-width: var(--session-content-width);
+  }
+
+  .input-wrapper.chat-composer textarea {
+    min-height: var(--chat-composer-textarea-mobile-height);
+    max-height: var(--chat-composer-textarea-mobile-height);
+    overflow-y: auto;
   }
 }
 

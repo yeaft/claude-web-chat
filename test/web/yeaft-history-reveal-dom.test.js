@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import * as Vue from 'vue';
 import { mount, flushPromises } from '@vue/test-utils';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const storeFactories = new Map();
 
@@ -49,8 +49,23 @@ beforeAll(async () => {
   ({ default: YeaftPage } = await import('../../web/components/YeaftPage.js'));
 });
 
+function indexedHistoryResult(overrides = {}) {
+  return {
+    entryId: 'entry-m42',
+    indexGeneration: 7,
+    entryStartSeq: 42,
+    messageId: 'm42',
+    seq: 42,
+    sourceMessageIds: ['m42'],
+    ...overrides,
+  };
+}
+
 function primeStore() {
   const store = useChatStore();
+  store._hasHandledAgentList = true;
+  store._hasHandledYeaftSessionHydrate = true;
+  store.yeaftSessionHydrateError = null;
   store.currentView = 'yeaft';
   store.currentAgent = 'agent-a';
   store.currentAgentInfo = {
@@ -65,7 +80,9 @@ function primeStore() {
   store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-a' };
   store.yeaftActiveSessionFilter = 'same';
   store.yeaftSessionAgentById = { same: 'agent-a' };
-  store.yeaftMessageWindowState = { same: { visibleTurns: 5 } };
+  store.yeaftMessageWindowState = { [yeaftHistoryIdentityKey('agent-a', 'same')]: { visibleTurns: 5 } };
+  store.yeaftHistoryCacheState = {};
+  store._yeaftHistoryWindowPendingByKey = {};
   store.messagesMap = {
     'conv-a': Array.from({ length: 12 }, (_, index) => ({
       id: `m${index + 50}`,
@@ -82,7 +99,7 @@ function primeStore() {
       sessionId: 'same',
       loaded: true,
       loading: false,
-      results: [{ messageId: 'm42', seq: 42, role: 'assistant', snippet: 'old answer' }],
+      results: [indexedHistoryResult({ role: 'assistant', snippet: 'old answer' })],
       hasMore: false,
       nextBeforeSeq: null,
       totalCount: 13,
@@ -94,6 +111,7 @@ function primeStore() {
     agentId: null,
     sessionId: null,
     query: '',
+    senderKey: '',
     loading: false,
     results: [],
     hasMore: false,
@@ -116,38 +134,65 @@ function primeStore() {
   return store;
 }
 
-function mountPage() {
+async function openDefaultUserSearch(wrapper, store) {
+  wrapper.vm.toggleHistorySearch();
+  await Vue.nextTick();
+  const request = store._sent.find(message => message.type === 'yeaft_search_history');
+  expect(request).toMatchObject({
+    agentId: 'agent-a',
+    sessionId: 'same',
+    query: '',
+    senderKey: 'user',
+  });
+  expect(store.handleYeaftHistorySearchResult({
+    agentId: 'agent-a',
+    sessionId: 'same',
+    requestId: request.requestId,
+    query: '',
+    senderKey: 'user',
+    results: [indexedHistoryResult({ role: 'user', snippet: 'old question' })],
+    hasMore: false,
+    nextBeforeSeq: null,
+  })).toBe(true);
+  await Vue.nextTick();
+}
+
+function mountPage({ renderComposer = false } = {}) {
+  const stubs = {
+    YeaftSidebar: true,
+    WorkbenchPanel: true,
+    WorkCenterPage: true,
+    YeaftSessionActions: true,
+    VpTimelinePane: true,
+    YeaftDebugPanel: true,
+    SettingsPanel: true,
+    SessionInviteModal: true,
+    SessionCreateModal: true,
+    SessionSettingsModal: true,
+    LlmTab: true,
+    MessageItem: { template: '<span class="message-item-stub"></span>' },
+    UserTurnBlock: { template: '<span class="user-turn-stub"></span>' },
+    AssistantTurn: { template: '<span class="assistant-turn-stub"></span>' },
+    VpTurnBlock: {
+      props: ['turn'],
+      template: '<span class="vp-turn-stub" :data-vp-id="turn.speakerVpId" :data-turn-id="turn.turnId" :data-message-count="turn.messages.length">{{ turn.textContent }}</span>',
+    },
+    VpSpeakerHeader: true,
+    ReflectionCard: true,
+    SubAgentCard: true,
+  };
+  if (!renderComposer) stubs.ChatInput = true;
   return mount(YeaftPage, {
     attachTo: document.body,
     global: {
       mocks: { $t: key => key },
-      stubs: {
-        YeaftSidebar: true,
-        WorkbenchPanel: true,
-        WorkCenterPage: true,
-        YeaftSessionActions: true,
-        ChatInput: true,
-        VpTimelinePane: true,
-        YeaftDebugPanel: true,
-        SettingsPanel: true,
-        SessionInviteModal: true,
-        SessionCreateModal: true,
-        SessionSettingsModal: true,
-        LlmTab: true,
-        MessageItem: { template: '<span class="message-item-stub"></span>' },
-        UserTurnBlock: { template: '<span class="user-turn-stub"></span>' },
-        AssistantTurn: { template: '<span class="assistant-turn-stub"></span>' },
-        VpTurnBlock: { template: '<span class="vp-turn-stub"></span>' },
-        VpSpeakerHeader: true,
-        ReflectionCard: true,
-        SubAgentCard: true,
-      },
+      stubs,
     },
   });
 }
 
 async function settleWindow(store, revealWindow = null) {
-  const request = store._sent.find(message => message.type === 'yeaft_load_history_window');
+  const request = store._sent.filter(message => message.type === 'yeaft_load_history_window').at(-1);
   expect(request).toMatchObject({
     agentId: 'agent-a',
     sessionId: 'same',
@@ -159,8 +204,17 @@ async function settleWindow(store, revealWindow = null) {
     agentId: 'agent-a',
     sessionId: 'same',
     requestId: request.requestId,
+    entryId: request.entryId,
+    indexGeneration: request.indexGeneration,
+    entryStartSeq: request.entryStartSeq,
+    entryEndSeq: request.anchorSeq,
+    sourceMessageIds: [request.anchorMessageId],
+    anchorMessageId: request.anchorMessageId,
+    anchorSeq: request.anchorSeq,
     messages: [{ id: 'm42', role: 'assistant', content: 'old answer', createdAt: 42 }],
   };
+  const pendingWindow = store.pendingYeaftHistoryWindow(response);
+  if (pendingWindow?.pending?.prefetch === true) response.prefetch = true;
   const conversationId = mergeYeaftHistoryWindow(store, response);
   expect(conversationId).toBe('conv-a');
   expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(true);
@@ -175,7 +229,7 @@ async function settleWindow(store, revealWindow = null) {
 }
 
 async function expectRenderedReveal(wrapper, store, scrollToKey) {
-  expect(store.yeaftMessageWindowState.same.visibleTurns).toBeGreaterThan(5);
+  expect(store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')].visibleTurns).toBeGreaterThan(5);
   await flushPromises();
   await Vue.nextTick();
 
@@ -199,6 +253,69 @@ function observeVirtualScroll(wrapper) {
   return scrollToKey;
 }
 
+async function expectSilentTransportPromotion(wrapper, store) {
+  await flushPromises();
+  await Vue.nextTick();
+
+  const before = wrapper.getComponent({ name: 'VirtualTranscript' });
+  const beforeElement = before.element;
+  const beforeRow = before.get('.virtual-transcript-item').element;
+  const existingRows = store.messagesMap['conv-a'];
+  const sessionKey = yeaftHistoryIdentityKey('agent-a', 'same');
+  store.yeaftSessionHistoryState = {
+    [sessionKey]: {
+      loaded: true,
+      loading: true,
+      mode: 'recent',
+      hasMore: true,
+      oldestSeq: 50,
+      latestSeq: 61,
+      count: existingRows.length,
+    },
+  };
+  store.yeaftLoadingMoreHistory = true;
+  expect(wrapper.find('.loading-more').exists()).toBe(false);
+
+  store.messagesMap['conv-b'] = existingRows.slice();
+  store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-b' };
+  store.yeaftConversationId = 'conv-b';
+  store.activeConversations = ['conv-b'];
+  await flushPromises();
+  await Vue.nextTick();
+
+  const after = wrapper.getComponent({ name: 'VirtualTranscript' });
+  expect(after.element).toBe(beforeElement);
+  expect(after.get('.virtual-transcript-item').element).toBe(beforeRow);
+  expect(wrapper.find('.loading-more').exists()).toBe(false);
+  expect(store.messages.map(row => row.content)).toEqual(existingRows.map(row => row.content));
+
+  store.yeaftSessionHistoryState[sessionKey].mode = 'older';
+  await Vue.nextTick();
+  expect(wrapper.find('.loading-more').exists()).toBe(true);
+
+  store.yeaftSessionHistoryState[sessionKey] = {
+    ...store.yeaftSessionHistoryState[sessionKey],
+    loading: false,
+    mode: 'recent',
+  };
+  store.yeaftLoadingMoreHistory = false;
+  store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-a' };
+  store.yeaftConversationId = 'conv-a';
+  store.activeConversations = ['conv-a'];
+  delete store.messagesMap['conv-b'];
+  await flushPromises();
+  await Vue.nextTick();
+}
+
+const consolidatedHistoryScenarios = [];
+function historyScenario(name, run) { consolidatedHistoryScenarios.push({ name, run }); }
+async function runConsolidatedHistoryScenarios() {
+  for (const scenario of consolidatedHistoryScenarios) {
+    try { await scenario.run(); }
+    catch (error) { error.message = `[${scenario.name}] ${error.message}`; throw error; }
+  }
+}
+
 describe('Yeaft history result rendered reveal', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
@@ -220,10 +337,186 @@ describe('Yeaft history result rendered reveal', () => {
     };
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  historyScenario('keeps existing virtual block keys stable when older history is prepended', async () => {
+    const store = primeStore();
+    store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')] = { visibleTurns: 20 };
+    const wrapper = mountPage();
+    await flushPromises();
+    await Vue.nextTick();
+
+    const before = wrapper.findAll('[data-virtual-id]').map(row => row.attributes('data-virtual-id'));
+    store.messagesMap['conv-a'].unshift({
+      id: 'm49',
+      messageId: 'm49',
+      type: 'user',
+      content: 'older row',
+      sessionId: 'same',
+      timestamp: 49,
+    });
+    await flushPromises();
+    await Vue.nextTick();
+
+    const after = wrapper.findAll('[data-virtual-id]').map(row => row.attributes('data-virtual-id'));
+    expect(after[0]).toBe('block_m49');
+    expect(after.slice(1)).toEqual(before.slice(0, after.length - 1));
+    wrapper.unmount();
+  });
+
+  async function expectInterleavedVpExecutionBlocks({ isHistory }) {
+    const history = isHistory ? { isHistory: true } : {};
+    const store = primeStore();
+    store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')] = { visibleTurns: 20 };
+    store.messagesMap['conv-a'] = [
+      { id: 'u1', type: 'user', content: '@martin @grace inspect', sessionId: 'same', timestamp: 1 },
+      { id: 'grace-plan', type: 'tool-use', toolName: 'StartPlan', sessionId: 'same', speakerVpId: 'grace', turnId: 'turn-grace-1', timestamp: 2, ...history },
+      { id: 'martin-plan', type: 'tool-use', toolName: 'StartPlan', sessionId: 'same', speakerVpId: 'martin', turnId: 'turn-martin-1', timestamp: 3, ...history },
+    ];
+
+    const wrapper = mountPage();
+    const readTurns = () => wrapper.findAll('.vp-turn-stub').map(row => ({
+      vpId: row.attributes('data-vp-id'),
+      turnId: row.attributes('data-turn-id'),
+      messageCount: Number(row.attributes('data-message-count')),
+      text: row.text(),
+    }));
+    await flushPromises();
+    await Vue.nextTick();
+    expect(readTurns()).toHaveLength(2);
+
+    store.messagesMap['conv-a'].push(
+      { id: 'grace-text', type: 'assistant', content: 'Grace result', sessionId: 'same', speakerVpId: 'grace', turnId: 'turn-grace-1', status: 'completed', timestamp: 4, ...history },
+      { id: 'grace-route', type: 'tool-use', toolName: 'RouteForward', toolInput: { to: 'martin', text: 'Continue the review' }, sessionId: 'same', speakerVpId: 'grace', turnId: 'turn-grace-1', timestamp: 5, ...history },
+      { id: 'martin-text', type: 'assistant', content: 'Martin result', sessionId: 'same', speakerVpId: 'martin', turnId: 'turn-martin-1', status: 'completed', timestamp: 6, ...history },
+    );
+    await flushPromises();
+    await Vue.nextTick();
+    expect(readTurns()).toEqual([
+      { vpId: 'grace', turnId: 'turn-grace-1', messageCount: 3, text: 'Grace result' },
+      { vpId: 'martin', turnId: 'turn-martin-1', messageCount: 2, text: 'Martin result' },
+    ]);
+
+    store.messagesMap['conv-a'].push(
+      {
+        id: 'martin-handoff',
+        type: 'assistant',
+        content: 'Martin follow-up',
+        sessionId: 'same',
+        speakerVpId: 'martin',
+        turnId: 'turn-martin-2',
+        status: 'completed',
+        timestamp: 7,
+        ...(isHistory ? { isHistory: true, executionOrigin: 'route_forward' } : {}),
+      },
+    );
+    await flushPromises();
+    await Vue.nextTick();
+    expect(readTurns()).toEqual([
+      { vpId: 'grace', turnId: 'turn-grace-1', messageCount: 3, text: 'Grace result' },
+      { vpId: 'martin', turnId: 'turn-martin-1', messageCount: 2, text: 'Martin result' },
+      { vpId: 'martin', turnId: 'turn-martin-2', messageCount: 1, text: 'Martin follow-up' },
+    ]);
+    wrapper.unmount();
+  }
+
+  historyScenario('keeps interleaved live fan-out frames in one block per VP execution and splits a later handoff', async () => {
+    await expectInterleavedVpExecutionBlocks({ isHistory: false });
+  });
+
+  historyScenario('keeps interleaved history frames in one block per VP execution and splits a later handoff', async () => {
+    await expectInterleavedVpExecutionBlocks({ isHistory: true });
+  });
+
+  it('keeps composer menus click-driven and opens LLM configuration from the menu item', async () => {
+    const store = primeStore();
+    store.yeaftModel = 'provider/model-a';
+    store.yeaftModelEffort = 'medium';
+    store.yeaftAvailableModels = [
+      { id: 'model-a', provider: 'provider', ref: 'provider/model-a', effortOptions: ['low', 'medium', 'high'] },
+      { id: 'model-b', provider: 'provider', ref: 'provider/model-b', effortOptions: ['medium', 'high'] },
+    ];
+    store.switchYeaftModel = vi.fn();
+    store.inputDrafts = {};
+    sessionsStore.sessions = [{
+      id: 'same',
+      agentId: 'agent-a',
+      title: 'Session',
+      roster: ['omni'],
+      config: { model: 'provider/model-a', modelEffort: 'medium' },
+    }];
+
+    const wrapper = mountPage({ renderComposer: true });
+    await flushPromises();
+    await Vue.nextTick();
+
+    const modelChoice = wrapper.get('.yeaft-composer-model-choice');
+    const modelButton = wrapper.get('.yeaft-composer-model');
+    await modelChoice.trigger('mouseenter');
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(false);
+
+    await modelButton.trigger('focusin');
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(false);
+
+    await modelButton.trigger('click');
+    await Vue.nextTick();
+    expect(wrapper.get('.yeaft-composer-model-dropdown').isVisible()).toBe(true);
+
+    const configOption = wrapper.get('.yeaft-model-config-option');
+    await modelButton.trigger('focusout', { relatedTarget: configOption.element });
+    await configOption.trigger('click');
+    await Vue.nextTick();
+    expect(wrapper.get('.yeaft-llm-config-overlay').isVisible()).toBe(true);
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(false);
+    await wrapper.get('.yeaft-llm-config-overlay .modal-close').trigger('click');
+    await Vue.nextTick();
+
+    await modelButton.trigger('click');
+    await Vue.nextTick();
+    expect(wrapper.get('.yeaft-composer-model-dropdown').isVisible()).toBe(true);
+    await modelButton.trigger('focusout', { relatedTarget: document.body });
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(false);
+
+    await modelButton.trigger('click');
+    await Vue.nextTick();
+    expect(wrapper.get('.yeaft-composer-model-dropdown').isVisible()).toBe(true);
+    await modelChoice.trigger('mouseleave');
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(true);
+
+    await modelButton.trigger('click');
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(false);
+
+    await modelButton.trigger('click');
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(true);
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(false);
+
+    const effortButton = wrapper.get('.yeaft-composer-effort');
+    await effortButton.trigger('click');
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-effort-dropdown').exists()).toBe(true);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await Vue.nextTick();
+    expect(wrapper.find('.yeaft-composer-effort-dropdown').exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
   it('clicks an uncached outline row, expands it, and reveals the real virtual DOM row', async () => {
+    await runConsolidatedHistoryScenarios();
     const store = primeStore();
     const revealWindow = vi.spyOn(store, 'revealYeaftHistoryResult');
     const wrapper = mountPage();
+    await expectSilentTransportPromotion(wrapper, store);
     const messageList = wrapper.getComponent({ name: 'MessageList' });
     const scroller = messageList.get('main.chat-container').element;
     let scrollTop = 920;
@@ -286,15 +579,17 @@ describe('Yeaft history result rendered reveal', () => {
     expect(messageList.get('.scroll-to-latest').classes()).toContain('is-hidden');
     store.messagesMap['conv-a'].pop();
 
-    wrapper.vm.toggleHistorySearch();
-    await Vue.nextTick();
+    await openDefaultUserSearch(wrapper, store);
 
     const scrollToKey = observeVirtualScroll(wrapper);
     const option = wrapper.get('[role="option"]');
     expect(wrapper.find('[data-msg-id="m42"]').exists()).toBe(false);
 
     await option.trigger('click');
-    expect(revealWindow).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'm42' }));
+    expect(revealWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'm42' }),
+      expect.objectContaining({ token: expect.any(Number), sessionId: 'same', agentId: 'agent-a' }),
+    );
     await settleWindow(store, revealWindow);
     await expectRenderedReveal(wrapper, store, scrollToKey);
 
@@ -305,26 +600,53 @@ describe('Yeaft history result rendered reveal', () => {
     const store = primeStore();
     const revealWindow = vi.spyOn(store, 'revealYeaftHistoryResult');
     const wrapper = mountPage();
-    wrapper.vm.toggleHistorySearch();
-    await Vue.nextTick();
+    await openDefaultUserSearch(wrapper, store);
 
     const scrollToKey = observeVirtualScroll(wrapper);
     const option = wrapper.get('[role="option"]');
 
     await option.trigger('mouseenter');
     await settleWindow(store);
-    expect(store.yeaftMessageWindowState.same.visibleTurns).toBe(5);
+    // Resident Session history stays visible, while hover-prefetched search
+    // windows remain cache-only until the user explicitly reveals the result.
+    expect(store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')].visibleTurns).toBeGreaterThan(5);
     expect(wrapper.find('[data-msg-id="m42"]').exists()).toBe(false);
     expect(store._sent.filter(message => message.type === 'yeaft_load_history_window')).toHaveLength(1);
 
     const searchInput = wrapper.get('input[type="search"]');
     await searchInput.trigger('keydown', { key: 'Enter' });
-    expect(revealWindow).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'm42' }));
+    expect(revealWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'm42' }),
+      expect.objectContaining({ token: expect.any(Number), sessionId: 'same', agentId: 'agent-a' }),
+    );
+    expect(store._sent.filter(message => message.type === 'yeaft_load_history_window')).toHaveLength(2);
+    await settleWindow(store, revealWindow);
     await flushPromises();
     await Vue.nextTick();
 
-    expect(store._sent.filter(message => message.type === 'yeaft_load_history_window')).toHaveLength(1);
     await expectRenderedReveal(wrapper, store, scrollToKey);
+
+    store.messagesMap['conv-a'] = [
+      { type: 'user', content: 'identical idless sibling', sessionId: 'same' },
+      { type: 'user', content: 'identical idless sibling', sessionId: 'same' },
+      { type: 'system', content: 'idless system', sessionId: 'same' },
+      { type: 'legacy-unknown', content: 'idless unknown', sessionId: 'same' },
+    ];
+    store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')] = { visibleTurns: 20 };
+    await flushPromises();
+    await Vue.nextTick();
+    const idlessBefore = wrapper.findAll('[data-virtual-id]')
+      .map(row => row.attributes('data-virtual-id'));
+    expect(new Set(idlessBefore).size).toBe(idlessBefore.length);
+    store.messagesMap['conv-a'].unshift({
+      type: 'user', content: 'older idless row', sessionId: 'same',
+    });
+    await flushPromises();
+    await Vue.nextTick();
+    const idlessAfter = wrapper.findAll('[data-virtual-id]')
+      .map(row => row.attributes('data-virtual-id'));
+    expect(idlessAfter.slice(1)).toEqual(idlessBefore);
+    expect(idlessAfter.join(' ')).not.toMatch(/(?:u|s|x)_\d+/);
 
     wrapper.unmount();
   });

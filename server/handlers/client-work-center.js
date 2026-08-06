@@ -12,7 +12,7 @@ import {
 
 const REQUEST_TIMEOUT_MS = 60_000;
 const pendingRequests = new Map();
-const WORK_ITEM_ATTACHMENT_OPS = new Set(['create', 'work_item_message', 'action_input', 'guide']);
+const WORK_ITEM_ATTACHMENT_OPS = new Set(['create', 'post_work_item_message', 'work_item_message', 'action_input', 'guide']);
 
 export function workCenterOpAcceptsAttachments(op) {
   return WORK_ITEM_ATTACHMENT_OPS.has(op);
@@ -227,9 +227,10 @@ export async function deliverWorkCenterResponse(agentId, msg) {
   const pending = typeof msg?.requestId === 'string' ? pendingRequests.get(msg.requestId) : null;
   if (!pending || pending.agentId !== agentId) return false;
   pendingRequests.delete(msg.requestId);
-  if (msg.ok === true) {
-    for (const fileId of pending.attachmentFileIds || []) pendingFiles.delete(fileId);
-  }
+  // Keep staged Work Center bytes until the existing upload cleanup expires them.
+  // The Agent may have committed the durable clientMessageId while this response
+  // is lost before the browser receives it; a same-envelope retry must still be
+  // able to resolve the original fileId and reach the Agent receipt preflight.
   const { agentId: _untrustedAgentId, requestId: _opaqueRequestId, _requestUserId, ...payload } = msg;
   let response = payload;
   if (msg.ok === true && msg.op === 'preview_attachment') {

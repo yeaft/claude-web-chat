@@ -64,7 +64,25 @@ import {
 import { persistYeaftAttachments, attachmentsForPersistence, persistedAttachmentPreviewPayload } from './attachments.js';
 import { normalizeSessionMessageQuote, sessionMessageQuotePrompt } from './session-message-quote.js';
 import { ConversationStore, parseSeqFromId, projectVisibleSessionMessages } from './conversation/persist.js';
+import {
+  loadConversationOutlineFromIndex,
+  readConversationIndexWindow,
+  searchConversationIndex,
+} from './conversation/history-index.js';
 import { isHiddenConversationRow, isVisibleConversationRow } from './conversation/internal-control.js';
+import {
+  ProjectStoreError,
+  createProject,
+  deleteProject,
+  loadProjects,
+  moveSessionToProject,
+  removeSessionFromProjects,
+  renameProject,
+  reorderProjects,
+  updateProjectInstruction,
+} from './projects/store.js';
+import { readSummary as readScopeSummary } from './memory/store.js';
+import { estimateTokens } from './dream/segment.js';
 import { imageMetadataForPersistence } from './image-assets.js';
 import { sliceLastNTurns } from './turn-utils.js';
 import { pairSanitize } from './pair-sanitize.js';
@@ -74,10 +92,12 @@ import { classifyThread as defaultClassifyThread, fallbackTitle } from './vp/thr
 import { listMcpServers, upsertMcpServer, removeMcpServer } from './config-api.js';
 import { buildMcpFlattenedTools } from './tools/mcp-tools.js';
 import { getAgentRegistry, agentBelongsToScope } from './tools/agent.js';
-import { isPromptableAgentStatus } from './sub-agent/status.js';
+import { enqueueSubAgentPrompt } from './sub-agent/prompt-queue.js';
+import { isPromptableAgentStatus, isTerminalAgentStatus, STATUS } from './sub-agent/status.js';
+import { consumeNotificationForAgent } from './sub-agent/notifications.js';
 import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
 import { recordAgentSessionCreated, recordAgentTurn } from '../metrics.js';
-import { TASK_RESULT_DELIVERY, taskResultDeliveryFor } from './tasks/store.js';
+import { TASK_RESULT_DELIVERY, isTerminalTaskStatus, taskResultDeliveryFor } from './tasks/store.js';
 
 const LEGACY_SKILL_COMMAND_PREFIX = 'skill:';
 const YEAFT_SKILL_COMMAND_PREFIX = 'yeaft-skills:';
@@ -173,6 +193,11 @@ export async function refreshLiveSessionConfig(options = {}) {
 
   const configRoot = liveConfigRoot();
   const freshConfig = loadConfig({ dir: configRoot });
+  // All bridge producers reference ctx.CONFIG. Keep it synchronized even
+  // when no live Session is loaded and refresh returns early below.
+  if (ctx.CONFIG && typeof ctx.CONFIG === 'object') {
+    ctx.CONFIG.telemetry = freshConfig.telemetry;
+  }
   const previousDefaultModel = options.previousDefaultModel
     || session?.config?.primaryModel
     || session?.config?.model
@@ -222,6 +247,7 @@ export async function refreshLiveSessionConfig(options = {}) {
   for (const key of Object.keys(currentConfig)) delete currentConfig[key];
   Object.assign(currentConfig, nextConfig);
   liveSession.engine?.refreshConfig?.(currentConfig);
+  liveSession.trace?.refreshConfig?.(currentConfig.telemetry || {});
   if (pluginsChanged && session === liveSession) {
     claimRuntimeOwnership(liveSession);
     await scheduleBaseRuntimeLoad();
@@ -499,6 +525,7 @@ function retireCachedVpEngine(key, {
  *   onUnregister: (taskId: string, engine: import('./engine.js').Engine) => void,
  *   onConsumed: (taskId: string, engine: import('./engine.js').Engine) => void,
  *   onUndelivered: (taskId: string, delivery: object, engine: import('./engine.js').Engine) => void,
+ *   onDeferred: (taskId: string, engine: import('./engine.js').Engine) => void,
  * }}
  */
 function buildAsyncTaskCoordinator() {
@@ -529,6 +556,22 @@ function buildAsyncTaskCoordinator() {
         content: delivery?.content,
         taskKind: delivery?.taskKind,
         taskStatus: delivery?.taskStatus,
+      });
+    },
+    onDeferred(taskId, engine) {
+      if (!engine?.ownsPendingAsyncTask?.(taskId)) return;
+      if (!deleteOwnerIfMatch(taskId, engine)) return;
+      const sessionId = engine?.sessionId || null;
+      const task = sessionId && session?.taskManager?.getTask?.(sessionId, taskId);
+      if (!task || !isTerminalTaskStatus(task.status)) return;
+      scheduleTaskResultRescue({
+        taskId,
+        sessionId: task.sessionId || sessionId,
+        vpId: task.ownerVpId || engine?.vpId || null,
+        threadId: task.source?.threadId || task.runtime?.threadId || engine?.currentThreadId || 'main',
+        content: formatTaskResultForVp(task),
+        taskKind: task.kind,
+        taskStatus: task.status,
       });
     },
   };
@@ -573,6 +616,58 @@ const vpCurrentTodos = new Map();
  *                     sessionHandle: object }>}
  */
 const sessionContexts = new Map();
+/** Latest server-authoritative Project identity and same-Agent siblings per Session. */
+const projectContextBySession = new Map();
+
+function normalizeProjectContext(value, sessionId) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.sessionIds)) return null;
+  const currentSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+  return {
+    projectId: typeof value.projectId === 'string' && value.projectId.trim()
+      ? value.projectId.trim()
+      : null,
+    projectName: typeof value.projectName === 'string' && value.projectName.trim()
+      ? value.projectName.trim()
+      : null,
+    projectInstruction: typeof value.projectInstruction === 'string'
+      ? value.projectInstruction.trim()
+      : '',
+    sessionIds: Array.from(new Set(value.sessionIds
+      .filter(id => typeof id === 'string' && id.trim())
+      .map(id => id.trim())
+      .filter(id => id !== currentSessionId))),
+  };
+}
+
+function legacyProjectContext(yeaftDir, sessionId) {
+  const project = loadProjects(yeaftDir).find(row => row.sessionIds.includes(sessionId));
+  if (!project) return null;
+  return normalizeProjectContext({
+    projectId: project.id,
+    projectName: project.name,
+    projectInstruction: project.instruction || '',
+    sessionIds: project.sessionIds,
+  }, sessionId);
+}
+
+function buildProjectSharedBlock(projectContext, summaries = '') {
+  const context = normalizeProjectContext(projectContext, null);
+  const body = typeof summaries === 'string' ? summaries.trim() : '';
+  if (!context?.projectId && !body) return '';
+  const lines = ['[Project Shared Context]'];
+  if (context?.projectId) {
+    const label = context.projectName
+      ? `${context.projectName} (${context.projectId})`
+      : context.projectId;
+    lines.push(`Project: ${label}`);
+    lines.push('Sharing boundary: sibling Sessions in this Project on this Agent only.');
+  } else {
+    lines.push('Sharing boundary: sibling Sessions in the same Project on this Agent only.');
+  }
+  lines.push('Read-only memory summaries preserve each source Session identity.');
+  if (body) lines.push('', body);
+  return lines.join('\n');
+}
 
 function vpKey(sessionId, vpId) {
   return `${sessionId}::${vpId}`;
@@ -963,18 +1058,19 @@ async function waitForRoutePromises(msgId) {
 }
 
 /**
- * Drop the cached coordinator + router for a group AND abort/clear any
- * in-flight VP turns belonging to it. Call this from every CRUD handler
- * that mutates the group's roster, meta, or lifecycle state on disk —
- * the cached coord holds a closed `sessionHandle`, so without invalidation
- * later route_forward / ingest calls would read zombie meta (stale
- * roster, pre-rename announcement, kicked members still routable).
+ * Drop the cached coordinator + router for a Session. Metadata changes must
+ * not abort in-flight work: a rename, announcement sync, or default-VP update
+ * can race any provider request, and the running coordinator already owns a
+ * consistent snapshot for that turn. Future turns rebuild from disk.
+ *
+ * Destructive lifecycle operations opt into runtime teardown.
  *
  * Idempotent — safe to call when no entry exists.
  */
-function invalidateGroupContext(sessionId) {
+function invalidateGroupContext(sessionId, { abortRuntime = false } = {}) {
   if (!sessionId) return;
   sessionContexts.delete(sessionId);
+  if (!abortRuntime) return;
   const prefix = `${sessionId}::`;
   for (const [k, ctrl] of vpAborts) {
     if (!k.startsWith(prefix)) continue;
@@ -994,7 +1090,7 @@ function invalidateGroupContext(sessionId) {
     if (k.startsWith(prefix)) vpThreads.delete(k);
   }
   // Reap per-(group,vp) TodoWrite snapshots for this group so a
-  // deleted/renamed group doesn't pin a stale checklist forever.
+  // deleted/archived group doesn't pin a stale checklist forever.
   for (const k of vpCurrentTodos.keys()) {
     if (k.startsWith(prefix)) vpCurrentTodos.delete(k);
   }
@@ -1052,24 +1148,19 @@ function queryTimeoutMsForSession(sessionId = null) {
 /**
  * Secondary watchdog grace period (ms).
  *
- * After the active query timeout of silence the per-VP `vpAbort` is fired.
+ * After the active provider timeout of silence the per-VP `vpAbort` is fired.
  * Normal turns use {@link QUERY_TIMEOUT_MS}; high-reasoning session turns use
- * {@link HIGH_REASONING_QUERY_TIMEOUT_MS} because large tool-result arcs can
- * legitimately spend longer before the provider emits the first SSE event.
- * That's enough on its own when adapters / tools cooperate with the
- * AbortSignal — the engine throws `AbortError`, runVpTurn's catch emits
- * `result{stopped:true}`, the driver `finally` emits `vp_typing_end`, and
- * the user is unstuck.
+ * {@link HIGH_REASONING_QUERY_TIMEOUT_MS}. Tool execution and declared retry /
+ * async-task waits pause this watchdog because those phases own separate,
+ * explicit deadlines. Treating a long tool as silent provider work races the
+ * tool's own timeout and can abort the whole query before its error result is
+ * returned to the model.
  *
- * If a tool ignores `signal` and never resolves, the engine generator's
- * `await tool.execute(...)` is permanently blocked: the abort fires on a
- * controller it never observes, and runVpTurn never returns. The same
- * applies to an adapter `stream()` that ignores `signal` (e.g. a stuck
- * SSE connection) or to tools that legitimately opt out of the per-tool
- * timeout via `timeoutMs <= 0`. The per-tool timeout in
- * {@link import('./tools/registry.js').DEFAULT_TOOL_TIMEOUT_MS}
- * is the primary cure for the tool-ignore-signal case; this bridge-level
- * escalation strictly extends it to cover the adapter and opt-out cases.
+ * If an adapter ignores `signal`, runVpTurn still cannot return after the
+ * abort. The per-tool timeout in
+ * {@link import('./tools/registry.js').DEFAULT_TOOL_TIMEOUT_MS} independently
+ * protects tool execution; this bridge-level escalation covers the adapter
+ * and any other path that ignores the query abort.
  * Without a second-stage escalation the typing dots hang forever —
  * exactly the "halts mid-execution with no turn_end" symptom.
  *
@@ -1092,6 +1183,10 @@ const ESCALATE_AFTER_ABORT_MS = 15_000;
 
 /** Virtual conversationId for the Yeaft session */
 let yeaftConversationId = null;
+
+function createYeaftConversationId() {
+  return `yeaft-${randomUUID()}`;
+}
 
 /** Last agent-level Yeaft slash command payload. Replayed after the web side
  *  creates/replaces the virtual Yeaft conversation id so `/` autocomplete never
@@ -1260,16 +1355,17 @@ function hydrateHistoryAttachmentPreviews(attachments) {
   });
 }
 
-function loadVisibleGroupHistoryPage(store, sessionId, limit, beforeSeq = null) {
+function loadVisibleGroupHistoryPage(store, sessionId, limit, beforeSeq = null, opts = {}) {
   if (!store || !sessionId || !(limit > 0)) return { messages: [], oldestSeq: null, hasMore: false };
 
   let rows = [];
   try {
     if (typeof store.loadVisibleBySession === 'function') {
-      const page = store.loadVisibleBySession(sessionId, beforeSeq, limit);
+      const page = store.loadVisibleBySession(sessionId, beforeSeq, limit, opts);
       return {
         messages: (page.messages || []).map(projectPersistedToVisibleHistoryEntry).filter(Boolean),
         oldestSeq: (typeof page.oldestSeq === 'number') ? page.oldestSeq : null,
+        nextBeforeSeq: (typeof page.nextBeforeSeq === 'number') ? page.nextBeforeSeq : null,
         hasMore: !!page.hasMore,
       };
     } else if (typeof store.loadOlderBySession === 'function') {
@@ -1305,13 +1401,14 @@ function loadVisibleGroupHistoryPage(store, sessionId, limit, beforeSeq = null) 
   return {
     messages,
     oldestSeq: Number.isFinite(oldestSeq) ? oldestSeq : null,
+    nextBeforeSeq: Number.isFinite(oldestSeq) ? oldestSeq : null,
     hasMore,
   };
 }
 
 function ensureYeaftConversationId() {
   if (!yeaftConversationId) {
-    yeaftConversationId = `yeaft-${Date.now()}`;
+    yeaftConversationId = createYeaftConversationId();
     replayCachedSkillSlashCommandsToYeaftConversation();
   }
   return yeaftConversationId;
@@ -1323,6 +1420,7 @@ function projectVisibleHistoryChunkMessages(messages = []) {
     .filter(Boolean)
     .map(m => ({
       ...(m.id ? { id: m.id } : {}),
+      ...(Number.isFinite(m.seq) ? { seq: m.seq } : {}),
       role: m.role,
       content: m.content,
       ts: m.ts || null,
@@ -1346,7 +1444,7 @@ function projectVisibleHistoryChunkMessages(messages = []) {
     }));
 }
 
-function emitHistoryChunk({ sessionId, messages, mode = 'older', oldestSeq = null, hasMore = false, latestSeq = null, afterSeq = null, turns = null, perfTraceId = null }) {
+function emitHistoryChunk({ sessionId, messages, mode = 'older', oldestSeq = null, nextBeforeSeq = null, hasMore = false, latestSeq = null, afterSeq = null, hasMoreAfter = false, streamId = null, revision = null, turns = null, pageKind = null, gapStopAtSeq = null, cacheEpoch = null, requestId = null, requestClientId = null, perfTraceId = null }) {
   const projectedMessages = projectVisibleHistoryChunkMessages(messages);
   // Empty deltas still carry the authoritative safe cursor and clear the
   // browser's syncingAfterSeq fence. Dropping this envelope leaves Session
@@ -1355,14 +1453,23 @@ function emitHistoryChunk({ sessionId, messages, mode = 'older', oldestSeq = nul
     type: 'yeaft_history_chunk',
     conversationId: yeaftConversationId,
     ...(perfTraceId ? { perfTraceId } : {}),
+    ...(requestId ? { requestId } : {}),
+    ...(requestClientId ? { _requestClientId: requestClientId } : {}),
     sessionId,
     mode,
     messages: projectedMessages,
     oldestSeq,
+    nextBeforeSeq: Number.isFinite(nextBeforeSeq) ? nextBeforeSeq : oldestSeq,
     hasMore: !!hasMore,
     latestSeq,
     afterSeq,
+    hasMoreAfter: !!hasMoreAfter,
+    streamId,
+    revision,
     turns,
+    ...(pageKind ? { pageKind } : {}),
+    ...(Number.isFinite(gapStopAtSeq) ? { gapStopAtSeq } : {}),
+    ...(Number.isFinite(cacheEpoch) ? { cacheEpoch } : {}),
   });
   return projectedMessages;
 }
@@ -1417,7 +1524,10 @@ function emitLegacyHistoryOutputFrames(replayEntries) {
   }
 }
 
-function emitVisibleHistoryReplay({ store, sessionId, limit, beforeSeq = null, mode = 'recent', perfTraceId = null }) {
+function emitVisibleHistoryReplay({ store, sessionId, limit, beforeSeq = null, mode = 'recent', requestId = null, requestClientId = null, perfTraceId = null }) {
+  const historyMetadata = sessionId && typeof store.getSessionHistoryMetadata === 'function'
+    ? store.getSessionHistoryMetadata(sessionId)
+    : null;
   const visiblePage = sessionId
     ? loadVisibleGroupHistoryPage(store, sessionId, limit, beforeSeq)
     : { messages: limit > 0 ? (store.loadRecent?.(limit) || []) : [], oldestSeq: null, hasMore: false };
@@ -1436,9 +1546,14 @@ function emitVisibleHistoryReplay({ store, sessionId, limit, beforeSeq = null, m
       messages: replayEntries,
       mode,
       oldestSeq: visiblePage.oldestSeq,
+      nextBeforeSeq: visiblePage.nextBeforeSeq,
       hasMore: visiblePage.hasMore,
       latestSeq: Number.isFinite(latestSeq) ? latestSeq : null,
+      streamId: historyMetadata?.streamId || null,
+      revision: historyMetadata?.revision ?? null,
       turns: limit,
+      requestId,
+      requestClientId,
       perfTraceId,
     });
     sendSessionEvent({
@@ -1446,10 +1561,12 @@ function emitVisibleHistoryReplay({ store, sessionId, limit, beforeSeq = null, m
       mode,
       count: replayEntries.length,
       sessionId,
+      requestId,
       hasMore: visiblePage.hasMore,
       oldestSeq: visiblePage.oldestSeq,
+      nextBeforeSeq: visiblePage.nextBeforeSeq,
       latestSeq: Number.isFinite(latestSeq) ? latestSeq : null,
-    }, { sessionId, perfTraceId });
+    }, { sessionId, requestId, requestClientId, perfTraceId });
     return;
   }
 
@@ -1463,10 +1580,11 @@ function emitVisibleHistoryReplay({ store, sessionId, limit, beforeSeq = null, m
     mode,
     count: replayEntries.length,
     sessionId,
+    requestId,
     hasMore: visiblePage.hasMore,
     oldestSeq: visiblePage.oldestSeq,
     latestSeq: Number.isFinite(latestSeq) ? latestSeq : null,
-  }, perfTraceId ? { sessionId, perfTraceId } : undefined);
+  }, { sessionId, requestId, requestClientId, perfTraceId });
 }
 
 /**
@@ -1719,6 +1837,7 @@ function getOrCreateVpEngine(sessionId, vpId, threadId = 'main') {
     skillManager: session.skillManager,
     mcpManager: session.mcpManager,
     yeaftDir: session.yeaftDir,
+    managedCliReady: session.managedCliReady || null,
     // Share the session-shared ToolUsageStats so per-VP tool calls land
     // in the same on-disk snapshot the `yeaft_fetch_tool_stats` handler
     // reads. Without this, engine's record-on-tool-exec guard
@@ -2285,8 +2404,13 @@ export async function __testResetVpState() {
   asyncTaskOwners.clear();
   vpAborts.clear();
   sessionContexts.clear();
+  projectContextBySession.clear();
   vpCurrentTodos.clear();
   threadClassifier = defaultClassifyThread;
+  if (_vpUnsubscribe) {
+    try { _vpUnsubscribe(); } catch { /* ignore */ }
+    _vpUnsubscribe = null;
+  }
   yeaftConversationId = null;
   lastYeaftSlashCommandSnapshot = null;
   // Per-group compact in-flight + pending state lives on the session's
@@ -2770,11 +2894,13 @@ function mergedStatusForProjectRuntime(runtime, ownerSession = session) {
 }
 
 /** Send a Yeaft Session metadata event over the legacy-compatible envelope. */
-function sendSessionEvent(event, { sessionId, chatId, vpId, turnId, threadId, perfTraceId } = {}) {
+function sendSessionEvent(event, { sessionId, chatId, vpId, turnId, threadId, requestId, requestClientId, perfTraceId } = {}) {
   sendToServer({
     type: 'yeaft_output',
     conversationId: yeaftConversationId,
     ...(perfTraceId ? { perfTraceId } : {}),
+    ...(requestId ? { requestId } : {}),
+    ...(requestClientId ? { _requestClientId: requestClientId } : {}),
     ...(sessionId ? { sessionId } : {}),
     ...(chatId ? { chatId } : {}),
     ...(vpId ? { vpId } : {}),
@@ -2850,17 +2976,28 @@ function configuredVpPaths() {
   };
 }
 
-export function handleYeaftVpSubscribe(_msg) {
+export function handleYeaftVpSubscribe(msg = {}) {
   if (_vpUnsubscribe) {
     try { _vpUnsubscribe(); } catch { /* ignore */ }
     _vpUnsubscribe = null;
   }
   const { libDir } = configuredVpPaths();
+  const requestId = typeof msg.requestId === 'string' && msg.requestId ? msg.requestId : null;
   _vpUnsubscribe = handleVpSubscribe(
-    sendSessionEvent,
+    event => sendSessionEvent(event, event?.type === 'vp_snapshot' && requestId ? { requestId } : undefined),
     undefined,
     libDir ? { dir: libDir } : {},
   );
+}
+
+/**
+ * Seed and publish the Agent-owned VP library as soon as the Agent registers.
+ * Session creation must not wait for a Session runtime or a first user message:
+ * stock VPs ship with the Agent and are cheap synchronous files to materialize.
+ * Later explicit subscriptions still refresh the same authoritative library.
+ */
+export function broadcastYeaftVpSnapshotEager() {
+  handleYeaftVpSubscribe();
 }
 
 /**
@@ -3009,6 +3146,60 @@ function decorateSessionsWithRuntimeState(sessions) {
   });
 }
 
+const PROJECT_CONTEXT_MAX_SIBLINGS = 8;
+const PROJECT_CONTEXT_MAX_TOKENS = 4096;
+const PROJECT_CONTEXT_TRUNCATION_NOTICE = '\n[Summary truncated to Project context budget]';
+
+async function sharedProjectContext(yeaftDir, sessionId, options = {}) {
+  const requestedSiblingIds = Array.isArray(options.sessionIds)
+    ? options.sessionIds.filter(id => typeof id === 'string' && id.trim()).map(id => id.trim())
+    : null;
+  const project = requestedSiblingIds === null
+    ? loadProjects(yeaftDir).find(row => row.sessionIds.includes(sessionId))
+    : null;
+  const sourceSessionIds = requestedSiblingIds || project?.sessionIds || [];
+  if (sourceSessionIds.length === 0) return '';
+  const memoryRoot = join(yeaftDir, 'memory');
+  const language = options.language || 'en';
+  const configuredBudget = Number.isFinite(options.tokenBudget) && options.tokenBudget > 0
+    ? options.tokenBudget
+    : PROJECT_CONTEXT_MAX_TOKENS;
+  const tokenBudget = Math.min(configuredBudget, PROJECT_CONTEXT_MAX_TOKENS);
+  let context = '';
+  const siblingIds = sourceSessionIds
+    .filter(id => id !== sessionId)
+    .slice(0, PROJECT_CONTEXT_MAX_SIBLINGS);
+  for (const siblingId of siblingIds) {
+    const summary = await readScopeSummary(
+      { kind: 'session', id: siblingId },
+      { root: memoryRoot, language },
+    ).catch(() => '');
+    if (!summary) continue;
+    const separator = context ? '\n\n' : '';
+    const header = `[Session ${siblingId}]\n`;
+    const fullContext = `${context}${separator}${header}${summary}`;
+    if (estimateTokens(fullContext) <= tokenBudget) {
+      context = fullContext;
+      continue;
+    }
+
+    const prefix = `${context}${separator}${header}`;
+    if (estimateTokens(`${prefix}${PROJECT_CONTEXT_TRUNCATION_NOTICE}`) <= tokenBudget) {
+      let low = 0;
+      let high = summary.length;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        const candidate = `${prefix}${summary.slice(0, middle)}${PROJECT_CONTEXT_TRUNCATION_NOTICE}`;
+        if (estimateTokens(candidate) <= tokenBudget) low = middle;
+        else high = middle - 1;
+      }
+      context = `${prefix}${summary.slice(0, low)}${PROJECT_CONTEXT_TRUNCATION_NOTICE}`;
+    }
+    break;
+  }
+  return context;
+}
+
 function sendSessionCrudResult(payload) {
   const next = payload && payload.ok && Array.isArray(payload.sessions)
     ? { ...payload, sessions: decorateSessionsWithRuntimeState(payload.sessions) }
@@ -3079,7 +3270,7 @@ function sendSessionSnapshotBroadcast() {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     if (!yeaftDir) return;
     const sessions = decorateSessionsWithRuntimeState(snapshotSessions(yeaftDir));
-    sendSessionEvent({ type: 'session_list_updated', sessions });
+    sendSessionEvent({ type: 'session_list_updated', sessions, projects: loadProjects(yeaftDir) });
   } catch (err) {
     console.warn('[Yeaft] sendSessionSnapshotBroadcast failed:', err?.message || err);
   }
@@ -3110,6 +3301,7 @@ function sendSessionRosterChanged(session) {
     roster: session.roster,
     defaultVpId: session.defaultVpId,
     workDir: session.workDir || '',
+    metadataUpdatedAt: session.metadataUpdatedAt || session.createdAt || null,
   };
   sendSessionEvent({ type: 'session_roster_changed', ...payload });
 }
@@ -3118,6 +3310,7 @@ function sessionErrorPayload(err) {
   let code = 'unknown';
   if (err instanceof SessionCrudError) code = err.code;
   else if (err instanceof SessionConfigError) code = err.code;
+  else if (err instanceof ProjectStoreError) code = err.code;
   return {
     code,
     sessionId: err && err.sessionId,
@@ -3130,9 +3323,63 @@ export function handleYeaftListSessions(msg) {
   try {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const groups = snapshotSessions(yeaftDir);
-    sendSessionCrudResult({ op: 'list', requestId, ok: true, sessions: groups });
+    sendSessionCrudResult({ op: 'list', requestId, ok: true, sessions: groups, projects: loadProjects(yeaftDir) });
   } catch (err) {
     sendSessionCrudResult({ op: 'list', requestId, ok: false, error: sessionErrorPayload(err) });
+  }
+}
+
+export function handleYeaftProjectContextSync(msg) {
+  for (const row of Array.isArray(msg?.contexts) ? msg.contexts : []) {
+    const sessionId = typeof row?.sessionId === 'string' ? row.sessionId.trim() : '';
+    if (!sessionId) continue;
+    const projectContext = normalizeProjectContext(row.projectContext, sessionId);
+    projectContextBySession.set(sessionId, projectContext || {
+      projectId: null,
+      projectName: null,
+      projectInstruction: '',
+      sessionIds: [],
+    });
+  }
+}
+
+export function handleYeaftProjectMutation(msg) {
+  const requestId = msg && msg.requestId;
+  const op = msg && msg.op;
+  try {
+    const yeaftDir = ctx.CONFIG?.yeaftDir;
+    let result = null;
+    if (op === 'create') result = createProject(yeaftDir, msg.name);
+    else if (op === 'rename') result = renameProject(yeaftDir, msg.projectId, msg.name);
+    else if (op === 'update_instruction') {
+      result = updateProjectInstruction(yeaftDir, msg.projectId, msg.instruction);
+    } else if (op === 'delete') result = deleteProject(yeaftDir, msg.projectId);
+    else if (op === 'reorder') result = reorderProjects(yeaftDir, msg.projectIds);
+    else if (op === 'move_session') {
+      if (!snapshotSessions(yeaftDir).some(row => row.id === msg.sessionId)) {
+        throw new ProjectStoreError('session_not_found', 'Session not found');
+      }
+      result = moveSessionToProject(yeaftDir, msg.sessionId, msg.projectId || null);
+    } else {
+      throw new ProjectStoreError('invalid_op', 'Unknown Project operation');
+    }
+    sendSessionEvent({
+      type: 'project_mutation_result',
+      requestId,
+      op,
+      ok: true,
+      result,
+      projects: loadProjects(yeaftDir),
+    }, { requestId });
+    sendSessionSnapshotBroadcast();
+  } catch (err) {
+    sendSessionEvent({
+      type: 'project_mutation_result',
+      requestId,
+      op,
+      ok: false,
+      error: sessionErrorPayload(err),
+    }, { requestId });
   }
 }
 
@@ -3298,7 +3545,8 @@ export function handleYeaftArchiveSession(msg) {
   try {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const result = archiveSession(yeaftDir, sessionId);
-    invalidateGroupContext(sessionId);
+    projectContextBySession.delete(sessionId);
+    invalidateGroupContext(sessionId, { abortRuntime: true });
     sendSessionCrudResult({
       op: 'archive',
       requestId,
@@ -3319,6 +3567,8 @@ export function handleYeaftDeleteSession(msg) {
   try {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const result = deleteSession(yeaftDir, sessionId);
+    projectContextBySession.delete(sessionId);
+    removeSessionFromProjects(yeaftDir, sessionId);
     ctx.assetOutbox?.removeSession(sessionId);
     // Cascade: remove every persisted message stamped with this group id.
     // Hard delete (per user spec): no soft-archive, the bytes are gone.
@@ -3336,7 +3586,7 @@ export function handleYeaftDeleteSession(msg) {
     // turns for the deleted group. Engines for the deleted group are
     // also dropped — unlike rename/announcement updates, the group is
     // gone for good and there's nothing to preserve.
-    invalidateGroupContext(sessionId);
+    invalidateGroupContext(sessionId, { abortRuntime: true });
     const prefix = `${sessionId}::`;
     for (const k of Array.from(vpEngines.keys())) {
       if (k.startsWith(prefix)) {
@@ -3675,8 +3925,11 @@ export function __testHandleEngineEvent(event, hctx) {
 function handleEngineEvent(event, hctx) {
   const terminalTurnEnd = event.type === 'turn_end' && event.terminal === true;
   const managesQueryTimer = terminalTurnEnd
+    || event.type === 'tool_start'
+    || event.type === 'tool_end'
     || event.type === 'async_task_wait_start'
-    || event.type === 'async_task_wait_end';
+    || event.type === 'async_task_wait_end'
+    || event.type === 'llm_retry';
   if (!managesQueryTimer) hctx.resetQueryTimer();
   const envelope = {
     sessionId: hctx.sessionId,
@@ -3761,6 +4014,11 @@ function handleEngineEvent(event, hctx) {
       break;
 
     case 'tool_start':
+      // ToolRegistry and individual tools own their execution deadlines. The
+      // bridge watchdog only protects provider silence; leaving it armed here
+      // races legitimate long tools and can abort the whole query just before
+      // the tool returns a bounded error result for the model to handle.
+      if (typeof hctx.pauseQueryTimer === 'function') hctx.pauseQueryTimer();
       sendSessionEvent({
         type: 'tool_start',
         id: event.id,
@@ -3826,12 +4084,12 @@ function handleEngineEvent(event, hctx) {
           is_error: event.isError || false,
         }],
       }, envelope);
-      // Tool finished. Do NOT speculatively flip to 'thinking' — the
-      // engine may emit more text-deltas (→ 'streaming') OR go straight
-      // to end_turn (→ 'idle' via runVpTurn's finally). The old
-      // speculative transition caused a visible 'tool → thinking →
-      // streaming' flicker on every tool call. Hold the 'tool' state
-      // until the next real event arrives.
+      // Tool execution is over, so the next silent phase is provider work
+      // again. Re-arm the provider watchdog before waiting for the next event.
+      if (typeof hctx.resetQueryTimer === 'function') hctx.resetQueryTimer();
+      // Do NOT speculatively flip to 'thinking' — the engine may emit more
+      // text-deltas (→ 'streaming') OR go straight to end_turn (→ 'idle' via
+      // runVpTurn's finally). Hold the 'tool' state until a real event arrives.
       break;
     }
 
@@ -3972,6 +4230,9 @@ function handleEngineEvent(event, hctx) {
       break;
 
     case 'llm_retry':
+      // Engine is intentionally sleeping before the next provider request.
+      // Silence watchdogs protect active calls, not declared retry waits.
+      if (typeof hctx.pauseQueryTimer === 'function') hctx.pauseQueryTimer();
       maybeTransitionVpStatus(hctx, 'retrying');
       // Engine paused before re-issuing the same turn because the LLM
       // returned a retryable error (rate limit / 5xx / transient network /
@@ -4037,6 +4298,7 @@ function handleEngineEvent(event, hctx) {
         type: 'memory_used',
         turnId: event.turnId,
         loaded: event.loaded || [],
+        meta: event.meta || null,
       }, envelope);
       break;
 
@@ -4078,6 +4340,10 @@ function handleEngineEvent(event, hctx) {
       break;
 
     case 'tool_exec':
+      // Full tool output is already durable in the file-backed debug trace and
+      // is fetched on demand when the user opens this Turn. Do not mirror it
+      // into the always-on browser store: a long-lived tab otherwise retains
+      // every large Bash/FileRead result even while the debug panel is closed.
       sendSessionEvent({
         type: 'tool_exec',
         turnId: event.turnId,
@@ -4086,7 +4352,6 @@ function handleEngineEvent(event, hctx) {
         name: event.name,
         durationMs: event.durationMs,
         isError: event.isError,
-        toolOutput: event.toolOutput,
       }, envelope);
       break;
 
@@ -4115,6 +4380,12 @@ function handleEngineEvent(event, hctx) {
       break;
 
     case 'async_task_wait_end':
+      if (event.timedOut) {
+        console.warn(
+          '[Yeaft] same-turn async task wait timed out; continuing the VP turn and deferring task results:',
+          Array.isArray(event.deferredTaskIds) ? event.deferredTaskIds : [],
+        );
+      }
       if (!event.aborted && typeof hctx.resetQueryTimer === 'function') hctx.resetQueryTimer();
       sendSessionEvent({
         type: 'vp_async_task_wait_end',
@@ -4123,31 +4394,28 @@ function handleEngineEvent(event, hctx) {
         loopNumber: event.loopNumber,
         aborted: Boolean(event.aborted),
         remainingTaskIds: Array.isArray(event.remainingTaskIds) ? event.remainingTaskIds : [],
+        timedOut: Boolean(event.timedOut),
+        deferredTaskIds: Array.isArray(event.deferredTaskIds) ? event.deferredTaskIds : [],
         ts: Date.now(),
       }, envelope);
       break;
 
     case 'loop':
-      // feat-6af5f9f1 PR B: replaces the old `debug_turn` event. Same
-      // payload shape plus turnId + loopNumber + usage.totalTokens.
-      // feat-debug-timestamp: also forward `at` (epoch ms) so the
-      // debug panel can render per-loop HH:MM:SS.
+      // Live clients only need bounded summary metadata. The complete request,
+      // response, prompt, messages, and tool calls are already persisted by
+      // DebugTrace and fetched for one Turn on demand. Forwarding those growing
+      // snapshots on every loop made a long-lived browser tab retain hundreds
+      // of MiB (or GiB) while the debug panel was closed.
       sendSessionEvent({
         type: 'loop',
         turnId: event.turnId,
         loopNumber: event.loopNumber,
         model: event.model,
-        systemPrompt: event.systemPrompt,
-        messages: event.messages,
-        response: event.response,
-        toolCalls: event.toolCalls,
         usage: event.usage,
         latencyMs: event.latencyMs,
         ttfbMs: event.ttfbMs,
         stopReason: event.stopReason,
         at: event.at,
-        rawRequest: event.rawRequest,
-        rawResponse: event.rawResponse,
       }, envelope);
       break;
 
@@ -4173,6 +4441,11 @@ function handleEngineEvent(event, hctx) {
         type: 'error',
         message: visibleErrMsg,
         errorName: event.error?.name || null,
+        statusCode: event.error?.statusCode ?? null,
+        reasonCode: event.error?.reasonCode || null,
+        provider: event.error?.provider || null,
+        model: event.error?.model || null,
+        credentialRefreshable: event.error?.credentialRefreshable === true,
         retryable: !!event.retryable,
         ...(event.reason ? { reason: event.reason } : {}),
         ...(event.retryExhausted !== undefined ? { retryExhausted: !!event.retryExhausted } : {}),
@@ -4442,6 +4715,21 @@ async function runYeaftSessionSend(msg) {
     },
   });
 
+  const hasInboundProjectContext = Object.prototype.hasOwnProperty.call(msg, 'projectContext');
+  const inboundProjectContext = normalizeProjectContext(msg.projectContext, sessionId);
+  if (hasInboundProjectContext) {
+    projectContextBySession.set(sessionId, inboundProjectContext || {
+      projectId: null,
+      projectName: null,
+      projectInstruction: '',
+      sessionIds: [],
+    });
+  } else {
+    // An old Server does not know this field. Drop any context cached from a
+    // newer Server before falling back to this Agent's legacy projects.json.
+    projectContextBySession.delete(sessionId);
+  }
+
   // Ingest user text. The coordinator persists, applies mention/fanout
   // rules, and calls deliver() (== enqueueForVp) for each chosen VP —
   // which both (a) emits vp_typing_start and (b) ensures a driver runs.
@@ -4466,6 +4754,9 @@ async function runYeaftSessionSend(msg) {
       _promptParts: attachmentBundle.promptParts,
       _promptSuffix: attachmentBundle.promptSuffix,
       _perfTraceId: perfTraceId,
+      _projectContext: msg.projectContext && typeof msg.projectContext === 'object'
+        ? msg.projectContext
+        : null,
     });
   } catch (err) {
     console.warn('[Yeaft] yeaft_session_chat: coord.ingest failed', err?.message || err);
@@ -4709,6 +5000,7 @@ export async function ensureSessionLoaded(opts = {}) {
       skipMCP: true,
       skipSkills: true,
       serverMode: true,
+      managedCliReady: ctx.managedCliReady,
     });
     claimRuntimeOwnership(session);
 
@@ -5105,6 +5397,28 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         envelope: inboundEnvelope,
         threadId,
       });
+      if (queryOpts) {
+        const envelopeProjectContext = normalizeProjectContext(inboundEnvelope?._projectContext, sessionId);
+        const projectContext = envelopeProjectContext
+          || projectContextBySession.get(sessionId)
+          || legacyProjectContext(ctx.CONFIG?.yeaftDir, sessionId);
+        const projectSessionIds = projectContext?.sessionIds || [];
+        queryOpts.projectSessionIds = projectSessionIds;
+        queryOpts.projectLabel = projectContext?.projectName
+          ? `${projectContext.projectName} (${projectContext.projectId})`
+          : (projectContext?.projectId || '');
+        queryOpts.projectInstruction = projectContext?.projectInstruction || '';
+        // Related Session summaries now enter through Engine's single AMS
+        // memory outlet. Keep this announcement limited to Project identity and
+        // sharing boundaries so parent VP prompts do not duplicate the same prose
+        // that sub-agents receive through memory.
+        const sharedBlock = buildProjectSharedBlock(projectContext);
+        if (sharedBlock) {
+          queryOpts.sessionAnnouncement = queryOpts.sessionAnnouncement
+            ? `${queryOpts.sessionAnnouncement}\n\n${sharedBlock}`
+            : sharedBlock;
+        }
+      }
       let turnSessionMeta = null;
       try { turnSessionMeta = sessionCoordinator?.group?.getMeta?.() || null; } catch { turnSessionMeta = null; }
       const projectRuntime = getProjectRuntimeForTurn(turnSessionMeta);
@@ -6240,7 +6554,13 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
   let dreamEvents = [];
   let hasMore = false;
   try {
-    if (session?.trace && typeof session.trace.fetchRecentDebugHistory === 'function') {
+    if (session?.trace && detailTurnId && sessionId && typeof session.trace.fetchTurnDebug === 'function') {
+      const out = await session.trace.fetchTurnDebug({ sessionId, turnId: detailTurnId, dreamLimit });
+      loops = Array.isArray(out?.loops) ? out.loops : [];
+      turns = Array.isArray(out?.turns) ? out.turns : [];
+      dreamEvents = Array.isArray(out?.dreamEvents) ? out.dreamEvents : [];
+      hasMore = false;
+    } else if (session?.trace && typeof session.trace.fetchRecentDebugHistory === 'function') {
       const out = await session.trace.fetchRecentDebugHistory({ limit, dreamLimit, sessionId, threadId, indexOnly, detailTurnId, search });
       loops = Array.isArray(out?.loops) ? out.loops : [];
       turns = Array.isArray(out?.turns) ? out.turns : [];
@@ -6342,8 +6662,15 @@ export function handleYeaftSubAgentPrompt(msg) {
     return;
   }
 
-  if (!Array.isArray(agent.pendingPrompts)) agent.pendingPrompts = [];
-  agent.pendingPrompts.push(message);
+  const projectContext = projectContextBySession.get(sessionId)
+    || legacyProjectContext(ctx.CONFIG?.yeaftDir, sessionId);
+  enqueueSubAgentPrompt(agent, message, {
+    projectSessionIds: projectContext?.sessionIds,
+    projectLabel: projectContext?.projectName
+      ? `${projectContext.projectName} (${projectContext.projectId})`
+      : (projectContext?.projectId || ''),
+    projectInstruction: projectContext?.projectInstruction,
+  });
   if (!Array.isArray(agent.messages)) agent.messages = [];
   agent.messages.push({ role: 'user', content: message, timestamp: Date.now() });
   if (agent.status === 'idle' || agent.status === 'created') agent.status = 'running';
@@ -6389,6 +6716,38 @@ export function handleYeaftTaskCancel(msg) {
   }
   if (!session?.taskManager || typeof session.taskManager.cancelTask !== 'function') {
     fail('task manager unavailable');
+    return;
+  }
+
+  const existingTask = session.taskManager.getTask?.(sessionId, taskId) || null;
+  if (existingTask?.kind === 'sub_agent' && existingTask.status === 'running') {
+    const subAgentId = existingTask.runtime?.subAgentId || '';
+    const agent = subAgentId ? getAgentRegistry().get(subAgentId) : null;
+    const scope = {
+      sessionId,
+      parentVpId: existingTask.ownerVpId || null,
+      parentThreadId: existingTask.source?.threadId || 'main',
+    };
+    if (!agent || !agentBelongsToScope(agent, scope)) {
+      fail('sub-agent not found', existingTask);
+      return;
+    }
+    if (!isTerminalAgentStatus(agent.status)) {
+      agent.status = STATUS.CLOSED;
+      if (agent.abortController && !agent.abortController.signal.aborted) {
+        try { agent.abortController.abort('stopped_by_user'); } catch { /* best effort */ }
+      }
+    }
+    try { consumeNotificationForAgent(agent.id); } catch { /* best effort */ }
+    const task = session.taskManager.completeTask(sessionId, taskId, { status: 'cancelled' });
+    sendSessionEvent({
+      type: 'yeaft_task_cancel_result',
+      success: true,
+      taskId,
+      clientRequestId: clientRequestId || null,
+      pending: false,
+      task,
+    }, { sessionId, vpId: task?.ownerVpId || null, threadId: task?.source?.threadId || null });
     return;
   }
 
@@ -6472,6 +6831,8 @@ export function handleYeaftModelSwitch(msg) {
  */
 export async function handleYeaftLoadHistory(msg) {
   const sessionId = (msg && typeof msg.sessionId === 'string' && msg.sessionId) || null;
+  const requestId = typeof msg?.requestId === 'string' && msg.requestId ? msg.requestId : null;
+  const requestClientId = typeof msg?._requestClientId === 'string' && msg._requestClientId ? msg._requestClientId : null;
   const perfTraceId = typeof msg?.perfTraceId === 'string' && msg.perfTraceId.trim() ? msg.perfTraceId.trim() : null;
   const perfStart = perfNowMs();
   const tracePerf = (phase, extra = {}) => {
@@ -6508,7 +6869,20 @@ export async function handleYeaftLoadHistory(msg) {
     // and wants only the messages that arrived after that cursor. Returns
     // mode:'delta' so the frontend can append+dedupe instead of replacing
     // the pane.
-    const afterSeqRaw = (msg && Number.isFinite(msg.afterSeq)) ? msg.afterSeq : null;
+    const deltaLimit = Number.isFinite(msg?.maxRows)
+      ? Math.min(500, Math.max(1, Math.floor(msg.maxRows)))
+      : 100;
+    const deltaMaxBytes = Number.isFinite(msg?.maxBytes)
+      ? Math.min(2 * 1024 * 1024, Math.max(32 * 1024, Math.floor(msg.maxBytes)))
+      : 512 * 1024;
+    const historyMetadata = typeof session.conversationStore.getSessionHistoryMetadata === 'function'
+      ? session.conversationStore.getSessionHistoryMetadata(sessionId)
+      : null;
+    const cacheIdentityMatches = !msg?.streamId || (
+      msg.streamId === historyMetadata?.streamId
+      && Number(msg.revision) === Number(historyMetadata?.revision)
+    );
+    const afterSeqRaw = cacheIdentityMatches && msg && Number.isFinite(msg.afterSeq) ? msg.afterSeq : null;
     const afterMessageId = (msg && typeof msg.afterMessageId === 'string') ? msg.afterMessageId : null;
     let afterSeq = afterSeqRaw;
     if (afterSeq === null && afterMessageId && typeof session.conversationStore.getMessageSeqById === 'function') {
@@ -6516,7 +6890,10 @@ export async function handleYeaftLoadHistory(msg) {
     }
     if (sessionId && afterSeq !== null && typeof session.conversationStore.loadAfterSeqByGroup === 'function') {
       const loadStart = perfNowMs();
-      const delta = session.conversationStore.loadAfterSeqByGroup(sessionId, afterSeq);
+      const delta = session.conversationStore.loadAfterSeqByGroup(sessionId, afterSeq, {
+        limit: deltaLimit,
+        maxBytes: deltaMaxBytes,
+      });
       traceDuration('history.store_load_delta', loadStart, { detail: { count: delta.messages?.length || 0, afterSeq } });
       const emitStart = perfNowMs();
       const projectedMessages = emitHistoryChunk({
@@ -6525,6 +6902,11 @@ export async function handleYeaftLoadHistory(msg) {
         mode: 'delta',
         latestSeq: delta.latestSeq,
         afterSeq,
+        hasMoreAfter: delta.hasMoreAfter,
+        streamId: historyMetadata?.streamId || null,
+        revision: historyMetadata?.revision ?? null,
+        requestId,
+        requestClientId,
         perfTraceId,
       });
       traceDuration('history.emit_chunk', emitStart, { detail: { mode: 'delta', count: projectedMessages.length } });
@@ -6533,9 +6915,13 @@ export async function handleYeaftLoadHistory(msg) {
         mode: 'delta',
         count: projectedMessages.length,
         sessionId,
+        requestId,
         latestSeq: delta.latestSeq,
         afterSeq,
-      }, { sessionId, perfTraceId });
+        hasMoreAfter: !!delta.hasMoreAfter,
+        streamId: historyMetadata?.streamId || null,
+        revision: historyMetadata?.revision ?? null,
+      }, { sessionId, requestId, requestClientId, perfTraceId });
       return;
     }
 
@@ -6572,9 +6958,14 @@ export async function handleYeaftLoadHistory(msg) {
         messages: replayEntries,
         mode: 'recent',
         oldestSeq: visiblePage.oldestSeq,
+        nextBeforeSeq: visiblePage.nextBeforeSeq,
         hasMore: visiblePage.hasMore,
         latestSeq,
+        streamId: historyMetadata?.streamId || null,
+        revision: historyMetadata?.revision ?? null,
         turns: limit,
+        requestId,
+        requestClientId,
         perfTraceId,
       });
       traceDuration('history.emit_chunk', emitStart, { detail: { mode: 'recent', count: replayEntries.length } });
@@ -6609,15 +7000,24 @@ export async function handleYeaftLoadHistory(msg) {
       count: replayEntries.length,
       hasCompactSummary: hasCompactSummaryFlag,
       sessionId,
+      requestId,
       hasMore,
       oldestSeq,
+      nextBeforeSeq: visiblePage.nextBeforeSeq,
       latestSeq,
-    }, { sessionId, perfTraceId });
+      streamId: historyMetadata?.streamId || null,
+      revision: historyMetadata?.revision ?? null,
+    }, { sessionId, requestId, requestClientId, perfTraceId });
   };
 
   if (!session) {
     const yeaftDir = ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR;
-    const afterSeqRaw = (msg && Number.isFinite(msg.afterSeq)) ? msg.afterSeq : null;
+    const deltaLimit = Number.isFinite(msg?.maxRows)
+      ? Math.min(500, Math.max(1, Math.floor(msg.maxRows)))
+      : 100;
+    const deltaMaxBytes = Number.isFinite(msg?.maxBytes)
+      ? Math.min(2 * 1024 * 1024, Math.max(32 * 1024, Math.floor(msg.maxBytes)))
+      : 512 * 1024;
     const afterMessageId = (msg && typeof msg.afterMessageId === 'string') ? msg.afterMessageId : null;
     const limit = (typeof msg.limit === 'number') ? msg.limit : 10;
     ensureYeaftConversationId();
@@ -6640,6 +7040,14 @@ export async function handleYeaftLoadHistory(msg) {
     // window immediately, then finish loadSession below for actual turns.
     const coldStoreStart = perfNowMs();
     const coldStore = new ConversationStore(historyYeaftDir);
+    const historyMetadata = sessionId && typeof coldStore.getSessionHistoryMetadata === 'function'
+      ? coldStore.getSessionHistoryMetadata(sessionId)
+      : null;
+    const cacheIdentityMatches = !msg?.streamId || (
+      msg.streamId === historyMetadata?.streamId
+      && Number(msg.revision) === Number(historyMetadata?.revision)
+    );
+    const afterSeqRaw = cacheIdentityMatches && msg && Number.isFinite(msg.afterSeq) ? msg.afterSeq : null;
     traceDuration('history.cold_store_open', coldStoreStart);
     if (sessionId && (afterSeqRaw !== null || afterMessageId)) {
       let afterSeq = afterSeqRaw;
@@ -6648,8 +7056,11 @@ export async function handleYeaftLoadHistory(msg) {
       }
       const loadStart = perfNowMs();
       const delta = afterSeq !== null && typeof coldStore.loadAfterSeqByGroup === 'function'
-        ? coldStore.loadAfterSeqByGroup(sessionId, afterSeq)
-        : { messages: [], latestSeq: null };
+        ? coldStore.loadAfterSeqByGroup(sessionId, afterSeq, {
+            limit: deltaLimit,
+            maxBytes: deltaMaxBytes,
+          })
+        : { messages: [], latestSeq: null, hasMoreAfter: false };
       traceDuration('history.store_load_delta', loadStart, { detail: { count: delta.messages?.length || 0, afterSeq, cold: true } });
       const emitStart = perfNowMs();
       const projectedMessages = emitHistoryChunk({
@@ -6658,13 +7069,29 @@ export async function handleYeaftLoadHistory(msg) {
         mode: 'delta',
         latestSeq: delta.latestSeq,
         afterSeq,
+        hasMoreAfter: delta.hasMoreAfter,
+        streamId: historyMetadata?.streamId || null,
+        revision: historyMetadata?.revision ?? null,
+        requestId,
+        requestClientId,
         perfTraceId,
       });
       traceDuration('history.emit_chunk', emitStart, { detail: { mode: 'delta', count: projectedMessages.length, cold: true } });
-      sendSessionEvent({ type: 'history_loaded', mode: 'delta', count: projectedMessages.length, sessionId, latestSeq: delta.latestSeq, afterSeq }, { sessionId, perfTraceId });
+      sendSessionEvent({
+        type: 'history_loaded',
+        mode: 'delta',
+        count: projectedMessages.length,
+        sessionId,
+        requestId,
+        latestSeq: delta.latestSeq,
+        afterSeq,
+        hasMoreAfter: !!delta.hasMoreAfter,
+        streamId: historyMetadata?.streamId || null,
+        revision: historyMetadata?.revision ?? null,
+      }, { sessionId, requestId, requestClientId, perfTraceId });
     } else if (!metadataOnly) {
       const replayStart = perfNowMs();
-      emitVisibleHistoryReplay({ store: coldStore, sessionId, limit, mode: 'recent', perfTraceId });
+      emitVisibleHistoryReplay({ store: coldStore, sessionId, limit, mode: 'recent', requestId, requestClientId, perfTraceId });
       traceDuration('history.cold_replay', replayStart, { detail: { mode: 'recent', limit } });
     }
     historyAlreadyReplayed = true;
@@ -6709,13 +7136,45 @@ export async function handleYeaftLoadHistory(msg) {
   traceDuration('history.handler_total', perfStart, { ok: true });
 }
 
+function traceHistoryScan({ perfTraceId, phase, sessionId, messageType, start, scanStats, detail = null }) {
+  if (!perfTraceId) return;
+  recordAgentPerfTrace(ctx.CONFIG, {
+    traceId: perfTraceId,
+    phase,
+    sessionId,
+    messageType,
+    durationMs: perfNowMs() - start,
+    bytes: Number(scanStats?.bytes) || 0,
+    detail: {
+      segments: Number(scanStats?.segments) || 0,
+      rows: Number(scanStats?.rows) || 0,
+      legacyFiles: Number(scanStats?.legacyFiles) || 0,
+      ...(detail || {}),
+    },
+  });
+}
+
+function scheduleHistoryEventLoopTrace({ perfTraceId, phase, sessionId, messageType }) {
+  if (!perfTraceId) return;
+  const scheduledAt = perfNowMs();
+  setImmediate(() => {
+    recordAgentPerfTrace(ctx.CONFIG, {
+      traceId: perfTraceId,
+      phase,
+      sessionId,
+      messageType,
+      durationMs: perfNowMs() - scheduledAt,
+    });
+  });
+}
+
 /**
  * Load one lightweight Conversation Outline page. The response contains only
  * visible user/assistant metadata and bounded snippets; full message bodies and
  * tool payloads stay on the Agent. `beforeSeq` is an exclusive older-page
- * cursor, and `includeTotal` avoids recounting after the first page.
+ * cursor, and total counting is explicit because it scans the full transcript.
  *
- * @param {object} msg — { sessionId, beforeSeq, limit, includeTotal }
+ * @param {object} msg — { sessionId, beforeSeq, limit, includeTotal, perfTraceId }
  */
 export async function handleYeaftLoadHistoryOutline(msg) {
   const sessionId = typeof msg?.sessionId === 'string' ? msg.sessionId.trim() : '';
@@ -6738,16 +7197,59 @@ export async function handleYeaftLoadHistoryOutline(msg) {
     return;
   }
 
+  const perfTraceId = typeof msg?.perfTraceId === 'string' && msg.perfTraceId.trim() ? msg.perfTraceId.trim() : null;
+  const scanStats = {};
+  scheduleHistoryEventLoopTrace({
+    perfTraceId,
+    phase: 'history_outline.event_loop_delay',
+    sessionId,
+    messageType: msg?.type || 'yeaft_load_history_outline',
+  });
+  const scanStart = perfNowMs();
   try {
     const defaultYeaftDir = ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR;
     const storeDir = resolveSessionYeaftDir(defaultYeaftDir, sessionId);
-    const store = new ConversationStore(storeDir);
-    const result = store.loadVisibleOutlineBySession(sessionId, {
-      limit,
-      beforeSeq,
-      includeTotal: msg?.includeTotal !== false,
+    let result;
+    let indexFallback = false;
+    try {
+      result = await loadConversationOutlineFromIndex(storeDir, sessionId, {
+        limit,
+        beforeSeq,
+        cursor: msg?.cursor || null,
+        includeTotal: msg?.includeTotal === true,
+        _waitForBuild: false,
+      });
+    } catch (indexError) {
+      sendToServer({
+        ...response,
+        error: indexError?.code === 'stale_result'
+          ? 'stale_result'
+          : (indexError?.code === 'index_building' ? 'index_building' : 'index_unavailable'),
+        ...(perfTraceId ? { perfTraceId } : {}),
+      });
+      return;
+    }
+    if (!indexFallback) {
+      scanStats.segments = Number(result.indexSourceFiles) || 0;
+      scanStats.bytes = Number(result.indexSourceBytes) || 0;
+      scanStats.rows = Number(result.indexEntryCount) || 0;
+    }
+    traceHistoryScan({
+      perfTraceId,
+      phase: 'history_outline.store_scan',
+      sessionId,
+      messageType: msg?.type || 'yeaft_load_history_outline',
+      start: scanStart,
+      scanStats,
+      detail: {
+        limit,
+        includeTotal: msg?.includeTotal === true,
+        resultCount: result.results.length,
+        indexGeneration: result.indexGeneration || null,
+        indexFallback,
+      },
     });
-    sendToServer({ ...response, ...result });
+    sendToServer({ ...response, ...result, ...(perfTraceId ? { perfTraceId } : {}) });
   } catch (err) {
     console.error('[Yeaft] Session history outline failed:', err?.message || err);
     sendToServer({ ...response, error: 'outline_failed' });
@@ -6775,17 +7277,65 @@ export async function handleYeaftSearchHistory(msg) {
     _requestClientId: msg?._requestClientId || null,
   };
 
-  if (!sessionId || (query.length < 2 && !senderKey)) {
+  if (!sessionId || (Array.from(query).length < 1 && !senderKey)) {
     sendToServer(response);
     return;
   }
 
+  const perfTraceId = typeof msg?.perfTraceId === 'string' && msg.perfTraceId.trim() ? msg.perfTraceId.trim() : null;
+  const scanStats = {};
+  scheduleHistoryEventLoopTrace({
+    perfTraceId,
+    phase: 'history_search.event_loop_delay',
+    sessionId,
+    messageType: msg?.type || 'yeaft_search_history',
+  });
+  const scanStart = perfNowMs();
   try {
     const defaultYeaftDir = ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR;
     const storeDir = resolveSessionYeaftDir(defaultYeaftDir, sessionId);
-    const store = new ConversationStore(storeDir);
-    const result = store.searchVisibleBySession(sessionId, query, { limit, beforeSeq, senderKey });
-    sendToServer({ ...response, ...result });
+    let result;
+    let indexFallback = false;
+    try {
+      result = await searchConversationIndex(storeDir, sessionId, query, {
+        limit,
+        beforeSeq,
+        cursor: msg?.cursor || null,
+        senderKey,
+        _waitForBuild: false,
+      });
+    } catch (indexError) {
+      sendToServer({
+        ...response,
+        error: indexError?.code === 'stale_result'
+          ? 'stale_result'
+          : (indexError?.code === 'index_building' ? 'index_building' : 'index_unavailable'),
+        ...(perfTraceId ? { perfTraceId } : {}),
+      });
+      return;
+    }
+    if (!indexFallback) {
+      scanStats.segments = Number(result.indexSourceFiles) || 0;
+      scanStats.bytes = Number(result.indexSourceBytes) || 0;
+      scanStats.rows = Number(result.indexEntryCount) || 0;
+    }
+    traceHistoryScan({
+      perfTraceId,
+      phase: 'history_search.store_scan',
+      sessionId,
+      messageType: msg?.type || 'yeaft_search_history',
+      start: scanStart,
+      scanStats,
+      detail: {
+        limit,
+        queryLength: Array.from(query).length,
+        senderFilter: !!senderKey,
+        resultCount: result.results.length,
+        indexGeneration: result.indexGeneration || null,
+        indexFallback,
+      },
+    });
+    sendToServer({ ...response, ...result, ...(perfTraceId ? { perfTraceId } : {}) });
   } catch (err) {
     console.error('[Yeaft] Session history search failed:', err?.message || err);
     sendToServer({ ...response, error: 'search_failed' });
@@ -6797,11 +7347,17 @@ export async function handleYeaftLoadHistoryWindow(msg) {
   const requestId = typeof msg?.requestId === 'string' ? msg.requestId : null;
   const anchorSeq = Number(msg?.anchorSeq);
   const anchorMessageId = typeof msg?.anchorMessageId === 'string' ? msg.anchorMessageId : null;
+  const entryId = typeof msg?.entryId === 'string' ? msg.entryId : null;
+  const indexGeneration = Number(msg?.indexGeneration);
+  const entryStartSeq = Number(msg?.entryStartSeq);
   const response = {
     type: 'yeaft_history_window',
     requestId,
     conversationId: ensureYeaftConversationId(),
     sessionId: sessionId || null,
+    entryId,
+    indexGeneration: Number.isFinite(indexGeneration) ? indexGeneration : null,
+    entryStartSeq: Number.isFinite(entryStartSeq) ? entryStartSeq : null,
     anchorMessageId,
     anchorSeq: Number.isFinite(anchorSeq) ? anchorSeq : null,
     messages: [],
@@ -6810,7 +7366,10 @@ export async function handleYeaftLoadHistoryWindow(msg) {
     _requestClientId: msg?._requestClientId || null,
   };
 
-  if (!sessionId || !Number.isFinite(anchorSeq)) {
+  if (!sessionId || !entryId || !anchorMessageId
+    || !Number.isFinite(indexGeneration)
+    || !Number.isFinite(entryStartSeq)
+    || !Number.isFinite(anchorSeq)) {
     sendToServer({ ...response, error: 'invalid_anchor' });
     return;
   }
@@ -6818,24 +7377,41 @@ export async function handleYeaftLoadHistoryWindow(msg) {
   try {
     const defaultYeaftDir = ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR;
     const storeDir = resolveSessionYeaftDir(defaultYeaftDir, sessionId);
-    const store = new ConversationStore(storeDir);
-    const window = store.loadVisibleWindowBySession(sessionId, anchorSeq, {
+    const loaded = await readConversationIndexWindow(storeDir, sessionId, {
+      indexGeneration,
+      entryId,
+      entryStartSeq,
+      anchorMessageId,
+      anchorSeq,
       beforeTurns: msg?.beforeTurns,
       afterTurns: msg?.afterTurns,
+      maxRows: msg?.maxRows,
+      maxBytes: msg?.maxBytes,
     });
+    if (!loaded?.ok) {
+      sendToServer({ ...response, error: 'stale_result' });
+      return;
+    }
     sendToServer({
       ...response,
-      ...window,
-      messages: projectVisibleHistoryChunkMessages(window.messages),
+      ...loaded.window,
+      entryEndSeq: loaded.entry.entryEndSeq,
+      sourceMessageIds: loaded.entry.sourceMessageIds,
+      messages: projectVisibleHistoryChunkMessages(loaded.window.messages),
     });
   } catch (err) {
     console.error('[Yeaft] Session history anchor load failed:', err?.message || err);
-    sendToServer({ ...response, error: 'window_load_failed' });
+    sendToServer({
+      ...response,
+      error: err?.code === 'stale_result' ? 'stale_result' : 'window_load_failed',
+    });
   }
 }
 
 export async function handleYeaftLoadMoreHistory(msg) {
   const sessionId = (msg && typeof msg.sessionId === 'string' && msg.sessionId) || null;
+  const requestId = typeof msg?.requestId === 'string' && msg.requestId ? msg.requestId : null;
+  const requestClientId = typeof msg?._requestClientId === 'string' && msg._requestClientId ? msg._requestClientId : null;
   const perfTraceId = typeof msg?.perfTraceId === 'string' && msg.perfTraceId.trim() ? msg.perfTraceId.trim() : null;
   const perfStart = perfNowMs();
   const tracePerf = (phase, extra = {}) => {
@@ -6845,12 +7421,17 @@ export async function handleYeaftLoadMoreHistory(msg) {
   const traceDuration = (phase, start, extra = {}) => tracePerf(phase, { durationMs: perfNowMs() - start, ...extra });
   tracePerf('history_more.received');
   if (!sessionId) {
-    emitHistoryChunk({ sessionId, messages: [], mode: 'older', oldestSeq: null, hasMore: false, perfTraceId });
+    emitHistoryChunk({ sessionId, messages: [], mode: 'older', oldestSeq: null, hasMore: false, requestId, requestClientId, perfTraceId });
     traceDuration('history_more.handler_total', perfStart, { ok: false, detail: { missingSessionId: true } });
     return;
   }
 
   const beforeSeq = (typeof msg.beforeSeq === 'number') ? msg.beforeSeq : null;
+  const pageKind = msg.pageKind === 'gap' ? 'gap' : 'server';
+  const gapStopAtSeq = pageKind === 'gap' && Number.isFinite(msg.gapStopAtSeq)
+    ? msg.gapStopAtSeq
+    : null;
+  const cacheEpoch = Number.isFinite(msg.cacheEpoch) ? msg.cacheEpoch : 0;
   const turns = Math.min(50, (typeof msg.turns === 'number' && msg.turns > 0) ? Math.floor(msg.turns) : 20);
 
   let result;
@@ -6859,8 +7440,12 @@ export async function handleYeaftLoadMoreHistory(msg) {
     const store = session?.conversationStore || new ConversationStore(
       resolveSessionYeaftDir(ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR, sessionId),
     );
-    result = loadVisibleGroupHistoryPage(store, sessionId, turns, beforeSeq);
-    traceDuration('history_more.store_load', loadStart, { detail: { count: result.messages?.length || 0, beforeSeq, turns } });
+    result = loadVisibleGroupHistoryPage(store, sessionId, turns, beforeSeq, {
+      stopAtSeq: gapStopAtSeq,
+    });
+    traceDuration('history_more.store_load', loadStart, {
+      detail: { count: result.messages?.length || 0, beforeSeq, turns, pageKind, gapStopAtSeq },
+    });
   } catch (err) {
     console.error('[Yeaft] loadOlderBySession failed:', err.message);
     result = { messages: [], oldestSeq: null, hasMore: false };
@@ -6877,8 +7462,14 @@ export async function handleYeaftLoadMoreHistory(msg) {
     messages: result.messages || [],
     mode: 'older',
     oldestSeq: result.oldestSeq,
+    nextBeforeSeq: result.nextBeforeSeq,
     hasMore: !!result.hasMore,
     turns,
+    pageKind,
+    gapStopAtSeq,
+    cacheEpoch,
+    requestId,
+    requestClientId,
     perfTraceId,
   });
   traceDuration('history_more.emit_chunk', emitStart, { detail: { count: result.messages?.length || 0 } });
@@ -6930,6 +7521,7 @@ export async function resetYeaftSession() {
   vpEngineConfigKeys.clear();
   asyncTaskOwners.clear();
   sessionContexts.clear();
+  projectContextBySession.clear();
   vpCurrentTodos.clear();
   threadClassifier = defaultClassifyThread;
   // History-dedup cache is keyed by per-session coordinator msg ids;
@@ -6953,11 +7545,12 @@ export async function resetYeaftSession() {
       skipMCP: true,
       skipSkills: true,
       serverMode: true,
+      managedCliReady: ctx.managedCliReady,
     });
     claimRuntimeOwnership(session);
     installYeaftRuntimeBridge(session);
 
-    yeaftConversationId = `yeaft-${Date.now()}`;
+    yeaftConversationId = createYeaftConversationId();
     scheduleBaseRuntimeLoad();
     hydrateYeaftStatusFromSession(session, { reason: 'reset', emitEvent: true });
     broadcastSkillSlashCommands(session);
@@ -7215,6 +7808,16 @@ export async function handleYeaftMcpReload(msg = {}) {
 }
 
 export const __testHooks = {
+  loadProjects,
+  sharedProjectContext,
+  buildProjectSharedBlock,
+  normalizeProjectContext,
+  handleProjectContextSyncForTest(msg) {
+    handleYeaftProjectContextSync(msg);
+  },
+  projectContextForSessionForTest(sessionId) {
+    return projectContextBySession.get(sessionId) || null;
+  },
   loadVisibleGroupHistoryPage,
   projectVisibleHistoryChunkMessages,
   persistInboundMessageOnceByMsgId,
@@ -7276,6 +7879,9 @@ export const __testHooks = {
   },
   ensureYeaftConversationIdForTest() {
     return ensureYeaftConversationId();
+  },
+  setYeaftConversationIdForTest(value) {
+    yeaftConversationId = value || null;
   },
   preloadYeaftSkillSlashCommandsForTest() {
     return broadcastSkillSlashCommands(session);
@@ -7387,5 +7993,11 @@ export const __testHooks = {
   },
   queuedTurnIds() {
     return Array.from(vpInboxes.values()).flatMap((inbox) => Array.isArray(inbox) ? inbox.map((entry) => entry.turnId) : []);
+  },
+  asyncTaskCoordinatorForTest() {
+    return buildAsyncTaskCoordinator();
+  },
+  asyncTaskOwnerForTest(taskId) {
+    return asyncTaskOwners.get(taskId) || null;
   },
 };

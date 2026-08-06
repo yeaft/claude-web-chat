@@ -19,6 +19,8 @@ const MAX_ACTION_REQUEST_NAME_BYTES = 512;
 const MAX_ACTION_REQUEST_MODEL_BYTES = 1_024;
 const MAX_ACTION_REQUEST_STOP_REASON_BYTES = 256;
 const MAX_ACTION_REQUEST_METADATA_BYTES = 4 * 1_024;
+const MAX_SPEAKER_ID_BYTES = 256;
+const MAX_SPEAKER_NAME_BYTES = 512;
 const MAX_HISTORICAL_BRIEF_CHARS = 256;
 const MAX_CURRENT_BRIEF_BYTES = 8 * 1024;
 export const MAX_WORK_ITEM_BROWSER_DTO_BYTES = 512 * 1024;
@@ -207,9 +209,12 @@ function conversationRuns(action, runs) {
 
 function projectVpSpeaker(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') return null;
-  const id = typeof snapshot.id === 'string' && snapshot.id ? snapshot.id : null;
-  const name = typeof snapshot.name === 'string' && snapshot.name ? snapshot.name : id;
-  return id || name ? { id, name } : null;
+  const sourceId = typeof snapshot.id === 'string' ? snapshot.id.trim() : '';
+  if (!sourceId) return null;
+  const id = truncateUtf8(sourceId, MAX_SPEAKER_ID_BYTES);
+  const sourceName = typeof snapshot.name === 'string' ? snapshot.name.trim() : '';
+  const name = truncateUtf8(sourceName || id, MAX_SPEAKER_NAME_BYTES) || id;
+  return { id, name };
 }
 
 function compareEventIds(leftId, rightId) {
@@ -254,6 +259,25 @@ function compareProjectedMessages(left, right) {
     || String(left?.id || '').localeCompare(String(right?.id || ''));
 }
 
+function projectedMessageQuote(value) {
+  if (!value || typeof value !== 'object') return null;
+  const content = truncateUtf8(value.content || '', MAX_ACTION_MESSAGE_CHARS);
+  const todos = Array.isArray(value.todos) ? value.todos.slice(0, 100).map(todo => ({
+    content: truncateUtf8(todo?.content || '', 2_000),
+    status: ['pending', 'in_progress', 'completed'].includes(todo?.status) ? todo.status : 'pending',
+    ...(todo?.activeForm ? { activeForm: truncateUtf8(todo.activeForm, 2_000) } : {}),
+  })).filter(todo => todo.content) : [];
+  if (!content && todos.length === 0) return null;
+  return {
+    id: truncateUtf8(value.id || '', 256) || null,
+    role: value.role === 'assistant' ? 'assistant' : 'user',
+    author: truncateUtf8(value.author || '', 256) || (value.role === 'assistant' ? 'Assistant' : 'User'),
+    content,
+    ...(Number(value.timestamp) > 0 ? { timestamp: Number(value.timestamp) } : {}),
+    ...(todos.length > 0 ? { todos } : {}),
+  };
+}
+
 function normalizeProjectedMessage(message) {
   if (!message || typeof message !== 'object') return null;
   const text = typeof message.text === 'string'
@@ -269,6 +293,7 @@ function normalizeProjectedMessage(message) {
     status: message.status || null,
     text,
     attachments,
+    ...(projectedMessageQuote(message.quote) ? { quote: projectedMessageQuote(message.quote) } : {}),
     createdAt: count(message.createdAt),
     updatedAt: count(message.updatedAt || message.createdAt),
     ...(message.progressRevision == null ? {} : { progressRevision: count(message.progressRevision) }),
@@ -290,6 +315,7 @@ function actionInputMessages(action, events, generation = actionGeneration(actio
       kind: 'input',
       status: 'sent',
       text: event.data?.text || event.data?.guidance || '',
+      quote: event.data?.quote,
       attachments: event.data?.attachments,
       createdAt: event.createdAt,
     }))
@@ -579,6 +605,7 @@ function projectAction(action, runs, events, includeBody = true) {
       ? (action.assignmentPolicy || null)
       : projectAssignmentPolicy(action.assignmentPolicy),
     dependsOnStageIds: Array.isArray(action.dependsOnStageIds) ? action.dependsOnStageIds : [],
+    sourceActionIds: Array.isArray(action.sourceActionIds) ? action.sourceActionIds : [],
     workspaceMode: action.workspaceMode || 'shared',
     requiredRole: action.requiredRole || '',
     generation: Math.max(1, count(action.generation) || 1),
@@ -771,17 +798,20 @@ function projectCanonicalEvidence(value) {
 }
 
 function projectMainlineBrowser(detail) {
-  if (!detail?.id || detail.executionSchemaVersion !== 2) return null;
+  if (!detail?.id || Number(detail.executionSchemaVersion) < 2) return null;
   const mainline = buildMainlineProjection(detail);
+  const actionSet = mainline.actionJournal || mainline.graph;
+  const nodes = actionSet.entries || actionSet.nodes || [];
+  const frontier = actionSet.runnableActionIds || actionSet.frontier || [];
   const actionById = new Map((detail.actions || []).map(action => [action.id, action]));
   const activeActionIds = Array.isArray(detail.activeActionIds)
     ? detail.activeActionIds
-    : mainline.graph.nodes.filter(node => ['ready', 'running'].includes(node.status)).map(node => node.id);
+    : nodes.filter(node => ['ready', 'running'].includes(node.status)).map(node => node.id);
   const attentionActionIds = Array.isArray(detail.attentionActionIds)
     ? detail.attentionActionIds
-    : mainline.graph.nodes.filter(node => ['waiting', 'failed'].includes(node.status)).map(node => node.id);
+    : nodes.filter(node => ['waiting', 'failed'].includes(node.status)).map(node => node.id);
   const counts = Object.fromEntries(['completed', 'running', 'ready', 'waiting', 'failed']
-    .map(status => [status, mainline.graph.nodes.filter(node => node.status === status).length]));
+    .map(status => [status, nodes.filter(node => node.status === status).length]));
   return {
     contract: {
       title: truncateUtf8(mainline.contract.title, 8_000),
@@ -790,15 +820,15 @@ function projectMainlineBrowser(detail) {
         .map(criterion => truncateUtf8(criterion, 4_000)),
     },
     progress: {
-      lifecycle: detail.lifecycle || (counts.completed === mainline.graph.nodes.length ? 'done' : 'active'),
+      lifecycle: detail.lifecycle || (counts.completed === nodes.length ? 'done' : 'active'),
       attentionState: detail.attentionState || (counts.waiting && counts.failed ? 'mixed'
         : counts.waiting ? 'waiting' : counts.failed ? 'failed' : 'none'),
       activeActionIds: [...activeActionIds],
       attentionActionIds: [...attentionActionIds],
-      frontierActionIds: [...mainline.graph.frontier],
+      frontierActionIds: [...frontier],
       counts,
     },
-    actions: mainline.graph.nodes.map(node => {
+    actions: nodes.map(node => {
       const action = actionById.get(node.id) || {};
       const result = mainline.canonicalActionResults[node.id];
       return {
@@ -813,7 +843,7 @@ function projectMainlineBrowser(detail) {
               truncateUtf8(value, MAX_CURRENT_BRIEF_BYTES),
             ]))
           : null,
-        dependencies: [...node.dependsOnStageIds],
+        dependencies: [...(node.sourceActionIds?.length ? node.sourceActionIds : node.dependsOnStageIds || [])],
         canonicalResult: result ? {
           status: result.status,
           summary: sanitizeMainlineDiagnostic(result.summary, MAX_ACTION_DIAGNOSTIC_CHARS),
@@ -829,7 +859,14 @@ function projectMainlineBrowser(detail) {
 
 function waitingReason(detail) {
   if (typeof detail?.waitingReason === 'string') return detail.waitingReason;
-  if (detail?.status !== 'waiting' || !Array.isArray(detail.runs)) return '';
+  if (detail?.status !== 'waiting') return '';
+  const waitingEvent = Array.isArray(detail?.events)
+    ? detail.events.find(event => event?.type === 'action.waiting'
+      && event?.actionId === detail.currentActionId
+      && typeof event?.data?.reason === 'string')
+    : null;
+  if (waitingEvent) return waitingEvent.data.reason;
+  if (!Array.isArray(detail.runs)) return '';
   return detail.runs.find(run => (
     run?.actionId === detail.currentActionId && typeof run.waitingReason === 'string'
   ))?.waitingReason || '';
@@ -862,6 +899,22 @@ export function projectWorkItemDetail(detail, options = {}) {
     planRevision: count(detail.planRevision),
     ledgerRevision: count(detail.ledgerRevision),
     coordinatorRevision: count(detail.coordinatorRevision),
+    coordinationMode: detail.coordinationMode || 'legacy',
+    finalResult: detail.finalResult && typeof detail.finalResult === 'object' ? {
+      summary: truncateUtf8(detail.finalResult.summary || '', MAX_ACTION_MESSAGE_CHARS),
+      acceptanceResults: Array.isArray(detail.finalResult.acceptanceResults)
+        ? detail.finalResult.acceptanceResults.slice(0, 24).map(result => ({
+            criterion: truncateUtf8(result?.criterion || '', MAX_ACTION_MESSAGE_CHARS),
+            status: result?.status === 'passed' ? 'passed' : null,
+            evidenceRunIds: Array.isArray(result?.evidenceRunIds)
+              ? result.evidenceRunIds.map(String).slice(0, 24) : [],
+          })) : [],
+      evidenceRunIds: Array.isArray(detail.finalResult.evidenceRunIds)
+        ? detail.finalResult.evidenceRunIds.map(String).slice(0, 64) : [],
+      residualRisks: Array.isArray(detail.finalResult.residualRisks)
+        ? detail.finalResult.residualRisks
+          .map(risk => truncateUtf8(risk, MAX_ACTION_MESSAGE_CHARS)).slice(0, 24) : [],
+    } : null,
     title: detail.title,
     goal: detail.goal,
     acceptanceCriteria: Array.isArray(detail.acceptanceCriteria) ? detail.acceptanceCriteria : [],
@@ -889,12 +942,17 @@ export function projectWorkItemDetail(detail, options = {}) {
       id: String(message.id || ''),
       turnId: String(message.turnId || message.id || ''),
       role: message.role === 'assistant' ? 'assistant' : message.role === 'legacy_instruction' ? 'legacy_instruction' : 'user',
+      ...(message.role === 'assistant' && projectVpSpeaker(message.speaker)
+        ? { speaker: projectVpSpeaker(message.speaker) } : {}),
       text: truncateUtf8(message.text || '', MAX_ACTION_MESSAGE_CHARS),
+      ...(message.role !== 'assistant' && projectedMessageQuote(message.quote)
+        ? { quote: projectedMessageQuote(message.quote) } : {}),
       attachments: projectAttachments(message.attachments),
       status: ['thinking', 'completed', 'failed'].includes(message.status) ? message.status : 'completed',
       error: truncateUtf8(message.error || '', MAX_ACTION_DIAGNOSTIC_CHARS) || null,
       decision: message.decision && typeof message.decision === 'object' ? {
-        kind: ['answer', 'guide_actions', 'replan', 'request_human'].includes(message.decision.kind)
+        kind: ['answer', 'create_actions', 'guide_actions', 'replan', 'request_human', 'complete']
+          .includes(message.decision.kind)
           ? message.decision.kind : null,
         reason: truncateUtf8(message.decision.reason || '', MAX_ACTION_DIAGNOSTIC_CHARS),
         changedContract: message.decision.changedContract === true,
@@ -944,6 +1002,7 @@ export function projectWorkItemSummary(detail) {
       planRevision: count(detail.planRevision),
       ledgerRevision: count(detail.ledgerRevision),
       coordinatorRevision: count(detail.coordinatorRevision),
+      coordinationMode: detail.coordinationMode || 'legacy',
       title: detail.title,
       goal: detail.goal,
       workItemType: detail.workflowSnapshot?.workItemType || detail.workItemType || null,
@@ -980,6 +1039,7 @@ export function projectWorkItemSummary(detail) {
     planRevision: count(detail.planRevision),
     ledgerRevision: count(detail.ledgerRevision),
     coordinatorRevision: count(detail.coordinatorRevision),
+    coordinationMode: detail.coordinationMode || 'legacy',
     title: detail.title,
     goal: detail.goal,
     workItemType: detail.workflowSnapshot?.workItemType || detail.workItemType || null,
@@ -1029,6 +1089,8 @@ export function projectWorkCenterEvent(event) {
     type,
     ...(eventActionId ? { actionId: eventActionId } : {}),
     ...(typeof event?.runId === 'string' && event.runId ? { runId: event.runId } : {}),
+    ...(typeof event?.clientMessageId === 'string' && event.clientMessageId
+      ? { clientMessageId: truncateUtf8(event.clientMessageId, 256) } : {}),
     workItem: {
       ...projectWorkItemSummary(event?.workItem),
       actionStats: projectActionStats(event?.workItem, liveActionId),

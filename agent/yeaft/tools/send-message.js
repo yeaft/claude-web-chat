@@ -7,6 +7,7 @@
 
 import { defineTool } from './types.js';
 import { agentBelongsToCaller, getAgentRegistry } from './agent.js';
+import { enqueueSubAgentPrompt } from '../sub-agent/prompt-queue.js';
 import { isTerminalAgentStatus, isPromptableAgentStatus, STATUS, describeAgentStatus } from '../sub-agent/status.js';
 
 export default defineTool({
@@ -61,6 +62,9 @@ SpawnAgent -> (PromptAgent <-> WaitAgent)+ -> CloseAgent -> 最终回复给用�
   },
   isConcurrencySafe: () => false,
   isReadOnly: () => false,
+  // Queueing a prompt can resume an existing writable child after this
+  // orchestration call returns, so parent filesystem snapshots are stale-risk.
+  mayMutateWorkspaceAfterReturn: () => true,
   async execute(input, ctx) {
     // NB: next_steps is the FIRST envelope field — the registry's
     // model-context tail truncation would eat it if it lived at the end.
@@ -111,8 +115,11 @@ SpawnAgent -> (PromptAgent <-> WaitAgent)+ -> CloseAgent -> 最终回复给用�
 
     // Queue as a pending prompt the driver will pull. This wakes the
     // driver out of its idle wait and starts a new turn.
-    if (!Array.isArray(agent.pendingPrompts)) agent.pendingPrompts = [];
-    agent.pendingPrompts.push(message);
+    enqueueSubAgentPrompt(agent, message, {
+      projectSessionIds: ctx?.parentEngineDeps?.projectSessionIds,
+      projectLabel: ctx?.parentEngineDeps?.projectLabel,
+      projectInstruction: ctx?.parentEngineDeps?.projectInstruction,
+    });
     agent.messages.push({
       role: 'user',
       content: message,

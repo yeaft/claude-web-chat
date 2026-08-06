@@ -1,208 +1,154 @@
-# Yeaft 引擎
+# 原生 Yeaft Engine
 
-Yeaft 自有的 AI 引擎跑在 `agent/yeaft/`，**不依赖**任何外部 CLI（Claude / Copilot 都不需要）。它有自己的 query loop、记忆系统、工具集、LLM 路由。本章讲它的**核心架构**和 **turn lifecycle**。
+原生 engine 位于 `agent/yeaft/`，不依赖 Claude Code 或 GitHub Copilot CLI。它拥有自己的 LLM adapter、Session/VP 编排、tool loop、memory、persistence、sub-agent、background job 和 Work Center runner integration。
 
-> 本章面向**想读 Yeaft 引擎代码 / 改它**的开发者。普通用户视角看 [Yeaft Code Agent](../user/yeaft-group.md)。
+> 本页面向开发者。产品行为请阅读 [Yeaft Session 与 Project](../user/yeaft-session.md) 和 [Work Center](../user/work-center.md)。
 
-## 模块布局
+## 主要模块
 
-```
+```text
 agent/yeaft/
-  engine.js        — 主 query loop（turn-based）
-  session.js       — Session orchestrator（loadSession 把所有子系统串起来）
-  config.js        — 从 ~/.yeaft/config.json 读配置
-  prompts.js       — 双语 system prompt builder
-  models.js        — Model registry（上下文窗口、output limit、provider 推断）
-
-  sessions/        — Session 编排（coordinator、roster、store、pre-flow）
-  routing/         — Turn 内路由 + loop guard
-  router/          — Continuity / thinking 相关路由策略
-  memory/          — H2-AMS 记忆子系统（见 yeaft-memory.md）
-  llm/             — LLM 适配器层（见 yeaft-llm.md）
-  tools/           — 内置工具表
-  templates/       — System prompt 模板
-  conversation/    — Message 持久化 + 搜索
-  dream/        — 后台记忆维护
-  compact/         — 上下文 compact 策略
-  eval/            — 评估脚本
-
-  web-bridge.js    — Engine 事件 → claude_output envelope 翻译
+  engine.js             query/tool loop、retry、folding、persistence
+  session.js            加载一个 engine context 与配套子系统
+  web-bridge.js         Web Session/VP 与 event bridge
+  cli-session-runner.js transport-neutral multi-VP CLI Session runner
+  sessions/             roster、store、coordinator、pre-flow、CRUD
+  projects/             Agent-side Project context store
+  vp/                   VP library、persona loader、default、registry
+  llm/                  adapter router、Anthropic、OpenAI Responses、credential
+  memory/               H2-AMS、FTS index、scope、summary、segment
+  conversation/         持久 message 与搜索
+  tools/                33 个内置工具定义和 registry
+  sub-agent/            child-agent runner、log、liveness、notification
+  tasks/                持久 background shell job
+  work-center/          WorkItem/Action/Run planner、store、watcher、runner
+  tool-folding/         turn reflection 与长 tool arc folding
+  compact/              context compaction
+  dream/                后台 memory maintenance
+  archive/              大型/raw turn 与 tool-result archive helper
+  templates/            双语 base、unified、dream、plan、persona prompt
 ```
 
-## Engine Query Loop（核心 turn cycle）
+## 一个原生 turn
 
-`engine.js` 是引擎的主循环。一个 user turn 进来后，引擎做：
+普通 VP turn 按以下步骤运行：
 
-```
-1. Pre-query
-   - preflow.recall(scopes) — 跨 user/vp/group/feature scope FTS 召回相关记忆
-   - 注入到 system prompt
-   - AMS（Active Memory Set）三层缓存（Resident summary / Recent / OnDemand）一并注入
+1. **Pre-query** — 解析 Agent/Session/VP/Project identity、project instruction、runtime platform、pending child-agent notification、project docs 与 H2-AMS recall。
+2. **构造 context** — 组合 system prompt、VP persona、compact summary、有预算的 history、当前 user content 和支持的 attachment。
+3. **Stream LLM** — 选择配置的 provider/model，调用 Anthropic Messages 或 OpenAI Responses adapter。
+4. **执行工具** — 通过 `ToolRegistry` 运行允许的 call，append result block 并继续 stream。
+5. **Fold 长 arc** — 周期性 reflect tool batch，并 summary 长 turn，同时在 persistence/debug 路径保留 raw output。
+6. **结束** — 持久化 message、usage、trace、task state 和 terminal result；确认已注入 notification；然后触发 AMS adjustment、Dream 或 compact check。
+7. **恢复** — 在配置上限内 auto-continue `max_tokens`；context error 强制 compact；分类为 retryable 的 failure 可以切换 eligible fallback model。
 
-2. 构造 messages 数组
-   - system: 模板 + 记忆 + persona + tool-guidance + project doc
-   - history: 该 thread 的历史消息（如有 compact summary 一并带上）
-   - 当前 user message
+Abort signal 会传入 adapter 和 tools。Engine 区分 user abort、auth error、rate limit、server failure、idle timeout 与 context failure，不把所有 stop 当成 generic error。
 
-3. adapter.stream({ model, system, messages, tools, signal })
-   - 收 text_delta / thinking_delta / tool_call / usage / stop 事件
-   - 实时通过 web-bridge 推到前端
+## Session 与 VP 编排
 
-4. 收到 tool_call 事件
-   - ToolRegistry.execute(name, input, ctx) — 执行工具
-   - 把结果 append 到 messages（role: 'tool'）
-   - 回到 step 3 继续 stream
-
-5. 收到 stop 事件
-   - stop_reason === 'end_turn' → 持久化 messages → 检查是否需要 consolidation → 完成 turn
-   - stop_reason === 'max_tokens' → auto-continue（最多 3 次）
-   - stop_reason === 'tool_use' → 已在 step 4 处理
-
-6. 错误处理
-   - LLMContextError → 强制 compact → 重试
-   - 可重试错误 + 配了 fallbackModel → 换 model → 重试
-   - 不可重试错误 → 终止 turn，错误传给用户
-```
-
-## Turn lifecycle 详细图
-
-```
-                  ┌─────────────────────────┐
-   user message → │ runVpTurn(group, vp)    │
-                  └────────────┬────────────┘
-                               ↓
-                  ┌─────────────────────────┐
-                  │ preflow.recall(scopes)  │  ← FTS over user/vp/group/feature
-                  │ → memory hits            │
-                  └────────────┬────────────┘
-                               ↓
-                  ┌─────────────────────────┐
-                  │ buildSystemPrompt()     │  ← templates + persona + memory + tool guidance
-                  └────────────┬────────────┘
-                               ↓
-                  ┌─────────────────────────┐
-                  │ Engine.query(messages)  │  ← the loop
-                  └────────────┬────────────┘
-              ┌────────────────┴────────────────┐
-              ↓                                 ↓
-      ┌──────────────┐                  ┌──────────────┐
-      │ adapter.stream → events          │ tool_call event
-      └──────┬───────┘                   └──────┬───────┘
-             ↓                                  ↓
-       text_delta / thinking_delta       ToolRegistry.execute
-        → web-bridge → frontend           → append tool result
-                                          → re-stream
-             ↓
-       stop event (end_turn)
-             ↓
-      ┌──────────────────────┐
-      │ persist messages     │
-      │ trigger consolidate? │  ← if yes, schedule dream maintenance
-      │ adjust AMS (max 1×)  │
-      └──────┬───────────────┘
-             ↓
-        turn complete → web-bridge emits 'result' envelope
-```
-
-## Session & VP 编排
-
-### Session
-`session.js` 的 `loadSession()` 把所有子系统串起来：
+Session coordinator 根据 roster 解析接收者：
 
 ```js
-const session = await loadSession({ conversationId, userId, agentId });
-// → { engine, memory, tools, llm, ... }
+const recipients = resolveVps(mentions, roster, defaultVpId);
+await Promise.all(recipients.map(vp => runVpTurn(session, vp, input)));
 ```
 
-一个 session 包含：
-- 一个 `Engine` 实例
-- Session 状态、roster、活跃 VP、以及每个 VP 的 turn 状态
-- 共享的 `memory` / `tools` / `llm` 子系统
+真实 API 还有 identity、attachments、quoting、routing 和 persistence 字段；这个 pseudocode 只展示 fan-out。关键规则是：
 
-### Session fan-out
-`sessions/coordinator.js` 接到 `yeaft_session_send`（legacy alias: `yeaft_session_chat`）后：
+- 每个 turn 只持久化一条 canonical user message；
+- 没有 mention 时发送给 default VP；
+- 显式 mention 发送给匹配的 roster member；
+- 每个 selected VP 有独立 engine/persona/memory context；
+- VP event 保留 `sessionId`、`vpId`、turn/thread identity 与 source order；
+- Peer handoff 使用 `RouteForward` tool 与 loop guard，不依赖文本 mention。
 
-```js
-async ingest({ sessionId, text, mentions, attachments }) {
-  const vps = roster.resolveVps(mentions);  // @mention → VPs（不写默认 VP）
-  await Promise.all(vps.map(vp => runVpTurn(session, vp, text)));
-}
-```
+Web path 使用 `web-bridge.js`。直接运行的 `yeaft` CLI 使用 transport-neutral Session runner，使 Session ID 和 multi-VP 语义一致。
 
-VP 并行跑 `runVpTurn`，每个 VP 一个 `Engine.query()`。完成时间不同，事件按 VP 分流。
+## Prompt 构造
 
-### Routing & loop guard
-`routing/` 处理 turn 内的路由（VP→VP `route_forward`）+ loop guard（防止 ping-pong）。`routing/loop-guard.js` 检测同一对 VP 在短时间内多次互相 ping-pong → 强制中止。
+`prompts.js` 组合：
 
-## System Prompt 模板
+- `templates/base.md`、`identity-yeaft.md` 和 `common-rules.md`；
+- 唯一的 interactive `mode-unified.md` contract；
+- Dream 或 plan operation 的专用 instruction；
+- selected persona 与 VP metadata；
+- runtime platform/tool guidance；
+- project docs 与 Project instruction；
+- 渲染后的 H2-AMS memory block；
+- 可选 harness-level instruction。
 
-`templates/` 下有几个核心模板：
+历史 interactive mode 已收敛进 unified contract。Dream 仍是专用 memory-maintenance operation，不是面向用户的 Session mode。
 
-| 模板 | 作用 |
-| --- | --- |
-| `base.md` | 核心身份 + 原则（双语 EN/zh） |
-| `identity-yeaft.md` | Yeaft 身份 + brand 指令 |
-| `common-rules.md` | 公共行为规则（不撒谎、不假装查询…） |
-| `mode-unified.md` | 当前唯一的运行 mode（覆盖 Session 协作所需指令） |
-| `mode-dream.md` | Dream 模式：记忆维护用的 prompt |
-| `plan-instruction.md` | 计划阶段的额外指令 |
-| `tool-guidance.md` | 工具使用最佳实践 |
-| `personas/` | Jobs / Torvalds / Fowler / Rams / Beck 等预设人格 |
-| `harness/` | Harness 级指令（环境信息等） |
+## LLM adapter
 
-`prompts.js` 的 `buildSystemPrompt()` 按当前 VP 配置 + 当前 mode + 记忆 + 项目 doc 拼最终 prompt。
+`AdapterRouter` 按以下优先级解析 provider 与 protocol：
 
-> 历史模板（`mode-chat.md` / `mode-worker.md` / `mode-coordinator.md`）已合并进 `mode-unified.md` + `personas/`，不再单独存在。
+1. per-model protocol override；
+2. provider protocol；
+3. model-ID heuristic；
+4. OpenAI Responses fallback。
 
-## Web Bridge
+支持的 protocol 是 `anthropic` 和 `openai-responses`。Provider entry 可以使用静态 `apiKey` 或已支持的 dynamic credential provider。Context/output limit 来自 model override、bundled catalog 或保守 default。Model effort 会在支持时转换成 Anthropic thinking/output effort 或 OpenAI reasoning effort。
 
-`web-bridge.js` 把 Engine 事件翻译成 `claude_output` envelope 推给 server：
-
-```
-Engine emits:                Web bridge emits:
-─────────────────────────────────────────────────────────────
-text_delta                   { type: 'assistant', message: { content: [{ type: 'text', text }] } }
-thinking_delta               { type: 'assistant', ... thinking block }
-tool_call                    { type: 'assistant', ... tool_use block }
-tool_result                  { type: 'user',      ... tool_result block }
-usage / stop                 { type: 'result',    subtype, ... }
-```
-
-这是 Yeaft 引擎复用 Claude 渲染管线的关键 — 前端 `MessageList` / `AssistantTurn` 不知道下游是 Yeaft 还是 Claude CLI。
+参见[原生 LLM 层](./yeaft-llm.md)。
 
 ## 工具系统
 
-`tools/registry.js` 是工具注册表：
+`createFullRegistry()` 当前注册 33 个内置工具：
 
-```js
-const registry = createFullRegistry({ scope, mode, allowedTools });
-const result = await registry.execute(toolName, input, ctx);
-```
+- files 与 patch；
+- grep/glob/directory/disk/history search；
+- foreground/background shell job 与 task log；
+- Git worktree enter/exit；
+- Web search/fetch、local image view 与 image generation；
+- JavaScript REPL 与 notebook edit；
+- planning、visible todo 与 user question；
+- 持久 WorkItem 创建；
+- sub-agent spawn/prompt/wait/list/close 与显式 VP routing；
+- Skills。
 
-工具按 mode 过滤：`unified` 模式给完整 30+ 工具，`dream` 模式只给记忆维护相关工具。
+MCP tool 在 runtime 添加。Registry policy 可以针对当前 execution context deny tool。Dream maintenance 不拥有与 interactive Session turn 相同的广泛 side-effect contract。
 
-工具实现按类别分文件，见 [Yeaft Code Agent](../user/yeaft-group.md) 的工具清单。
+Tool event 与 raw result 会持久化用于 audit/debug。进入 context 的表示另有预算，并可能 fold 或变成 archive stub；UI truncation 不表示 raw record 已丢失。
 
-## 记忆 / LLM / Group 子系统
+## H2-AMS memory
 
-每个都有独立的章节：
-- 记忆 → [Yeaft 记忆系统 (H2-AMS)](./yeaft-memory.md)
-- LLM 层 → [Yeaft LLM 层](./yeaft-llm.md)
-- Wire 协议 → [WebSocket 协议](./wire-protocol.md)
+每个 turn 前，pre-flow 将授权 scope 映射到当前 Agent memory store，提取 query keyword 并获取 FTS hit。Active Memory Set 组合：
 
-## 测试
+- resident scope summary；
+- recent item；
+- on-demand full-text segment。
 
-- `test/agent/yeaft-phase5.test.js` — engine 核心
-- `test/agent/yeaft-phase6.test.js` — 多 VP / group 编排
-- `test/agent/yeaft-eval.test.js` — 端到端评估
+Dream maintenance 提取持久 segment 并重建 summary。Scope ownership 是显式的：user、VP、nested VP、Session、related Project-Session 和 compatibility scope 不会变成一份共享 transcript。
 
-> 测试文件名沿用历史 "yeaft" 前缀，实际覆盖现在叫 Yeaft 的引擎。
+参见 [H2-AMS memory](./yeaft-memory.md)。
 
-## 关键文件
+## Background task 与 sub-agent
 
-- `agent/yeaft/engine.js` — 主 query loop
-- `agent/yeaft/session.js` — Session orchestrator
-- `agent/yeaft/sessions/coordinator.js` — Session 内多 VP fan-out
-- `agent/yeaft/prompts.js` — System prompt builder
-- `agent/yeaft/web-bridge.js` — Event → wire 翻译
-- `agent/yeaft/tools/registry.js` — 工具注册表
+- `Bash` 使用 `background=true` 会创建带 log 的持久 Session task。
+- `ListTasks`、`ReadTaskLog` 和 `CancelTask` 操作这条 record。
+- Agent restart 后，未解决的 process handle 会标为 orphaned，不会假装仍可控制。
+- Sub-agent 有自己的 output log、liveness counter、可选 budget 和 terminal/idle notification。
+- Terminal notification 是 parent re-entry control context，不是新的 user-authored semantic memory。
+
+## Work Center integration
+
+Work Center 通过 runner adapter 复用 `Engine.query()`，不实现第二套 LLM/tool loop。Run 会冻结 Action、VP、model/effort、tool-policy、workspace 与 attempt identity。Structured completion tool 提交 `completed`、`waiting`、`retryable` 或 `failed`；普通 model `turn_end` 不能推进 Action。
+
+Coordinator 使用相同 model infrastructure，但其 decision contract 受限，没有 file/shell/external side-effect tool。
+
+## Persistence 与兼容
+
+Agent-local Session metadata、history、memory、tasks 和 Work Center data 位于解析出的 Yeaft directory。Session 的 `workDir` 只是 project context。
+
+旧 wire alias、payload identifier 和 storage scope prefix 会在修改可能破坏已部署 client/data 的地方保留。新代码使用 Session/Yeaft 术语，canonical Session memory layout 是 `sessions/<id>`；迁移期间 reader 仍可能处理 legacy `session/<id>` 与 `group/<id>` alias。
+
+## 验证映射
+
+Test tree 按 subsystem 组织，不再使用历史 phase 文件：
+
+- `test/agent/yeaft/` 覆盖 compact、conversation、memory、Sessions、sub-agent、tasks、tool folding、Work Center 等模块；
+- `test/agent/yeaft-*.test.js` 覆盖 cross-module native-engine behavior；
+- `test/server/yeaft-*.test.js` 与 `test/web/yeaft-*.test.js` 覆盖 relay/UI integration；
+- `e2e/` 覆盖 browser-visible flow。
+
+当前 repository-wide gate 使用 `npm test`、`npm run test:e2e` 和 `npm run release:guard`。

@@ -26,11 +26,11 @@ import { sendToServer, flushMessageBuffer } from './buffer.js';
 import { sendAgentMetricsSnapshot } from '../metrics.js';
 import { handleRestartAgent, handleUpgradeAgent } from './upgrade.js';
 import { loadMcpServers, updateMcpConfig } from '../mcp.js';
-import { getLlmConfig, updateLlmConfig, getYeaftSettings, updateYeaftSettings, getPluginConfig, updatePluginConfig, getSearchSettings, updateSearchSettings, fetchTavilyUsage } from '../yeaft/config-api.js';
+import { getLlmConfig, updateLlmConfig, getYeaftSettings, updateYeaftSettings, getPluginConfig, updatePluginConfig, getTelemetrySettings, updateTelemetrySettings, getSearchSettings, updateSearchSettings, fetchTavilyUsage } from '../yeaft/config-api.js';
 import { loadConfig } from '../yeaft/config.js';
 import { discoverLlmModels } from '../llm-model-discovery.js';
 import { fetchModelsDev } from '../yeaft/llm/models-dev.js';
-import { handleYeaftSessionSend, handleYeaftAskUserAnswer, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftModeSwitch, handleYeaftModelSwitch, resetYeaftSession, refreshLiveSessionConfig, handleYeaftLoadHistory, handleYeaftLoadHistoryOutline, handleYeaftSearchHistory, handleYeaftLoadHistoryWindow, handleYeaftLoadMoreHistory, handleYeaftAbortThread, handleYeaftAbortAll, handleYeaftAbortTurn, handleYeaftVpSubscribe, handleYeaftVpCreate, handleYeaftVpUpdate, handleYeaftVpDelete, handleYeaftVpRead, handleYeaftListSessions, handleYeaftCreateSession, handleYeaftRenameSession, handleYeaftUpdateSession, handleYeaftUpdateSessionConfig, handleYeaftArchiveSession, handleYeaftDeleteSession, handleYeaftSessionAddMember, handleYeaftSessionRemoveMember, handleYeaftSessionSetDefaultVp, handleYeaftScanWorkdirSessions, handleYeaftRestoreSession, handleYeaftDreamTrigger, handleYeaftFetchToolStats, handleYeaftFetchDebugHistory, handleYeaftMcpList, handleYeaftMcpAdd, handleYeaftMcpRemove, handleYeaftMcpReload, handleYeaftPluginCatalog, broadcastLanguageChange, broadcastYeaftSessionSnapshotEager, preloadYeaftSkillSlashCommands } from '../yeaft/web-bridge.js';
+import { handleYeaftSessionSend, handleYeaftAskUserAnswer, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftModeSwitch, handleYeaftModelSwitch, resetYeaftSession, refreshLiveSessionConfig, handleYeaftLoadHistory, handleYeaftLoadHistoryOutline, handleYeaftSearchHistory, handleYeaftLoadHistoryWindow, handleYeaftLoadMoreHistory, handleYeaftAbortThread, handleYeaftAbortAll, handleYeaftAbortTurn, handleYeaftVpSubscribe, handleYeaftVpCreate, handleYeaftVpUpdate, handleYeaftVpDelete, handleYeaftVpRead, handleYeaftListSessions, handleYeaftProjectContextSync, handleYeaftProjectMutation, handleYeaftCreateSession, handleYeaftRenameSession, handleYeaftUpdateSession, handleYeaftUpdateSessionConfig, handleYeaftArchiveSession, handleYeaftDeleteSession, handleYeaftSessionAddMember, handleYeaftSessionRemoveMember, handleYeaftSessionSetDefaultVp, handleYeaftScanWorkdirSessions, handleYeaftRestoreSession, handleYeaftDreamTrigger, handleYeaftFetchToolStats, handleYeaftFetchDebugHistory, handleYeaftMcpList, handleYeaftMcpAdd, handleYeaftMcpRemove, handleYeaftMcpReload, handleYeaftPluginCatalog, broadcastLanguageChange, broadcastYeaftSessionSnapshotEager, broadcastYeaftVpSnapshotEager, preloadYeaftSkillSlashCommands } from '../yeaft/web-bridge.js';
 import { startYeaftStatusRefresh, forceRefreshYeaftStatus } from '../yeaft/status-cache.js';
 import { handleWorkCenterRequest } from '../yeaft/work-center/bridge.js';
 
@@ -131,6 +131,10 @@ export async function handleMessage(msg) {
       // The callee already wraps its FS scan + emit in try/catch and
       // logs via console.warn — no second guard needed here.
       broadcastYeaftSessionSnapshotEager();
+      // Stock VPs are bundled Agent data. Seed + publish them during register so
+      // a first-install user can open the create dialog immediately instead of
+      // depending on a later Session runtime or modal subscription race.
+      broadcastYeaftVpSnapshotEager();
 
       // ★ Flush 断连期间缓冲的消息
       await flushMessageBuffer();
@@ -459,6 +463,34 @@ export async function handleMessage(msg) {
       break;
     }
 
+    // Local performance telemetry settings — read/write the `telemetry`
+    // section of config.json. This does not expose trace payloads.
+    case 'get_telemetry_settings': {
+      const settings = getTelemetrySettings(ctx.CONFIG?.yeaftDir);
+      sendToServer({ type: 'telemetry_settings', ...settings });
+      break;
+    }
+
+    case 'update_telemetry_settings': {
+      const result = updateTelemetrySettings(msg.settings || msg.config || {}, ctx.CONFIG?.yeaftDir);
+      if (!result.error) {
+        // Bridge trace producers use the agent-owned config object directly.
+        // The result is the normalized section that was successfully written,
+        // so apply it before refresh can yield and leave no enabled-by-default
+        // gap for diagnostics emitted outside a loaded Session.
+        if (ctx.CONFIG && typeof ctx.CONFIG === 'object') {
+          ctx.CONFIG.telemetry = { ...result };
+        }
+        try {
+          await refreshLiveSessionConfig({});
+        } catch (error) {
+          result.runtimeRefreshError = error?.message || String(error);
+        }
+      }
+      sendToServer({ type: 'telemetry_settings_updated', ...result });
+      break;
+    }
+
     // Search settings (web-search backend + Tavily key) — read/write the
     // `search` section of config.json. `get_tavily_usage` hits Tavily's
     // /usage endpoint with the saved key and is fired from the UI only
@@ -515,6 +547,14 @@ export async function handleMessage(msg) {
     case 'yeaft_session_chat':
     case 'unify_group_chat':
       await handleYeaftSessionSend(msg);
+      break;
+
+    case 'yeaft_project_context_sync':
+      handleYeaftProjectContextSync(msg);
+      break;
+
+    case 'yeaft_project_mutation':
+      handleYeaftProjectMutation(msg);
       break;
 
     case 'yeaft_load_history':

@@ -1,9 +1,9 @@
 /**
  * dream/segment-extract.js.
  *
- * Minimal H2 Dream bridge: extract atomic memory segments for the session
- * scopes touched by a Dream pass and persist them through memory/segment-store.
- * The existing apply path still maintains summary.md as the coarse layer.
+ * Extract atomic evidence segments for scopes touched by a Dream pass and
+ * persist them through memory/segment-store. Dream Apply separately maintains
+ * canonical content.md and the short catalog summary.md.
  */
 
 import { readScope, writeScope } from '../memory/segment-store.js';
@@ -12,7 +12,6 @@ import { makeSegment } from '../memory/segment.js';
 import { render, extractTemplateForScope } from './prompts/index.js';
 import { parseJsonSafe } from './triage.js';
 
-const MAX_TARGETS = 24;
 const MAX_MESSAGES = 80;
 const MAX_BODY_CHARS = 1200;
 const MAX_SEGMENTS_PER_SCOPE = 64;
@@ -50,6 +49,7 @@ export async function extractAndWriteMemorySegments(opts) {
 
   const messages = normalizeMessages(opts.messages || []);
   if (messages.length === 0) return { scopes: 0, segments: 0, errors: [] };
+  const allowedSourceIds = new Set(messages.map(message => message.id));
 
   const targetScopes = normalizeTargetScopes(opts.sessionId, opts.targets || []);
   const now = opts.nowIso ? opts.nowIso() : new Date().toISOString();
@@ -57,7 +57,7 @@ export async function extractAndWriteMemorySegments(opts) {
   let scopeCount = 0;
   const errors = [];
 
-  for (const scope of targetScopes.slice(0, MAX_TARGETS)) {
+  for (const scope of targetScopes) {
     let extracted = [];
     try {
       extracted = await extractScopeSegments({
@@ -67,6 +67,7 @@ export async function extractAndWriteMemorySegments(opts) {
         llm: opts.llm,
         language: opts.language,
         now,
+        allowedSourceIds,
       });
     } catch (err) {
       errors.push({ scope, error: err.message, rawSnippet: err.rawSnippet || '' });
@@ -90,7 +91,7 @@ export async function extractAndWriteMemorySegments(opts) {
   return { scopes: scopeCount, segments: segmentCount, errors };
 }
 
-async function extractScopeSegments({ scope, sessionId, messages, llm, language, now }) {
+async function extractScopeSegments({ scope, sessionId, messages, llm, language, now, allowedSourceIds }) {
   const template = extractTemplateForScope(scope);
   const base = render(template, templateVarsForScope(scope, sessionId), { language });
   const prompt = `${base}\n\nTarget scope: ${scope}\n\nConversation diff, oldest first:\n${renderMessages(messages)}\n\nReturn only the JSON array. Do not wrap it in Markdown.`;
@@ -98,7 +99,7 @@ async function extractScopeSegments({ scope, sessionId, messages, llm, language,
   const firstParsed = parseJsonSafe(firstRaw);
   if (Array.isArray(firstParsed)) {
     return firstParsed
-      .map(item => normalizeExtractedSegment({ item, scope, now }))
+      .map(item => normalizeExtractedSegment({ item, scope, now, allowedSourceIds }))
       .filter(Boolean);
   }
 
@@ -112,7 +113,7 @@ async function extractScopeSegments({ scope, sessionId, messages, llm, language,
   }
 
   return retryParsed
-    .map(item => normalizeExtractedSegment({ item, scope, now }))
+    .map(item => normalizeExtractedSegment({ item, scope, now, allowedSourceIds }))
     .filter(Boolean);
 }
 
@@ -142,14 +143,14 @@ function normalizeMessages(messages) {
   return messages
     .filter(m => m && typeof m === 'object')
     .slice(-MAX_MESSAGES)
-    .map((m, index) => ({
-      id: String(m.id || m.messageId || `dream_msg_${index}`),
+    .map(m => ({
+      id: String(m.id || m.messageId || '').trim(),
       role: String(m.role || m.type || 'unknown'),
       vpId: typeof m.vpId === 'string' ? m.vpId : '',
       body: String(m.body || m.content || '').slice(0, MAX_BODY_CHARS),
       kind: String(m.kind || ''),
     }))
-    .filter(m => m.body.trim());
+    .filter(m => m.id && m.body.trim());
 }
 
 function renderMessages(messages) {
@@ -162,13 +163,15 @@ function renderMessages(messages) {
   })), null, 2);
 }
 
-function normalizeExtractedSegment({ item, scope, now }) {
+function normalizeExtractedSegment({ item, scope, now, allowedSourceIds }) {
   if (!item || typeof item !== 'object') return null;
   const body = String(item.body || item.content || item.summary || '').trim();
   if (!body) return null;
   const kind = VALID_KINDS.has(String(item.kind || '')) ? String(item.kind) : 'context';
   const tags = Array.isArray(item.tags) ? item.tags.map(t => String(t).trim()).filter(Boolean) : [];
-  const sourceMessages = normalizeSourceMessageIds(item.sourceMessages);
+  const sourceMessages = [...new Set(normalizeSourceMessageIds(item.sourceMessages))];
+  if (sourceMessages.length === 0) return null;
+  if (sourceMessages.some(id => !allowedSourceIds.has(id))) return null;
   return makeSegment({
     scope,
     kind,

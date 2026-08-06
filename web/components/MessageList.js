@@ -13,7 +13,10 @@ import ReflectionCard from './ReflectionCard.js';
 import SubAgentCard from './SubAgentCard.js';
 import UserTurnBlock from './UserTurnBlock.js';
 import VirtualTranscript from './VirtualTranscript.js';
-import { shouldCloseYeaftVpTurn } from '../stores/helpers/yeaft-turn-boundary.js';
+import {
+  orderYeaftVpTurnMessagesByExecution,
+  shouldCloseYeaftVpTurn,
+} from '../stores/helpers/yeaft-turn-boundary.js';
 import {
   estimateVirtualItemHeight,
   historyPrefetchThreshold,
@@ -62,7 +65,7 @@ export default {
       </div>
 
       <!-- Welcome Screen when no conversation -->
-      <div v-if="!store.currentConversation" class="welcome-screen">
+      <div v-if="!store.activeConversationId" class="welcome-screen">
         <div class="welcome-content">
           <div class="welcome-logo">
             <svg viewBox="0 0 48 48" width="64" height="64" aria-hidden="true">
@@ -182,7 +185,7 @@ export default {
           <div class="initial-message-loading-spinner" aria-hidden="true"></div>
           <div class="initial-message-loading-text">{{ initialMessagesLoadingText || $t('chat.session.loadingHistory') }}</div>
         </div>
-        <div v-else-if="(store.loadingMoreMessages && store.currentView !== 'yeaft') || store.yeaftLoadingMoreHistory" class="loading-more">{{ $t('message.loadingMore') }}</div>
+        <div v-else-if="(store.loadingMoreMessages && store.currentView !== 'yeaft') || showYeaftOlderHistoryLoading" class="loading-more">{{ $t('message.loadingMore') }}</div>
         <div v-else-if="(store.hasMoreMessages && store.currentView !== 'yeaft') || store.yeaftHasMoreHistory || store.hasHiddenYeaftMessages" class="load-more-hint" @click="onClickLoadMore">{{ $t('message.loadMore') }}</div>
         <VirtualTranscript
           :key="virtualTranscriptIdentity"
@@ -235,6 +238,7 @@ export default {
                   :response-toggle-label="responseCollapseLabel(block)"
                   @quote="$emit('quote-message', $event)"
                   @toggle-response-collapse="toggleMessageTurnResponse(block)"
+                  @open-debug="onOpenTurnDebug(item)"
                 />
                 <AssistantTurn
                   v-else-if="item.type === 'assistant-turn'"
@@ -327,6 +331,7 @@ export default {
                 :turn="block"
                 :now-ms="nowMs"
                 @quote="$emit('quote-message', $event)"
+                @open-debug="onOpenTurnDebug(block)"
               />
               <AssistantTurn
                 v-else-if="block.type === 'assistant-turn'"
@@ -705,6 +710,14 @@ export default {
     const setAssistantTurnActionsExpanded = (turn, value) => {
       assistantTurnActionStates[turnUiKey(turn)] = !!value;
     };
+    const onOpenTurnDebug = (turn) => {
+      const turnId = turn && (turn.turnId || turn.id);
+      if (!turnId || typeof store.openYeaftTurnDebug !== 'function') return;
+      store.openYeaftTurnDebug({
+        sessionId: activeYeaftSessionId.value || null,
+        turnId,
+      });
+    };
     const setToolExpanded = ({ key, value } = {}) => {
       if (!key) return;
       toolExpandStates[key] = !!value;
@@ -798,14 +811,21 @@ export default {
       if (gs.activeSessionId && typeof gs.sessionById === 'function' && gs.sessionById(gs.activeSessionId, store.currentAgent || null)) return gs.activeSessionId;
       return null;
     });
-    const virtualTranscriptIdentity = Vue.computed(() => [
-      store.activeConversationId || '',
-      store.currentView || '',
-      store.currentAgent || '',
-      store.currentView === 'yeaft'
-        ? (store.yeaftActiveSessionFilter || activeYeaftSessionId.value || '__all__')
-        : '',
-    ].join('\u001f'));
+    const virtualTranscriptIdentity = Vue.computed(() => {
+      const view = store.currentView || '';
+      const agentId = store.currentAgent || '';
+      if (view === 'yeaft') {
+        // A Yeaft bridge conversation id is transport state. Cold history and
+        // session_ready may promote local/old ids while the user is still reading
+        // the same Session; keying Vue by that id destroys and recreates the whole
+        // virtual transcript, producing a visible refresh and a transient blank
+        // pane. User navigation identity is Agent + Session, which changes only
+        // when the user actually switches context.
+        const sessionId = store.yeaftActiveSessionFilter || activeYeaftSessionId.value || '__all__';
+        return [view, agentId, sessionId].join('\u001f');
+      }
+      return [view, agentId, store.activeConversationId || ''].join('\u001f');
+    });
 
     // Issue C (2026-05-12) — IM-style dual-column layout gate.
     // The user explicitly scoped this to Yeaft Session conversations only:
@@ -894,20 +914,56 @@ export default {
       catch (err) { console.warn('Failed to copy welcome setup command:', err); }
     };
 
-    const messageBlockMetaForItem = (item, index) => {
+    const fallbackUiKeys = new WeakMap();
+    let fallbackUiKeySequence = 0;
+    const objectUiFallback = (item, msg) => {
+      const identityObject = (item?.message && typeof item.message === 'object')
+        ? item.message
+        : (Array.isArray(item?.messages) && item.messages[0] && typeof item.messages[0] === 'object'
+          ? item.messages[0]
+          : (msg && typeof msg === 'object'
+            ? msg
+            : (item && typeof item === 'object' ? item : null)));
+      if (!identityObject) return `legacy_render_${++fallbackUiKeySequence}`;
+      let key = fallbackUiKeys.get(identityObject);
+      if (!key) {
+        key = `legacy_render_${++fallbackUiKeySequence}`;
+        fallbackUiKeys.set(identityObject, key);
+      }
+      return key;
+    };
+    const messageUiKey = (item) => {
+      const msg = item?.message || item || null;
+      return item?.entryId
+        || item?.uiKey
+        || item?.stableKey
+        || msg?.entryId
+        || msg?.uiKey
+        || msg?.stableKey
+        || item?.atMessageId
+        || item?.messageId
+        || msg?.messageId
+        || item?.id
+        || msg?.id
+        || objectUiFallback(item, msg);
+    };
+    const renderSafeUiKey = value => encodeURIComponent(String(value || 'legacy'));
+    const messageBlockMetaForItem = (item) => {
       const msg = item?.message || null;
+      const uiKey = messageUiKey(item);
       const messageId = item?.id
         || item?.atMessageId
         || msg?.id
         || msg?.messageId
-        || `legacy_${index}`;
+        || uiKey;
       const vpId = item?.speakerVpId
         || item?.vpId
         || msg?.speakerVpId
         || msg?.vpId
         || '';
       return {
-        id: `message_${vpId || 'user'}_${messageId}_${index}`,
+        id: `message_${renderSafeUiKey(uiKey)}`,
+        uiKey,
         vpId,
         messageId,
       };
@@ -915,10 +971,12 @@ export default {
 
     // Turn aggregation: group flat messages into turn groups
     const turnGroups = Vue.computed(() => {
-      const messages = store.messages;
+      const messages = store.currentView === 'yeaft'
+        ? orderYeaftVpTurnMessagesByExecution(store.messages)
+        : store.messages;
       const result = [];
       let currentTurn = null;
-      let turnCounter = 0;
+
       // task-708: every VP-attributed turn carries its own avatar header.
       // The previous "consecutive-same-speaker collapse" (Slack-style)
       // produced the user's "VP disappears" complaint — when a VP sent
@@ -1008,11 +1066,13 @@ export default {
         }
       };
 
-      const startTurn = () => {
-        turnCounter++;
+      const startTurn = (message = null) => {
+        const uiKey = messageUiKey(message);
         currentTurn = {
           type: 'assistant-turn',
-          id: 'turn_' + turnCounter,
+          id: `response_${renderSafeUiKey(uiKey)}`,
+          uiKey,
+          ...(message?.entryId ? { entryId: message.entryId } : {}),
           textContent: '',
           textSegments: [],
           isStreaming: false,
@@ -1066,13 +1126,13 @@ export default {
             continue;
           }
           finishTurn();
-          result.push({ type: 'user', id: msg.id || 'u_' + i, message: msg });
+          result.push({ type: 'user', id: messageUiKey(msg), message: msg });
           continue;
         }
 
         if (msg.type === 'system' || msg.type === 'error') {
           finishTurn();
-          result.push({ type: msg.type, id: msg.id || 's_' + i, message: msg });
+          result.push({ type: msg.type, id: messageUiKey(msg), message: msg });
           continue;
         }
 
@@ -1083,7 +1143,7 @@ export default {
 
         if (msg.type === 'tool-summary') {
           closeTurnIfTurnBoundaryChanged(msg);
-          if (!currentTurn) startTurn();
+          if (!currentTurn) startTurn(msg);
           latchSpeakerFromMsg(msg);
           if (msg.isHistory) currentTurn.isHistory = true;
           currentTurn.toolSummaryCount += Number(msg.count || msg.omittedCount || 0) || 0;
@@ -1093,7 +1153,7 @@ export default {
 
         if (msg.type === 'assistant') {
           closeTurnIfTurnBoundaryChanged(msg);
-          if (!currentTurn) startTurn();
+          if (!currentTurn) startTurn(msg);
           appendTurnResponseSegment(currentTurn, msg);
           if (msg.isStreaming) {
             currentTurn.isStreaming = true;
@@ -1120,7 +1180,7 @@ export default {
 
         if (msg.type === 'tool-use') {
           closeTurnIfTurnBoundaryChanged(msg);
-          if (!currentTurn) startTurn();
+          if (!currentTurn) startTurn(msg);
           latchSpeakerFromMsg(msg);
 
           // Merge tool-result from next message
@@ -1146,7 +1206,7 @@ export default {
 
         if (msg.type === 'chat-image') {
           closeTurnIfTurnBoundaryChanged(msg);
-          if (!currentTurn) startTurn();
+          if (!currentTurn) startTurn(msg);
           latchSpeakerFromMsg(msg);
           if (msg.isHistory) currentTurn.isHistory = true;
           currentTurn.imageMsgs.push(msg);
@@ -1156,7 +1216,7 @@ export default {
 
         // Unknown type: pass through
         finishTurn();
-        result.push({ type: msg.type || 'unknown', id: msg.id || 'x_' + i, message: msg });
+        result.push({ type: msg.type || 'unknown', id: messageUiKey(msg), message: msg });
       }
 
       finishTurn();
@@ -1202,19 +1262,20 @@ export default {
         currentBlock = null;
       };
 
-      turnGroups.value.forEach((item, i) => {
+      turnGroups.value.forEach((item) => {
         if (!item || item.type === 'system' || item.type === 'error') {
           finishBlock();
           blocks.push(item);
           return;
         }
 
-        const meta = messageBlockMetaForItem(item, i);
+        const meta = messageBlockMetaForItem(item);
         if (item.type === 'user' || !currentBlock) {
           finishBlock();
           currentBlock = {
             type: 'message-block',
-            id: `turn_${meta.messageId}_${i}`,
+            id: `block_${renderSafeUiKey(meta.uiKey)}`,
+            uiKey: meta.uiKey,
             vpId: meta.vpId,
             messageId: meta.messageId,
             items: [item],
@@ -1330,12 +1391,23 @@ export default {
     });
 
     const showInitialMessagesLoading = Vue.computed(() => {
-      if (!store.currentConversation || messageBlocks.value.length > 0) return false;
-      if (store.currentView === 'yeaft') return !!store.yeaftLoadingMoreHistory;
+      if (!store.activeConversationId || messageBlocks.value.length > 0) return false;
+      if (store.currentView === 'yeaft') return !!store.yeaftInitialHistoryLoading;
       return !!store.sessionLoading;
     });
 
-    const initialMessagesLoadingText = Vue.computed(() => store.sessionLoadingText || '');
+    // Recent/delta loads are background synchronization. Rendering the shared
+    // "loading more" row for them makes an otherwise stable Session visibly
+    // flash on open/reconnect. Only an explicit older-page request owns that UI.
+    const showYeaftOlderHistoryLoading = Vue.computed(() => (
+      store.currentView === 'yeaft'
+      && !!store.yeaftLoadingMoreHistory
+      && store.activeYeaftHistoryState?.mode === 'older'
+    ));
+
+    const initialMessagesLoadingText = Vue.computed(() => (
+      store.currentView === 'yeaft' ? '' : (store.sessionLoadingText || '')
+    ));
 
     const showSessionLoadingOverlay = Vue.computed(() => {
       return !!store.sessionLoading && !showInitialMessagesLoading.value;
@@ -1954,7 +2026,6 @@ export default {
       });
       autoFollowPaused.value = !isAtBottom.value;
       virtualTranscriptRef.value?.setBottomFollowEnabled?.(isAtBottom.value);
-      if (isAtBottom.value) pruneYeaftWindowNearBottom();
       if (userScrollInteractionActive) scheduleUserScrollInteractionEnd();
 
       if (containerRef.value) {
@@ -1965,15 +2036,10 @@ export default {
       }
     };
 
-    const pruneYeaftWindowNearBottom = () => {
-      if (store.currentView === 'yeaft') store.pruneYeaftMessageWindow();
-    };
-
     const scrollToBottom = () => {
       if (containerRef.value) {
         containerRef.value.scrollTop = containerRef.value.scrollHeight;
         resumeAutoFollow();
-        pruneYeaftWindowNearBottom();
       }
     };
 
@@ -1988,7 +2054,6 @@ export default {
 
     const smartScrollToBottom = () => {
       if (!autoFollowPaused.value && isAtBottom.value) {
-        pruneYeaftWindowNearBottom();
         Vue.nextTick(scrollToBottom);
       }
     };
@@ -2051,12 +2116,12 @@ export default {
     const flashMsgId = Vue.ref(null);
     let flashGeneration = 0;
 
-    const revealMessage = async (messageId) => {
-      if (!messageId) return false;
+    const revealMessage = async (target) => {
+      if (!target) return false;
       pauseAutoFollow();
       const revealed = await navigateToPersistedMessage({
         blocks: messageBlocks.value,
-        messageId,
+        target,
         collapseStates: messageTurnCollapseStates,
         nextTick: Vue.nextTick,
         scrollToBlock: (blockId, options) => {
@@ -2120,6 +2185,7 @@ export default {
       nowMs,
       showTypingDots,
       showInitialMessagesLoading,
+      showYeaftOlderHistoryLoading,
       showSessionLoadingOverlay,
       initialMessagesLoadingText,
       previewShowTypingDots,
@@ -2159,6 +2225,7 @@ export default {
       turnUiKey,
       assistantTurnActionsExpandedFor,
       setAssistantTurnActionsExpanded,
+      onOpenTurnDebug,
       toolExpandStates,
       setToolExpanded,
       cardsForRow,

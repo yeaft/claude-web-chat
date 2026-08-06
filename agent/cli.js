@@ -6,13 +6,13 @@
 import { assertNodeVersion } from './check-node-version.js';
 assertNodeVersion({ component: '@yeaft/webchat-agent' });
 
-import { execSync, spawn } from 'child_process';
+import { execFileSync, execSync, spawn } from 'child_process';
 import { createInterface } from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { platform, homedir } from 'os';
+import { platform } from 'os';
 import {
   addOrUpdateProvider,
   formatLlmConfig,
@@ -29,12 +29,24 @@ import {
   discoverOpenAICompatibleModels,
   GITHUB_COPILOT_PROVIDER,
 } from './llm-model-discovery.js';
-import { applyAgentIdentityToEnv, warnDeprecatedInstanceArg } from './service/config.js';
+import {
+  DEFAULT_INSTANCE_ID,
+  applyAgentIdentityToEnv,
+  getConfigDir,
+  getPm2AppName,
+  resolveServiceInstanceId,
+  warnDeprecatedInstanceArg,
+} from './service/config.js';
 import {
   buildUpgradeInstallCommand,
   buildUpgradeMetadataUrl,
   buildUpgradeVersionCommand,
+  createWindowsUpgradeRun,
   launchWindowsUpgradeScript,
+  prepareWindowsUpgradeRunner,
+  releaseWindowsUpgradeLock,
+  resolveWindowsNpmCliPath,
+  resolveWindowsPm2CliPath,
 } from './upgrade-command.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -52,15 +64,9 @@ if (command === 'doctor') {
 } else if (command === 'llm') {
   await handleLlmCommand(subArgs);
 } else if (command === 'local') {
-  try {
-    const { runLocal } = await import('./local-run.js');
-    await runLocal(subArgs);
-  } catch (error) {
-    console.error(`Local run failed: ${error.message}`);
-    process.exit(1);
-  }
+  await handleLocalCommand(subArgs);
 } else if (command === 'upgrade') {
-  await upgrade();
+  await upgrade(subArgs);
 } else if (command === '--version' || command === '-v') {
   console.log(pkg.version);
 } else if (command === '--help' || command === '-h') {
@@ -72,6 +78,37 @@ if (command === 'doctor') {
   parseAndStart(args);
 }
 
+/** Dispatch the local foreground and managed-service command family. */
+export async function handleLocalCommand(subArgs, options = {}) {
+  const printHelpFn = options.printHelp || printHelp;
+  const warn = options.warn || console.warn;
+  const loadLocalService = options.loadLocalService || (() => import('./local-service.js'));
+  const loadLocalRun = options.loadLocalRun || (() => import('./local-run.js'));
+  try {
+    const localCommand = subArgs[0];
+    if (localCommand === '--help' || localCommand === '-h') {
+      printHelpFn();
+      return;
+    }
+    warnDeprecatedInstanceArg(subArgs, warn);
+    if (SERVICE_COMMANDS.includes(localCommand)) {
+      const { handleLocalServiceCommand } = await loadLocalService();
+      await handleLocalServiceCommand(localCommand, subArgs.slice(1));
+      return;
+    }
+    const { runLocal } = await loadLocalRun();
+    await runLocal(subArgs);
+  } catch (error) {
+    const message = `Local run failed: ${error.message}`;
+    if (options.onError) {
+      options.onError(message, error);
+      return;
+    }
+    console.error(message);
+    process.exit(1);
+  }
+}
+
 function printHelp() {
   console.log(`
   ${pkg.name} v${pkg.version}
@@ -79,6 +116,11 @@ function printHelp() {
   Usage:
     yeaft-agent [options]              Run agent in foreground
     yeaft-agent local [options]        Run local Web UI, server, and agent
+    yeaft-agent local --background      Run local mode in the background
+    yeaft-agent local install [options] Install local mode as a managed service
+    yeaft-agent local uninstall [options] Remove the local managed service
+    yeaft-agent local start|stop|restart|status|logs [options]
+                                      Control the local managed service
     yeaft-agent install [options]      Install as system service
     yeaft-agent uninstall [options]    Remove system service
     yeaft-agent start [options]        Start installed service
@@ -88,7 +130,7 @@ function printHelp() {
     yeaft-agent logs [options]         View service logs (follow mode)
     yeaft-agent doctor                 Diagnose service configuration
     yeaft-agent llm <command>          Configure local Yeaft LLM providers/models
-    yeaft-agent upgrade                Upgrade to latest version
+    yeaft-agent upgrade [--name <id>]  Upgrade and restart the selected service
     yeaft-agent --version              Show version
 
   Options:
@@ -96,6 +138,7 @@ function printHelp() {
     --server <url>      WebSocket server URL (default: ws://localhost:3456)
     --name <name>       Agent name and instance id (default: computer name; invalid chars become -)
     --port <port>       Local server port (local command only; default: 6868)
+    --background, -d    Detach local mode after spawning it (local command only)
     --secret <secret>   Agent secret for authentication
     --work-dir <dir>    Default working directory (default: cwd)
     --yeaft-dir <dir>   Yeaft data directory for this instance
@@ -112,6 +155,8 @@ function printHelp() {
   Examples:
     yeaft-agent local
     yeaft-agent local --name my-worker --port 7000
+    yeaft-agent local --name my-worker --background
+    yeaft-agent local install --name my-worker --port 7000
     yeaft-agent --server wss://your-server.com --name my-worker --secret xxx
     yeaft-agent install --server wss://your-server.com --name my-worker --secret xxx
     yeaft-agent install --server wss://your-server.com --name my-worker-2 --secret xxx
@@ -486,7 +531,9 @@ async function checkForUpdates() {
   }
 }
 
-async function upgrade() {
+async function upgrade(args = []) {
+  warnDeprecatedInstanceArg(args);
+  const instanceId = resolveServiceInstanceId(args, process.env, { management: true });
   console.log(`Current version: ${pkg.version}`);
   console.log('Checking for updates...');
 
@@ -499,10 +546,10 @@ async function upgrade() {
     console.log(`Upgrading to ${latest}...`);
 
     if (platform() === 'win32') {
-      // On Windows, the current process locks its own files. npm cannot overwrite
-      // them while this process is running. Spawn a detached bat script that waits
-      // for us to exit, then runs npm install, then optionally restarts the service.
-      await upgradeWindows(latest);
+      // On Windows, the current process locks its own files. A short-lived
+      // bootstrap detaches the updater before this process exits; the updater then
+      // installs the exact version and restores the selected service instance.
+      await upgradeWindows(latest, instanceId);
     } else {
       execSync(buildUpgradeInstallCommand(`${pkg.name}@${latest}`), { stdio: 'inherit' });
       console.log(`Successfully upgraded to ${latest}`);
@@ -526,114 +573,92 @@ async function upgrade() {
   }
 }
 
-async function upgradeWindows(latestVersion) {
-  const configDir = join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'yeaft-agent');
-  mkdirSync(configDir, { recursive: true });
+async function upgradeWindows(latestVersion, instanceId = DEFAULT_INSTANCE_ID) {
+  const configDir = getConfigDir(instanceId);
+  const upgradeDir = join(configDir, 'upgrade-runtime');
   const logDir = join(configDir, 'logs');
   mkdirSync(logDir, { recursive: true });
-  const batPath = join(configDir, 'upgrade-cli.bat');
-  const handoffPath = join(configDir, 'upgrade-cli.started');
+
   const logPath = join(logDir, 'upgrade.log');
-  const pid = process.pid;
-  const pkgSpec = `${pkg.name}@${latestVersion}`;
+  const ecosystemPath = join(configDir, 'ecosystem.config.cjs');
+  const pm2AppName = getPm2AppName(instanceId);
+  const npmCliPath = resolveWindowsNpmCliPath(process.execPath);
+  if (!npmCliPath) throw new Error('npm JavaScript CLI entry point could not be resolved');
+  const pm2CliPath = resolveWindowsPm2CliPath(process.execPath);
 
-  // Detect PM2 now, but do not delete it until the updater confirms handoff.
   let isPm2 = false;
-  const ecoPath = join(configDir, 'ecosystem.config.cjs');
+  if (pm2CliPath) {
+    try {
+      const apps = JSON.parse(execFileSync(process.execPath, [pm2CliPath, 'jlist'], { encoding: 'utf8' }));
+      isPm2 = Array.isArray(apps) && apps.some(app => app.name === pm2AppName);
+    } catch {}
+  }
+
+  const run = createWindowsUpgradeRun(upgradeDir);
+  const {
+    runId,
+    lockPath,
+    bootstrapPath,
+    runnerPath,
+    commandPath,
+    payloadPath,
+    handoffPath,
+    authorizePath,
+    cancelPath,
+  } = run;
+  const payload = {
+    runId,
+    lockPath,
+    parentPid: process.pid,
+    packageSpec: `${pkg.name}@${latestVersion}`,
+    globalInstall: true,
+    installDir: dirname(dirname(__dirname)),
+    logPath,
+    handoffPath,
+    authorizePath,
+    cancelPath,
+    bootstrapPath,
+    runnerPath,
+    commandPath,
+    payloadPath,
+    nodePath: process.execPath,
+    npmCliPath,
+    pm2CliPath: isPm2 ? pm2CliPath : null,
+    pm2AppName: isPm2 ? pm2AppName : null,
+    ecosystemPath: isPm2 ? ecosystemPath : null,
+  };
   try {
-    const pm2List = execSync('pm2 jlist', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
-    const apps = JSON.parse(pm2List);
-    isPm2 = Array.isArray(apps) && apps.some(app => app.name === 'yeaft-agent');
-  } catch {
-    // PM2 not installed or not managing yeaft-agent — continue
+    prepareWindowsUpgradeRunner({
+      sourceBootstrapPath: join(__dirname, 'windows-upgrade-bootstrap.js'),
+      sourceRunnerPath: join(__dirname, 'windows-upgrade-runner.js'),
+      sourceCommandPath: join(__dirname, 'upgrade-command.js'),
+      bootstrapPath,
+      runnerPath,
+      commandPath,
+      payloadPath,
+      payload,
+    });
+  } catch (err) {
+    releaseWindowsUpgradeLock(lockPath, runId);
+    throw err;
   }
-
-  const batLines = [
-    '@echo off',
-    'setlocal',
-    `set PID=${pid}`,
-    `set PKG=${pkgSpec}`,
-    `set LOGFILE=${logPath}`,
-    `set HANDOFF=${handoffPath}`,
-    `set MAX_WAIT=30`,
-    `set COUNT=0`,
-    '',
-    ':: Change to temp dir to avoid EBUSY on cwd',
-    'cd /d "%TEMP%"',
-    '',
-    'echo started>"%HANDOFF%"',
-    'echo [Upgrade] Started at %date% %time% > "%LOGFILE%"',
-    `echo [Upgrade] Version: ${pkg.version} -> ${latestVersion} >> "%LOGFILE%"`,
-    `echo [Upgrade] PM2 managed: ${isPm2 ? 'yes (deleted pre-exit)' : 'no'} >> "%LOGFILE%"`,
-    'echo [Upgrade] Waiting for CLI process (PID %PID%) to exit... >> "%LOGFILE%"',
-    '',
-    ':WAIT_LOOP',
-    'tasklist /FI "PID eq %PID%" /NH 2>NUL | findstr /C:"%PID%" >NUL',
-    'if errorlevel 1 goto PID_EXITED',
-    'set /A COUNT+=1',
-    'if %COUNT% GEQ %MAX_WAIT% (',
-    '  echo [Upgrade] Timeout waiting for PID %PID% to exit after %MAX_WAIT%s >> "%LOGFILE%"',
-    '  goto PID_EXITED',
-    ')',
-    'ping -n 3 127.0.0.1 >NUL',
-    'goto WAIT_LOOP',
-    ':PID_EXITED',
-    '',
-    ':: Extra wait for file locks to release',
-    'echo [Upgrade] Process exited at %time%, waiting for file locks... >> "%LOGFILE%"',
-    'ping -n 5 127.0.0.1 >NUL',
-    '',
-    'echo [Upgrade] Running npm install -g %PKG%... >> "%LOGFILE%"',
-    `call ${buildUpgradeInstallCommand('%PKG%')} >> "%LOGFILE%" 2>&1`,
-    'if not "%errorlevel%"=="0" (',
-    '  echo [Upgrade] npm install failed with exit code %errorlevel% at %time% >> "%LOGFILE%"',
-    '  goto PM2_RESTART',
-    ')',
-    'echo [Upgrade] npm install succeeded at %time% >> "%LOGFILE%"',
-  ];
-
-  // PM2 re-registration after successful upgrade
-  batLines.push(
-    '',
-    ':PM2_RESTART',
-  );
-  if (isPm2) {
-    batLines.push(
-      'echo [Upgrade] Re-registering agent via PM2... >> "%LOGFILE%"',
-      `if exist "${ecoPath}" (`,
-      `  call pm2 start "${ecoPath}" >> "%LOGFILE%" 2>&1`,
-      '  call pm2 save >> "%LOGFILE%" 2>&1',
-      '  echo [Upgrade] PM2 app re-registered at %time% >> "%LOGFILE%"',
-      ') else (',
-      '  echo [Upgrade] WARNING: ecosystem.config.cjs not found, PM2 not restarted >> "%LOGFILE%"',
-      ')',
-    );
-  }
-
-  batLines.push(
-    '',
-    'echo [Upgrade] Finished at %time% >> "%LOGFILE%"',
-    ':CLEANUP',
-    'del /F /Q "%HANDOFF%" 2>NUL',
-    `del /F /Q "${batPath}" 2>NUL`,
-  );
-
-  writeFileSync(batPath, batLines.join('\r\n'));
 
   const launcher = await launchWindowsUpgradeScript({
-    batPath,
+    runId,
+    nodePath: process.execPath,
+    bootstrapPath,
+    runnerPath,
+    payloadPath,
+    logPath,
     handoffPath,
+    authorizePath,
+    cancelPath,
+    lockPath,
     spawnProcess: spawn,
-    onHandoff: isPm2
-      ? () => {
-          execSync('pm2 delete yeaft-agent', { stdio: 'pipe' });
-          console.log('PM2 app deleted after upgrade handoff.');
-        }
-      : undefined,
   });
+  console.log(`Upgrade runner spawned via ${launcher}.`);
 
-  console.log(`Upgrade script spawned via ${launcher}.`);
-  console.log(`This process will exit now. The upgrade will proceed after exit.`);
+  console.log('This process will exit now. The upgrade will proceed after exit.');
   console.log(`Check upgrade log: ${logPath}`);
   process.exit(0);
 }

@@ -12,6 +12,8 @@
  * The engine sees only unified types — it never knows which API is underneath.
  */
 
+import { utf8PrefixWithinBytes } from '../utf8.js';
+
 // ─── Unified Types ─────────────────────────────────────────────
 
 /**
@@ -74,13 +76,68 @@ export class LLMRateLimitError extends Error {
   }
 }
 
-/** Authentication error (401, 403) — need to re-authenticate. */
+/** Authentication / authorization error (401, 403). */
 export class LLMAuthError extends Error {
-  constructor(message, statusCode) {
+  constructor(message, statusCode, details = {}) {
     super(message);
     this.name = 'LLMAuthError';
     this.statusCode = statusCode;
+    this.reasonCode = details.reasonCode || (statusCode === 401 ? 'invalid_credentials' : 'permission_denied');
+    this.temporary = details.temporary === true;
+    this.provider = details.provider || null;
+    this.model = details.model || null;
+    this.credentialRefreshable = details.credentialRefreshable === true;
   }
+}
+
+const PERMANENT_FORBIDDEN_RE = /(?:access[_ -]?denied|not[_ -]?authorized|unauthori[sz]ed|authorization[_ -]?denied|policy|safety|content[_ -]?filter|entitle(?:ment|d)|subscription[_ -]?(?:required|inactive|expired)|plan[_ -]?(?:required|does[_ -]?not[_ -]?include)|model[^\n]{0,60}(?:access|permission|unavailable|not[_ -]?available|plan)|permission[^\n]{0,40}model|account[^\n]{0,40}(?:disabled|suspended)|organization[^\n]{0,40}(?:disabled|suspended)|insufficient[_ -]?(?:permission|scope))/i;
+const PERMANENT_FORBIDDEN_CODE_RE = /(?:access_denied|permission_denied|unauthorized|not_authorized|insufficient_(?:scope|permission)|model_(?:access_denied|not_available)|subscription_required|not_entitled|policy_violation|content_filter)/i;
+
+function parseProviderErrorBody(responseBody) {
+  if (typeof responseBody !== 'string') return responseBody && typeof responseBody === 'object' ? responseBody : null;
+  try {
+    const parsed = JSON.parse(responseBody);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function providerErrorSignals(responseBody) {
+  const parsed = parseProviderErrorBody(responseBody);
+  const error = parsed?.error && typeof parsed.error === 'object' ? parsed.error : parsed;
+  const code = [error?.code, error?.type, error?.reason, parsed?.code, parsed?.type]
+    .filter(value => typeof value === 'string')
+    .join(' ');
+  const message = [error?.message, parsed?.message, typeof responseBody === 'string' ? responseBody : '']
+    .filter(value => typeof value === 'string')
+    .join(' ');
+  return { code, message };
+}
+
+/**
+ * Build a user-safe auth error. The provider response body is used only for
+ * classification and is deliberately excluded from the message; raw response
+ * capture remains available in the bounded debug trace.
+ */
+export function classifyAuthError(statusCode, responseBody = '', details = {}) {
+  const status = Number(statusCode) || 0;
+  if (status === 401) {
+    return new LLMAuthError('LLM provider returned HTTP 401 (invalid credentials)', status, {
+      ...details,
+      reasonCode: 'invalid_credentials',
+      temporary: false,
+    });
+  }
+  const signals = providerErrorSignals(responseBody);
+  const permanent = PERMANENT_FORBIDDEN_CODE_RE.test(signals.code)
+    || PERMANENT_FORBIDDEN_RE.test(signals.message);
+  const reasonCode = permanent ? 'permission_denied' : 'unknown_forbidden';
+  return new LLMAuthError(`LLM provider returned HTTP 403 (${reasonCode})`, status, {
+    ...details,
+    reasonCode,
+    temporary: !permanent,
+  });
 }
 
 /** Context too long error (413 or API-specific) — need compaction. */
@@ -399,13 +456,49 @@ export function classifyFetchError(err, opts = {}) {
  * NOTE: there is intentionally NO body / response truncation here. The whole
  * point of the "copy request" debug feature is to capture EXACTLY what we
  * sent to the LLM. A truncated copy is worse than useless — it lies about
- * what the model saw. If the resulting payload is too large for the debug
- * store, the fix is to bound retention (drop oldest turns), not to mutilate
- * individual payloads. See `MAX_YEAFT_DEBUG_LOOPS` in `web/stores/chat.js`.
+ * what the model saw. Full payloads therefore stay in the Agent's bounded,
+ * file-backed debug trace and are fetched for one Turn on demand; live browser
+ * events carry summary metadata only.
  *
  * @param {{ url: string, method: string, headers: object, body: any }} req
  * @returns {{ url: string, method: string, headers: object, body: any }}
  */
+
+export function createBoundedTextAccumulator(maxBytes = 512 * 1024) {
+  const limit = Number.isFinite(Number(maxBytes)) ? Math.max(0, Math.floor(Number(maxBytes))) : 512 * 1024;
+  const chunks = [];
+  let retainedBytes = 0;
+  let totalBytes = 0;
+  let truncated = false;
+  return {
+    push(value) {
+      const text = String(value ?? '');
+      const bytes = Buffer.byteLength(text, 'utf8');
+      totalBytes += bytes;
+      if (retainedBytes >= limit || bytes === 0) {
+        if (bytes > 0) truncated = true;
+        return;
+      }
+      const available = limit - retainedBytes;
+      if (bytes <= available) {
+        chunks.push(text);
+        retainedBytes += bytes;
+        return;
+      }
+      // Walk UTF-16 code points once. The old slice(0, -1) loop repeatedly
+      // rescanned an oversized SSE chunk and went quadratic in its length.
+      const retained = utf8PrefixWithinBytes(text, available);
+      if (retained.text) chunks.push(retained.text);
+      retainedBytes += retained.bytes;
+      truncated = true;
+    },
+    text() { return chunks.join(''); },
+    get totalBytes() { return totalBytes; },
+    get truncated() { return truncated; },
+    get maxBytes() { return limit; },
+  };
+}
+
 export function redactRawRequest(req) {
   if (!req || typeof req !== 'object') return req;
   const headers = { ...(req.headers || {}) };

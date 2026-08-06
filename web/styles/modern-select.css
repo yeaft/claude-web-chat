@@ -162,6 +162,16 @@
   font-weight: 500;
 }
 
+.modern-select-option.is-disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.modern-select-option.is-disabled:hover {
+  background: transparent;
+}
+
 .modern-select-option-main {
   display: flex;
   align-items: center;

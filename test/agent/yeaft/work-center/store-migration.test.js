@@ -63,6 +63,7 @@ function runnerRuntime(calls, defaultWorkDir = '') {
     adapter: {
       async *stream(params) {
         calls.push(params);
+        params.onRequestStart?.();
         yield { type: 'text_delta', text: '{"outcome":"completed","summary":"Safe","evidence":[]}' };
         yield { type: 'stop', stopReason: 'end_turn' };
       },
@@ -90,6 +91,51 @@ function legacyPolicyWorkflow() {
       maxAttempts: 2,
     }],
   });
+}
+
+function installLegacyEngineTurnStatusContract(dbPath, options = {}) {
+  const db = new DatabaseSync(dbPath);
+  db.exec('PRAGMA foreign_keys = OFF');
+  const currentSql = db.prepare(`SELECT sql FROM sqlite_master
+    WHERE type = 'table' AND name = 'engine_turns'`).get().sql;
+  const legacySql = currentSql
+    .replace('CREATE TABLE engine_turns', 'CREATE TABLE engine_turns_legacy')
+    .replace(
+      "('prepared', 'dispatching', 'responded', 'unknown', 'cancelled', 'legacy_imported')",
+      "('prepared', 'claimed', 'consumed', 'blocked', 'cancelled', 'legacy_imported')",
+    );
+  const columns = db.prepare('PRAGMA table_info(engine_turns)').all().map(column => column.name);
+  const selectColumns = columns.map(column => column === 'status'
+    ? "CASE status WHEN 'responded' THEN 'consumed' WHEN 'dispatching' THEN 'claimed' ELSE status END"
+    : column);
+  db.exec(legacySql);
+  db.exec(`INSERT INTO engine_turns_legacy(${columns.join(',')})
+    SELECT ${selectColumns.join(',')} FROM engine_turns;
+    CREATE TEMP TABLE legacy_action_entry_turn_refs AS
+      SELECT id, engine_turn_id FROM action_entries WHERE engine_turn_id IS NOT NULL;
+    CREATE TEMP TABLE legacy_operation_turn_refs AS
+      SELECT id, engine_turn_id FROM operations WHERE engine_turn_id IS NOT NULL;
+    UPDATE action_entries SET engine_turn_id = NULL WHERE engine_turn_id IS NOT NULL;
+    UPDATE operations SET engine_turn_id = NULL WHERE engine_turn_id IS NOT NULL;
+    DROP TABLE engine_turns;
+    ALTER TABLE engine_turns_legacy RENAME TO engine_turns;
+    UPDATE action_entries SET engine_turn_id = (
+      SELECT engine_turn_id FROM legacy_action_entry_turn_refs ref WHERE ref.id = action_entries.id
+    ) WHERE id IN (SELECT id FROM legacy_action_entry_turn_refs);
+    UPDATE operations SET engine_turn_id = (
+      SELECT engine_turn_id FROM legacy_operation_turn_refs ref WHERE ref.id = operations.id
+    ) WHERE id IN (SELECT id FROM legacy_operation_turn_refs);
+    DROP TABLE legacy_action_entry_turn_refs;
+    DROP TABLE legacy_operation_turn_refs;`);
+  if (options.badLedger === true) {
+    db.prepare("DELETE FROM schema_migrations WHERE name = '34-engine-turn-status-repair'").run();
+    db.prepare("UPDATE schema_meta SET value = '33' WHERE key = 'schema_version'").run();
+  } else {
+    db.prepare(`DELETE FROM schema_migrations WHERE name IN
+      ('32-engine-turn-status-contract', '33-coordinator-provider-turns', '34-engine-turn-status-repair')`).run();
+    db.prepare("UPDATE schema_meta SET value = '31' WHERE key = 'schema_version'").run();
+  }
+  db.close();
 }
 
 function seedLegacyInstructionStore(dbPath, sourceVersion) {
@@ -344,6 +390,39 @@ describe('Work Center store migration', () => {
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
 
+  it('adds dynamic coordination storage without changing legacy WorkItem ownership', () => {
+    dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-dynamic-schema-'));
+    const dbPath = join(dir, 'work-center.db');
+    store = new WorkItemStore(dbPath, { now: () => 1_000 });
+
+    expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get())
+      .toEqual({ value: '37' });
+    expect(store.db.prepare('PRAGMA table_info(work_items)').all().map(row => row.name))
+      .toEqual(expect.arrayContaining(['coordination_mode', 'final_result']));
+    expect(store.db.prepare('PRAGMA table_info(actions)').all().map(row => row.name))
+      .toContain('source_action_ids');
+    expect(store.db.prepare('PRAGMA table_info(runs)').all().map(row => row.name))
+      .toContain('acceptance_checks');
+
+    const controller = new WorkflowController(store);
+    const legacy = controller.create({
+      id: 'legacy-stays-legacy',
+      title: 'Legacy item',
+      goal: 'Keep the existing execution path',
+      acceptanceCriteria: ['Legacy path stays readable'],
+      workflowTemplate: 'software-change',
+      workDir: '/tmp',
+      start: false,
+    });
+    expect(store.db.prepare('SELECT coordination_mode, final_result FROM work_items WHERE id = ?')
+      .get(legacy.id)).toEqual({ coordination_mode: 'legacy', final_result: null });
+
+    store.close();
+    store = new WorkItemStore(dbPath, { now: () => 2_000 });
+    expect(store.db.prepare(`SELECT COUNT(*) AS count FROM schema_migrations
+      WHERE name IN ('36-dynamic-coordination', '37-run-acceptance-checks')`).get()).toEqual({ count: 2 });
+  });
+
   it('migrates legacy prompt stores without re-injecting historical WorkItem messages', async () => {
     for (const sourceVersion of [17, 18]) {
       dir = mkdtempSync(join(tmpdir(), `yeaft-work-center-legacy-${sourceVersion}-`));
@@ -410,7 +489,11 @@ describe('Work Center store migration', () => {
           data: expect.objectContaining({ reason: 'schema19_legacy_repair' }),
         }),
       ]));
-      expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value).toBe('22');
+      expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value).toBe('37');
+      expect(store.db.prepare('PRAGMA table_info(coordinator_provider_turns)').all()
+        .map(column => column.name)).toEqual(expect.arrayContaining(['claim_owner', 'claim_epoch']));
+      expect(store.db.prepare('PRAGMA index_list(coordinator_provider_turns)').all()
+        .map(index => index.name)).toContain('idx_coordinator_provider_turns_claim');
 
       const claim = store.claimReadyAction('repaired-boot', 60_000);
       expect(claim).toMatchObject({
@@ -430,6 +513,7 @@ describe('Work Center store migration', () => {
           adapter: {
             async *stream(params) {
               calls.push(params);
+              params.onRequestStart?.();
               yield { type: 'text_delta', text: '{"outcome":"completed","summary":"Safe","evidence":[]}' };
               yield { type: 'stop', stopReason: 'end_turn' };
             },
@@ -447,6 +531,12 @@ describe('Work Center store migration', () => {
       });
       expect(result).toMatchObject({ outcome: 'completed', summary: 'Safe' });
       expect(calls).toHaveLength(1);
+      const persistedTurns = store.db.prepare('SELECT * FROM engine_turns WHERE run_id = ? ORDER BY ordinal')
+        .all(claim.run.id);
+      expect(persistedTurns).toHaveLength(1);
+      expect(persistedTurns[0]).toMatchObject({ status: 'responded', ordinal: 1, dispatch_attempt: 1 });
+      expect(JSON.parse(persistedTurns[0].request_body)).toMatchObject({ model: 'provider/model' });
+      expect(JSON.parse(persistedTurns[0].request_body).messages.length).toBeGreaterThan(0);
       const renderedRequest = JSON.stringify(calls[0]);
       expect(renderedRequest).toContain('Safe legacy WorkItem');
       expect(renderedRequest.split('Keep this scoped recovery input')).toHaveLength(2);
@@ -979,7 +1069,7 @@ describe('Work Center store migration', () => {
       snapshotOccurrences: reviewRepairSnapshot.userContext.guidance
         .filter(entry => entry.text === reviewRepairSentinel).length,
     }).toEqual({
-      schemaVersion: '22',
+      schemaVersion: '37',
       generation: reviewRepairParentAction.generation + 1,
       inputIds: reviewRepairSourceEvents.map(event => `legacy-event:${event.id}`),
       attachmentNames: reviewRepairAttachmentNames,
@@ -1703,7 +1793,7 @@ describe('Work Center store migration', () => {
     store = new WorkItemStore(resetInputDbPath, { now: () => 3_000 });
     resetInputController = new WorkflowController(store);
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('22');
+      .toBe('37');
     expect(store.getAction(resetInputAction.id)).toEqual(resetActionBeforeReopen);
     expect(store.db.prepare(`SELECT event_id, run_id, action_generation,
       action_spec_hash, consumed_at, superseded_at FROM pending_action_inputs
@@ -1869,6 +1959,7 @@ describe('Work Center store migration', () => {
       ledgerRevision: replanInputDetail.ledgerRevision,
       coordinatorRevision: replanInputDetail.coordinatorRevision,
     });
+    const claimedReplanTurn = store.claimStartedCoordinatorTurn(replanTurn, 'migration-replan-owner');
     const replanMutation = applyCoordinatorReplan({
       workItem: replanInputDetail,
       actions: replanInputDetail.actions,
@@ -1883,7 +1974,7 @@ describe('Work Center store migration', () => {
         ],
       },
     });
-    replanInputDetail = store.completeCoordinatorTurn(replanTurn.turnId, {
+    replanInputDetail = store.completeCoordinatorTurn(claimedReplanTurn.turnId, {
       reply: 'The unfinished Action contracts were replaced.',
       decision: {
         kind: 'replan',
@@ -1893,7 +1984,7 @@ describe('Work Center store migration', () => {
         actions: [],
       },
       mutation: replanMutation,
-    }, replanTurn.fence);
+    }, claimedReplanTurn.fence);
     const replannedValidate = replanInputDetail.actions
       .find(action => action.stageId === 'validate' && action.status === 'ready');
     expect(replannedValidate.id).not.toBe(replanInputAction.id);
@@ -1914,7 +2005,7 @@ describe('Work Center store migration', () => {
     store = new WorkItemStore(replanInputDbPath, { now: () => 3_000 });
     replanInputController = new WorkflowController(store);
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('22');
+      .toBe('37');
     expect(store.getAction(replanInputAction.id)).toEqual(replanOldActionBeforeReopen);
     expect(store.getAction(replannedValidate.id)).toEqual(replanNewActionBeforeReopen);
     expect(store.db.prepare(`SELECT event_id, run_id, action_generation,
@@ -2008,7 +2099,7 @@ describe('Work Center store migration', () => {
 
     store = new WorkItemStore(terminalInputDbPath, { now: () => 3_000 });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('22');
+      .toBe('37');
     expect(store.getWorkItem(terminalInputItem.id).status).toBe('done');
     expect(store.getAction(terminalInputAction.id)).toEqual(terminalActionBeforeReopen);
     expect(store.db.prepare(`SELECT event_id, run_id, action_generation,
@@ -2277,6 +2368,7 @@ describe('Work Center store migration', () => {
           adapter: {
             async *stream(params) {
               calls.push(params);
+              params.onRequestStart?.();
               yield { type: 'text_delta', text: '{"outcome":"completed","summary":"Verified","evidence":[]}' };
               yield { type: 'stop', stopReason: 'end_turn' };
             },
@@ -2355,12 +2447,86 @@ describe('Work Center store migration', () => {
 
     store = new WorkItemStore(rollbackDbPath, { now: () => 2_000 });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('22');
+      .toBe('37');
     expect(store.getAction(rollbackClaim.action.id).instruction).not.toContain(LEGACY_INSTRUCTION);
     store.close();
     store = null;
     rmSync(dir, { recursive: true, force: true });
     dir = null;
+
+    for (const badLedger of [false, true]) {
+      dir = mkdtempSync(join(tmpdir(), `yeaft-work-center-engine-turn-repair-${badLedger ? 'bad-ledger' : 'schema31'}-`));
+      const schema31DbPath = join(dir, 'work-center.db');
+      const suffix = badLedger ? 'bad-ledger' : 'schema31';
+      store = new WorkItemStore(schema31DbPath, { now: () => 1_000 });
+      store.createWorkItem({
+        id: `engine-turn-repair-${suffix}`, title: 'Repair EngineTurn schema',
+        goal: 'Upgrade EngineTurn safely', acceptanceCriteria: [],
+        workItemType: 'software-change', workDir: dir, workspaceKey: suffix,
+      }, {
+        id: `engine-turn-action-${suffix}`, type: 'implement', requiredRole: 'developer',
+        instruction: 'Exercise the repaired turn', maxAttempts: 1,
+      });
+      const claim = store.claimReadyAction(`engine-turn-boot-${suffix}`, 60_000);
+      const detail = store.getWorkItemDetail(`engine-turn-repair-${suffix}`);
+      store.addActionInput(`engine-turn-repair-${suffix}`, 'Legacy input', {
+        actionId: `engine-turn-action-${suffix}`, revision: detail.revision,
+        generation: 1, statuses: ['running'],
+      });
+      const inputs = store.listPendingActionInputs(
+        `engine-turn-action-${suffix}`, claim.run.id, `engine-turn-boot-${suffix}`, claim.run.leaseEpoch,
+      );
+      const turn = store.prepareEngineTurn(
+        `engine-turn-action-${suffix}`, claim.run.id, `engine-turn-boot-${suffix}`,
+        claim.run.leaseEpoch, inputs, { requestBody: { messages: ['Legacy input'] } },
+      );
+      store.createOperation({
+        id: `engine-turn-operation-${suffix}`, workItemId: `engine-turn-repair-${suffix}`,
+        actionId: `engine-turn-action-${suffix}`, runId: claim.run.id, engineTurnId: turn.id,
+        operationType: 'file-write', idempotencyKey: `engine-turn-operation-key-${suffix}`,
+      });
+      store.close();
+      store = null;
+
+      installLegacyEngineTurnStatusContract(schema31DbPath, { badLedger });
+      store = new WorkItemStore(schema31DbPath, { now: () => 2_000 });
+      expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
+        .toBe('37');
+      expect(store.getEngineTurn(turn.id)).toMatchObject({
+        status: 'prepared', inputEntryIds: turn.inputEntryIds,
+      });
+      expect(store.db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+      expect(store.db.prepare('PRAGMA foreign_key_list(engine_turns)').all().map(row => row.table).sort())
+        .toEqual(['actions', 'runs', 'work_items']);
+      expect(store.db.prepare('SELECT engine_turn_id FROM action_entries WHERE id = ?')
+        .get(turn.inputEntryIds[0]).engine_turn_id).toBe(turn.id);
+      expect(store.getOperation(`engine-turn-operation-${suffix}`)).toMatchObject({ engineTurnId: turn.id });
+      const physicalSql = store.db.prepare(`SELECT sql FROM sqlite_master
+        WHERE type = 'table' AND name = 'engine_turns'`).get().sql;
+      expect(physicalSql).toMatch(/status\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(status\s+IN\s*\(\s*'prepared'\s*,\s*'dispatching'\s*,\s*'responded'/i);
+      expect(store.db.prepare('PRAGMA index_list(engine_turns)').all().map(row => row.name))
+        .toEqual(expect.arrayContaining(['idx_engine_turns_recovery']));
+      expect(store.db.prepare(`SELECT name FROM sqlite_master WHERE type = 'trigger'
+        AND tbl_name = 'engine_turns'`).all().map(row => row.name))
+        .toContain('trg_engine_turn_request_immutable');
+      expect(store.claimEngineTurn(turn.id, `engine-turn-boot-${suffix}`, claim.run.leaseEpoch))
+        .toMatchObject({ status: 'dispatching' });
+      expect(store.consumeEngineTurn(
+        turn.id, `engine-turn-boot-${suffix}`, claim.run.leaseEpoch,
+        { responseText: 'repaired response', stopReason: 'end_turn' },
+      )).toBe(true);
+      expect(store.getEngineTurn(turn.id)).toMatchObject({
+        status: 'responded', response: { text: 'repaired response', stopReason: 'end_turn' },
+      });
+      expect(store.db.prepare('SELECT status FROM action_entries WHERE id = ?')
+        .get(turn.inputEntryIds[0])).toEqual({ status: 'consumed' });
+      expect(() => store.db.prepare("UPDATE engine_turns SET request_body = '{}' WHERE id = ?")
+        .run(turn.id)).toThrow(/immutable/);
+      store.close();
+      store = null;
+      rmSync(dir, { recursive: true, force: true });
+      dir = null;
+    }
 
     dir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-graph-migration-'));
     const dbPath = join(dir, 'work-center.db');
@@ -2470,5 +2636,5 @@ describe('Work Center store migration', () => {
       actionStatus: 'completed', workItemStatus: 'ready', graphAdvance: true, eventType: 'action.completed',
     }));
     expect(store.getWorkItemDetail('graph-item')).toMatchObject({ status: 'done', currentActionId: null });
-  });
+  }, 30_000);
 });

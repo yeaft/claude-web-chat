@@ -3,6 +3,25 @@ import {
   sendToWebClient, forwardToAgent, broadcastAgentList
 } from '../ws-utils.js';
 
+// v1.0.342 is the first release with the bootstrap -> detached runner handoff.
+// Older Windows Agents can lose their updater to PM2 tree-kill before npm runs.
+export const MIN_SAFE_REMOTE_UPGRADE_VERSION = '1.0.342';
+
+function parseVersion(version) {
+  const match = String(version || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)$/u);
+  return match ? match.slice(1).map(Number) : null;
+}
+
+export function requiresManualUpgradeBridge(version) {
+  const current = parseVersion(version);
+  const minimum = parseVersion(MIN_SAFE_REMOTE_UPGRADE_VERSION);
+  if (!current || !minimum) return true;
+  for (let index = 0; index < minimum.length; index++) {
+    if (current[index] !== minimum[index]) return current[index] < minimum[index];
+  }
+  return false;
+}
+
 /**
  * Handle miscellaneous messages from web client.
  * Types: ping, restart_agent, upgrade_agent,
@@ -26,6 +45,19 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       const upgradeAgentId = msg.agentId;
       if (!upgradeAgentId) break;
       if (!await checkAgentAccess(upgradeAgentId)) break;
+      const upgradeAgent = agents.get(upgradeAgentId);
+      if (requiresManualUpgradeBridge(upgradeAgent?.version)) {
+        await sendToWebClient(client, {
+          type: 'upgrade_agent_ack',
+          agentId: upgradeAgentId,
+          success: false,
+          reason: 'manual_upgrade_required',
+          version: upgradeAgent?.version || null,
+          minimumVersion: MIN_SAFE_REMOTE_UPGRADE_VERSION,
+          error: `Agent ${upgradeAgent?.version || 'unknown'} predates the safe remote-upgrade handoff; manually install ${MIN_SAFE_REMOTE_UPGRADE_VERSION} or newer once`,
+        });
+        break;
+      }
       await forwardToAgent(upgradeAgentId, { type: 'upgrade_agent' });
       break;
     }
@@ -185,6 +217,27 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       await forwardToAgent(targetAgentId, {
         type: 'update_yeaft_settings',
         settings: msg.settings || msg.config || {}
+      });
+      break;
+    }
+
+    // Local performance telemetry settings. The agent owns the config file;
+    // the server only checks access and relays the request.
+    case 'get_telemetry_settings': {
+      const a = msg.agentId || client.currentAgent;
+      if (!a) break;
+      if (!await checkAgentAccess(a)) break;
+      await forwardToAgent(a, { type: 'get_telemetry_settings' });
+      break;
+    }
+
+    case 'update_telemetry_settings': {
+      const a = msg.agentId || client.currentAgent;
+      if (!a) break;
+      if (!await checkAgentAccess(a)) break;
+      await forwardToAgent(a, {
+        type: 'update_telemetry_settings',
+        settings: msg.settings || msg.config || {},
       });
       break;
     }

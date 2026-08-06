@@ -5,9 +5,16 @@ import { createHash, randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 import { normalizeActionCheckpoint } from './action-checkpoint.js';
 import { currentActionInputEventIds, runMatchesActionIdentity } from './action-identity.js';
+import { isDynamicWorkItem, usesLegacyGraph } from './execution-mode.js';
+import { normalizeDynamicCompletion } from './dynamic-coordination.js';
 import { canonicalActionInstruction, withoutActionInputContext } from './workflow.js';
+import {
+  WORK_CENTER_SCHEMA_VERSION,
+  durableId,
+  migrateDurableWorkCenterModel,
+} from './durable-model.js';
 
-const SCHEMA_VERSION = 22;
+const SCHEMA_VERSION = WORK_CENTER_SCHEMA_VERSION;
 const UNFINISHED_ACTION_STATUSES = "'ready','running','waiting','failed'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -79,6 +86,7 @@ function actionSpecHash(action) {
     assignmentPolicy: action.assignmentPolicy || null,
     modelPolicy: action.modelPolicy || null,
     dependsOnStageIds: [...new Set(action.dependsOnStageIds || [])].sort(),
+    sourceActionIds: [...new Set(action.sourceActionIds || [])].sort(),
     workspaceMode: action.workspaceMode || 'shared',
     changesRequestedStageId: action.changesRequestedStageId || null,
     requiredRole: action.requiredRole || '',
@@ -98,6 +106,8 @@ function mapWorkItem(row) {
     planRevision: Math.max(0, Number(row.plan_revision) || 0),
     executionSchemaVersion: Math.max(1, Number(row.execution_schema_version) || 1),
     ledgerRevision: Math.max(0, Number(row.ledger_revision) || 0),
+    coordinationMode: row.coordination_mode || 'legacy',
+    finalResult: parseJson(row.final_result, null),
     title: row.title,
     goal: row.goal,
     acceptanceCriteria: parseJson(row.acceptance_criteria, []),
@@ -139,12 +149,29 @@ function mapWorkItem(row) {
   };
 }
 
-function isGraphWorkItem(workItem) {
-  return workItem?.workflowSnapshot?.executionMode === 'graph';
+function dynamicExecutionState(workItem, actions) {
+  if (!isDynamicWorkItem(workItem)) return workItem;
+  const current = (Array.isArray(actions) ? actions : [])
+    .filter(action => !['superseded', 'cancelled'].includes(action.status));
+  const activeActionIds = current.filter(action => ['ready', 'running'].includes(action.status))
+    .map(action => action.id);
+  const waitingIds = current.filter(action => action.status === 'waiting').map(action => action.id);
+  const failedIds = current.filter(action => action.status === 'failed').map(action => action.id);
+  return {
+    ...workItem,
+    lifecycle: workItem.status === 'cancelled' ? 'cancelled'
+      : workItem.status === 'done' ? 'done'
+        : workItem.status === 'draft' ? 'draft' : 'active',
+    attentionState: waitingIds.length > 0 && failedIds.length > 0 ? 'mixed'
+      : waitingIds.length > 0 ? 'waiting'
+        : failedIds.length > 0 ? 'failed' : 'none',
+    activeActionIds,
+    attentionActionIds: [...waitingIds, ...failedIds],
+  };
 }
 
 function graphExecutionState(workItem, actions) {
-  if (!isGraphWorkItem(workItem)) return workItem;
+  if (!usesLegacyGraph(workItem)) return dynamicExecutionState(workItem, actions);
   const current = (Array.isArray(actions) ? actions : [])
     .filter(action => !['superseded', 'cancelled'].includes(action.status));
   const activeActionIds = current
@@ -183,6 +210,7 @@ function mapAction(row) {
     assignmentPolicy: parseJson(row.assignment_policy, null),
     modelPolicy: parseJson(row.model_policy, null),
     dependsOnStageIds: parseJson(row.depends_on_stage_ids, []),
+    sourceActionIds: parseJson(row.source_action_ids, []),
     workspaceMode: row.workspace_mode || 'shared',
     changesRequestedStageId: row.changes_requested_stage_id || null,
     workspace: parseJson(row.workspace, null),
@@ -227,6 +255,9 @@ function mapRun(row) {
     workItemId: row.work_item_id,
     ownerBootId: row.owner_boot_id,
     leaseEpoch: row.lease_epoch,
+    ordinal: Math.max(1, Number(row.ordinal) || 1),
+    terminalStatus: row.terminal_status || null,
+    terminalAt: row.terminal_at || null,
     status: row.status,
     startedAt: row.started_at,
     expiresAt: row.expires_at,
@@ -240,6 +271,7 @@ function mapRun(row) {
     response: row.response || '',
     summary: row.summary || '',
     evidence: normalizeEvidence(parseJson(row.evidence, [])),
+    acceptanceChecks: parseJson(row.acceptance_checks, []),
     waitingReason: row.waiting_reason || null,
     error: row.error || null,
     failureKind: row.failure_kind || null,
@@ -377,6 +409,8 @@ function carryCurrentActionInputContext(db, action, extraInputs = [], explicitOn
     return [{
       ...entry,
       inputId,
+      summary: event?.data?.text || entry.summary || '',
+      quote: event?.data?.quote || entry.quote || null,
       attachments: Array.isArray(entry.attachments) && entry.attachments.length > 0
         ? entry.attachments
         : inputAttachments(event),
@@ -392,6 +426,7 @@ function carryCurrentActionInputContext(db, action, extraInputs = [], explicitOn
       role: 'user',
       inputId,
       summary: event.data?.text || '',
+      quote: event.data?.quote || null,
       attachments: inputAttachments(event),
       evidence: [],
     });
@@ -774,6 +809,10 @@ export class WorkItemStore {
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA foreign_keys = ON;');
     this.#initSchema();
+    this.recoverCoordinatorMailbox();
+    this.recoverCoordinatorProviderTurns();
+    this.recoverOperations();
+    this.recoverEngineTurns();
     this.recoverInterruptedCoordinatorTurns();
   }
 
@@ -789,6 +828,8 @@ export class WorkItemStore {
         plan_revision INTEGER NOT NULL DEFAULT 0,
         execution_schema_version INTEGER NOT NULL DEFAULT 2,
         ledger_revision INTEGER NOT NULL DEFAULT 0,
+        coordination_mode TEXT NOT NULL DEFAULT 'legacy',
+        final_result TEXT,
         title TEXT NOT NULL,
         goal TEXT NOT NULL,
         acceptance_criteria TEXT NOT NULL,
@@ -819,6 +860,7 @@ export class WorkItemStore {
         assignment_policy TEXT,
         model_policy TEXT,
         depends_on_stage_ids TEXT NOT NULL DEFAULT '[]',
+        source_action_ids TEXT NOT NULL DEFAULT '[]',
         workspace_mode TEXT NOT NULL DEFAULT 'shared',
         changes_requested_stage_id TEXT,
         workspace TEXT,
@@ -858,6 +900,7 @@ export class WorkItemStore {
         execution_manifest TEXT,
         summary TEXT,
         evidence TEXT NOT NULL DEFAULT '[]',
+        acceptance_checks TEXT NOT NULL DEFAULT '[]',
         waiting_reason TEXT,
         error TEXT,
         failure_kind TEXT,
@@ -939,6 +982,9 @@ export class WorkItemStore {
     const storedSchemaVersion = Number(
       this.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get()?.value,
     ) || 0;
+    if (storedSchemaVersion > SCHEMA_VERSION) {
+      throw new Error(`Work Center database schema ${storedSchemaVersion} is newer than supported schema ${SCHEMA_VERSION}`);
+    }
 
     // The feature shipped first as an unmerged PR, but keep the store tolerant
     // of databases created by review builds.
@@ -1054,6 +1100,15 @@ export class WorkItemStore {
     if (!hasColumn(this.db, 'work_items', 'ledger_revision')) {
       this.db.exec('ALTER TABLE work_items ADD COLUMN ledger_revision INTEGER NOT NULL DEFAULT 0');
     }
+    if (!hasColumn(this.db, 'work_items', 'coordination_mode')) {
+      this.db.exec("ALTER TABLE work_items ADD COLUMN coordination_mode TEXT NOT NULL DEFAULT 'legacy'");
+    }
+    if (!hasColumn(this.db, 'work_items', 'final_result')) {
+      this.db.exec('ALTER TABLE work_items ADD COLUMN final_result TEXT');
+    }
+    if (!hasColumn(this.db, 'actions', 'source_action_ids')) {
+      this.db.exec("ALTER TABLE actions ADD COLUMN source_action_ids TEXT NOT NULL DEFAULT '[]'");
+    }
     if (!hasColumn(this.db, 'actions', 'generation')) {
       this.db.exec('ALTER TABLE actions ADD COLUMN generation INTEGER NOT NULL DEFAULT 1');
     }
@@ -1100,6 +1155,9 @@ export class WorkItemStore {
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_pending_action_inputs_identity
       ON pending_action_inputs(action_id, action_generation, action_spec_hash,
         run_id, consumed_at, superseded_at, event_id)`);
+    if (!hasColumn(this.db, 'runs', 'acceptance_checks')) {
+      this.db.exec("ALTER TABLE runs ADD COLUMN acceptance_checks TEXT NOT NULL DEFAULT '[]'");
+    }
     if (!hasColumn(this.db, 'runs', 'context_snapshot')) {
       this.db.exec('ALTER TABLE runs ADD COLUMN context_snapshot TEXT');
     }
@@ -1129,14 +1187,595 @@ export class WorkItemStore {
         }
         if (storedSchemaVersion < 20) reconcilePendingActionInputIdentity(this.db, this.now());
         if (storedSchemaVersion < 22) repairReviewBuildActionInputIdentity(this.db, this.now());
-        this.db.prepare(`INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)
-          ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
       });
     }
+    withTransaction(this.db, () => {
+      migrateDurableWorkCenterModel(this.db, this.now(), storedSchemaVersion || SCHEMA_VERSION);
+      this.db.prepare(`INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
+    });
   }
 
   close() {
     this.db.close();
+  }
+
+  #nextConversationSequence(conversationId) {
+    return Number(this.db.prepare(`SELECT COALESCE(MAX(sequence), 0) + 1 AS value
+      FROM conversation_entries WHERE conversation_id = ?`).get(conversationId)?.value) || 1;
+  }
+
+  #nextActionEntrySequence(actionId) {
+    return Number(this.db.prepare(`SELECT COALESCE(MAX(sequence), 0) + 1 AS value
+      FROM action_entries WHERE action_id = ?`).get(actionId)?.value) || 1;
+  }
+
+  #appendConversationEntry(workItemId, entry, sourceKey) {
+    const now = this.now();
+    const conversationId = `work-item:${workItemId}`;
+    this.db.prepare(`INSERT INTO conversations
+      (id, work_item_id, status, created_at, updated_at) VALUES (?, ?, 'active', ?, ?)
+      ON CONFLICT(work_item_id) DO UPDATE SET updated_at = excluded.updated_at`).run(
+      conversationId, workItemId, now, now,
+    );
+    const existing = this.db.prepare('SELECT id FROM conversation_entries WHERE source_key = ?').get(sourceKey);
+    if (existing) {
+      this.db.prepare(`UPDATE conversation_entries SET status = ?, text = ?, attachments = ?,
+        payload = ?, updated_at = ? WHERE id = ?`).run(
+        entry.status || 'completed',
+        entry.text || '',
+        stringify(Array.isArray(entry.attachments) ? entry.attachments : []),
+        stringify(entry),
+        Number(entry.updatedAt) || Number(entry.createdAt) || now,
+        existing.id,
+      );
+      return existing.id;
+    }
+    const id = entry.id || durableId('conversation-entry');
+    this.db.prepare(`INSERT INTO conversation_entries
+      (id, conversation_id, work_item_id, sequence, kind, role, status, text, attachments,
+       turn_id, source_key, payload, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      id,
+      conversationId,
+      workItemId,
+      this.#nextConversationSequence(conversationId),
+      entry.kind || 'message',
+      entry.role || null,
+      entry.status || 'completed',
+      entry.text || '',
+      stringify(Array.isArray(entry.attachments) ? entry.attachments : []),
+      entry.turnId || null,
+      sourceKey,
+      stringify(entry),
+      Number(entry.createdAt) || now,
+      Number(entry.updatedAt) || Number(entry.createdAt) || now,
+    );
+    return id;
+  }
+
+  #appendActionEntry(input, sourceKey) {
+    const append = () => {
+      const existing = this.db.prepare('SELECT * FROM action_entries WHERE source_key = ?').get(sourceKey);
+      if (existing) return existing;
+      const now = this.now();
+      const status = input.status || 'pending';
+      const id = input.id || durableId('action-entry');
+      this.db.prepare(`INSERT INTO action_entries
+        (id, work_item_id, action_id, run_id, sequence, kind, role, status, text, attachments,
+         source_key, payload, created_at, updated_at, consumed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        id,
+        input.workItemId,
+        input.actionId,
+        input.runId || null,
+        this.#nextActionEntrySequence(input.actionId),
+        input.kind || 'message',
+        input.role || null,
+        status,
+        input.text || '',
+        stringify(Array.isArray(input.attachments) ? input.attachments : []),
+        sourceKey,
+        stringify(input.payload || {}),
+        Number(input.createdAt) || now,
+        now,
+        status === 'consumed' ? now : null,
+      );
+      return this.db.prepare('SELECT * FROM action_entries WHERE id = ?').get(id);
+    };
+    return this.db.isTransaction ? append() : withTransaction(this.db, append);
+  }
+
+  appendActionControl(workItemId, actionId, command, options = {}) {
+    if (!['start', 'pause', 'stop'].includes(command)) {
+      throw new Error(`Unsupported Action control command: ${command}`);
+    }
+    const action = this.getAction(actionId);
+    if (!action || action.workItemId !== workItemId) return null;
+    const sourceKey = options.sourceKey || durableId(`action-control-${command}`);
+    return this.#appendActionEntry({
+      workItemId,
+      actionId,
+      runId: options.runId || action.currentRunId || null,
+      kind: 'control',
+      role: options.source || 'user',
+      status: options.status || 'pending',
+      text: options.reason || '',
+      payload: { command, reason: options.reason || '', source: options.source || 'user' },
+      createdAt: options.createdAt,
+    }, sourceKey);
+  }
+
+  enqueueCoordinatorMailbox(workItemId, kind, payload = {}, sourceKey = durableId('mailbox-source')) {
+    const enqueue = () => {
+      const existing = this.db.prepare(`SELECT * FROM coordinator_mailbox_entries
+        WHERE source_key = ?`).get(sourceKey);
+      if (existing) return existing;
+      const now = this.now();
+      const sequence = Number(this.db.prepare(`SELECT COALESCE(MAX(sequence), 0) + 1 AS value
+        FROM coordinator_mailbox_entries WHERE work_item_id = ?`).get(workItemId)?.value) || 1;
+      const id = durableId('coordinator-mailbox');
+      this.db.prepare(`INSERT INTO coordinator_mailbox_entries
+        (id, work_item_id, sequence, kind, status, source_key, payload, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)`).run(
+        id, workItemId, sequence, kind, sourceKey, stringify(payload), now, now,
+      );
+      return this.db.prepare('SELECT * FROM coordinator_mailbox_entries WHERE id = ?').get(id);
+    };
+    return this.db.isTransaction ? enqueue() : withTransaction(this.db, enqueue);
+  }
+
+  claimCoordinatorTurn(workItemId, turnId, owner, leaseMs = 60_000) {
+    return withTransaction(this.db, () => {
+      const now = this.now();
+      const row = this.db.prepare(`SELECT * FROM coordinator_mailbox_entries
+        WHERE work_item_id = ? AND json_extract(payload, '$.turnId') = ?
+        AND (status = 'pending' OR (status = 'claimed' AND lease_expires_at <= ?))`).get(
+        workItemId, turnId, now,
+      );
+      if (!row) return null;
+      const changed = this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'claimed',
+        claim_owner = ?, claim_epoch = claim_epoch + 1, claimed_at = ?, lease_expires_at = ?,
+        updated_at = ? WHERE id = ? AND claim_epoch = ?
+        AND (status = 'pending' OR (status = 'claimed' AND lease_expires_at <= ?))`).run(
+        owner, now, now + leaseMs, now, row.id, row.claim_epoch, now,
+      );
+      if (Number(changed.changes) !== 1) return null;
+      const claimed = this.db.prepare('SELECT * FROM coordinator_mailbox_entries WHERE id = ?').get(row.id);
+      const providerChanged = this.db.prepare(`UPDATE coordinator_provider_turns SET claim_owner = ?,
+        claim_epoch = ?, updated_at = ? WHERE coordinator_turn_id = ?
+        AND status IN ('prepared', 'responded')`).run(
+        owner, claimed.claim_epoch, now, turnId,
+      );
+      const providerCount = Number(this.db.prepare(`SELECT COUNT(*) AS count FROM coordinator_provider_turns
+        WHERE coordinator_turn_id = ? AND status IN ('prepared', 'responded')`).get(turnId)?.count) || 0;
+      if (providerCount !== Number(providerChanged.changes)) {
+        throw new Error('Coordinator provider turn cannot transfer an in-flight dispatch');
+      }
+      return {
+        mailboxId: claimed.id,
+        ownerBootId: owner,
+        claimEpoch: Number(claimed.claim_epoch),
+        leaseExpiresAt: Number(claimed.lease_expires_at),
+        payload: parseJson(claimed.payload, {}),
+      };
+    });
+  }
+
+  listPendingDynamicCoordinatorWakes() {
+    return this.db.prepare(`SELECT c.id, c.work_item_id, c.kind, c.payload, c.source_key
+      FROM coordinator_mailbox_entries c
+      JOIN work_items w ON w.id = c.work_item_id
+      WHERE w.coordination_mode = 'dynamic' AND w.status NOT IN ('done', 'cancelled')
+        AND (c.status = 'pending' OR (c.status = 'claimed' AND c.lease_expires_at <= ?))
+      ORDER BY c.created_at, c.sequence`).all(this.now()).map(row => ({
+      id: row.id,
+      workItemId: row.work_item_id,
+      kind: row.kind,
+      sourceKey: row.source_key,
+      payload: parseJson(row.payload, {}),
+    }));
+  }
+
+  claimCoordinatorMailbox(workItemId, owner, leaseMs = 60_000) {
+    return withTransaction(this.db, () => {
+      const now = this.now();
+      const row = this.db.prepare(`SELECT * FROM coordinator_mailbox_entries
+        WHERE work_item_id = ? AND (status = 'pending'
+          OR (status = 'claimed' AND lease_expires_at <= ?))
+        ORDER BY sequence LIMIT 1`).get(workItemId, now);
+      if (!row) return null;
+      const changed = this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'claimed',
+        claim_owner = ?, claim_epoch = claim_epoch + 1, claimed_at = ?, lease_expires_at = ?,
+        updated_at = ? WHERE id = ? AND claim_epoch = ?`).run(
+        owner, now, now + leaseMs, now, row.id, row.claim_epoch,
+      );
+      if (Number(changed.changes) !== 1) return null;
+      const claimed = this.db.prepare('SELECT * FROM coordinator_mailbox_entries WHERE id = ?').get(row.id);
+      return { ...claimed, payload: parseJson(claimed.payload, {}) };
+    });
+  }
+
+  releaseCoordinatorMailboxClaim(id, owner, claimEpoch) {
+    const now = this.now();
+    const changed = this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'pending',
+      claim_owner = NULL, claimed_at = NULL, lease_expires_at = NULL, updated_at = ?
+      WHERE id = ? AND status = 'claimed' AND claim_owner = ? AND claim_epoch = ?`).run(
+      now, id, owner, claimEpoch,
+    );
+    return Number(changed.changes) === 1;
+  }
+
+  renewCoordinatorMailbox(id, owner, claimEpoch, leaseMs = 60_000) {
+    const now = this.now();
+    const changed = this.db.prepare(`UPDATE coordinator_mailbox_entries SET lease_expires_at = ?,
+      updated_at = ? WHERE id = ? AND status = 'claimed' AND claim_owner = ? AND claim_epoch = ?
+      AND lease_expires_at > ?`).run(now + leaseMs, now, id, owner, claimEpoch, now);
+    return Number(changed.changes) === 1;
+  }
+
+  ackCoordinatorMailbox(id, owner, claimEpoch) {
+    const now = this.now();
+    const changed = this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'acked',
+      acked_at = ?, updated_at = ? WHERE id = ? AND status = 'claimed' AND claim_owner = ?
+      AND claim_epoch = ?`).run(now, now, id, owner, claimEpoch);
+    return Number(changed.changes) === 1;
+  }
+
+  recoverCoordinatorMailbox() {
+    const now = this.now();
+    return Number(this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'pending',
+      claim_owner = NULL, claimed_at = NULL, lease_expires_at = NULL, updated_at = ?
+      WHERE status = 'claimed' AND lease_expires_at <= ?`).run(now, now).changes);
+  }
+
+  prepareCoordinatorProviderTurn(
+    workItemId,
+    coordinatorTurnId,
+    attemptNumber,
+    requestBody,
+    claim = {},
+    speaker = null,
+  ) {
+    return withTransaction(this.db, () => {
+      const mailbox = this.#activeCoordinatorMailboxClaim(coordinatorTurnId, claim);
+      if (!mailbox || mailbox.work_item_id !== workItemId) return null;
+      const existing = this.db.prepare(`SELECT * FROM coordinator_provider_turns
+        WHERE coordinator_turn_id = ? AND attempt_number = ?`).get(coordinatorTurnId, attemptNumber);
+      const requestHash = createHash('sha256').update(stableJson(requestBody), 'utf8').digest('hex');
+      if (existing) {
+        if (existing.request_hash !== requestHash) {
+          throw new Error('Prepared Coordinator provider request changed before dispatch');
+        }
+        if (existing.claim_owner !== claim.ownerBootId
+            || Number(existing.claim_epoch) !== Number(claim.claimEpoch)) return null;
+        const persistedSpeaker = this.#persistCoordinatorSpeaker(
+          workItemId, coordinatorTurnId, null,
+        );
+        return { ...this.#mapCoordinatorProviderTurn(existing), speaker: persistedSpeaker };
+      }
+      const persistedSpeaker = this.#persistCoordinatorSpeaker(
+        workItemId, coordinatorTurnId, speaker,
+      );
+      const now = this.now();
+      const id = durableId('coordinator-provider-turn');
+      this.db.prepare(`INSERT INTO coordinator_provider_turns
+        (id, work_item_id, coordinator_turn_id, attempt_number, status, request_body, request_hash,
+         claim_owner, claim_epoch, prepared_at, updated_at)
+        VALUES (?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?)`).run(
+        id, workItemId, coordinatorTurnId, attemptNumber, stringify(requestBody), requestHash,
+        claim.ownerBootId, claim.claimEpoch, now, now,
+      );
+      return { ...this.getCoordinatorProviderTurn(id), speaker: persistedSpeaker };
+    });
+  }
+
+  #persistCoordinatorSpeaker(workItemId, coordinatorTurnId, speaker) {
+    const workItem = this.getWorkItem(workItemId);
+    if (!workItem) return null;
+    const messages = [...(workItem.messages || [])];
+    const index = messages.findIndex(message => (
+      message?.turnId === coordinatorTurnId
+        && message.role === 'assistant'
+        && message.status === 'thinking'
+    ));
+    if (index < 0) return null;
+    const persistedSpeaker = messages[index].speaker;
+    const persistedId = typeof persistedSpeaker?.id === 'string' ? persistedSpeaker.id.trim() : '';
+    const persistedName = typeof persistedSpeaker?.name === 'string'
+      ? persistedSpeaker.name.trim()
+      : '';
+    if (persistedId || persistedName) {
+      return { id: persistedId || null, name: persistedName || persistedId };
+    }
+    const id = typeof speaker?.id === 'string' ? speaker.id.trim() : '';
+    const name = typeof speaker?.name === 'string' ? speaker.name.trim() : '';
+    if (!id && !name) return null;
+    if (!id || !name) throw new Error('Coordinator speaker identity is incomplete');
+    const persisted = { id, name };
+    messages[index] = { ...messages[index], speaker: persisted };
+    const changed = this.db.prepare(`UPDATE work_items SET messages = ?
+      WHERE id = ? AND coordinator_revision = ?`).run(
+      stringify(messages), workItemId, workItem.coordinatorRevision,
+    );
+    if (Number(changed.changes) !== 1) {
+      throw new Error('Coordinator speaker lost its revision fence');
+    }
+    this.#appendConversationEntry(
+      workItemId,
+      messages[index],
+      `coordinator:turn:${coordinatorTurnId}:assistant`,
+    );
+    return persisted;
+  }
+
+  #activeCoordinatorMailboxClaim(coordinatorTurnId, claim = {}) {
+    if (!claim.mailboxId || !claim.ownerBootId || !Number.isInteger(Number(claim.claimEpoch))) return null;
+    return this.db.prepare(`SELECT * FROM coordinator_mailbox_entries WHERE id = ? AND status = 'claimed'
+      AND claim_owner = ? AND claim_epoch = ? AND lease_expires_at > ?
+      AND json_extract(payload, '$.turnId') = ?`).get(
+      claim.mailboxId, claim.ownerBootId, Number(claim.claimEpoch), this.now(), coordinatorTurnId,
+    );
+  }
+
+  #mapCoordinatorProviderTurn(row) {
+    return {
+      id: row.id,
+      workItemId: row.work_item_id,
+      coordinatorTurnId: row.coordinator_turn_id,
+      attemptNumber: Number(row.attempt_number),
+      status: row.status,
+      requestBody: parseJson(row.request_body, {}),
+      requestHash: row.request_hash,
+      response: parseJson(row.response, null),
+      responseHash: row.response_hash || null,
+      error: row.error || null,
+      claimOwner: row.claim_owner || null,
+      claimEpoch: Number(row.claim_epoch) || 0,
+    };
+  }
+
+  getCoordinatorProviderTurn(id) {
+    const row = this.db.prepare('SELECT * FROM coordinator_provider_turns WHERE id = ?').get(id);
+    return row ? this.#mapCoordinatorProviderTurn(row) : null;
+  }
+
+  dispatchCoordinatorProviderTurn(id, claim = {}) {
+    return withTransaction(this.db, () => {
+      const existing = this.getCoordinatorProviderTurn(id);
+      if (!existing || !this.#activeCoordinatorMailboxClaim(existing.coordinatorTurnId, claim)) return null;
+      const now = this.now();
+      const changed = this.db.prepare(`UPDATE coordinator_provider_turns SET status = 'dispatching',
+        dispatched_at = ?, updated_at = ? WHERE id = ? AND status = 'prepared'
+        AND claim_owner = ? AND claim_epoch = ?`).run(
+        now, now, id, claim.ownerBootId, Number(claim.claimEpoch),
+      );
+      return Number(changed.changes) === 1 ? this.getCoordinatorProviderTurn(id) : null;
+    });
+  }
+
+  respondCoordinatorProviderTurn(id, requestHash, response, claim = {}) {
+    return withTransaction(this.db, () => {
+      const existing = this.getCoordinatorProviderTurn(id);
+      if (!existing || !this.#activeCoordinatorMailboxClaim(existing.coordinatorTurnId, claim)) return null;
+      const now = this.now();
+      const responseHash = createHash('sha256').update(stableJson(response), 'utf8').digest('hex');
+      const changed = this.db.prepare(`UPDATE coordinator_provider_turns SET status = 'responded',
+        response = ?, response_hash = ?, responded_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'dispatching' AND request_hash = ?
+        AND claim_owner = ? AND claim_epoch = ?`).run(
+        stringify(response), responseHash, now, now, id, requestHash,
+        claim.ownerBootId, Number(claim.claimEpoch),
+      );
+      return Number(changed.changes) === 1 ? this.getCoordinatorProviderTurn(id) : null;
+    });
+  }
+
+  rejectCoordinatorProviderTurn(id, error, claim = {}) {
+    return withTransaction(this.db, () => {
+      const existing = this.getCoordinatorProviderTurn(id);
+      if (!existing || !this.#activeCoordinatorMailboxClaim(existing.coordinatorTurnId, claim)) return null;
+      const now = this.now();
+      const changed = this.db.prepare(`UPDATE coordinator_provider_turns SET status = 'cancelled',
+        error = ?, updated_at = ? WHERE id = ? AND status = 'responded'
+        AND claim_owner = ? AND claim_epoch = ?`).run(
+        String(error?.message || error || 'Coordinator provider response was rejected').slice(0, 8_000),
+        now, id, claim.ownerBootId, Number(claim.claimEpoch),
+      );
+      return Number(changed.changes) === 1 ? this.getCoordinatorProviderTurn(id) : null;
+    });
+  }
+
+  recoverCoordinatorProviderTurns() {
+    const now = this.now();
+    return Number(this.db.prepare(`UPDATE coordinator_provider_turns SET status = 'unknown',
+      error = 'Coordinator provider dispatch outcome is unknown after Agent restart', updated_at = ?
+      WHERE status = 'dispatching' AND NOT EXISTS (
+        SELECT 1 FROM coordinator_mailbox_entries mailbox
+        WHERE json_extract(mailbox.payload, '$.turnId') = coordinator_provider_turns.coordinator_turn_id
+          AND mailbox.status = 'claimed' AND mailbox.claim_owner = coordinator_provider_turns.claim_owner
+          AND mailbox.claim_epoch = coordinator_provider_turns.claim_epoch
+          AND mailbox.lease_expires_at > ?
+      )`).run(now, now).changes);
+  }
+
+  createOperation(input = {}) {
+    const replayPolicy = input.replayPolicy || 'never_automatic';
+    if (!input.idempotencyKey) throw new Error('Operation idempotencyKey is required');
+    if (!['safe', 'probe_first', 'never_automatic'].includes(replayPolicy)) {
+      throw new Error(`Unsupported Operation replay policy: ${replayPolicy}`);
+    }
+    const now = this.now();
+    const id = input.id || durableId('operation');
+    this.db.prepare(`INSERT INTO operations
+      (id, work_item_id, action_id, run_id, engine_turn_id, operation_type, idempotency_key,
+       replay_policy, effect_status, execution_status, payload, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(idempotency_key) DO NOTHING`).run(
+      id, input.workItemId, input.actionId || null, input.runId || null, input.engineTurnId || null,
+      input.operationType || 'unknown', input.idempotencyKey, replayPolicy,
+      input.effectStatus || 'pending', input.executionStatus || 'not_started',
+      stringify(input.payload || {}), now, now,
+    );
+    return this.getOperationByKey(input.idempotencyKey);
+  }
+
+  getOperation(id) {
+    const row = this.db.prepare('SELECT * FROM operations WHERE id = ?').get(id);
+    return row ? this.#mapOperation(row) : null;
+  }
+
+  getOperationByKey(idempotencyKey) {
+    const row = this.db.prepare('SELECT * FROM operations WHERE idempotency_key = ?').get(idempotencyKey);
+    return row ? this.#mapOperation(row) : null;
+  }
+
+  #mapOperation(row) {
+    return {
+      id: row.id,
+      workItemId: row.work_item_id,
+      actionId: row.action_id || null,
+      runId: row.run_id || null,
+      engineTurnId: row.engine_turn_id || null,
+      operationType: row.operation_type,
+      idempotencyKey: row.idempotency_key,
+      replayPolicy: row.replay_policy,
+      concurrencyPolicy: row.concurrency_policy,
+      effectStatus: row.effect_status,
+      executionStatus: row.execution_status,
+      effectCutoff: parseJson(row.effect_cutoff, null),
+      grantManifest: parseJson(row.grant_manifest, {}),
+      resourceRelease: parseJson(row.resource_release, {}),
+      supplementalInventory: parseJson(row.supplemental_inventory, {}),
+      payload: parseJson(row.payload, {}),
+      result: parseJson(row.result, null),
+    };
+  }
+
+  operationSafeToProceed(operationOrKey) {
+    const operation = typeof operationOrKey === 'string'
+      ? this.getOperationByKey(operationOrKey) : operationOrKey;
+    if (!operation) return false;
+    const effectSafe = ['applied', 'not_applied', 'failed_no_effect'].includes(operation.effectStatus);
+    const executionSafe = ['not_started', 'quiescent'].includes(operation.executionStatus)
+      || (operation.executionStatus === 'fenced' && operation.effectCutoff?.status === 'current');
+    const manifest = operation.grantManifest || {};
+    const grantSafe = manifest.status === 'closed' && manifest.safetyStatus === 'current'
+      && manifest.inventoryComplete === true
+      && (manifest.pendingGrantAttemptIds || []).length === 0
+      && (manifest.authorityClosures || []).every(closure => closure.status === 'closed');
+    const release = operation.resourceRelease || {};
+    const resourcesSafe = release.status === 'released'
+      && (release.leases || []).every(lease => ['released', 'expired'].includes(lease.status));
+    const supplemental = operation.supplementalInventory || {};
+    const supplementalSafe = ['clear', 'resolved'].includes(supplemental.status || 'clear');
+    return effectSafe && executionSafe && grantSafe && resourcesSafe && supplementalSafe;
+  }
+
+  #hasBlockingOperation(workItemId, actionId = null) {
+    const rows = this.db.prepare(`SELECT idempotency_key FROM operations
+      WHERE work_item_id = ? AND concurrency_policy = 'blocking'
+        AND (? IS NULL OR action_id IS NULL OR action_id = ?)`)
+      .all(workItemId, actionId, actionId);
+    return rows.some(row => !this.operationSafeToProceed(row.idempotency_key));
+  }
+
+  createAndClaimOperation(input = {}, ownerBootId, leaseEpoch, automatic = true) {
+    return withTransaction(this.db, () => {
+      const active = this.#activeRunRow(input.runId, ownerBootId, leaseEpoch, true);
+      if (!active || active.work_item_id !== input.workItemId || active.action_id !== input.actionId) return null;
+      const operation = this.createOperation(input);
+      if (!operation
+          || operation.workItemId !== input.workItemId
+          || operation.actionId !== input.actionId
+          || operation.runId !== input.runId
+          || operation.operationType !== (input.operationType || 'unknown')
+          || operation.executionStatus !== 'not_started') return null;
+      if (automatic && operation.replayPolicy !== 'safe') return null;
+      const now = this.now();
+      const changed = this.db.prepare(`UPDATE operations SET execution_status = 'running',
+        execution_epoch = execution_epoch + 1, owner_boot_id = ?, owner_lease_epoch = ?,
+        claimed_at = ?, updated_at = ? WHERE idempotency_key = ? AND execution_status = 'not_started'
+        AND work_item_id = ? AND action_id = ? AND run_id = ?`).run(
+        ownerBootId, leaseEpoch, now, now, input.idempotencyKey,
+        input.workItemId, input.actionId, input.runId,
+      );
+      return Number(changed.changes) === 1 ? this.getOperationByKey(input.idempotencyKey) : null;
+    });
+  }
+
+  claimOperation(idempotencyKey, ownerBootId, leaseEpoch, automatic = true) {
+    return withTransaction(this.db, () => {
+      const operation = this.getOperationByKey(idempotencyKey);
+      if (!operation || operation.executionStatus !== 'not_started') return null;
+      if (!this.#activeRunRow(operation.runId, ownerBootId, leaseEpoch, true)) return null;
+      if (automatic && operation.replayPolicy !== 'safe') return null;
+      const now = this.now();
+      const changed = this.db.prepare(`UPDATE operations SET execution_status = 'running',
+        execution_epoch = execution_epoch + 1, owner_boot_id = ?, owner_lease_epoch = ?,
+        claimed_at = ?, updated_at = ? WHERE idempotency_key = ? AND execution_status = 'not_started'
+        AND run_id = ?`).run(
+        ownerBootId, leaseEpoch, now, now, idempotencyKey, operation.runId,
+      );
+      return Number(changed.changes) === 1 ? this.getOperationByKey(idempotencyKey) : null;
+    });
+  }
+
+  completeOperation(idempotencyKey, ownerBootId, leaseEpoch, effectStatus, result = null) {
+    if (!['applied', 'not_applied', 'failed_no_effect', 'unknown'].includes(effectStatus)) return false;
+    return withTransaction(this.db, () => {
+      const operation = this.getOperationByKey(idempotencyKey);
+      if (!operation || operation.executionStatus !== 'running'
+          || operation.payload == null) return false;
+      const ownerMatches = this.db.prepare(`SELECT 1 AS present FROM operations
+        WHERE idempotency_key = ? AND execution_status = 'running'
+          AND owner_boot_id = ? AND owner_lease_epoch = ?`).get(
+        idempotencyKey, ownerBootId, leaseEpoch,
+      );
+      if (!ownerMatches) return false;
+      const now = this.now();
+      const active = this.#activeRunRow(operation.runId, ownerBootId, leaseEpoch, true);
+      if (!active || active.work_item_id !== operation.workItemId
+          || active.action_id !== operation.actionId) {
+        this.db.prepare(`UPDATE operations SET effect_status = 'unknown',
+          execution_status = 'hazardous_orphan', effect_cutoff = ?, result = ?, completed_at = ?,
+          updated_at = ? WHERE idempotency_key = ? AND execution_status = 'running'
+          AND owner_boot_id = ? AND owner_lease_epoch = ?`).run(
+          stringify({ status: 'stale', closureType: 'late_completion', closedAt: now }),
+          stringify({ attemptedEffectStatus: effectStatus, reportedResult: result }),
+          now, now, idempotencyKey, ownerBootId, leaseEpoch,
+        );
+        return false;
+      }
+      const changed = this.db.prepare(`UPDATE operations SET effect_status = ?, execution_status = ?,
+        effect_cutoff = ?, result = ?, completed_at = ?, updated_at = ? WHERE idempotency_key = ?
+        AND execution_status = 'running' AND owner_boot_id = ? AND owner_lease_epoch = ?`).run(
+        effectStatus,
+        'quiescent',
+        stringify({ status: 'current', closureType: 'quiescent', closedAt: now }),
+        stringify(result), now, now, idempotencyKey, ownerBootId, leaseEpoch,
+      );
+      return Number(changed.changes) === 1;
+    });
+  }
+
+  recoverOperations() {
+    return withTransaction(this.db, () => {
+      const now = this.now();
+      const unstarted = this.db.prepare(`UPDATE operations SET effect_status = 'failed_no_effect',
+        execution_status = 'quiescent', effect_cutoff = ?, result = ?, completed_at = ?, updated_at = ?
+        WHERE effect_status = 'pending' AND execution_status = 'not_started'`).run(
+        stringify({ status: 'current', closureType: 'recovered_before_dispatch', closedAt: now }),
+        stringify({ recovered: true, reason: 'Operation was never claimed before restart' }),
+        now, now,
+      );
+      const hazardous = this.db.prepare(`UPDATE operations SET execution_status = 'hazardous_orphan',
+        effect_status = CASE WHEN effect_status = 'pending' THEN 'unknown' ELSE effect_status END,
+        effect_cutoff = ?, updated_at = ? WHERE execution_status IN ('running', 'cancel_requested')`).run(
+        stringify({ status: 'stale', closureType: 'restart_unknown', closedAt: now }), now,
+      );
+      return Number(unstarted.changes) + Number(hazardous.changes);
+    });
   }
 
   appendEvent(workItemId, type, data = {}, refs = {}) {
@@ -1157,16 +1796,49 @@ export class WorkItemStore {
     return Number(result.lastInsertRowid);
   }
 
-  addActionInput(id, input, expected, attachments = null, addedAttachments = []) {
+  getCoordinatorClientMessageReceipt(workItemId, clientMessageId) {
+    if (typeof clientMessageId !== 'string' || !clientMessageId) return null;
+    const sourceKey = `client:message:${workItemId}:${clientMessageId}`;
+    const actionReceipt = this.db.prepare('SELECT action_id FROM action_entries WHERE source_key = ?')
+      .get(sourceKey);
+    if (actionReceipt) throw new Error('clientMessageId already belongs to an Action message');
+    const row = this.db.prepare(`SELECT payload FROM coordinator_mailbox_entries
+      WHERE work_item_id = ? AND source_key = ?`).get(workItemId, sourceKey);
+    return row ? parseJson(row.payload, {}) : null;
+  }
+
+  hasActionInputClientMessage(workItemId, actionId, clientMessageId) {
+    if (typeof clientMessageId !== 'string' || !clientMessageId) return false;
+    const sourceKey = `client:message:${workItemId}:${clientMessageId}`;
+    const coordinatorReceipt = this.db.prepare(`SELECT 1 FROM coordinator_mailbox_entries
+      WHERE source_key = ?`).get(sourceKey);
+    if (coordinatorReceipt) throw new Error('clientMessageId already belongs to a Coordinator message');
+    const entry = this.db.prepare('SELECT action_id FROM action_entries WHERE source_key = ?').get(sourceKey)
+      || this.db.prepare(`SELECT action_id FROM events WHERE work_item_id = ?
+        AND type = 'action.input_added' AND json_extract(data, '$.clientMessageId') = ?`).get(
+        workItemId, clientMessageId,
+      );
+    if (!entry) return false;
+    if (entry.action_id !== actionId) throw new Error('clientMessageId already belongs to another Action');
+    return true;
+  }
+
+  addActionInput(id, input, expected, attachments = null, addedAttachments = [], clientMessageId = null, quote = null) {
     return withTransaction(this.db, () => {
+      const sourceKey = typeof clientMessageId === 'string' && clientMessageId
+        ? `client:message:${id}:${clientMessageId}` : null;
+      if (sourceKey) {
+        const existing = this.db.prepare('SELECT id FROM action_entries WHERE source_key = ?').get(sourceKey);
+        if (existing) return this.getWorkItemDetail(id);
+      }
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
       const expectedGeneration = Number(expected.generation);
       if (!Number.isInteger(expectedGeneration) || expectedGeneration < 1) {
         throw new Error('Action input generation must be a positive integer');
       }
-      const graphMode = isGraphWorkItem(workItem);
-      const inputStatuses = graphMode
+      const concurrentMode = usesLegacyGraph(workItem) || isDynamicWorkItem(workItem);
+      const inputStatuses = concurrentMode
         ? ['ready', 'running', 'waiting', 'needs_attention']
         : ['ready', 'running'];
       if (!inputStatuses.includes(workItem.status)) {
@@ -1176,7 +1848,7 @@ export class WorkItemStore {
       const actionMatches = action?.workItemId === id
         && action.generation === expectedGeneration
         && ['ready', 'running'].includes(action.status)
-        && (graphMode || action.id === workItem.currentActionId);
+        && (concurrentMode || action.id === workItem.currentActionId);
       const activeRun = action?.currentRunId ? this.getRun(action.currentRunId) : null;
       const runMatches = action?.status !== 'running'
         || (activeRun?.status === 'running' && activeRun.acceptingInput !== false
@@ -1214,6 +1886,7 @@ export class WorkItemStore {
           role: 'user',
           inputId,
           summary: input,
+          quote,
           attachments: projectedAttachments,
           evidence: [],
         });
@@ -1265,7 +1938,9 @@ export class WorkItemStore {
       }
       const eventId = this.appendEvent(id, 'action.input_added', {
         inputId,
+        clientMessageId,
         text: input,
+        quote,
         attachments: projectedAttachments,
       }, { actionId: action.id, runId: eventRunId, actionGeneration: eventGeneration });
       if (action.status === 'running') {
@@ -1282,6 +1957,31 @@ export class WorkItemStore {
           input,
           stringify(projectedAttachments),
         );
+        this.#appendActionEntry({
+          workItemId: id,
+          actionId: action.id,
+          runId: action.currentRunId,
+          kind: 'message',
+          role: 'user',
+          status: 'pending',
+          text: input,
+          attachments: projectedAttachments,
+          payload: { eventId, inputId, quote, actionGeneration: eventGeneration, actionSpecHash: eventSpecHash },
+          createdAt: now,
+        }, sourceKey || `pending_action_inputs:event:${eventId}`);
+      } else if (sourceKey) {
+        this.#appendActionEntry({
+          workItemId: id,
+          actionId: action.id,
+          runId: null,
+          kind: 'message',
+          role: 'user',
+          status: 'consumed',
+          text: input,
+          attachments: projectedAttachments,
+          payload: { eventId, inputId, quote, actionGeneration: eventGeneration, actionSpecHash: eventSpecHash },
+          createdAt: now,
+        }, sourceKey);
       }
       return this.getWorkItemDetail(id);
     });
@@ -1290,27 +1990,243 @@ export class WorkItemStore {
   listPendingActionInputs(actionId, runId, ownerBootId, leaseEpoch) {
     const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
     if (!active || active.action_id !== actionId) return [];
-    return this.db.prepare(`SELECT * FROM pending_action_inputs
-      WHERE action_id = ? AND run_id = ? AND action_generation = ? AND action_spec_hash = ?
-        AND consumed_at IS NULL AND superseded_at IS NULL ORDER BY event_id`).all(
+    return this.db.prepare(`SELECT p.*, ae.id AS action_entry_id, ae.sequence AS action_entry_sequence,
+      ae.payload AS action_entry_payload FROM pending_action_inputs p
+      LEFT JOIN action_entries ae ON CAST(json_extract(ae.payload, '$.eventId') AS INTEGER) = p.event_id
+        AND ae.action_id = p.action_id
+      WHERE p.action_id = ? AND p.run_id = ? AND p.action_generation = ? AND p.action_spec_hash = ?
+        AND p.consumed_at IS NULL AND p.superseded_at IS NULL ORDER BY p.event_id`).all(
       actionId, runId, active.action_generation, active.action_spec_hash,
     ).map(row => ({
       id: String(row.event_id),
+      actionEntryId: row.action_entry_id || null,
+      sequence: row.action_entry_sequence == null ? null : Number(row.action_entry_sequence),
       text: row.text || '',
+      quote: parseJson(row.action_entry_payload, null)?.quote || null,
       attachments: parseJson(row.attachments, []),
     }));
   }
 
-  acknowledgeActionInput(eventId, actionId, runId, ownerBootId, leaseEpoch) {
+  prepareEngineTurn(actionId, runId, ownerBootId, leaseEpoch, inputs = [], request = {}) {
     return withTransaction(this.db, () => {
       const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
-      if (!active || active.action_id !== actionId) return false;
-      const result = this.db.prepare(`UPDATE pending_action_inputs SET consumed_at = ?
-        WHERE event_id = ? AND action_id = ? AND run_id = ? AND action_generation = ?
-          AND action_spec_hash = ? AND consumed_at IS NULL AND superseded_at IS NULL`).run(
-        this.now(), Number(eventId), actionId, runId, active.action_generation, active.action_spec_hash,
+      if (!active || active.action_id !== actionId) return null;
+      const eventIds = inputs.map(input => Number(input?.id ?? input)).filter(Number.isInteger);
+      const normalizedEventIds = [...new Set(eventIds)].sort((left, right) => left - right);
+      const reusable = this.db.prepare(`SELECT id FROM engine_turns
+        WHERE run_id = ? AND status = 'prepared' ORDER BY ordinal DESC LIMIT 1`).get(runId);
+      if (reusable) {
+        const turn = this.getEngineTurn(reusable.id);
+        const requestBody = request.requestBody && typeof request.requestBody === 'object'
+          ? request.requestBody : {};
+        const requestHash = createHash('sha256').update(stableJson(requestBody), 'utf8').digest('hex');
+        if (turn.requestHash !== requestHash) {
+          throw new Error('Prepared EngineTurn request changed before provider dispatch');
+        }
+        return turn;
+      }
+      const entries = [];
+      for (const eventId of normalizedEventIds) {
+        const row = this.db.prepare(`SELECT p.*, ae.id AS action_entry_id,
+          ae.sequence AS action_entry_sequence FROM pending_action_inputs p
+          JOIN action_entries ae ON CAST(json_extract(ae.payload, '$.eventId') AS INTEGER) = p.event_id
+            AND ae.action_id = p.action_id
+          WHERE p.event_id = ? AND p.action_id = ? AND p.run_id = ? AND p.action_generation = ?
+            AND p.action_spec_hash = ? AND p.consumed_at IS NULL AND p.superseded_at IS NULL
+            AND ae.status = 'pending' AND ae.engine_turn_id IS NULL`).get(
+          eventId, actionId, runId, active.action_generation, active.action_spec_hash,
+        );
+        if (row) entries.push(row);
+      }
+      if (entries.length !== normalizedEventIds.length) return null;
+      const requestBody = request.requestBody && typeof request.requestBody === 'object'
+        ? request.requestBody
+        : { actionEntryIds: entries.map(row => row.action_entry_id) };
+      const requestHash = createHash('sha256').update(stableJson(requestBody), 'utf8').digest('hex');
+      const ordinal = Number(this.db.prepare(`SELECT COALESCE(MAX(ordinal), 0) + 1 AS value
+        FROM engine_turns WHERE run_id = ?`).get(runId)?.value) || 1;
+      const turnId = durableId('engine-turn');
+      const requestKey = `run:${runId}:turn:${ordinal}`;
+      const claimedThroughSequence = Math.max(
+        0,
+        ...entries.map(row => Number(row.action_entry_sequence) || 0),
       );
-      return Number(result.changes) === 1;
+      const entryIds = entries.map(row => row.action_entry_id);
+      const now = this.now();
+      this.db.prepare(`INSERT INTO engine_turns
+        (id, work_item_id, action_id, run_id, ordinal, status, owner_boot_id, lease_epoch,
+         input_entry_ids, message_entry_ids, claimed_through_sequence, request_body, request_hash,
+         request_key, dispatch_capability, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        turnId, active.work_item_id, actionId, runId, ordinal, ownerBootId, leaseEpoch,
+        stringify(entryIds), stringify(entryIds), claimedThroughSequence, stringify(requestBody),
+        requestHash, requestKey, request.dispatchCapability || 'unknown', now, now,
+      );
+      const bind = this.db.prepare(`UPDATE action_entries SET status = 'bound', engine_turn_id = ?,
+        run_id = ?, updated_at = ? WHERE id = ? AND status = 'pending' AND engine_turn_id IS NULL`);
+      for (const row of entries) {
+        const changed = bind.run(turnId, runId, now, row.action_entry_id);
+        if (Number(changed.changes) !== 1) throw new Error('ActionEntry changed before EngineTurn prepare');
+      }
+      this.appendEvent(active.work_item_id, 'engine_turn.prepared', {
+        turnId, ordinal, requestHash, actionEntryIds: entryIds,
+      }, { actionId, runId });
+      return this.getEngineTurn(turnId);
+    });
+  }
+
+  getEngineTurn(turnId) {
+    const row = this.db.prepare('SELECT * FROM engine_turns WHERE id = ?').get(turnId);
+    if (!row) return null;
+    return {
+      id: row.id,
+      workItemId: row.work_item_id,
+      actionId: row.action_id,
+      runId: row.run_id,
+      ordinal: Number(row.ordinal),
+      status: row.status,
+      ownerBootId: row.owner_boot_id,
+      leaseEpoch: Number(row.lease_epoch),
+      inputEntryIds: parseJson(row.input_entry_ids, []),
+      requestBody: parseJson(row.request_body, {}),
+      requestHash: row.request_hash,
+      requestKey: row.request_key,
+      dispatchAttempt: Number(row.dispatch_attempt) || 0,
+      dispatchCapability: row.dispatch_capability || 'unknown',
+      claimedAt: row.claimed_at || null,
+      dispatchedAt: row.dispatched_at || null,
+      response: parseJson(row.response, null),
+      responseHash: row.response_hash || null,
+      consumedAt: row.consumed_at || null,
+      error: row.error || null,
+    };
+  }
+
+  claimEngineTurn(turnId, ownerBootId, leaseEpoch) {
+    return withTransaction(this.db, () => {
+      const turn = this.getEngineTurn(turnId);
+      if (!turn || turn.ownerBootId !== ownerBootId || turn.leaseEpoch !== leaseEpoch) return null;
+      if (!this.#activeRunRow(turn.runId, ownerBootId, leaseEpoch, true)) return null;
+      if (turn.status === 'dispatching') return turn;
+      if (turn.status !== 'prepared') return null;
+      const now = this.now();
+      const changed = this.db.prepare(`UPDATE engine_turns SET status = 'dispatching',
+        dispatch_attempt = dispatch_attempt + 1, claimed_at = COALESCE(claimed_at, ?),
+        dispatched_at = ?, updated_at = ? WHERE id = ? AND status = 'prepared'`).run(
+        now, now, now, turnId,
+      );
+      if (Number(changed.changes) !== 1) return null;
+      this.appendEvent(turn.workItemId, 'engine_turn.dispatching', {
+        turnId, requestHash: turn.requestHash, dispatchAttempt: turn.dispatchAttempt + 1,
+      }, { actionId: turn.actionId, runId: turn.runId });
+      return this.getEngineTurn(turnId);
+    });
+  }
+
+  consumeEngineTurn(turnId, ownerBootId, leaseEpoch, result = {}) {
+    return withTransaction(this.db, () => {
+      const turn = this.getEngineTurn(turnId);
+      if (!turn || turn.status !== 'dispatching' || turn.ownerBootId !== ownerBootId
+          || turn.leaseEpoch !== leaseEpoch) return false;
+      const now = this.now();
+      const response = {
+        text: String(result.responseText || ''),
+        stopReason: result.stopReason || null,
+        toolCalls: Array.isArray(result.toolCalls) ? result.toolCalls : [],
+        thinkingBlocks: Array.isArray(result.thinkingBlocks) ? result.thinkingBlocks : [],
+      };
+      const responseHash = createHash('sha256').update(stableJson(response), 'utf8').digest('hex');
+      const consumed = this.db.prepare(`UPDATE engine_turns SET status = 'responded', response = ?,
+        response_hash = ?, responded_at = ?, consumed_at = ?,
+        consumed_through_sequence = claimed_through_sequence, updated_at = ?
+        WHERE id = ? AND status = 'dispatching' AND dispatch_attempt = ? AND request_hash = ?`).run(
+        stringify(response), responseHash, now, now, now, turnId, turn.dispatchAttempt, turn.requestHash,
+      );
+      if (Number(consumed.changes) !== 1) return false;
+      this.db.prepare(`UPDATE action_entries SET status = 'consumed', consumed_at = ?, updated_at = ?
+        WHERE engine_turn_id = ? AND status = 'bound'`).run(now, now, turnId);
+      const eventIds = this.db.prepare(`SELECT CAST(json_extract(payload, '$.eventId') AS INTEGER) AS event_id
+        FROM action_entries WHERE engine_turn_id = ? AND json_extract(payload, '$.eventId') IS NOT NULL`)
+        .all(turnId).map(row => row.event_id);
+      const acknowledge = this.db.prepare(`UPDATE pending_action_inputs SET consumed_at = ?
+        WHERE event_id = ? AND action_id = ? AND run_id = ? AND consumed_at IS NULL AND superseded_at IS NULL`);
+      for (const eventId of eventIds) acknowledge.run(now, eventId, turn.actionId, turn.runId);
+      this.appendEvent(turn.workItemId, 'engine_turn.responded', {
+        turnId, requestHash: turn.requestHash, responseHash, dispatchAttempt: turn.dispatchAttempt,
+      }, { actionId: turn.actionId, runId: turn.runId });
+      return true;
+    });
+  }
+
+  failEngineTurn(turnId, ownerBootId, leaseEpoch, error) {
+    return withTransaction(this.db, () => {
+      const turn = this.getEngineTurn(turnId);
+      if (!turn || turn.ownerBootId !== ownerBootId || turn.leaseEpoch !== leaseEpoch) {
+        return { allowRetry: false, status: 'stale' };
+      }
+      if (turn.status === 'prepared') return { allowRetry: true, status: 'prepared' };
+      if (turn.status !== 'dispatching') return { allowRetry: false, status: turn.status };
+      const now = this.now();
+      const message = String(error?.message || error || 'Provider dispatch failed').slice(0, 8_000);
+      const changed = this.db.prepare(`UPDATE engine_turns SET status = 'unknown', error = ?,
+        updated_at = ? WHERE id = ? AND status = 'dispatching' AND dispatch_attempt = ?`).run(
+        message, now, turnId, turn.dispatchAttempt,
+      );
+      if (Number(changed.changes) !== 1) return { allowRetry: false, status: 'stale' };
+      this.db.prepare(`UPDATE runs SET status = 'dispatch_unknown', accepting_input = 0,
+        ended_at = ?, error = ? WHERE id = ? AND status = 'running'
+        AND owner_boot_id = ? AND lease_epoch = ?`).run(
+        now, message, turn.runId, ownerBootId, leaseEpoch,
+      );
+      this.db.prepare(`UPDATE actions SET status = 'failed', current_run_id = NULL,
+        updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ?
+        AND lease_epoch = ?`).run(now, turn.actionId, turn.runId, leaseEpoch);
+      this.db.prepare(`UPDATE work_items SET status = 'needs_attention', current_action_id = ?,
+        current_run_id = NULL, updated_at = ? WHERE id = ? AND status = 'running'`).run(
+        turn.actionId, now, turn.workItemId,
+      );
+      this.appendEvent(turn.workItemId, 'engine_turn.dispatch_unknown', {
+        turnId, requestHash: turn.requestHash, dispatchAttempt: turn.dispatchAttempt, error: message,
+      }, { actionId: turn.actionId, runId: turn.runId });
+      return { allowRetry: false, status: 'unknown' };
+    });
+  }
+
+  recoverEngineTurns() {
+    return withTransaction(this.db, () => {
+      const now = this.now();
+      const recoverable = this.db.prepare(`SELECT id FROM engine_turns WHERE status = 'prepared'`).all();
+      const dispatching = this.db.prepare(`SELECT * FROM engine_turns WHERE status = 'dispatching'`).all();
+      for (const row of dispatching) {
+        const turn = this.getEngineTurn(row.id);
+        const message = 'Provider dispatch outcome is unknown after Agent restart';
+        this.db.prepare(`UPDATE engine_turns SET status = 'unknown', error = ?, updated_at = ?
+          WHERE id = ? AND status = 'dispatching'`).run(message, now, turn.id);
+        this.db.prepare(`UPDATE runs SET status = 'dispatch_unknown', accepting_input = 0,
+          ended_at = ?, error = ? WHERE id = ? AND status = 'running'`).run(now, message, turn.runId);
+        this.db.prepare(`UPDATE actions SET status = 'failed', current_run_id = NULL,
+          updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ?`).run(
+          now, turn.actionId, turn.runId,
+        );
+        this.db.prepare(`UPDATE work_items SET status = 'needs_attention', current_action_id = ?,
+          current_run_id = NULL, updated_at = ? WHERE id = ? AND status = 'running'`).run(
+          turn.actionId, now, turn.workItemId,
+        );
+        this.appendEvent(turn.workItemId, 'engine_turn.dispatch_unknown', {
+          turnId: turn.id, requestHash: turn.requestHash,
+          dispatchAttempt: turn.dispatchAttempt, error: message,
+        }, { actionId: turn.actionId, runId: turn.runId });
+      }
+      return recoverable.map(row => this.getEngineTurn(row.id));
+    });
+  }
+
+  acknowledgeActionInput(eventId, actionId, runId, ownerBootId, leaseEpoch) {
+    const prepared = this.prepareEngineTurn(actionId, runId, ownerBootId, leaseEpoch, [eventId]);
+    if (!prepared) return false;
+    const claimed = this.claimEngineTurn(prepared.id, ownerBootId, leaseEpoch);
+    return !!claimed && this.consumeEngineTurn(prepared.id, ownerBootId, leaseEpoch, {
+      responseText: '', stopReason: 'legacy_acknowledge',
     });
   }
 
@@ -1378,11 +2294,14 @@ export class WorkItemStore {
       const id = input.id || randomUUID();
       const workspaceKey = canonicalWorkspaceKey(input.workDir);
       this.db.prepare(`INSERT INTO work_items
-        (id, revision, execution_schema_version, ledger_revision, title, goal, acceptance_criteria, workflow_template, workflow_snapshot, status,
+        (id, revision, execution_schema_version, ledger_revision, coordination_mode, final_result,
+         title, goal, acceptance_criteria, workflow_template, workflow_snapshot, status,
          current_action_id, current_run_id, work_dir, workspace_key, reuse_memory, origin, linked_session_ids,
          session_context, attachments, created_at, updated_at)
-        VALUES (?, 1, 2, 0, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        VALUES (?, 1, ?, 0, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         id,
+        Number.isInteger(input.executionSchemaVersion) ? input.executionSchemaVersion : 2,
+        input.coordinationMode || 'legacy',
         input.title,
         input.goal,
         stringify(input.acceptanceCriteria || []),
@@ -1411,7 +2330,7 @@ export class WorkItemStore {
 
   #insertAction(workItemId, input, sequence, now = this.now()) {
     const stageId = input.stageId || input.type;
-    const activeStage = isGraphWorkItem(this.getWorkItem(workItemId))
+    const activeStage = usesLegacyGraph(this.getWorkItem(workItemId))
       ? this.db.prepare(`SELECT id FROM actions WHERE work_item_id = ? AND stage_id = ?
           AND status NOT IN ('superseded', 'cancelled') LIMIT 1`).get(workItemId, stageId)
       : null;
@@ -1427,6 +2346,7 @@ export class WorkItemStore {
       assignmentPolicy: input.assignmentPolicy || null,
       modelPolicy: input.modelPolicy || null,
       dependsOnStageIds: Array.isArray(input.dependsOnStageIds) ? input.dependsOnStageIds : [],
+      sourceActionIds: Array.isArray(input.sourceActionIds) ? input.sourceActionIds : [],
       workspaceMode: input.workspaceMode || 'shared',
       changesRequestedStageId: input.changesRequestedStageId || null,
       workspace: input.workspace || null,
@@ -1451,10 +2371,10 @@ export class WorkItemStore {
     action.identityHistory = actionIdentityHistory(action);
     this.db.prepare(`INSERT INTO actions
       (id, work_item_id, sequence, type, required_role, stage_id, assignment_policy, model_policy,
-       depends_on_stage_ids, workspace_mode, changes_requested_stage_id, workspace, instruction, brief, context, contract_revision,
-       generation, spec_hash, identity_history, result_run_id, status, attempt, max_attempts, current_run_id, lease_epoch,
-       replaces_action_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?)`).run(
+       depends_on_stage_ids, source_action_ids, workspace_mode, changes_requested_stage_id, workspace,
+       instruction, brief, context, contract_revision, generation, spec_hash, identity_history, result_run_id,
+       status, attempt, max_attempts, current_run_id, lease_epoch, replaces_action_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?)`).run(
       action.id,
       workItemId,
       action.sequence,
@@ -1464,6 +2384,7 @@ export class WorkItemStore {
       stringify(action.assignmentPolicy),
       stringify(action.modelPolicy),
       stringify(action.dependsOnStageIds),
+      stringify(action.sourceActionIds),
       action.workspaceMode,
       action.changesRequestedStageId,
       stringify(action.workspace),
@@ -1846,12 +2767,12 @@ export class WorkItemStore {
     const remaining = this.db.prepare(`SELECT id, status FROM actions WHERE work_item_id = ?
       AND status IN ('ready', 'running', 'waiting', 'failed') ORDER BY sequence`).all(workItemId);
     const blocked = remaining.find(candidate => candidate.status === 'waiting' || candidate.status === 'failed');
-    const runnable = remaining.find(candidate => candidate.status === 'ready' || candidate.status === 'running');
+    const running = remaining.find(candidate => candidate.status === 'running');
+    const ready = remaining.find(candidate => candidate.status === 'ready');
     return {
       status: blocked ? (blocked.status === 'waiting' ? 'waiting' : 'needs_attention')
-        : runnable ? (remaining.some(candidate => candidate.status === 'running') ? 'running' : 'ready')
-          : 'done',
-      currentActionId: blocked?.id || runnable?.id || null,
+        : running ? 'running' : ready ? 'ready' : 'done',
+      currentActionId: blocked?.id || running?.id || ready?.id || null,
     };
   }
 
@@ -1876,9 +2797,9 @@ export class WorkItemStore {
       if (Number(changedAction.changes) !== 1) {
         throw new Error('Work Center deferred Run lost the current Action fence');
       }
-      const graphMode = isGraphWorkItem(workItem);
-      const graphState = graphMode ? this.#graphWorkItemState(workItem.id) : null;
-      const changedWorkItem = graphMode
+      const concurrentMode = usesLegacyGraph(workItem) || isDynamicWorkItem(workItem);
+      const graphState = concurrentMode ? this.#graphWorkItemState(workItem.id) : null;
+      const changedWorkItem = concurrentMode
         ? this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?, current_run_id = NULL,
             updated_at = ? WHERE id = ? AND status IN ('ready', 'running', 'waiting', 'needs_attention')`).run(
             graphState.status, graphState.currentActionId, now, workItem.id,
@@ -1968,6 +2889,22 @@ export class WorkItemStore {
     });
   }
 
+  listActionSources(workItemId, actionIds) {
+    if (!Array.isArray(actionIds) || actionIds.length === 0) return [];
+    const placeholders = actionIds.map(() => '?').join(',');
+    return this.db.prepare(`SELECT a.*, r.summary AS dependency_summary,
+      r.evidence AS dependency_evidence, r.vp_snapshot AS dependency_vp_snapshot
+      FROM actions a JOIN runs r ON r.id = a.result_run_id
+      WHERE a.work_item_id = ? AND a.id IN (${placeholders})
+        AND a.status = 'completed' AND r.status = 'completed'
+      ORDER BY a.sequence`).all(workItemId, ...actionIds).map(row => ({
+      ...mapAction(row),
+      summary: row.dependency_summary || '',
+      evidence: normalizeEvidence(parseJson(row.dependency_evidence, [])),
+      vpId: parseJson(row.dependency_vp_snapshot, null)?.id || null,
+    }));
+  }
+
   listActionDependencies(workItemId, stageIds) {
     if (!Array.isArray(stageIds) || stageIds.length === 0) return [];
     const placeholders = stageIds.map(() => '?').join(',');
@@ -1989,7 +2926,7 @@ export class WorkItemStore {
 
   getWorkItem(id) {
     const workItem = mapWorkItem(this.db.prepare('SELECT * FROM work_items WHERE id = ?').get(id));
-    if (!isGraphWorkItem(workItem)) return workItem;
+    if (!usesLegacyGraph(workItem) && !isDynamicWorkItem(workItem)) return workItem;
     const actions = this.db.prepare('SELECT * FROM actions WHERE work_item_id = ? ORDER BY sequence')
       .all(id).map(mapAction);
     return graphExecutionState(workItem, actions);
@@ -2023,6 +2960,7 @@ export class WorkItemStore {
         AND recovery_event.action_generation = a.generation
         AND recovery_event.type = 'coordinator.recovery_started'
       WHERE a.status = 'failed' AND w.status NOT IN ('done', 'cancelled')
+        AND COALESCE(w.coordination_mode, 'legacy') != 'dynamic'
       GROUP BY a.id
       ORDER BY a.updated_at, a.sequence, a.id`).all().map(row => ({
         workItemId: row.work_item_id,
@@ -2175,8 +3113,151 @@ export class WorkItemStore {
     return this.db.prepare(`SELECT * FROM events WHERE action_id = ? ORDER BY id`).all(actionId).map(mapEvent);
   }
 
+  getRecoverableCoordinatorTurns() {
+    return this.db.prepare(`SELECT w.id AS work_item_id, c.payload FROM coordinator_mailbox_entries c
+      JOIN work_items w ON w.id = c.work_item_id
+      WHERE c.status IN ('pending', 'claimed')
+        AND EXISTS (SELECT 1 FROM json_each(w.messages) message
+          WHERE json_extract(message.value, '$.turnId') = json_extract(c.payload, '$.turnId')
+            AND json_extract(message.value, '$.role') = 'assistant'
+            AND json_extract(message.value, '$.status') = 'thinking')
+        AND EXISTS (SELECT 1 FROM coordinator_provider_turns p
+          WHERE p.coordinator_turn_id = json_extract(c.payload, '$.turnId')
+            AND p.status IN ('prepared', 'dispatching', 'responded'))
+      ORDER BY c.created_at`).all().map(row => ({
+        workItemId: row.work_item_id,
+        ...parseJson(row.payload, {}),
+      }));
+  }
+
+  resumeCoordinatorTurn(workItemId, turnId, claim = {}) {
+    const detail = this.getWorkItemDetail(workItemId);
+    if (!detail || !this.#activeCoordinatorMailboxClaim(turnId, claim)) return null;
+    const assistant = [...(detail.messages || [])].reverse().find(message => (
+      message.turnId === turnId && message.role === 'assistant' && message.status === 'thinking'
+    ));
+    if (!assistant) return null;
+    return {
+      turnId,
+      detail,
+      fence: {
+        workItemId,
+        revision: detail.revision,
+        planRevision: detail.planRevision,
+        ledgerRevision: detail.ledgerRevision,
+        coordinatorRevision: detail.coordinatorRevision,
+        status: detail.status,
+        actionFence: coordinatorActionFence(
+          (detail.actions || []).filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status)),
+        ),
+        recovery: assistant.recovery ? { ...assistant.recovery } : null,
+        automatic: assistant.automatic === true,
+        claim: {
+          mailboxId: claim.mailboxId,
+          ownerBootId: claim.ownerBootId,
+          claimEpoch: Number(claim.claimEpoch),
+        },
+      },
+    };
+  }
+
+  beginDynamicCoordinatorTurn(mailboxId, expected = {}) {
+    return withTransaction(this.db, () => {
+      const mailbox = this.db.prepare(`SELECT * FROM coordinator_mailbox_entries WHERE id = ?
+        AND status = 'claimed' AND claim_owner = ? AND claim_epoch = ? AND lease_expires_at > ?`).get(
+        mailboxId, expected.ownerBootId, expected.claimEpoch, this.now(),
+      );
+      if (!mailbox) return null;
+      const workItem = this.getWorkItem(mailbox.work_item_id);
+      if (!isDynamicWorkItem(workItem) || ['done', 'cancelled'].includes(workItem.status)) return null;
+      const latest = (workItem.messages || []).at(-1);
+      if (latest?.role === 'assistant' && latest.status === 'thinking') return null;
+      const now = this.now();
+      const turnId = randomUUID();
+      const payload = parseJson(mailbox.payload, {});
+      const assistantMessage = {
+        id: randomUUID(), turnId, role: 'assistant', text: '', status: 'thinking',
+        createdAt: now, updatedAt: now,
+        automatic: true,
+        trigger: { kind: mailbox.kind, sourceKey: mailbox.source_key, ...(payload.trigger || {}) },
+      };
+      const messages = [...(workItem.messages || []), assistantMessage].slice(-100);
+      const coordinatorRevision = workItem.coordinatorRevision + 1;
+      const changedMailbox = this.db.prepare(`UPDATE coordinator_mailbox_entries SET payload = ?,
+        updated_at = ? WHERE id = ? AND status = 'claimed' AND claim_owner = ? AND claim_epoch = ?`).run(
+        stringify({ ...payload, turnId }), now, mailbox.id, expected.ownerBootId, expected.claimEpoch,
+      );
+      if (Number(changedMailbox.changes) !== 1) return null;
+      const changed = this.db.prepare(`UPDATE work_items SET messages = ?, coordinator_revision = ?,
+        updated_at = ? WHERE id = ? AND revision = ? AND plan_revision = ?
+        AND ledger_revision = ? AND coordinator_revision = ?`).run(
+        stringify(messages), coordinatorRevision, now, workItem.id, workItem.revision,
+        workItem.planRevision, workItem.ledgerRevision, workItem.coordinatorRevision,
+      );
+      if (Number(changed.changes) !== 1) throw new Error('Dynamic Coordinator turn lost its revision fence');
+      this.#appendConversationEntry(
+        workItem.id, assistantMessage, `coordinator:turn:${turnId}:assistant`,
+      );
+      this.appendEvent(workItem.id, 'coordinator.advance_started', {
+        turnId, triggerKind: mailbox.kind, sourceKey: mailbox.source_key,
+      });
+      const detail = this.getWorkItemDetail(workItem.id);
+      return {
+        turnId,
+        detail,
+        fence: {
+          workItemId: workItem.id,
+          revision: workItem.revision,
+          planRevision: workItem.planRevision,
+          ledgerRevision: workItem.ledgerRevision,
+          coordinatorRevision,
+          status: workItem.status,
+          actionFence: coordinatorActionFence(
+            (detail.actions || []).filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status)),
+          ),
+          automatic: true,
+          claim: {
+            mailboxId: mailbox.id,
+            ownerBootId: expected.ownerBootId,
+            claimEpoch: Number(expected.claimEpoch),
+          },
+        },
+      };
+    });
+  }
+
+  claimStartedCoordinatorTurn(started, ownerBootId, leaseMs = 60_000) {
+    if (!started?.turnId || !started?.detail?.id) return null;
+    const claim = this.claimCoordinatorTurn(started.detail.id, started.turnId, ownerBootId, leaseMs);
+    if (!claim) return null;
+    return {
+      ...started,
+      fence: {
+        ...started.fence,
+        claim: {
+          mailboxId: claim.mailboxId,
+          ownerBootId: claim.ownerBootId,
+          claimEpoch: claim.claimEpoch,
+        },
+      },
+    };
+  }
+
   beginCoordinatorTurn(id, text, expected = {}, options = {}) {
     return withTransaction(this.db, () => {
+      const clientMessageId = typeof options.clientMessageId === 'string' && options.clientMessageId
+        ? options.clientMessageId : null;
+      if (clientMessageId) {
+        const sourceKey = `client:message:${id}:${clientMessageId}`;
+        const existingAction = this.db.prepare('SELECT 1 FROM action_entries WHERE source_key = ?').get(sourceKey);
+        if (existingAction) throw new Error('clientMessageId already belongs to an Action message');
+        const existing = this.db.prepare(`SELECT payload FROM coordinator_mailbox_entries
+          WHERE source_key = ?`).get(sourceKey);
+        if (existing) {
+          const payload = parseJson(existing.payload, {});
+          return { turnId: payload.turnId, detail: this.getWorkItemDetail(id), duplicate: true };
+        }
+      }
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
       if (['done', 'cancelled'].includes(workItem.status)) {
@@ -2233,15 +3314,33 @@ export class WorkItemStore {
         throw new Error('WorkItem Coordinator message or attachments are required');
       }
       const turnId = randomUUID();
+      const quote = options.quote && typeof options.quote === 'object' ? options.quote : null;
       const userMessage = automaticRecovery ? null : {
         id: randomUUID(), turnId, role: 'user', text, attachments: projectedAttachments,
         status: 'completed', createdAt: now,
+        ...(quote ? { quote } : {}),
       };
       const assistantMessage = {
         id: randomUUID(), turnId, role: 'assistant', text: '', status: 'thinking',
         createdAt: now, updatedAt: now, decision: null,
         ...(recovery ? { recovery: { ...recovery } } : {}),
       };
+      if (userMessage) {
+        this.#appendConversationEntry(
+          id,
+          userMessage,
+          clientMessageId ? `client:conversation:${id}:${clientMessageId}` : `coordinator:turn:${turnId}:user`,
+        );
+      }
+      this.#appendConversationEntry(id, assistantMessage, `coordinator:turn:${turnId}:assistant`);
+      this.enqueueCoordinatorMailbox(id, automaticRecovery ? 'recovery' : 'message', {
+        turnId,
+        text,
+        recovery,
+        clientMessageId,
+        ...(quote ? { quote } : {}),
+        addedAttachments: projectedAttachments,
+      }, clientMessageId ? `client:message:${id}:${clientMessageId}` : `coordinator:turn:${turnId}`);
       const messages = [...(workItem.messages || []), ...(userMessage ? [userMessage] : []), assistantMessage]
         .slice(-100);
       const coordinatorRevision = workItem.coordinatorRevision + 1;
@@ -2258,6 +3357,7 @@ export class WorkItemStore {
       if (Number(changed.changes) !== 1) throw new Error('Coordinator turn lost its revision fence');
       this.appendEvent(id, automaticRecovery ? 'coordinator.recovery_started' : 'coordinator.turn_started', {
         turnId,
+        clientMessageId,
         status: 'thinking',
         coordinatorRevision,
         addedAttachmentCount: projectedAttachments.length,
@@ -2285,6 +3385,8 @@ export class WorkItemStore {
 
   completeCoordinatorTurn(turnId, result, expected = {}) {
     return withTransaction(this.db, () => {
+      const claim = expected.claim || {};
+      if (!this.#activeCoordinatorMailboxClaim(turnId, claim)) return null;
       const workItem = this.getWorkItem(expected.workItemId);
       if (!workItem) return null;
       if (workItem.revision !== expected.revision
@@ -2312,8 +3414,13 @@ export class WorkItemStore {
         throw new Error('WorkItem Actions changed while the Coordinator was responding; send the message again');
       }
       this.#assertNoIntegrationReservation(activeActions, now);
+      if (isDynamicWorkItem(workItem)) {
+        return this.#completeDynamicCoordinatorTurn({
+          turnId, result, expected, workItem, messages, assistantIndex, activeActions, now,
+        });
+      }
 
-      const graphMode = isGraphWorkItem(workItem);
+      const graphMode = usesLegacyGraph(workItem);
       if (decision.kind === 'replan'
           && (!graphMode || workItem.workflowSnapshot?.planningMode !== 'ai')) {
         throw new Error('Coordinator replan requires an AI-planned Action graph');
@@ -2355,11 +3462,6 @@ export class WorkItemStore {
           || this.db.prepare(`SELECT id FROM runs WHERE action_id = ? AND status = 'failed'
             ORDER BY ended_at DESC, started_at DESC LIMIT 1`).get(action.id)?.id;
         if (!resultRunId) throw new Error('Coordinator human request requires a failed Run');
-        const changedRun = this.db.prepare(`UPDATE runs SET waiting_reason = ?
-          WHERE id = ? AND action_id = ? AND status = 'failed'`).run(question, resultRunId, action.id);
-        if (Number(changedRun.changes) !== 1) {
-          throw new Error('Coordinator human request lost the failed Run fence');
-        }
         affectedActionIds = [action.id];
         this.appendEvent(workItem.id, 'action.waiting', {
           reason: question,
@@ -2480,7 +3582,11 @@ export class WorkItemStore {
 
       const graphState = ['answer'].includes(decision.kind) ? null : this.#graphWorkItemState(workItem.id);
       messages[assistantIndex] = {
-        ...messages[assistantIndex], text: result.reply, status: 'completed', updatedAt: now,
+        ...messages[assistantIndex],
+        text: result.reply,
+        status: 'completed',
+        updatedAt: now,
+        ...(result.speaker ? { speaker: result.speaker } : {}),
         decision: {
           kind: decision.kind,
           reason: decision.reason,
@@ -2488,6 +3594,14 @@ export class WorkItemStore {
           affectedActionIds,
         },
       };
+      this.#appendConversationEntry(
+        workItem.id,
+        messages[assistantIndex],
+        `coordinator:turn:${turnId}:assistant`,
+      );
+      if (!this.ackCoordinatorMailbox(claim.mailboxId, claim.ownerBootId, claim.claimEpoch)) {
+        throw new Error('Coordinator completion lost its mailbox claim');
+      }
       const current = this.getWorkItem(workItem.id);
       const coordinatorRevision = current.coordinatorRevision + 1;
       const changed = decision.kind === 'answer'
@@ -2516,8 +3630,170 @@ export class WorkItemStore {
     });
   }
 
+  #completeDynamicCoordinatorTurn({
+    turnId, result, expected, workItem, messages, assistantIndex, activeActions, now,
+  }) {
+    const decision = result?.decision || {};
+    let affectedActionIds = [];
+    let nextStatus = workItem.status;
+    let currentActionId = workItem.currentActionId;
+    let finalResult = null;
+
+    if (decision.kind === 'create_actions') {
+      if (activeActions.some(action => action.status === 'running')) {
+        throw new Error('Dynamic Coordinator cannot mutate Actions while a Run is active');
+      }
+      const mutation = result.mutation;
+      if (!mutation || !Array.isArray(mutation.createdActions) || mutation.createdActions.length === 0) {
+        throw new Error('Dynamic Coordinator Action creation is missing a validated mutation');
+      }
+      for (const actionId of mutation.supersedeActionIds || []) {
+        const action = activeActions.find(candidate => candidate.id === actionId);
+        if (!action || !['ready', 'waiting', 'failed'].includes(action.status)) {
+          throw new Error('Dynamic Coordinator supersede target changed before apply');
+        }
+        this.#supersedePendingActionInputs([action], 'Superseded by WorkItem Coordinator', now);
+        const changed = this.db.prepare(`UPDATE actions SET status = 'superseded', current_run_id = NULL,
+          lease_epoch = lease_epoch + 1, updated_at = ? WHERE id = ? AND generation = ?
+          AND status IN ('ready', 'waiting', 'failed')`).run(now, action.id, action.generation);
+        if (Number(changed.changes) !== 1) throw new Error('Dynamic Coordinator lost an Action fence');
+      }
+      const patch = mutation.contractPatch || null;
+      const title = patch?.title ?? workItem.title;
+      const goal = patch?.goal ?? workItem.goal;
+      const criteria = patch?.acceptanceCriteria ?? workItem.acceptanceCriteria;
+      const contractChanged = title !== workItem.title || goal !== workItem.goal
+        || JSON.stringify(criteria) !== JSON.stringify(workItem.acceptanceCriteria);
+      const snapshot = { ...workItem.workflowSnapshot, workItemType: mutation.workItemType };
+      const changedPlan = this.db.prepare(`UPDATE work_items SET title = ?, goal = ?,
+        acceptance_criteria = ?, workflow_snapshot = ?, revision = revision + ?,
+        plan_revision = plan_revision + 1, updated_at = ? WHERE id = ? AND revision = ?
+        AND plan_revision = ? AND ledger_revision = ? AND coordinator_revision = ?`).run(
+        title, goal, stringify(criteria), stringify(snapshot), contractChanged ? 1 : 0,
+        now, workItem.id, workItem.revision, workItem.planRevision,
+        workItem.ledgerRevision, workItem.coordinatorRevision,
+      );
+      if (Number(changedPlan.changes) !== 1) throw new Error('Dynamic Coordinator lost the WorkItem plan fence');
+      const current = this.getWorkItem(workItem.id);
+      for (const candidate of mutation.createdActions) {
+        const action = this.#insertAction(workItem.id, {
+          ...candidate, status: 'ready', contractRevision: current.revision,
+        }, this.#nextSequence(workItem.id), now);
+        affectedActionIds.push(action.id);
+      }
+      nextStatus = 'ready';
+      currentActionId = affectedActionIds[0];
+    } else if (decision.kind === 'guide_actions') {
+      const byId = new Map(decision.guidance.map(entry => [entry.actionId, entry.instruction]));
+      for (const action of activeActions) {
+        const guidance = byId.get(action.id);
+        if (!guidance) continue;
+        if (!['ready', 'waiting', 'failed'].includes(action.status)) {
+          throw new Error('Dynamic Coordinator can guide only non-running unfinished Actions');
+        }
+        const context = [...withoutActionInputContext(action.context), {
+          type: 'coordinator-guidance', role: 'user', summary: guidance, evidence: [],
+        }];
+        const candidate = { ...action, context, generation: action.generation + 1 };
+        candidate.instruction = canonicalActionInstruction(workItem, candidate, context);
+        const specHash = actionSpecHash(candidate);
+        const changed = this.db.prepare(`UPDATE actions SET status = 'ready', attempt = 0,
+          current_run_id = NULL, context = ?, instruction = ?, generation = generation + 1,
+          spec_hash = ?, identity_history = ?, result_run_id = NULL, workspace = NULL, updated_at = ?
+          WHERE id = ? AND generation = ? AND status IN ('ready', 'waiting', 'failed')`).run(
+          stringify(context), candidate.instruction, specHash,
+          stringify(actionIdentityHistory(action, candidate.generation, specHash)),
+          now, action.id, action.generation,
+        );
+        if (Number(changed.changes) !== 1) throw new Error('Dynamic Coordinator guidance lost its Action fence');
+        affectedActionIds.push(action.id);
+      }
+      if (affectedActionIds.length !== decision.guidance.length) {
+        throw new Error('Dynamic Coordinator guidance target changed before apply');
+      }
+      nextStatus = 'ready';
+      currentActionId = affectedActionIds[0];
+    } else if (decision.kind === 'request_human') {
+      nextStatus = 'waiting';
+      currentActionId = null;
+    } else if (decision.kind === 'complete') {
+      if (activeActions.length > 0) throw new Error('Work Center cannot complete with unfinished Actions');
+      if (this.#hasBlockingOperation(workItem.id)) {
+        throw new Error('WorkItem has an unsafe blocking Operation and cannot complete');
+      }
+      finalResult = normalizeDynamicCompletion(decision.completion, workItem.acceptanceCriteria);
+      const canonicalRuns = new Map(this.db.prepare(`SELECT r.* FROM runs r JOIN actions a ON a.id = r.action_id
+        WHERE r.work_item_id = ? AND r.status = 'completed' AND a.result_run_id = r.id`).all(workItem.id)
+        .map(row => {
+          const run = mapRun(row);
+          return [run.id, run];
+        }));
+      const criteria = Array.isArray(workItem.acceptanceCriteria) ? workItem.acceptanceCriteria : [];
+      for (const runId of finalResult.evidenceRunIds) {
+        const run = canonicalRuns.get(runId);
+        if (!run) throw new Error(`Completion evidence is not a canonical owned Run: ${runId}`);
+        if (run.evidence.length === 0) {
+          throw new Error(`Completion evidence Run has no concrete evidence: ${runId}`);
+        }
+        if (!Array.isArray(run.acceptanceChecks) || run.acceptanceChecks.length !== criteria.length
+            || run.acceptanceChecks.some((check, index) => (
+              check?.criterion !== criteria[index] || !check?.status || !String(check?.evidence || '').trim()
+            ))) {
+          throw new Error(`Completion evidence Run has incomplete acceptance checks: ${runId}`);
+        }
+      }
+      for (const [index, acceptanceResult] of finalResult.acceptanceResults.entries()) {
+        const provesCriterion = acceptanceResult.evidenceRunIds.some(runId => (
+          canonicalRuns.get(runId)?.acceptanceChecks?.[index]?.criterion === criteria[index]
+          && canonicalRuns.get(runId)?.acceptanceChecks?.[index]?.status === 'passed'
+        ));
+        if (!provesCriterion) {
+          throw new Error(`Completion criterion lacks a passing canonical Run check: ${criteria[index]}`);
+        }
+      }
+      nextStatus = 'done';
+      currentActionId = null;
+    } else if (decision.kind !== 'answer') {
+      throw new Error(`Unsupported dynamic Coordinator decision: ${decision.kind || '(missing)'}`);
+    }
+
+    messages[assistantIndex] = {
+      ...messages[assistantIndex], text: result.reply, status: 'completed', updatedAt: now,
+      ...(result.speaker ? { speaker: result.speaker } : {}),
+      decision: { kind: decision.kind, reason: decision.reason, affectedActionIds },
+    };
+    this.#appendConversationEntry(
+      workItem.id, messages[assistantIndex], `coordinator:turn:${turnId}:assistant`,
+    );
+    const claim = expected.claim || {};
+    if (!this.ackCoordinatorMailbox(claim.mailboxId, claim.ownerBootId, claim.claimEpoch)) {
+      throw new Error('Dynamic Coordinator completion lost its mailbox claim');
+    }
+    const current = this.getWorkItem(workItem.id);
+    const changed = this.db.prepare(`UPDATE work_items SET messages = ?,
+      coordinator_revision = coordinator_revision + 1, status = ?, current_action_id = ?,
+      current_run_id = NULL, final_result = COALESCE(final_result, ?), updated_at = ?
+      WHERE id = ? AND coordinator_revision = ? AND revision = ? AND plan_revision = ?
+      AND ledger_revision = ? AND status NOT IN ('done', 'cancelled')`).run(
+      stringify(messages), nextStatus, currentActionId, finalResult ? stringify(finalResult) : null,
+      now, workItem.id, current.coordinatorRevision, current.revision,
+      current.planRevision, current.ledgerRevision,
+    );
+    if (Number(changed.changes) !== 1) throw new Error('Dynamic Coordinator completion lost its turn fence');
+    this.appendEvent(workItem.id, decision.kind === 'complete'
+      ? 'work_item.completed' : `coordinator.${decision.kind}`, {
+      turnId, reason: decision.reason, affectedActionIds,
+    });
+    return this.getWorkItemDetail(workItem.id);
+  }
+
   failCoordinatorTurn(turnId, error, expected = {}) {
     return withTransaction(this.db, () => {
+      const claim = expected.claim || {};
+      if (!this.#activeCoordinatorMailboxClaim(turnId, claim)) return null;
+      const responded = this.db.prepare(`SELECT 1 AS present FROM coordinator_provider_turns
+        WHERE coordinator_turn_id = ? AND status = 'responded'`).get(turnId);
+      if (responded) return null;
       const workItem = this.getWorkItem(expected.workItemId);
       if (!workItem || workItem.coordinatorRevision !== expected.coordinatorRevision) return null;
       const messages = [...(workItem.messages || [])];
@@ -2527,9 +3803,25 @@ export class WorkItemStore {
       if (index < 0) return null;
       const now = this.now();
       messages[index] = {
-        ...messages[index], status: 'failed', updatedAt: now,
+        ...messages[index],
+        status: 'failed',
+        updatedAt: now,
+        ...(expected.speaker ? { speaker: expected.speaker } : {}),
         error: String(error?.message || error || 'Coordinator failed').slice(0, 8_000),
       };
+      this.#appendConversationEntry(
+        workItem.id,
+        messages[index],
+        `coordinator:turn:${turnId}:assistant`,
+      );
+      const dynamicAutomatic = isDynamicWorkItem(workItem) && expected.automatic === true;
+      if (dynamicAutomatic) {
+        if (!this.releaseCoordinatorMailboxClaim(
+          claim.mailboxId, claim.ownerBootId, claim.claimEpoch,
+        )) return null;
+      } else if (!this.ackCoordinatorMailbox(
+        claim.mailboxId, claim.ownerBootId, claim.claimEpoch,
+      )) return null;
       const changed = this.db.prepare(`UPDATE work_items SET messages = ?, coordinator_revision = coordinator_revision + 1,
         updated_at = ? WHERE id = ? AND coordinator_revision = ?`).run(
         stringify(messages), now, workItem.id, workItem.coordinatorRevision,
@@ -2537,6 +3829,7 @@ export class WorkItemStore {
       if (Number(changed.changes) !== 1) return null;
       this.appendEvent(workItem.id, 'coordinator.turn_failed', {
         turnId, error: messages[index].error,
+        retryScheduled: dynamicAutomatic,
       });
       return this.getWorkItemDetail(workItem.id);
     });
@@ -2571,38 +3864,71 @@ export class WorkItemStore {
     return withTransaction(this.db, () => {
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
-      const graphMode = isGraphWorkItem(workItem);
+      const graphMode = usesLegacyGraph(workItem);
+      const concurrentMode = graphMode || isDynamicWorkItem(workItem);
       const expectedAction = this.getAction(expected.actionId);
       const expectedGeneration = Number(expected.generation);
       const hasExpectedGeneration = Number.isInteger(expectedGeneration) && expectedGeneration > 0;
       const expectedMatches = expectedAction?.workItemId === id
-        && (graphMode || workItem.currentActionId === expected.actionId)
-        && (hasExpectedGeneration ? expectedAction.generation === expectedGeneration : !graphMode);
+        && (concurrentMode || workItem.currentActionId === expected.actionId)
+        && (hasExpectedGeneration ? expectedAction.generation === expectedGeneration : !concurrentMode);
       if (!expectedMatches || workItem.revision !== expected.revision) {
         throw new Error('Action changed before guidance was applied; refresh and try again');
       }
-      const guidanceStatuses = graphMode
+      const guidanceStatuses = concurrentMode
         ? ['ready', 'running', 'waiting', 'needs_attention']
         : ['ready', 'running'];
       if (!guidanceStatuses.includes(workItem.status)) {
         throw new Error(`WorkItem in ${workItem.status} cannot accept Action guidance`);
       }
-      const previous = graphMode ? expectedAction
+      const previous = concurrentMode ? expectedAction
         : (workItem.currentActionId ? this.getAction(workItem.currentActionId) : null);
-      const actionableStatuses = graphMode
+      const actionableStatuses = concurrentMode
         ? ['ready', 'running', 'waiting', 'needs_attention']
         : ['ready', 'running'];
       if (!previous || !actionableStatuses.includes(previous.status)) {
         throw new Error('WorkItem has no active Action for guidance');
       }
       const now = this.now();
-      const revision = workItem.revision + 1;
+      const revision = workItem.revision + (isDynamicWorkItem(workItem) ? 0 : 1);
       const replacement = {
         ...makeAction(workItem, previous),
         contractRevision: previous.contractRevision,
       };
       let action;
-      if (graphMode) {
+      if (isDynamicWorkItem(workItem)) {
+        this.#supersedePendingActionInputs([previous], 'Action restarted after user guidance', now);
+        if (previous.status === 'running' && previous.currentRunId) {
+          this.db.prepare(`UPDATE runs SET status = 'superseded', ended_at = ?, error = ?
+            WHERE id = ? AND status = 'running'`).run(
+            now, 'Action restarted after user guidance', previous.currentRunId,
+          );
+        }
+        const candidate = {
+          ...replacement,
+          id: previous.id,
+          context: withoutActionInputContext(replacement.context),
+          generation: previous.generation + 1,
+          attempt: 0,
+          currentRunId: null,
+          resultRunId: null,
+          workspace: null,
+        };
+        candidate.instruction = canonicalActionInstruction(workItem, candidate, candidate.context);
+        const specHash = actionSpecHash(candidate);
+        const changed = this.db.prepare(`UPDATE actions SET status = 'ready', attempt = 0,
+          current_run_id = NULL, lease_epoch = lease_epoch + ?, context = ?, instruction = ?,
+          generation = generation + 1, spec_hash = ?, identity_history = ?, result_run_id = NULL,
+          workspace = NULL, updated_at = ? WHERE id = ? AND generation = ?
+          AND status NOT IN ('completed', 'superseded', 'cancelled')`).run(
+          previous.status === 'running' ? 1 : 0,
+          stringify(candidate.context), candidate.instruction, specHash,
+          stringify(actionIdentityHistory(previous, candidate.generation, specHash)),
+          now, previous.id, previous.generation,
+        );
+        if (Number(changed.changes) !== 1) throw new Error('Dynamic Action guidance lost its generation fence');
+        action = this.getAction(previous.id);
+      } else if (graphMode) {
         action = this.#resetGraphFromStage(
           id,
           previous.stageId,
@@ -2712,12 +4038,20 @@ export class WorkItemStore {
       let action = null;
       if (contractChanged) {
         const updated = this.getWorkItem(id);
-        action = this.#insertAction(id, {
-          ...makeInitialAction(updated),
-          contractRevision: revision,
-        }, this.#nextSequence(id), now);
-        this.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ?,
-          current_run_id = NULL, updated_at = ? WHERE id = ?`).run(action.id, now, id);
+        if (isDynamicWorkItem(updated)) {
+          this.db.prepare(`UPDATE work_items SET status = 'running', current_action_id = NULL,
+            current_run_id = NULL, updated_at = ? WHERE id = ?`).run(now, id);
+          this.enqueueCoordinatorMailbox(id, 'contract_changed', {
+            trigger: { revision, changedFields: Object.keys(patch || {}) },
+          }, `dynamic:contract:${id}:${revision}`);
+        } else {
+          action = this.#insertAction(id, {
+            ...makeInitialAction(updated),
+            contractRevision: revision,
+          }, this.#nextSequence(id), now);
+          this.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ?,
+            current_run_id = NULL, updated_at = ? WHERE id = ?`).run(action.id, now, id);
+        }
       }
       this.appendEvent(id, contractChanged ? 'workflow.retriaged' : 'work_item.updated', {
         revision,
@@ -2763,6 +4097,30 @@ export class WorkItemStore {
       const cancelledActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
         AND status = 'cancelled' ORDER BY sequence`).all(id).map(mapAction);
       this.#assertNoIntegrationReservation(cancelledActions, now);
+      if (isDynamicWorkItem(workItem)) {
+        this.#supersedePendingActionInputs(
+          cancelledActions,
+          'WorkItem resume returned control to the Coordinator',
+          now,
+        );
+        this.db.prepare(`UPDATE actions SET status = 'superseded', current_run_id = NULL,
+          lease_epoch = lease_epoch + 1, updated_at = ? WHERE work_item_id = ? AND status = 'cancelled'`).run(
+          now, id,
+        );
+        const changed = this.db.prepare(`UPDATE work_items SET status = 'running',
+          current_action_id = NULL, current_run_id = NULL, updated_at = ?
+          WHERE id = ? AND status = 'cancelled' AND revision = ?`).run(now, id, expectedRevision);
+        if (Number(changed.changes) !== 1) {
+          throw new Error('WorkItem changed before it was resumed; refresh and try again');
+        }
+        this.enqueueCoordinatorMailbox(id, 'work_item_resumed', {
+          trigger: { workItemId: id, revision: expectedRevision },
+        }, `dynamic:resume:${id}:${expectedRevision}`);
+        this.appendEvent(id, 'work_item.resumed', {
+          supersededActionIds: cancelledActions.map(action => action.id),
+        });
+        return this.getWorkItemDetail(id);
+      }
       this.#supersedePendingActionInputs(
         cancelledActions,
         'WorkItem resume started a new Action generation',
@@ -2848,6 +4206,15 @@ export class WorkItemStore {
         throw new Error(`WorkItem in ${workItem.status} must be resumed with retry`);
       }
       const now = this.now();
+      if (isDynamicWorkItem(workItem)) {
+        this.db.prepare(`UPDATE work_items SET status = 'running', current_action_id = NULL,
+          current_run_id = NULL, updated_at = ? WHERE id = ?`).run(now, id);
+        this.enqueueCoordinatorMailbox(id, 'work_item_started', {
+          trigger: { workItemId: id },
+        }, `dynamic:start:${id}:${workItem.revision}`);
+        this.appendEvent(id, 'work_item.started');
+        return this.getWorkItemDetail(id);
+      }
       const action = this.#insertAction(id, {
         ...makeInitialAction(workItem),
         contractRevision: workItem.revision,
@@ -2861,9 +4228,23 @@ export class WorkItemStore {
 
   retryWorkItemAtomic(id, makeAction, options = {}) {
     return withTransaction(this.db, () => {
+      const clientMessageId = typeof options.inputEvent?.clientMessageId === 'string'
+        ? options.inputEvent.clientMessageId : null;
+      if (clientMessageId) {
+        const existing = this.db.prepare(`SELECT action_id FROM events WHERE work_item_id = ?
+          AND type = 'action.input_added' AND json_extract(data, '$.clientMessageId') = ?`).get(
+          id, clientMessageId,
+        );
+        if (existing) {
+          if (existing.action_id !== options.inputEvent.targetActionId) {
+            throw new Error('clientMessageId already belongs to another Action');
+          }
+          return this.getWorkItemDetail(id);
+        }
+      }
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
-      const graphMode = isGraphWorkItem(workItem);
+      const graphMode = usesLegacyGraph(workItem);
       const retryableWorkItemStatuses = graphMode
         ? ['ready', 'running', 'waiting', 'needs_attention']
         : ['waiting', 'needs_attention'];
@@ -2958,13 +4339,14 @@ export class WorkItemStore {
 
   claimReadyAction(ownerBootId, leaseMs = 60_000) {
     return withTransaction(this.db, () => {
-      const row = this.db.prepare(`SELECT a.* FROM actions a
+      const rows = this.db.prepare(`SELECT a.* FROM actions a
         JOIN work_items w ON w.id = a.work_item_id
         WHERE a.status = 'ready' AND a.current_run_id IS NULL
           AND NOT EXISTS (
             SELECT 1 FROM actions failed_recovery
             WHERE failed_recovery.work_item_id = a.work_item_id
               AND failed_recovery.status = 'failed'
+              AND COALESCE(w.coordination_mode, 'legacy') != 'dynamic'
           )
           AND NOT (
             json_extract(w.messages, '$[#-1].role') = 'assistant'
@@ -2972,7 +4354,11 @@ export class WorkItemStore {
             AND json_type(w.messages, '$[#-1].recovery') IS NOT NULL
           )
           AND (
-            (COALESCE(json_extract(w.workflow_snapshot, '$.executionMode'), 'linear') != 'graph'
+            (COALESCE(w.coordination_mode, 'legacy') = 'dynamic'
+              AND w.status IN ('ready', 'running', 'waiting', 'needs_attention'))
+            OR
+            (COALESCE(w.coordination_mode, 'legacy') != 'dynamic'
+              AND COALESCE(json_extract(w.workflow_snapshot, '$.executionMode'), 'linear') != 'graph'
               AND w.status = 'ready' AND w.current_action_id = a.id AND w.current_run_id IS NULL)
             OR
             (json_extract(w.workflow_snapshot, '$.executionMode') = 'graph'
@@ -3005,6 +4391,12 @@ export class WorkItemStore {
                   AND a.workspace_mode != 'read' AND running.workspace_mode != 'read'))
           )
           AND NOT EXISTS (
+            SELECT 1 FROM operations unsafe_operation
+            WHERE unsafe_operation.work_item_id = w.id
+              AND unsafe_operation.concurrency_policy = 'blocking'
+              AND unsafe_operation.effect_status NOT IN ('applied', 'not_applied', 'failed_no_effect')
+          )
+          AND NOT EXISTS (
             SELECT 1 FROM runs deferred
             WHERE deferred.action_id = a.id
               AND deferred.failure_kind = 'resource_deferred'
@@ -3017,7 +4409,8 @@ export class WorkItemStore {
                   AND blocker_item.workspace_key = w.workspace_key
               )
           )
-        ORDER BY a.updated_at ASC, a.sequence ASC LIMIT 1`).get();
+        ORDER BY a.updated_at ASC, a.sequence ASC`).all();
+      const row = rows.find(candidate => !this.#hasBlockingOperation(candidate.work_item_id, candidate.id));
       if (!row) return null;
       const now = this.now();
       let action = mapAction(row);
@@ -3034,6 +4427,9 @@ export class WorkItemStore {
       action = promoteReadyActionInputs(this.db, action, readyInputs, now, 'run_claim');
       const runId = randomUUID();
       const leaseEpoch = Number(action.leaseEpoch) + 1;
+      const priorOrdinal = this.db.prepare(`SELECT MAX(ordinal) AS value FROM runs
+        WHERE action_id = ?`).get(action.id);
+      const runOrdinal = Math.max(0, Number(priorOrdinal?.value) || 0) + 1;
       const priorProgress = this.db.prepare(`SELECT MAX(progress_revision) AS value FROM runs
         WHERE action_id = ?`).get(action.id);
       const progressRevision = Math.max(0, Number(priorProgress?.value) || 0) + 1;
@@ -3048,8 +4444,8 @@ export class WorkItemStore {
       );
       if (Number(changedAction.changes) !== 1) return null;
       const workItem = this.getWorkItem(action.workItemId);
-      const graphMode = isGraphWorkItem(workItem);
-      const changedWorkItem = graphMode
+      const concurrentMode = usesLegacyGraph(workItem) || isDynamicWorkItem(workItem);
+      const changedWorkItem = concurrentMode
         ? this.db.prepare(`UPDATE work_items SET status = 'running', current_action_id = ?,
           current_run_id = NULL, updated_at = ? WHERE id = ?
           AND status IN ('ready', 'running', 'waiting', 'needs_attention')`).run(
@@ -3061,14 +4457,15 @@ export class WorkItemStore {
         );
       if (Number(changedWorkItem.changes) !== 1) throw new Error('WorkItem claim lost its Action fence');
       this.db.prepare(`INSERT INTO runs
-        (id, action_id, work_item_id, owner_boot_id, lease_epoch, status, started_at,
+        (id, action_id, work_item_id, owner_boot_id, lease_epoch, ordinal, status, started_at,
          expires_at, evidence, progress_revision, action_generation, action_spec_hash, action_attempt)
-        VALUES (?, ?, ?, ?, ?, 'running', ?, ?, '[]', ?, ?, ?, ?)`).run(
+        VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, '[]', ?, ?, ?, ?)`).run(
         runId,
         action.id,
         action.workItemId,
         ownerBootId,
         leaseEpoch,
+        runOrdinal,
         now,
         now + leaseMs,
         progressRevision,
@@ -3112,7 +4509,7 @@ export class WorkItemStore {
     );
     if (!row) return null;
     const workItem = this.getWorkItem(row.work_item_id);
-    if (isGraphWorkItem(workItem)) return row;
+    if (usesLegacyGraph(workItem) || isDynamicWorkItem(workItem)) return row;
     return workItem?.status === 'running' && workItem.currentActionId === row.action_id
       && workItem.currentRunId === row.id ? row : null;
   }
@@ -3193,8 +4590,8 @@ export class WorkItemStore {
       );
       if (Number(actionChanged.changes) !== 1) throw new Error('Run interruption lost the Action fence');
       const activeWorkItem = this.getWorkItem(active.work_item_id);
-      const graphMode = isGraphWorkItem(activeWorkItem);
-      const itemChanged = graphMode
+      const concurrentMode = usesLegacyGraph(activeWorkItem) || isDynamicWorkItem(activeWorkItem);
+      const itemChanged = concurrentMode
         ? this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?, current_run_id = NULL,
           updated_at = ? WHERE id = ? AND status = 'running'`).run(
           retryable ? 'ready' : 'needs_attention', action.id, now, active.work_item_id,
@@ -3316,15 +4713,31 @@ export class WorkItemStore {
       const priorRuns = this.db.prepare(`SELECT * FROM runs
         WHERE work_item_id = ? AND id != ? AND status != 'running'
         ORDER BY started_at ASC`).all(workItem.id, runId).map(mapRun);
-      const transition = makeTransition({ run: mapRun(active), action, workItem, priorRuns });
+      const transition = isDynamicWorkItem(workItem)
+        ? {
+            actionStatus: result.outcome === 'completed' ? 'completed'
+              : result.outcome === 'waiting' ? 'waiting'
+                : result.outcome === 'retryable' && action.attempt < action.maxAttempts ? 'ready' : 'failed',
+            workItemStatus: result.outcome === 'retryable' && action.attempt < action.maxAttempts
+              ? 'ready' : 'running',
+            keepCurrentAction: false,
+            eventType: result.outcome === 'completed' ? 'action.completed'
+              : result.outcome === 'waiting' ? 'action.waiting' : 'action.failed',
+            eventData: {
+              reviewDecision: result.reviewDecision,
+              error: result.error,
+              reason: result.waitingReason,
+            },
+          }
+        : makeTransition({ run: mapRun(active), action, workItem, priorRuns });
       if (!transition || !transition.actionStatus || !transition.workItemStatus) {
         throw new Error('Work Center transition plan is incomplete');
       }
       const now = this.now();
-      const ledgerIncrement = workItem.executionSchemaVersion === 2
+      const ledgerIncrement = workItem.executionSchemaVersion >= 2
         && ['completed', 'failed', 'waiting'].includes(result.outcome) ? 1 : 0;
       this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, response = ?, summary = ?, evidence = ?,
-        waiting_reason = ?, error = ?, failure_kind = ?, failure_code = ?, review_decision = ?, contract_patch = ?, checkpoint = ?,
+        acceptance_checks = ?, waiting_reason = ?, error = ?, failure_kind = ?, failure_code = ?, review_decision = ?, contract_patch = ?, checkpoint = ?,
         loop_count = ?, tool_count = ?, llm_request_count = ?, input_tokens = ?, output_tokens = ?,
         cache_read_tokens = ?, cache_write_tokens = ?, total_tokens = ?,
         progress_revision = progress_revision + 1 WHERE id = ?`).run(
@@ -3333,6 +4746,7 @@ export class WorkItemStore {
         normalizeRunResponse(result.response),
         result.summary || '',
         stringify(normalizeEvidence(result.evidence)),
+        stringify(Array.isArray(result.acceptanceChecks) ? result.acceptanceChecks : []),
         result.waitingReason || null,
         result.error || null,
         result.failureKind || null,
@@ -3583,9 +4997,32 @@ export class WorkItemStore {
         }, this.#nextSequence(workItem.id), now);
       }
       let workItemStatus = transition.workItemStatus;
+      if (workItemStatus === 'done' && this.#hasBlockingOperation(workItem.id)) {
+        throw new Error('WorkItem has an unsafe blocking Operation and cannot complete');
+      }
       let currentActionId = nextAction?.id ?? (transition.keepCurrentAction ? action.id : null);
       let changedWorkItem;
-      if (transition.planConflict) {
+      if (isDynamicWorkItem(workItem)) {
+        const remaining = this.db.prepare(`SELECT id, status FROM actions WHERE work_item_id = ?
+          AND status IN ('ready', 'running', 'waiting', 'failed') ORDER BY sequence`).all(workItem.id);
+        const running = remaining.find(candidate => candidate.status === 'running');
+        const ready = remaining.find(candidate => candidate.status === 'ready');
+        const settledBlocker = remaining.find(candidate => ['waiting', 'failed'].includes(candidate.status));
+        if (running || ready) {
+          workItemStatus = running ? 'running' : 'ready';
+          currentActionId = running?.id || ready.id;
+        } else {
+          workItemStatus = settledBlocker?.status === 'waiting' ? 'waiting'
+            : settledBlocker ? 'needs_attention' : 'running';
+          currentActionId = settledBlocker?.id || null;
+        }
+        changedWorkItem = this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
+          current_run_id = NULL, ledger_revision = ledger_revision + ?, updated_at = ?
+          WHERE id = ? AND status IN ('ready', 'running', 'waiting', 'needs_attention')
+          AND revision = ?`).run(
+          workItemStatus, currentActionId, ledgerIncrement, now, workItem.id, nextWorkItem.revision,
+        );
+      } else if (transition.planConflict) {
         changedWorkItem = this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
           current_run_id = NULL, ledger_revision = ledger_revision + ?, updated_at = ?
           WHERE id = ? AND status IN ('ready', 'running', 'waiting', 'needs_attention') AND revision = ?`).run(
@@ -3643,25 +5080,46 @@ export class WorkItemStore {
         actionId: action.id,
         runId,
       });
+      if (isDynamicWorkItem(workItem)) {
+        this.#enqueueDynamicReconciliation(workItem.id, { runId });
+      }
       return this.getWorkItemDetail(workItem.id);
     });
+  }
+
+  #enqueueDynamicReconciliation(workItemId, trigger = {}) {
+    const detail = this.getWorkItemDetail(workItemId);
+    if (!isDynamicWorkItem(detail)
+        || (detail.actions || []).some(action => ['ready', 'running'].includes(action.status))) return null;
+    return this.enqueueCoordinatorMailbox(workItemId, 'action_settled', {
+      trigger: {
+        ...trigger,
+        ledgerRevision: detail.ledgerRevision,
+        actionIds: (detail.actions || [])
+          .filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status))
+          .map(action => action.id),
+      },
+    }, `dynamic:reconcile:${workItemId}:${detail.ledgerRevision}`);
   }
 
   #refreshGraphWorkItem(workItemId, now) {
     const remaining = this.db.prepare(`SELECT id, status FROM actions WHERE work_item_id = ?
       AND status IN ('ready', 'running', 'waiting', 'failed') ORDER BY sequence`).all(workItemId);
     const blocked = remaining.find(action => action.status === 'waiting' || action.status === 'failed');
-    const runnable = remaining.find(action => action.status === 'ready' || action.status === 'running');
+    const running = remaining.find(action => action.status === 'running');
+    const ready = remaining.find(action => action.status === 'ready');
     const status = blocked ? (blocked.status === 'waiting' ? 'waiting' : 'needs_attention')
-      : runnable ? (remaining.some(action => action.status === 'running') ? 'running' : 'ready')
-        : 'done';
-    const currentActionId = blocked?.id || runnable?.id || null;
+      : running ? 'running' : ready ? 'ready' : 'done';
+    const currentActionId = blocked?.id || running?.id || ready?.id || null;
     this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?, current_run_id = NULL,
       updated_at = ? WHERE id = ?`).run(status, currentActionId, now, workItemId);
   }
 
   recoverInterruptedCoordinatorTurns() {
     return withTransaction(this.db, () => {
+      const recoverableTurnIds = new Set(
+        this.getRecoverableCoordinatorTurns().map(turn => turn.turnId),
+      );
       const now = this.now();
       let recovered = 0;
       for (const row of this.db.prepare(`SELECT id, messages, coordinator_revision FROM work_items
@@ -3670,6 +5128,7 @@ export class WorkItemStore {
         const messages = parseJson(row.messages, []);
         const index = messages.length - 1;
         if (index < 0 || messages[index]?.role !== 'assistant' || messages[index]?.status !== 'thinking') continue;
+        if (recoverableTurnIds.has(messages[index].turnId)) continue;
         messages[index] = {
           ...messages[index],
           status: 'failed',
@@ -3682,6 +5141,20 @@ export class WorkItemStore {
           stringify(messages), now, row.id, row.coordinator_revision,
         );
         if (Number(changed.changes) !== 1) continue;
+        const turnId = messages[index].turnId || null;
+        if (turnId) {
+          const providerStatus = this.db.prepare(`SELECT status FROM coordinator_provider_turns
+            WHERE coordinator_turn_id = ? ORDER BY attempt_number DESC LIMIT 1`).get(turnId)?.status || null;
+          if (messages[index].automatic === true && providerStatus === null) {
+            this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'pending', acked_at = NULL,
+              claim_owner = NULL, claimed_at = NULL, lease_expires_at = NULL, updated_at = ?
+              WHERE json_extract(payload, '$.turnId') = ? AND status != 'cancelled'`).run(now, turnId);
+          } else {
+            this.db.prepare(`UPDATE coordinator_mailbox_entries SET status = 'acked', acked_at = ?,
+              claim_owner = NULL, claimed_at = NULL, lease_expires_at = NULL, updated_at = ?
+              WHERE json_extract(payload, '$.turnId') = ? AND status != 'acked'`).run(now, now, turnId);
+          }
+        }
         this.appendEvent(row.id, 'coordinator.turn_interrupted', {
           turnId: messages[index].turnId || null,
           error: messages[index].error,
@@ -3702,12 +5175,13 @@ export class WorkItemStore {
         const action = this.getAction(row.action_id);
         if (this.#hasActiveIntegrationReservation(action, now)) continue;
         const workItem = this.getWorkItem(row.work_item_id);
-        const graphMode = isGraphWorkItem(workItem);
+        const graphMode = usesLegacyGraph(workItem);
+        const concurrentMode = graphMode || isDynamicWorkItem(workItem);
         const isCurrent = action?.status === 'running'
           && action.currentRunId === row.id
           && action.leaseEpoch === row.lease_epoch
           && workItem?.status === 'running'
-          && (graphMode || (workItem.currentActionId === action.id && workItem.currentRunId === row.id));
+          && (concurrentMode || (workItem.currentActionId === action.id && workItem.currentRunId === row.id));
         if (!isCurrent) {
           const staleStatus = workItem?.status === 'cancelled' ? 'cancelled' : 'superseded';
           const stillOwnsAction = action?.status === 'running'
@@ -3731,7 +5205,11 @@ export class WorkItemStore {
             actionId: row.action_id,
             runId: row.id,
           });
-          if (graphMode && workItem) this.#refreshGraphWorkItem(workItem.id, now);
+          if (concurrentMode && workItem) {
+            const state = this.#graphWorkItemState(workItem.id);
+            this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?, current_run_id = NULL,
+              updated_at = ? WHERE id = ?`).run(state.status, state.currentActionId, now, workItem.id);
+          }
           recovered += 1;
           continue;
         }
@@ -3742,8 +5220,10 @@ export class WorkItemStore {
         const retryable = action.type !== 'deliver' && action.attempt < action.maxAttempts;
         this.db.prepare(`UPDATE actions SET status = ?, current_run_id = NULL, updated_at = ?
           WHERE id = ?`).run(retryable ? 'ready' : 'failed', now, action.id);
-        if (graphMode) {
-          this.#refreshGraphWorkItem(workItem.id, now);
+        if (concurrentMode) {
+          const state = this.#graphWorkItemState(workItem.id);
+          this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?, current_run_id = NULL,
+            updated_at = ? WHERE id = ?`).run(state.status, state.currentActionId, now, workItem.id);
         } else {
           this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
             current_run_id = NULL, updated_at = ? WHERE id = ?`).run(
@@ -3757,6 +5237,9 @@ export class WorkItemStore {
           actionId: action.id,
           runId: row.id,
         });
+        if (isDynamicWorkItem(workItem) && !retryable) {
+          this.#enqueueDynamicReconciliation(workItem.id, { runId: row.id, interrupted: true });
+        }
         recovered += 1;
       }
       return recovered;

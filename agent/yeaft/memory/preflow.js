@@ -19,14 +19,19 @@ import { extractKeywords } from './keywords.js';
 import { approxTokens } from './budget.js';
 import { isVpForeign } from './store.js';
 
+export const DEFAULT_PICK_LIMIT = 8;
+
 /**
  * @typedef {object} PreflowOptions
  * @property {string}        userMsg
- * @property {string[]}      relevantScopes      e.g. ['user', 'group/g1', 'vp/alice']
+ * @property {string[]}      relevantScopes      e.g. ['user', 'sessions/s1', 'sessions/s1/vp/alice']
  * @property {string|null}  [ownVpId]
- * @property {string[]}     [currentTags]        tags from the current group/feature context
- * @property {number}       [topK]               max FTS rows to fetch (default 50)
+ * @property {string[]}     [currentTags]        tags from the current Session context
+ * @property {number}       [topK]               max FTS rows to fetch (default 200)
  * @property {number}       [budgetTokens]       onDemand budget (caller-supplied)
+ * @property {number}       [pickLimit]          max picked segments (default 8)
+ * @property {boolean}      [uniqueScopes]       pick at most one best hit per scope
+ * @property {boolean}      [canonicalOnly]      search canonical content records only
  */
 
 /**
@@ -51,9 +56,11 @@ export function runPreflow(index, opts) {
   const relevantScopes = Array.isArray(opts.relevantScopes) ? opts.relevantScopes : [];
   const ownVpId = opts.ownVpId || null;
   const currentTags = Array.isArray(opts.currentTags) ? opts.currentTags : [];
-  const topK = Number.isFinite(opts.topK) && opts.topK > 0 ? opts.topK : 50;
+  const topK = Number.isFinite(opts.topK) && opts.topK > 0 ? opts.topK : 200;
   const budgetTokens = Number.isFinite(opts.budgetTokens) && opts.budgetTokens > 0
     ? opts.budgetTokens : Infinity;
+  const pickLimit = Number.isFinite(opts.pickLimit) && opts.pickLimit > 0
+    ? Math.floor(opts.pickLimit) : DEFAULT_PICK_LIMIT;
 
   const keywords = extractKeywords(userMsg);
   if (keywords.length === 0) {
@@ -72,16 +79,27 @@ export function runPreflow(index, opts) {
     };
   }
 
-  const hits = index.search({ query: ftsQuery, scopeFilter, limit: topK });
-  const reranked = rerank(hits, { currentTags });
+  const hits = index.search({
+    query: ftsQuery,
+    scopeFilter,
+    limit: topK,
+    ...(opts.canonicalOnly ? { requiredTag: 'canonical-content' } : {}),
+  });
+  const reranked = rerank(hits, { currentTags, keywords });
 
   const picked = [];
+  const pickedScopes = new Set();
   let cost = 0;
   let dropped = 0;
   for (const h of reranked) {
+    if (opts.uniqueScopes && pickedScopes.has(h.scope)) {
+      dropped += 1;
+      continue;
+    }
     const tk = approxTokens(h.body);
-    if (cost + tk <= budgetTokens) {
+    if (picked.length < pickLimit && cost + tk <= budgetTokens) {
       picked.push(toSegment(h));
+      pickedScopes.add(h.scope);
       cost += tk;
     } else {
       dropped += 1;
@@ -124,7 +142,7 @@ export function filterScopes(scopes, ownVpId) {
 
 /**
  * Rerank FTS hits with two soft signals on top of bm25:
- *   - tag overlap with the current group/feature context (subtract penalty)
+ *   - tag overlap with the current Session context (subtract penalty)
  *   - recency: recent items get a small bonus
  *
  * SQLite FTS5 bm25 returns NEGATIVE numbers (more negative = better
@@ -133,7 +151,7 @@ export function filterScopes(scopes, ownVpId) {
  * score more negative).
  *
  * @param {import('./index-db.js').SearchHit[]} hits
- * @param {{ currentTags: string[] }} ctx
+ * @param {{ currentTags: string[], keywords?: string[] }} ctx
  * @returns {import('./index-db.js').SearchHit[]}
  */
 export function rerank(hits, ctx) {
@@ -144,7 +162,11 @@ export function rerank(hits, ctx) {
       const overlap = (h.tags || []).reduce(
         (n, t) => n + (tagSet.has(String(t).toLowerCase()) ? 1 : 0), 0,
       );
-      const tagBonus = Math.min(2, overlap * 0.5);   // up to 2 points
+      const queryTerms = new Set((ctx.keywords || []).map(term => String(term).toLowerCase()));
+      const canonicalOverlap = (h.tags || []).reduce(
+        (n, tag) => n + (queryTerms.has(String(tag).toLowerCase()) ? 1 : 0), 0,
+      );
+      const tagBonus = Math.min(2, overlap * 0.5) + Math.min(1.5, canonicalOverlap * 0.15);
       const ageDays = Math.max(0, (now - Date.parse(h.updatedAt || h.createdAt || '')) / 86400000);
       const recencyBonus = Math.min(0.5, 0.2 / Math.max(0.5, ageDays + 1));
       const base = h.rank ?? 0;
@@ -152,7 +174,7 @@ export function rerank(hits, ctx) {
       return { ...h, _score: score };
     })
     .sort((a, b) => a._score - b._score)
-    .map(({ _score, ...rest }) => rest);
+    .map(({ _score, ...rest }) => ({ ...rest, score: _score }));
 }
 
 function toSegment(h) {
@@ -163,6 +185,7 @@ function toSegment(h) {
     tags: h.tags,
     sourceMessages: h.sourceMessages,
     body: h.body,
+    score: typeof h.score === 'number' ? h.score : (typeof h.rank === 'number' ? h.rank : undefined),
     createdAt: h.createdAt,
     updatedAt: h.updatedAt,
   };

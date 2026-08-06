@@ -58,6 +58,18 @@ const DEFAULTS = {
   // block is injected). Hand-edited values are NOT clamped — we let
   // power users opt into larger docs at their own context-window risk.
   projectDocMaxBytes: 32 * 1024,
+  // ─── Performance telemetry ─────────────────────────────
+  // Telemetry is local, best-effort diagnostics. The agent buffers events and
+  // flushes them in batches; raw provider responses are bounded separately so
+  // a long SSE stream cannot grow the debug payload without limit.
+  telemetry: {
+    enabled: true,
+    retentionDays: 3,
+    flushIntervalMs: 1_000,
+    maxQueueSize: 5_000,
+    rawExchangeMaxBytes: 512 * 1024,
+    traceTextMaxBytes: 256 * 1024,
+  },
   // ─── LLM retry policy ──────────────────────────────────────
   // How the engine reacts when adapter.stream()/call() throws a
   // retryable error (429 / 529 / 5xx / transport failure). Each field
@@ -78,6 +90,7 @@ const DEFAULTS = {
     maxDelayMs: 30_000,
     jitterRatio: 0.25,
     streamIdleTimeoutMs: 90_000,
+    forbiddenRetryDelaysMs: [30_000, 120_000],
   },
 };
 
@@ -114,6 +127,12 @@ export function normalizeLlmRetry(fileConfig, overrides) {
     }
     if (Number.isFinite(src.streamIdleTimeoutMs) && src.streamIdleTimeoutMs >= 0) {
       out.streamIdleTimeoutMs = Math.min(600_000, Math.floor(src.streamIdleTimeoutMs));
+    }
+    if (Array.isArray(src.forbiddenRetryDelaysMs)) {
+      out.forbiddenRetryDelaysMs = src.forbiddenRetryDelaysMs
+        .filter(v => Number.isFinite(v) && v >= 0)
+        .slice(0, 3)
+        .map(v => Math.min(600_000, Math.floor(v)));
     }
   };
   apply(fileConfig);
@@ -275,6 +294,46 @@ export function clampYeaftField(v, field) {
 }
 
 /**
+ * Normalize the local performance telemetry section.
+ *
+ * `debug` controls human-facing verbosity; this section controls bounded,
+ * local timing diagnostics. Unknown keys are dropped so hand-edited config
+ * cannot leak arbitrary values into the engine hot path.
+ *
+ * @param {unknown} raw
+ * @returns {{ enabled: boolean, retentionDays: number, flushIntervalMs: number, maxQueueSize: number, rawExchangeMaxBytes: number, traceTextMaxBytes: number }}
+ */
+export function normaliseTelemetrySection(raw) {
+  const defaults = DEFAULTS.telemetry;
+  const out = { ...defaults };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  const value = /** @type {Record<string, unknown>} */ (raw);
+  if (typeof value.enabled === 'boolean') out.enabled = value.enabled;
+
+  const normalizeInteger = (candidate, min, max, fallback) => {
+    const number = Number(candidate);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.min(max, Math.max(min, Math.floor(number)));
+  };
+  out.retentionDays = normalizeInteger(value.retentionDays, 1, 3650, defaults.retentionDays);
+  out.flushIntervalMs = normalizeInteger(value.flushIntervalMs, 0, 60_000, defaults.flushIntervalMs);
+  out.maxQueueSize = normalizeInteger(value.maxQueueSize, 100, 50_000, defaults.maxQueueSize);
+  out.rawExchangeMaxBytes = normalizeInteger(
+    value.rawExchangeMaxBytes,
+    0,
+    4 * 1024 * 1024,
+    defaults.rawExchangeMaxBytes,
+  );
+  out.traceTextMaxBytes = normalizeInteger(
+    value.traceTextMaxBytes,
+    0,
+    4 * 1024 * 1024,
+    defaults.traceTextMaxBytes,
+  );
+  return out;
+}
+
+/**
  * Build config from legacy config.md + .env + env vars.
  * @deprecated — used only when config.json doesn't exist.
  */
@@ -307,6 +366,7 @@ function loadLegacyConfig(dir, overrides) {
     projectDocMaxBytes: overrides.projectDocMaxBytes ?? fileConfig.projectDocMaxBytes ?? DEFAULTS.projectDocMaxBytes,
     // task-318: legacy path never had the `yeaft` section — defaults.
     yeaft: normaliseYeaftSection(null),
+    telemetry: normaliseTelemetrySection(null),
     plugins: {},
     providers: null,
     primaryModel: null,
@@ -441,6 +501,7 @@ export function loadConfig(overrides = {}) {
     // task-318: Yeaft runtime caps. `yeaft` is a nested section so we
     // don't pollute the flat config namespace used by chat code.
     yeaft: normaliseYeaftSection(jsonConfig.yeaft),
+    telemetry: normaliseTelemetrySection(jsonConfig.telemetry),
 
     // Agent-level tools / skills / MCP server allowlists. Missing fields mean
     // all currently discovered capabilities remain enabled.

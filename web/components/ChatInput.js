@@ -8,10 +8,11 @@ import VpMentionAutocomplete, {
   vpMentionListboxId,
   vpMentionOptionId,
 } from './VpMentionAutocomplete.js';
+import MessageComposer from './MessageComposer.js';
 
 export default {
   name: 'ChatInput',
-  components: { VpMentionAutocomplete },
+  components: { MessageComposer, VpMentionAutocomplete },
   props: {
     /** Custom send function: (text, attachmentInfos) => void. Overrides store.sendMessage. */
     sendFn: { type: Function, default: null },
@@ -87,40 +88,39 @@ export default {
           >&times;</button>
         </div>
       </div>
-      <div class="input-wrapper" :class="{ 'btw-active': store.btwMode }">
-        <input
-          v-if="attachmentsAllowed"
-          type="file"
-          ref="fileInput"
-          id="chat-file-input"
-          @change="handleFileSelect"
-          multiple
-          accept="image/*,text/*,.pdf,.doc,.docx,.xls,.xlsx,.json,.md,.py,.js,.ts,.css,.html"
-          class="file-input-hidden"
-        />
-        <label
-          v-if="attachmentsAllowed"
-          class="attach-btn"
-          for="chat-file-input"
-          :title="$t('chatInput.upload')"
-          :aria-label="$t('chatInput.upload')"
-        >
-          <svg viewBox="0 0 24 24" width="20" height="20">
-            <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/>
-          </svg>
-        </label>
-        <button
-          v-if="workItemFn && !store.btwMode"
-          class="work-item-draft-btn"
-          type="button"
-          @click="workItemFn(inputText.trim())"
-          :title="$t('workCenter.fromSession')"
-          :aria-label="$t('workCenter.fromSession')"
-        >
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 5v2h10V8H7zm0 4v2h7v-2H7zm0 4v2h5v-2H7z"/></svg>
-        </button>
-        <span v-if="store.btwMode" class="btw-input-tag">BTW</span>
-        <div class="textarea-wrapper">
+      <input
+        v-if="attachmentsAllowed"
+        type="file"
+        ref="fileInput"
+        id="chat-file-input"
+        @change="handleFileSelect"
+        multiple
+        accept="image/*,text/*,.pdf,.doc,.docx,.xls,.xlsx,.json,.md,.py,.js,.ts,.css,.html"
+        class="file-input-hidden"
+      />
+      <MessageComposer
+        ref="messageComposerRef"
+        v-model="inputText"
+        :class="{ 'btw-active': store.btwMode }"
+        :placeholder="store.btwMode ? $t('btw.placeholder') : (isCompacting ? $t('chatHeader.compacting') : $t(effectivePlaceholderKey))"
+        :disabled="isCompacting"
+        :can-send="canSend"
+        :show-stop="isStopVisible"
+        :input-id="inputElementId"
+        :send-label="$t('chatInput.send')"
+        :stop-label="$t('chatInput.stop')"
+        aria-autocomplete="list"
+        aria-haspopup="listbox"
+        :aria-controls="vpMentionPopupOpen ? vpMentionPopupId : null"
+        :aria-activedescendant="vpMentionActiveOptionId"
+        @input="handleInput"
+        @keydown="handleKeydown"
+        @paste="handlePaste"
+        @blur="onBlur"
+        @send="send"
+        @stop="cancelExecution"
+      >
+        <template #overlays>
           <!-- Slash command autocomplete -->
           <div class="slash-autocomplete" v-if="!store.btwMode && showAutocomplete && flatItems.length > 0" ref="autocompleteRef">
             <template v-for="group in groupedCommands" :key="group.label">
@@ -164,44 +164,34 @@ export default {
             @select="selectVpMention"
             @hover-index="vpSelectedIndex = $event"
           />
-          <textarea
-            ref="inputRef"
-            v-model="inputText"
-            @input="handleInput"
-            @keydown="handleKeydown"
-            @paste="handlePaste"
-            @blur="onBlur"
-            :id="inputElementId"
-            aria-autocomplete="list"
-            aria-haspopup="listbox"
-            :aria-controls="vpMentionPopupOpen ? vpMentionPopupId : null"
-            :aria-activedescendant="vpMentionActiveOptionId"
-            :placeholder="store.btwMode ? $t('btw.placeholder') : (isCompacting ? $t('chatHeader.compacting') : $t(effectivePlaceholderKey))"
-            :disabled="isCompacting"
-            rows="1"
-          ></textarea>
-        </div>
-        <button
-          v-if="isStopVisible"
-          type="button"
-          class="send-btn stop-btn"
-          @click="cancelExecution"
-          :title="$t('chatInput.stop')"
-          :aria-label="$t('chatInput.stop')"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-        </button>
-        <button
-          type="button"
-          class="send-btn"
-          @click="send"
-          :disabled="!canSend"
-          :title="$t('chatInput.send')"
-          :aria-label="$t('chatInput.send')"
-        >
-          <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-        </button>
-      </div>
+        </template>
+        <template #start-actions>
+          <label
+            v-if="attachmentsAllowed"
+            class="attach-btn"
+            for="chat-file-input"
+            :title="$t('chatInput.upload')"
+            :aria-label="$t('chatInput.upload')"
+          >
+            <svg viewBox="0 0 24 24" width="20" height="20"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
+          </label>
+          <button
+            v-if="workItemFn && !store.btwMode"
+            class="work-item-draft-btn"
+            type="button"
+            @click="workItemFn(inputText.trim())"
+            :title="$t('workCenter.fromSession')"
+            :aria-label="$t('workCenter.fromSession')"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 5v2h10V8H7zm0 4v2h7v-2H7zm0 4v2h5v-2H7z"/></svg>
+          </button>
+          <span v-if="store.btwMode" class="btw-input-tag">BTW</span>
+          <slot name="actions-start"></slot>
+        </template>
+        <template #end-actions-before>
+          <slot name="actions-end-before"></slot>
+        </template>
+      </MessageComposer>
     </footer>
   `,
   setup(props, { emit }) {
@@ -211,7 +201,8 @@ export default {
     // task-338-F4: resolve groups store for Yeaft group-chat dispatch routing.
     const sessionsStore = (Pinia.useSessionsStore ? Pinia.useSessionsStore() : null);
     const inputText = Vue.ref('');
-    const inputRef = Vue.ref(null);
+    const messageComposerRef = Vue.ref(null);
+    const inputRef = Vue.computed(() => messageComposerRef.value?.getTextarea?.() || null);
     const componentUid = Vue.getCurrentInstance()?.uid ?? 0;
     const inputElementId = `chat-input-${componentUid}`;
     const fileInput = Vue.ref(null);
@@ -486,23 +477,9 @@ export default {
       return hasContent && store.currentAgent && store.currentConversation && notUploading;
     });
 
-    const MAX_TEXTAREA_HEIGHT = 120;
+    const autoResize = () => messageComposerRef.value?.autoResize?.();
 
-    const autoResize = () => {
-      const textarea = inputRef.value;
-      if (!textarea) return;
-      textarea.style.height = 'auto';
-      const nextHeight = Math.min(textarea.scrollHeight, MAX_TEXTAREA_HEIGHT);
-      textarea.style.height = nextHeight + 'px';
-      textarea.style.overflowY = textarea.scrollHeight > MAX_TEXTAREA_HEIGHT ? 'auto' : 'hidden';
-    };
-
-    const resetTextareaSize = () => {
-      const textarea = inputRef.value;
-      if (!textarea) return;
-      textarea.style.height = 'auto';
-      textarea.style.overflowY = 'hidden';
-    };
+    const resetTextareaSize = () => messageComposerRef.value?.resetTextareaSize?.();
 
     const handleInput = () => {
       autoResize();
@@ -930,6 +907,7 @@ export default {
       store,
       inputText,
       inputRef,
+      messageComposerRef,
       inputAreaRef,
       fileInput,
       attachments,

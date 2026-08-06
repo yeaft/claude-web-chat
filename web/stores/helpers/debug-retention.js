@@ -1,11 +1,11 @@
 /**
- * debug-retention.js — Pure helper for the Yeaft debug panel's count-based
+ * debug-retention.js — Pure helper for the Yeaft debug panel's live-summary
  * retention bound.
  *
- * The Yeaft debug feature ships verbatim LLM raw request/response bodies to
- * the client (no per-payload truncation — see anthropic.js / openai-responses.js
- * onRawExchange and `redactRawRequest` in adapter.js). To keep memory bounded
- * we cap the *number* of loops retained per tab via MAX_YEAFT_DEBUG_LOOPS.
+ * Full LLM request/response detail stays in the Agent's file-backed trace and
+ * is fetched for one Turn on demand. The always-on browser cache only retains
+ * lightweight loop metadata, and this helper additionally caps its count via
+ * MAX_YEAFT_DEBUG_LOOPS.
  *
  * When the cap is exceeded:
  *   1. Drop the oldest loop entries past the cap.
