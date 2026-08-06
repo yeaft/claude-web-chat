@@ -1,4 +1,5 @@
 import { yeaftHistoryIdentityKey } from './yeaft-history-identity.js';
+import { activeYeaftHistoryIdentity, syncActiveYeaftHistoryLoad } from './yeaft-history-load.js';
 
 export const YEAFT_HISTORY_CACHE_LIMITS = Object.freeze({
   maxSessions: 8,
@@ -154,6 +155,10 @@ export function pruneConversationMessageRetention(store, {
         count: summary.rowCount,
       },
     };
+    const active = activeYeaftHistoryIdentity(store);
+    if (active.agentId === agentId && active.sessionId === sessionId) {
+      syncActiveYeaftHistoryLoad(store);
+    }
   }
   return {
     evictedRows: evicted.length,

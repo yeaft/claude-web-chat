@@ -1836,7 +1836,16 @@ describe('Yeaft conversation loading state', () => {
         status: 'completed',
       });
     }
+    const sent = [];
     const store = {
+      currentView: 'yeaft',
+      currentAgent: agentId,
+      yeaftActiveSessionFilter: sessionId,
+      yeaftHasMoreHistory: false,
+      yeaftLoadingMoreHistory: false,
+      yeaftOldestLoadedSeq: 1,
+      resolveYeaftSessionAgentId: id => (id === sessionId ? agentId : null),
+      sendWsMessage: message => sent.push(message),
       messagesMap: { [conversationId]: rows },
       yeaftHistoryCacheState: {
         [sessionKey]: {
@@ -1887,6 +1896,83 @@ describe('Yeaft conversation loading state', () => {
     );
     expect(plan.request).toEqual(expect.objectContaining({ kind: 'server', beforeSeq: 9 }));
     expect(plan.state.hasMore).toBe(true);
+    expect(store.yeaftHasMoreHistory).toBe(true);
+    expect(store.yeaftOldestLoadedSeq).toBe(9);
+
+    loadMoreYeaftHistory.call(store, 10);
+    expect(sent).toEqual([expect.objectContaining({
+      type: 'yeaft_load_more_history',
+      agentId,
+      sessionId,
+      beforeSeq: 9,
+    })]);
+  });
+
+  historyScenario('does not mutate active pagination mirrors when pruning a background Session', () => {
+    const conversationId = 'yeaft-background-prune';
+    const activeAgentId = 'agent-active';
+    const activeSessionId = 'session-active';
+    const backgroundAgentId = 'agent-background';
+    const backgroundSessionId = 'session-background';
+    const backgroundKey = yeaftHistoryIdentityKey(backgroundAgentId, backgroundSessionId);
+    const rows = [];
+    for (let seq = 1; seq <= 8; seq += 1) {
+      rows.push({
+        id: `m${seq}`,
+        messageId: `m${seq}`,
+        persistedMessageId: `m${seq}`,
+        type: seq % 2 === 1 ? 'user' : 'assistant',
+        content: `row ${seq}`,
+        sessionId: backgroundSessionId,
+        seq,
+        status: 'completed',
+      });
+    }
+    const store = {
+      currentAgent: activeAgentId,
+      yeaftActiveSessionFilter: activeSessionId,
+      yeaftHasMoreHistory: false,
+      yeaftLoadingMoreHistory: false,
+      yeaftOldestLoadedSeq: 77,
+      resolveYeaftSessionAgentId: id => (id === activeSessionId ? activeAgentId : backgroundAgentId),
+      messagesMap: { [conversationId]: rows },
+      yeaftHistoryCacheState: {
+        [backgroundKey]: {
+          agentId: backgroundAgentId,
+          sessionId: backgroundSessionId,
+          conversationId,
+          rowCount: 8,
+          ranges: [{ startSeq: 1, endSeq: 8 }],
+          rangeEpoch: 1,
+        },
+      },
+      yeaftSessionHistoryState: {
+        [backgroundKey]: {
+          serverOldestFetchedSeq: 1,
+          oldestSeq: 1,
+          serverHasMore: false,
+          hasMore: false,
+        },
+      },
+    };
+
+    pruneConversationMessageRetention(store, {
+      conversationId,
+      agentId: backgroundAgentId,
+      sessionId: backgroundSessionId,
+      limits: {
+        maxRowsPerSession: 4,
+        maxBytesPerSession: 100_000,
+        recentRowsFloor: 1,
+      },
+    });
+
+    expect(store.yeaftSessionHistoryState[backgroundKey]).toEqual(expect.objectContaining({
+      hasMore: true,
+      oldestSeq: 5,
+    }));
+    expect(store.yeaftHasMoreHistory).toBe(false);
+    expect(store.yeaftOldestLoadedSeq).toBe(77);
   });
 
   historyScenario('keeps one oversized newest turn instead of splitting its boundary', () => {
