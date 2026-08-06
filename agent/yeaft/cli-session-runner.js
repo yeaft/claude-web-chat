@@ -72,6 +72,14 @@ export function createCliSessionRunner({
   const engines = new Map();
   const tails = new Map();
   const pending = new Set();
+  // Root turns are accepted synchronously but execute on per-VP promise tails.
+  // Durable rows therefore cannot use append order as their causal boundary: a
+  // later root user row may be written before an earlier VP starts, while the
+  // earlier VP's assistant rows may be written after that later user row. Keep
+  // an in-process identity map so each envelope can exclude only later roots
+  // while retaining completed rows that causally precede it.
+  const rootOrderByTurnId = new Map();
+  let nextRootOrder = 0;
   let closed = false;
 
   const engineFor = (vpId) => {
@@ -93,25 +101,46 @@ export function createCliSessionRunner({
     const persistedUserClientMessageId = typeof envelope?._persistedUserClientMessageId === 'string'
       ? envelope._persistedUserClientMessageId
       : null;
-    // The shared formal-Session user row is persisted before fan-out, but
-    // Engine.query() always appends `prompt` to the provider messages. Load the
-    // latest history at actual VP execution time, then exclude only this root
-    // turn's exact durable row so queued VPs still see intervening completed
-    // turns and repeated prompt text from older turns is never guessed away.
+    const rootOrder = Number.isInteger(envelope?._cliRootOrder)
+      ? envelope._cliRootOrder
+      : null;
+    // Engine.query() appends `prompt` itself. Exclude this root's durable user
+    // row and every later root turn, regardless of where their assistant/tool
+    // rows landed in the globally sequenced transcript. This preserves rows
+    // completed by earlier accepted roots while preventing future prompts from
+    // entering an earlier provider request.
     const messages = loaded.conversationStore
       .loadSessionHistoryForVp(sessionId, vpId)
-      .filter(message => !(
-        persistedUserClientMessageId
-        && message?.role === 'user'
-        && message.clientMessageId === persistedUserClientMessageId
-      ));
+      .filter((message) => {
+        if (persistedUserClientMessageId
+            && message?.role === 'user'
+            && message.clientMessageId === persistedUserClientMessageId) return false;
+        if (rootOrder === null) return true;
+        if (message?.role === 'user' && typeof message.clientMessageId === 'string') {
+          const messageRootOrder = rootOrderByTurnId.get(message.clientMessageId);
+          if (Number.isInteger(messageRootOrder) && messageRootOrder >= rootOrder) return false;
+        }
+        if (typeof message?.turnId === 'string') {
+          const messageRootOrder = rootOrderByTurnId.get(message.turnId);
+          if (Number.isInteger(messageRootOrder) && messageRootOrder >= rootOrder) return false;
+        }
+        return true;
+      });
     const todos = [];
     let resultText = '';
     let failed = null;
     const scopedCoordinator = {
       group: coordinator.group,
       ingest(input, opts) {
-        return coordinator.ingest({ ...input, _cliTurnContext: envelope._cliTurnContext }, opts);
+        const report = coordinator.ingest({
+          ...input,
+          _cliRootOrder: envelope._cliRootOrder,
+          _cliTurnContext: envelope._cliTurnContext,
+        }, opts);
+        if (rootOrder !== null && typeof report?.message?.id === 'string') {
+          rootOrderByTurnId.set(report.message.id, rootOrder);
+        }
+        return report;
       },
     };
     const queryOptions = {
@@ -233,6 +262,8 @@ export function createCliSessionRunner({
         claimedVpIds: new Set(),
       });
       const messageId = randomUUID();
+      const rootOrder = nextRootOrder++;
+      rootOrderByTurnId.set(messageId, rootOrder);
       // The shared user row is the durability boundary. Validate structured
       // routing above before this append so malformed machine selectors never
       // enter the transcript or reach a provider.
@@ -266,6 +297,7 @@ export function createCliSessionRunner({
         } : {}),
         ...(routingIntent ? { _routingIntent: routingIntent } : {}),
         ...(persistedUserClientMessageId ? { _persistedUserClientMessageId: persistedUserClientMessageId } : {}),
+        _cliRootOrder: rootOrder,
         _cliTurnContext: turnContext,
       });
       const results = [];

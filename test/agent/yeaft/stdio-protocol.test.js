@@ -431,6 +431,57 @@ describe('stream-json Session runtime protocol', () => {
     await runner.close();
   });
 
+  it('keeps concurrent formal-Session provider history causal by root turn identity', async () => {
+    const root = tempRoot('stdio-concurrent-causal-history');
+    const sessionId = 'session_stdio_concurrent_causal_history';
+    createFormalSession(root, sessionId, ['linus']);
+    const conversationStore = new ConversationStore(root);
+    const adapter = new RecordingAdapter();
+    const loaded = {
+      yeaftDir: root,
+      config: {
+        model: 'test-model',
+        primaryModel: 'test-model',
+        maxOutputTokens: 1024,
+        language: 'en',
+      },
+      adapter,
+      trace: new NullTrace(),
+      conversationStore,
+      memoryIndex: null,
+      amsRegistry: null,
+      toolRegistry: null,
+      skillManager: null,
+      mcpManager: null,
+      taskManager: null,
+      toolStats: null,
+      managedCliReady: null,
+    };
+    const runner = createCliSessionRunner({ loaded, sessionId });
+
+    const first = runner.run('FIRST_PROMPT', {
+      routingIntent: { targetVpIds: ['linus'], explicit: true },
+    });
+    const future = runner.run('FUTURE_PROMPT', {
+      routingIntent: { targetVpIds: ['linus'], explicit: true },
+    });
+    await Promise.all([first, future]);
+
+    const providerUsers = adapter.streamCalls.map(call => call.messages
+      .filter(message => message.role === 'user')
+      .map(message => message.content));
+    expect(providerUsers).toEqual([
+      ['FIRST_PROMPT'],
+      ['FIRST_PROMPT', 'FUTURE_PROMPT'],
+    ]);
+    expect(adapter.streamCalls[0].messages.some(message => message.role === 'assistant')).toBe(false);
+    expect(adapter.streamCalls[1].messages).toContainEqual(expect.objectContaining({
+      role: 'assistant',
+      content: 'recorded response',
+    }));
+    await runner.close();
+  });
+
   it('routes internal task-result reentry to its owner without appending a user transcript row', async () => {
     const root = tempRoot('stdio-task-result-routing');
     const sessionId = 'session_stdio_task_result_routing';
@@ -754,6 +805,56 @@ describe('stream-json Session runtime protocol', () => {
     }
   }, 40_000);
 
+  it('rejects ad-hoc VP selectors before provider dispatch and continues later input', async () => {
+    const root = tempRoot('stdio-adhoc-selector-rejection');
+    const sessionId = 'session_stdio_adhoc_selector_rejection';
+    const provider = writeMockProviderServer(root);
+    try {
+      await waitForFile(provider.portPath);
+      const port = readFileSync(provider.portPath, 'utf8').trim();
+      writeFileSync(join(root, 'config.json'), JSON.stringify({
+        providers: [{
+          name: 'mock',
+          baseUrl: `http://127.0.0.1:${port}`,
+          apiKey: 'test',
+          protocol: 'anthropic',
+          models: ['claude-test'],
+        }],
+        primaryModel: 'mock/claude-test',
+        llmRetry: { maxRetries: 0, forbiddenRetryDelaysMs: [] },
+      }));
+      writeFileSync(join(root, 'models_dev_cache.json'), '{}');
+      const input = [
+        JSON.stringify({ type: 'prompt', prompt: 'must reject before provider', targetVpId: 'martin' }),
+        JSON.stringify({ type: 'prompt', prompt: 'second prompt' }),
+        '',
+      ].join('\n');
+
+      const outcome = await runCli(root, [
+        '--session-id', sessionId,
+        '--cwd', root,
+        '--input-format', 'stream-json',
+        '--output-format', 'stream-json',
+      ], input);
+      const frames = outcome.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      const results = frames.filter(frame => frame.type === 'result');
+      const requests = readFileSync(provider.requestLogPath, 'utf8').trim().split('\n').filter(Boolean);
+
+      expect(results).toHaveLength(2);
+      expect(results[0]).toMatchObject({ subtype: 'error', is_error: true, stop_reason: 'error' });
+      expect(results[0].error).toContain('formal Session');
+      expect(results[1]).toMatchObject({ subtype: 'success', is_error: false });
+      expect(results.every(frame => frame.vp_id === undefined && frame.vpId === undefined)).toBe(true);
+      expect(outcome).toMatchObject({ code: 1, signal: null });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toContain('second prompt');
+      expect(requests[0]).not.toContain('must reject before provider');
+    } finally {
+      provider.child.kill('SIGTERM');
+      await new Promise(resolve => provider.child.once('close', resolve));
+    }
+  }, 40_000);
+
   it('drains a model-reentry task that completes after stdin EOF before closing the Session runner', async () => {
     const root = tempRoot('stdio-late-task-shutdown');
     const sessionId = 'session_stdio_late_task_shutdown';
@@ -814,6 +915,66 @@ describe('stream-json Session runtime protocol', () => {
       expect(Array.from(terminalResultsByTurn.values()).map(turnResults => turnResults.length)).toEqual([1, 1]);
       expect(results[0].turn_id).not.toBe(results[1].turn_id);
       expect(results.every(frame => frame.subtype === 'success' && frame.is_error === false)).toBe(true);
+      expect(results[0].result).toContain('root turn deferred while child runs');
+      expect(taskCompletions).toHaveLength(1);
+      expect(taskResultRequests).toHaveLength(1);
+      expect(results[1].result).toContain('owner consumed late child result exactly once');
+      expect(frames.indexOf(results[0])).toBeLessThan(frames.indexOf(taskCompletions[0]));
+      expect(frames.indexOf(taskCompletions[0])).toBeLessThan(frames.indexOf(results[1]));
+    } finally {
+      provider.child.kill('SIGTERM');
+      await new Promise(resolve => provider.child.once('close', resolve));
+    }
+  }, 40_000);
+
+  it('rescues an ad-hoc model-reentry task after stdin EOF through the single Engine', async () => {
+    const root = tempRoot('stdio-adhoc-late-task-shutdown');
+    const sessionId = 'session_stdio_adhoc_late_task_shutdown';
+    const provider = writeLateTaskProviderServer(root);
+    const timeShiftPath = join(root, 'shift-time.mjs');
+    writeFileSync(timeShiftPath, [
+      'const realNow = Date.now.bind(Date);',
+      'Date.now = () => realNow() + 180_000;',
+    ].join('\n'));
+
+    try {
+      await waitForFile(provider.portPath);
+      const port = readFileSync(provider.portPath, 'utf8').trim();
+      writeFileSync(join(root, 'config.json'), JSON.stringify({
+        providers: [{
+          name: 'mock',
+          baseUrl: `http://127.0.0.1:${port}`,
+          apiKey: 'test',
+          protocol: 'anthropic',
+          models: ['claude-test'],
+        }],
+        primaryModel: 'mock/claude-test',
+        llmRetry: { maxRetries: 0, forbiddenRetryDelaysMs: [] },
+      }));
+      writeFileSync(join(root, 'models_dev_cache.json'), '{}');
+      const input = `${JSON.stringify({
+        type: 'prompt',
+        prompt: 'spawn a child that completes after the ad-hoc root turn is deferred',
+      })}\n`;
+
+      const outcome = await runCli(root, [
+        '--session-id', sessionId,
+        '--cwd', root,
+        '--input-format', 'stream-json',
+        '--output-format', 'stream-json',
+      ], input, {
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --import=${timeShiftPath}`.trim(),
+      });
+      const frames = outcome.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      const results = frames.filter(frame => frame.type === 'result');
+      const taskCompletions = frames.filter(frame => frame.type === 'task' && frame.subtype === 'completed');
+      const requestBodies = readFileSync(provider.requestLogPath, 'utf8')
+        .trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      const taskResultRequests = requestBodies.filter(body => JSON.stringify(body.messages || []).includes('<task-result id='));
+
+      expect(outcome).toMatchObject({ code: 0, signal: null });
+      expect(results).toHaveLength(2);
+      expect(results.every(frame => frame.vp_id === undefined && frame.vpId === undefined)).toBe(true);
       expect(results[0].result).toContain('root turn deferred while child runs');
       expect(taskCompletions).toHaveLength(1);
       expect(taskResultRequests).toHaveLength(1);

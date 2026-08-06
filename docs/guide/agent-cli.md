@@ -125,7 +125,7 @@ printf '%s\n' '{"type":"user","message":{"role":"user","content":"List the repos
 
 Stdout is JSONL. Events include Session/turn identity and may include text/thinking deltas, skill loads, tool start/result, todo updates, usage, turn stop, result, or error. If a tool needs human input, stream-json input is required so the caller can return an answer. Treat engine events as authoritative rather than reconstructing state from display text.
 
-If the ID names an existing formal Session (with persisted `session.json` and roster), the transport-neutral runner executes that Session and adds VP identity to streamed events. A new ID accepted by stream-json only scopes an ad-hoc CLI message history; it does not create `session.json`, a roster, or a Web product Session. ID validation is currently enforced on the stream-json path; text modes instead fail when the requested formal Session does not exist.
+If the ID names an existing formal Session (with persisted `session.json` and roster), the transport-neutral runner executes that Session and adds VP identity to streamed events. Per-turn VP selectors such as `targetVpId`, `targetVps`, `targets`, and `broadcast` are valid only on this formal-Session path and are checked against the persisted roster before provider dispatch. A new ID accepted by stream-json only scopes an ad-hoc CLI message history; it does not create `session.json`, a roster, or a Web product Session, so any VP selector is rejected as a terminal result for that input line while later JSONL prompts may continue. ID validation is currently enforced on the stream-json path; text modes instead fail when the requested formal Session does not exist.
 
 ## Diagnostics
 

@@ -899,6 +899,26 @@ async function runStreamJson(config, args) {
   let sessionRunner = null;
   let taskEventIntakeOpen = true;
   let hadError = false;
+  let singleEngineTail = Promise.resolve();
+
+  const loadStreamHistory = () => conversationStore.loadRecentBySession(sessionId, 20).map(message => ({
+    role: message.role,
+    content: message.content,
+    ...(message.toolCallId && { toolCallId: message.toolCallId }),
+    ...(message.toolCalls && { toolCalls: message.toolCalls }),
+  }));
+
+  // An ad-hoc stream-json conversation has exactly one Engine and no VP roster.
+  // Serialize both root turns and late task-result rescues on that same stable
+  // process owner so a completion cannot race another query or invent a VP id.
+  const runSingleEngineTurn = (turnOptions) => {
+    const turn = singleEngineTail.catch(() => {}).then(() => runStreamTurn({
+      engine,
+      ...turnOptions,
+    }));
+    singleEngineTail = turn;
+    return turn;
+  };
 
   const wakeTaskLifecycleWaiters = () => {
     if (taskLifecycleWaiters.size === 0) return;
@@ -909,11 +929,11 @@ async function runStreamJson(config, args) {
 
   const rescueTaskResult = async (context) => {
     const taskId = context?.task?.id;
-    if (!taskId || !context?.vpId || !context?.content || rescuedTaskIds.has(taskId) || !sessionRunner) return false;
+    if (!taskId || !context?.content || rescuedTaskIds.has(taskId)) return false;
+    if (sessionRunner && !context.vpId) return false;
     rescuedTaskIds.add(taskId);
     try {
-      const result = await runStreamSessionTurn({
-        runner: sessionRunner,
+      const common = {
         prompt: context.content,
         sessionId,
         workDir,
@@ -921,15 +941,26 @@ async function runStreamJson(config, args) {
         modelEffort: loaded.config.modelEffort || null,
         input,
         write,
-        internal: true,
         taskId,
-        meta: {
-          injectedBy: 'task_result',
-          routeTargetVpId: context.vpId,
-          threadId: context.threadId || 'main',
-        },
-        routingIntent: { targetVpIds: [context.vpId], explicit: true },
-      });
+      };
+      const result = sessionRunner
+        ? await runStreamSessionTurn({
+            runner: sessionRunner,
+            ...common,
+            internal: true,
+            meta: {
+              injectedBy: 'task_result',
+              routeTargetVpId: context.vpId,
+              threadId: context.threadId || 'main',
+            },
+            routingIntent: { targetVpIds: [context.vpId], explicit: true },
+          })
+        : await runSingleEngineTurn({
+            ...common,
+            messages: loadStreamHistory(),
+            threadId: context.threadId || 'main',
+            userAlreadyPersisted: true,
+          });
       hadError ||= result?.is_error === true;
       return true;
     } catch (error) {
@@ -1061,15 +1092,12 @@ async function runStreamJson(config, args) {
 
   const runPrompt = async (prompt, message = null) => {
     const routingIntent = normalizeStreamRoutingIntent(message);
-    const priorMessages = conversationStore.loadRecentBySession(sessionId, 20).map(message => ({
-      role: message.role,
-      content: message.content,
-      ...(message.toolCallId && { toolCallId: message.toolCallId }),
-      ...(message.toolCalls && { toolCalls: message.toolCalls }),
-    }));
+    if (routingIntent && !sessionRunner) {
+      throw new Error('stream-json VP selectors require an existing formal Session with a persisted roster');
+    }
     const turnOptions = {
       prompt,
-      messages: priorMessages,
+      messages: loadStreamHistory(),
       sessionId,
       workDir,
       model: loaded.config.model,
@@ -1081,7 +1109,7 @@ async function runStreamJson(config, args) {
     };
     return sessionRunner
       ? runStreamSessionTurn({ runner: sessionRunner, routingIntent, ...turnOptions })
-      : runStreamTurn({ engine, ...turnOptions });
+      : runSingleEngineTurn(turnOptions);
   };
 
   const recordResult = (result) => {
