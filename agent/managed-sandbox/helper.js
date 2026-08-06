@@ -161,6 +161,7 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
   db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = FULL;
+    PRAGMA busy_timeout = 5000;
     CREATE TABLE IF NOT EXISTS helper_state (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -234,6 +235,45 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
     write.run(`epoch:${epoch}`, digest);
   }
 
+  function activationIntent() {
+    const storedEpoch = db.prepare("SELECT value FROM helper_state WHERE key = 'activation_intent_epoch'").get()?.value;
+    const digest = db.prepare("SELECT value FROM helper_state WHERE key = 'activation_intent_digest'").get()?.value;
+    if (!storedEpoch && !digest) return null;
+    const epoch = Number(storedEpoch);
+    if (!Number.isSafeInteger(epoch) || epoch <= 0 || !digest) {
+      throw new Error('Sandbox Helper found invalid durable Host epoch activation intent');
+    }
+    return { epoch, digest };
+  }
+
+  function writeActivationIntent(epoch, digest) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const current = activeEpoch();
+      const pending = activationIntent();
+      if (current?.epoch === epoch) {
+        if (current.digest !== digest) throw new Error('Sandbox Helper rejected conflicting epoch activation');
+        db.exec('COMMIT');
+        return false;
+      }
+      if ((current && epoch < current.epoch) || (pending && pending.epoch > epoch)) {
+        throw new Error('Sandbox Helper rejected epoch rollback');
+      }
+      if (pending?.epoch === epoch && pending.digest !== digest) {
+        throw new Error('Sandbox Helper rejected conflicting epoch activation');
+      }
+      const write = db.prepare(`INSERT INTO helper_state(key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value`);
+      write.run('activation_intent_epoch', epoch);
+      write.run('activation_intent_digest', digest);
+      db.exec('COMMIT');
+      return true;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   function activateEpoch(operation) {
     validateOperation(operation, effectiveConfig, now());
     if (operation.action !== 'ACTIVATE_EPOCH') {
@@ -244,6 +284,17 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
     // digest. Per-request nonce/timestamps remain covered by the signature but
     // must not make an idempotent activation look like a conflicting epoch.
     const digest = operation.requestDigest;
+    let activationNeeded;
+    try {
+      activationNeeded = writeActivationIntent(epoch, digest);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    if (!activationNeeded) {
+      return Promise.resolve(buildAttestation(
+        operation, { success: true, activated: false }, effectiveConfig, now()
+      ));
+    }
     queuedActivations++;
     const activation = activationTail.then(async () => {
       try {
@@ -261,6 +312,10 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
           db.exec('BEGIN IMMEDIATE');
           try {
             writeActiveEpoch(epoch, digest);
+            const pending = activationIntent();
+            if (pending?.epoch === epoch && pending.digest === digest) {
+              db.prepare("DELETE FROM helper_state WHERE key IN ('activation_intent_epoch', 'activation_intent_digest')").run();
+            }
             db.exec('COMMIT');
           } catch (error) {
             db.exec('ROLLBACK');
@@ -309,32 +364,28 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
     validateOperation(operation, effectiveConfig, now());
     while (queuedActivations > 0) await activationTail;
     await acquireEpochLock();
-    const epoch = activeEpoch();
-    if (!epoch || operation.hostEpoch !== epoch.epoch) {
-      releaseEpochLock();
-      throw new Error('Sandbox Helper rejected an inactive Host epoch');
-    }
-    try {
-      assertAvailable(operation);
-    } catch (error) {
-      releaseEpochLock();
-      throw error;
-    }
     const requestDigest = digestOperation(operation);
-    const existing = db.prepare('SELECT * FROM helper_operations WHERE operation_id = ?').get(operation.operationId);
-    if (existing) {
-      releaseEpochLock();
-      if (existing.request_digest !== requestDigest) {
-        throw new Error('Sandbox Helper rejected operation ID reuse with a different request');
-      }
-      if (existing.status === 'succeeded' || existing.status === 'failed') {
-        return JSON.parse(existing.result_json);
-      }
-      throw new Error('Sandbox Helper operation is not safely replayable');
-    }
-
     db.exec('BEGIN IMMEDIATE');
     try {
+      const existing = db.prepare('SELECT * FROM helper_operations WHERE operation_id = ?').get(operation.operationId);
+      if (existing) {
+        if (existing.request_digest !== requestDigest) {
+          throw new Error('Sandbox Helper rejected operation ID reuse with a different request');
+        }
+        if (existing.status === 'succeeded' || existing.status === 'failed') {
+          db.exec('COMMIT');
+          releaseEpochLock();
+          return JSON.parse(existing.result_json);
+        }
+        throw new Error('Sandbox Helper operation is not safely replayable');
+      }
+      const epoch = activeEpoch();
+      const pending = activationIntent();
+      if (!epoch || operation.hostEpoch !== epoch.epoch
+        || (pending && operation.hostEpoch !== pending.epoch)) {
+        throw new Error('Sandbox Helper rejected an inactive Host epoch');
+      }
+      assertAvailable(operation);
       db.prepare(`INSERT INTO helper_operations
         (operation_id, sandbox_id, action, request_digest, host_epoch, status, updated_at)
         VALUES (?, ?, ?, ?, ?, 'in_progress', ?)`)

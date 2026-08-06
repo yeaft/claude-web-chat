@@ -242,7 +242,9 @@ export function getUserByUsername(username) {
       id: dbUser.id
     };
   }
-  // Fallback to CONFIG.users only when no authoritative database row exists.
+  // A finalized deletion remains authoritative after the users row is erased.
+  if (userDb.isDeletionTombstoned(username)) return null;
+  // Fallback to CONFIG.users only when no authoritative database state exists.
   return CONFIG.users.find(u => u.username === username) || null;
 }
 

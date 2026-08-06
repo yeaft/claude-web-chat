@@ -38,6 +38,14 @@ db.exec(`
     deletion_id TEXT UNIQUE
   );
 
+  -- Finalized deletion survives removal of the users row. This prevents a
+  -- configured credential from becoming authoritative again on restart.
+  CREATE TABLE IF NOT EXISTS user_deletion_tombstones (
+    username TEXT PRIMARY KEY,
+    deletion_id TEXT,
+    deleted_at INTEGER NOT NULL
+  );
+
   -- 会话表
   CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
@@ -831,6 +839,15 @@ export const stmts = {
 
   getUserByUsername: db.prepare(`
     SELECT * FROM users WHERE username = ?
+  `),
+
+  getUserDeletionTombstone: db.prepare(`
+    SELECT * FROM user_deletion_tombstones WHERE username = ?
+  `),
+
+  insertUserDeletionTombstone: db.prepare(`
+    INSERT OR IGNORE INTO user_deletion_tombstones (username, deletion_id, deleted_at)
+    VALUES (?, ?, ?)
   `),
 
   getUserByAgentSecret: db.prepare(`

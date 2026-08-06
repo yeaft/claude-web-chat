@@ -2,7 +2,10 @@ import { createHash, randomUUID, sign, verify } from 'crypto';
 import { request as httpsRequest } from 'https';
 import { sandboxDb } from './database.js';
 import { isSandboxAgentReady } from './sandbox-agent-auth.js';
-import { validateSandboxDeploymentConfig } from './sandbox-config.js';
+import {
+  validateSandboxCleanupConfig,
+  validateSandboxDeploymentConfig
+} from './sandbox-config.js';
 
 function canonicalEnvelope(envelope) {
   return JSON.stringify({
@@ -318,13 +321,17 @@ export function createSandboxReconciler({
   }
 
   async function tick(now = Date.now()) {
-    if (running || !config?.enabled) return;
+    if (running || !config) return;
     running = true;
     try {
       store.reconcileRuntimeState?.(now, config, { isAgentReady: isSandboxAgentReady });
       const operations = store.listPendingOperations(now);
-      if (!validateControllerConfig(config)) return;
-      await Promise.all(operations.map(operation => dispatch(operation).catch(error => {
+      const deploymentReady = validateControllerConfig(config);
+      const cleanupReady = validateSandboxCleanupConfig(config);
+      const dispatchable = operations.filter(operation => (
+        deploymentReady || (cleanupReady && operation.kind === 'remove')
+      ));
+      await Promise.all(dispatchable.map(operation => dispatch(operation).catch(error => {
         logger.warn(`[Sandbox] Controller dispatch failed for ${operation.id}: ${error.message}`);
       })));
     } finally {
@@ -333,7 +340,7 @@ export function createSandboxReconciler({
   }
 
   function start() {
-    if (!config?.enabled) return null;
+    if (!config) return null;
     const timer = setInterval(() => void tick(), config.reconcileIntervalMs || 5_000);
     timer.unref?.();
     void tick();

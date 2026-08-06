@@ -7,9 +7,20 @@ import { logout, verifyToken } from '../../server/auth/token.js';
 import { generateSessionKey } from '../../server/encryption.js';
 import { activeSessions, revokedTokens } from '../../server/auth/session-store.js';
 import { CONFIG, getUserByUsername } from '../../server/config.js';
-import { userDb } from '../../server/database.js';
+import db, { userDb } from '../../server/database.js';
 
 const createdUserIds = [];
+const configuredUsernames = [];
+const tombstoneUsernames = [];
+
+function configureUser(username) {
+  CONFIG.users.push({
+    username,
+    passwordHash: 'configured-password-hash',
+    email: `${username}@example.test`
+  });
+  configuredUsernames.push(username);
+}
 
 function createSsoOnlyUser(username, role = 'admin') {
   const existing = userDb.getByUsername(username);
@@ -40,6 +51,19 @@ describe('session token issuance', () => {
       const id = createdUserIds.pop();
       try { userDb.deleteUser(id); } catch {
         // ignore cleanup failures from already-deleted rows
+      }
+    }
+    while (configuredUsernames.length > 0) {
+      const username = configuredUsernames.pop();
+      const index = CONFIG.users.findIndex(candidate => candidate.username === username);
+      if (index !== -1) CONFIG.users.splice(index, 1);
+    }
+    while (tombstoneUsernames.length > 0) {
+      const username = tombstoneUsernames.pop();
+      try {
+        db.prepare('DELETE FROM user_deletion_tombstones WHERE username = ?').run(username);
+      } catch {
+        // The regression test runs once against the pre-tombstone schema.
       }
     }
     vi.useRealTimers();
@@ -94,6 +118,8 @@ describe('session token issuance', () => {
 
   it('never restores configured credentials when migration sees a deleted database user', () => {
     const user = createSsoOnlyUser('deleted-config-user');
+    db.prepare('DELETE FROM user_deletion_tombstones WHERE username = ?').run(user.username);
+    tombstoneUsernames.push(user.username);
     userDb.beginDeletion(user.id);
     const deleted = userDb.get(user.id);
     createdUserIds.splice(createdUserIds.indexOf(user.id), 1);
@@ -112,6 +138,26 @@ describe('session token issuance', () => {
     });
 
     userDb.deleteUser(user.id, { requirePending: true });
+  });
+
+  it('keeps a finalized configured-user deletion authoritative for fallback and startup migration', () => {
+    const username = 'finalized-config-user';
+    configureUser(username);
+    tombstoneUsernames.push(username);
+    const user = userDb.migrateUser(
+      username, 'configured-password-hash', `${username}@example.test`, 'admin'
+    );
+    createdUserIds.push(user.id);
+    userDb.beginDeletion(user.id);
+    expect(userDb.deleteUser(user.id, { requirePending: true })).toBe(true);
+    createdUserIds.splice(createdUserIds.indexOf(user.id), 1);
+
+    expect(userDb.getByUsername(username)).toBeUndefined();
+    expect(getUserByUsername(username)).toBeNull();
+    expect(userDb.migrateUser(
+      username, 'configured-password-hash', `${username}@example.test`, 'admin'
+    )).toBeNull();
+    expect(userDb.getByUsername(username)).toBeUndefined();
   });
 
   it('preserves SSO-only user roles when verifying a freshly issued JWT', async () => {

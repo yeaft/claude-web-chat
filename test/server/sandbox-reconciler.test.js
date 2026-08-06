@@ -233,6 +233,73 @@ describe('sandbox reconciler', () => {
     );
   });
 
+  it('starts cleanup recovery while disabled and dispatches only persisted Removes', async () => {
+    const removeOperation = {
+      ...operation,
+      id: 'op-remove-disabled',
+      kind: 'remove',
+      desired_state: 'removed'
+    };
+    const store = {
+      reconcileRuntimeState: vi.fn(),
+      listPendingOperations: vi.fn(() => [operation, removeOperation]),
+      applyControllerResult: vi.fn()
+    };
+    const fetchImpl = vi.fn(async (url, request) => ({
+      ok: true,
+      json: async () => signedResult(JSON.parse(request.body), {
+        absenceProof: { container: true, credential: true, storage: true }
+      })
+    }));
+    const reconciler = createSandboxReconciler({
+      config: config({ enabled: false }), store, fetchImpl
+    });
+
+    const timer = reconciler.start();
+    try {
+      expect(timer).not.toBeNull();
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+      expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({
+        operationId: 'op-remove-disabled',
+        action: 'remove'
+      });
+      expect(store.applyControllerResult).toHaveBeenCalledOnce();
+    } finally {
+      if (timer) clearInterval(timer);
+    }
+  });
+
+  it('dispatches persisted Removes with temporarily invalid deployment config without admitting creates', async () => {
+    const removeOperation = {
+      ...operation,
+      id: 'op-remove-invalid-config',
+      kind: 'remove',
+      desired_state: 'removed'
+    };
+    const store = {
+      reconcileRuntimeState: vi.fn(),
+      listPendingOperations: vi.fn(() => [operation, removeOperation]),
+      applyControllerResult: vi.fn()
+    };
+    const fetchImpl = vi.fn(async (url, request) => ({
+      ok: true,
+      json: async () => signedResult(JSON.parse(request.body), {
+        absenceProof: { container: true, credential: true, storage: true }
+      })
+    }));
+
+    await createSandboxReconciler({
+      config: config({ imageDigest: '' }), store, fetchImpl
+    }).tick(4321);
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({
+      operationId: 'op-remove-invalid-config',
+      action: 'remove'
+    });
+    expect(store.applyControllerResult).toHaveBeenCalledOnce();
+  });
+
   it('does not dispatch an operation invalidated by runtime reconciliation', async () => {
     let invalidated = false;
     const store = {

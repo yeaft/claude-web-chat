@@ -368,6 +368,53 @@ describe('managed Sandbox Helper authorization boundary', () => {
     second.close();
   });
 
+  it('durably fences a third Helper once cross-process activation is requested', async () => {
+    vi.useFakeTimers();
+    let finishRunning;
+    const firstExecutor = { execute: vi.fn(() => new Promise(resolve => { finishRunning = resolve; })) };
+    const { activated, instance: first, root } = helper(firstExecutor);
+    await activated;
+    const config = {
+      hostId: 'dedicated-1', hostEpoch: 1, imageDigest: 'sha256:fixed',
+      operationSigningPublicKey: publicKey, attestationSigningPrivateKey: attestationPrivateKey,
+      journalPath: join(root, 'helper.db')
+    };
+    const second = createSandboxHelper({
+      config,
+      executor: { execute: vi.fn(async () => successfulRuntimeResult()) }
+    });
+    const thirdExecutor = { execute: vi.fn(async () => successfulRuntimeResult()) };
+    const third = createSandboxHelper({ config, executor: thirdExecutor });
+
+    const running = first.execute(signedOperation({ operationId: 'intent-running', nonce: 'intent-running' }));
+    await Promise.resolve();
+    const activation = second.activateEpoch(signedActivation({
+      operationId: 'intent-activate', hostEpoch: 2,
+      requestDigest: 'intent-activation-digest', nonce: 'intent-activation-nonce'
+    }));
+    await vi.advanceTimersByTimeAsync(5);
+    const lateExecution = third.execute(signedOperation({
+      operationId: 'intent-late', nonce: 'intent-late'
+    })).then(value => ({ status: 'fulfilled', value }), reason => ({ status: 'rejected', reason }));
+    await vi.advanceTimersByTimeAsync(5);
+
+    finishRunning(successfulRuntimeResult());
+    await running;
+    await vi.advanceTimersByTimeAsync(10);
+    const [activationOutcome, lateOutcome] = await Promise.all([activation, lateExecution]);
+    const lateWasAdmitted = thirdExecutor.execute.mock.calls.length > 0;
+
+    first.close();
+    second.close();
+    third.close();
+    vi.useRealTimers();
+    expect(activationOutcome).toMatchObject({ success: true, activated: true });
+    expect(lateOutcome).toMatchObject({
+      status: 'rejected', reason: expect.objectContaining({ message: expect.stringContaining('inactive Host epoch') })
+    });
+    expect(lateWasAdmitted).toBe(false);
+  });
+
   it('blocks new executions once activation is pending', async () => {
     let finishFirst;
     const executor = { execute: vi.fn(operation => operation.operationId === 'running'

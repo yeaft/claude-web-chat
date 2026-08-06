@@ -67,6 +67,7 @@ export const userDb = {
   },
 
   migrateUser(username, passwordHash, email, role = 'admin') {
+    if (this.isDeletionTombstoned(username)) return null;
     const existing = stmts.getUserByUsername.get(username);
     if (existing) {
       if ((existing.deletion_state && existing.deletion_state !== 'active') || existing.password_hash) {
@@ -85,6 +86,10 @@ export const userDb = {
 
   getByUsername(username) {
     return stmts.getUserByUsername.get(username);
+  },
+
+  isDeletionTombstoned(username) {
+    return stmts.getUserDeletionTombstone.get(username) !== undefined;
   },
 
   getUserByAgentSecret(secret) {
@@ -279,6 +284,9 @@ export const userDb = {
       stmts.deleteCustomExpertRolesForUser.run(id);
       stmts.deleteInvitationsCreatedBy.run(id);
       stmts.clearInvitationUsedBy.run(id);
+      if (requirePending) {
+        stmts.insertUserDeletionTombstone.run(user.username, user.deletion_id, Date.now());
+      }
       const result = stmts.deleteUserById.run(id);
       return result.changes > 0;
     });
