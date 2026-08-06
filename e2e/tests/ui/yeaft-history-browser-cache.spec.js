@@ -192,15 +192,9 @@ test('keeps at most the newest 500 complete turns', async ({ page }) => {
       agentId: 'agent-turn-limit',
       sessionId: 'session-turn-limit',
       rows,
-      limits: {
-        ...cache.YEAFT_HISTORY_BROWSER_CACHE_LIMITS,
-        maxRowsPerSession: 10_000,
-        maxBytesPerSession: 32 * 1024 * 1024,
-      },
     });
     const record = await cache.readYeaftHistoryBrowserCache({
       fence, agentId: 'agent-turn-limit', sessionId: 'session-turn-limit',
-      limits: { ...cache.YEAFT_HISTORY_BROWSER_CACHE_LIMITS, maxAgeMs: Number.MAX_SAFE_INTEGER },
     });
     return {
       written,
@@ -291,8 +285,6 @@ test('persists projections and completes cache lifecycle transactions', async ({
       sessionId: 'session-a',
       rows,
       historyState: { oldestSeq: 2, latestSeq: 2, hasMore: true },
-      // One complete turn can exceed the row budget; it must remain atomic.
-      limits: { ...cache.YEAFT_HISTORY_BROWSER_CACHE_LIMITS, maxRowsPerSession: 2 },
     });
     const record = await cache.readYeaftHistoryBrowserCache({
       fence, agentId: 'agent-a', sessionId: 'session-a',
@@ -346,14 +338,14 @@ test('persists projections and completes cache lifecycle transactions', async ({
   expect(removedOnLogout).toBeNull();
   expect(await readPhysicalRecords(page)).toEqual([]);
 
-  const expiredRead = await page.evaluate(async () => {
+  const retainedWithoutAgeExpiry = await page.evaluate(async () => {
     const cache = window.__historyCache;
     const fence = cache.bindYeaftHistoryBrowserOwner('owner-c');
     await cache.writeYeaftHistoryBrowserCache({
       fence,
       agentId: 'agent-c',
       sessionId: 'session-c',
-      rows: [{ id: 'm0004', messageId: 'm0004', seq: 4, type: 'user', content: 'expired', sessionId: 'session-c', isHistory: true }],
+      rows: [{ id: 'm0004', messageId: 'm0004', seq: 4, type: 'user', content: 'retained', sessionId: 'session-c', isHistory: true }],
     });
     const request = indexedDB.open('yeaft-history-cache', 4);
     const db = await new Promise((resolveOpen, reject) => {
@@ -368,7 +360,7 @@ test('persists projections and completes cache lifecycle transactions', async ({
       recordRequest.onsuccess = () => resolveRecord(recordRequest.result);
       recordRequest.onerror = () => reject(recordRequest.error);
     });
-    record.lastAccessed = Date.now() - (31 * 24 * 60 * 60 * 1000);
+    record.lastAccessed = Date.now() - (365 * 24 * 60 * 60 * 1000);
     store.put(record);
     await new Promise((resolveTransaction, reject) => {
       transaction.oncomplete = resolveTransaction;
@@ -380,8 +372,10 @@ test('persists projections and completes cache lifecycle transactions', async ({
       fence, agentId: 'agent-c', sessionId: 'session-c',
     });
   });
-  expect(expiredRead).toBeNull();
-  expect(await readPhysicalRecords(page)).toEqual([]);
+  expect(retainedWithoutAgeExpiry).toMatchObject({
+    ownerId: 'owner-c', sessionId: 'session-c', turnCount: 1,
+  });
+  expect(await readPhysicalRecords(page)).toHaveLength(1);
 
   const sessionDeleteOrder = await page.evaluate(async () => {
     const cache = window.__historyCache;
@@ -417,7 +411,9 @@ test('persists projections and completes cache lifecycle transactions', async ({
     order: ['delete-started', 'crud-resolved'],
     result: expect.objectContaining({ ok: true, op: 'delete', sessionId: 'session-delete' }),
   });
-  expect(await readPhysicalRecords(page)).toEqual([]);
+  expect(await readPhysicalRecords(page)).toEqual([
+    expect.objectContaining({ ownerId: 'owner-c', sessionId: 'session-c', turnCount: 1 }),
+  ]);
 
   const cleanupFailure = await page.evaluate(async () => {
     const cache = window.__historyCache;
@@ -444,7 +440,7 @@ test('persists projections and completes cache lifecycle transactions', async ({
     }
   });
   expect(cleanupFailure).toMatchObject({ rejected: true });
-  expect(await readPhysicalRecords(page)).toHaveLength(1);
+  expect(await readPhysicalRecords(page)).toHaveLength(2);
 
   const failedSessionDelete = await page.evaluate(async () => {
     const cache = window.__historyCache;

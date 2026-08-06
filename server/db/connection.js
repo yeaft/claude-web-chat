@@ -32,7 +32,18 @@ db.exec(`
     username TEXT UNIQUE NOT NULL,
     display_name TEXT,
     created_at INTEGER NOT NULL,
-    last_login_at INTEGER
+    last_login_at INTEGER,
+    deletion_state TEXT NOT NULL DEFAULT 'active',
+    deletion_requested_at INTEGER,
+    deletion_id TEXT UNIQUE
+  );
+
+  -- Finalized deletion survives removal of the users row. This prevents a
+  -- configured credential from becoming authoritative again on restart.
+  CREATE TABLE IF NOT EXISTS user_deletion_tombstones (
+    username TEXT PRIMARY KEY,
+    deletion_id TEXT,
+    deleted_at INTEGER NOT NULL
   );
 
   -- 会话表
@@ -141,6 +152,158 @@ db.exec(`
   -- concurrent reads continue during the build; writers will block briefly.
   CREATE INDEX IF NOT EXISTS idx_messages_session_role_id ON messages(session_id, role, id DESC);
   CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date);
+
+  -- Managed Sandbox control-plane state. Runtime resources are deliberately
+  -- not created on this mixed-use Server Host; qualified Controllers report
+  -- Host capacity separately.
+  CREATE TABLE IF NOT EXISTS sandbox_hosts (
+    id TEXT PRIMARY KEY,
+    epoch INTEGER NOT NULL,
+    qualified INTEGER NOT NULL DEFAULT 0,
+    controller_healthy INTEGER NOT NULL DEFAULT 0,
+    helper_healthy INTEGER NOT NULL DEFAULT 0,
+    runtime_healthy INTEGER NOT NULL DEFAULT 0,
+    quota_healthy INTEGER NOT NULL DEFAULT 0,
+    network_healthy INTEGER NOT NULL DEFAULT 0,
+    image_digest TEXT NOT NULL,
+    cpu_millis_total INTEGER NOT NULL,
+    memory_mib_total INTEGER NOT NULL,
+    memory_mib_available INTEGER NOT NULL,
+    disk_gib_total INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS sandbox_host_attestations (
+    nonce TEXT PRIMARY KEY,
+    host_id TEXT NOT NULL REFERENCES sandbox_hosts(id) ON DELETE CASCADE,
+    epoch INTEGER NOT NULL,
+    observed_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
+  -- Controller boot identity is only a change detector. The Server owns this
+  -- durable monotonic fence and its exact activation identity.
+  CREATE TABLE IF NOT EXISTS sandbox_host_epochs (
+    host_id TEXT PRIMARY KEY REFERENCES sandbox_hosts(id) ON DELETE CASCADE,
+    source_epoch TEXT NOT NULL,
+    epoch INTEGER NOT NULL CHECK(epoch >= 1),
+    activation_digest TEXT,
+    activated_at INTEGER,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sandbox_host_attestations_host
+    ON sandbox_host_attestations(host_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS sandbox_host_audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    error_code TEXT,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sandbox_host_audit_created
+    ON sandbox_host_audit_events(host_id, created_at DESC, id DESC);
+
+  CREATE TABLE IF NOT EXISTS sandbox_entitlements (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS sandbox_entitlement_audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    actor_username TEXT NOT NULL,
+    enabled INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sandbox_entitlement_audit_user_created
+    ON sandbox_entitlement_audit_events(user_id, created_at DESC, id DESC);
+
+  CREATE TABLE IF NOT EXISTS sandboxes (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    host_id TEXT NOT NULL REFERENCES sandbox_hosts(id) ON DELETE RESTRICT,
+    host_epoch INTEGER NOT NULL,
+    agent_name TEXT NOT NULL,
+    size_id TEXT NOT NULL,
+    cpu_millis INTEGER NOT NULL,
+    memory_mib INTEGER NOT NULL,
+    disk_gib INTEGER NOT NULL,
+    desired_state TEXT NOT NULL,
+    observed_state TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 1,
+    instance_id TEXT NOT NULL,
+    image_digest TEXT NOT NULL,
+    reservation_held INTEGER NOT NULL DEFAULT 1,
+    last_error_code TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    removed_at INTEGER
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_sandboxes_active_user
+    ON sandboxes(user_id) WHERE reservation_held = 1;
+  CREATE INDEX IF NOT EXISTS idx_sandboxes_host_reservation
+    ON sandboxes(host_id, reservation_held);
+
+  CREATE TABLE IF NOT EXISTS sandbox_operations (
+    id TEXT PRIMARY KEY,
+    sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    idempotency_key TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    host_epoch INTEGER NOT NULL,
+    deadline_at INTEGER NOT NULL,
+    error_code TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(user_id, idempotency_key)
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_sandbox_operations_active
+    ON sandbox_operations(sandbox_id)
+    WHERE status IN ('pending', 'running');
+
+  CREATE TABLE IF NOT EXISTS sandbox_credentials (
+    id TEXT PRIMARY KEY,
+    sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
+    instance_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    image_digest TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    secret_hash TEXT NOT NULL,
+    expires_at INTEGER,
+    consumed_at INTEGER,
+    revoked_at INTEGER,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS sandbox_audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    operation_id TEXT,
+    event_type TEXT NOT NULL,
+    actor_kind TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    host_epoch INTEGER NOT NULL,
+    outcome TEXT NOT NULL,
+    error_code TEXT,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sandbox_audit_sandbox_created
+    ON sandbox_audit_events(sandbox_id, created_at, id);
 `);
 
 // 数据库迁移 - 添加缺失的列
@@ -194,7 +357,11 @@ const migrations = [
   `ALTER TABLE daily_stats ADD COLUMN output_tokens INTEGER DEFAULT 0`,
   `ALTER TABLE daily_stats ADD COLUMN cache_read_tokens INTEGER DEFAULT 0`,
   `ALTER TABLE daily_stats ADD COLUMN cache_write_tokens INTEGER DEFAULT 0`,
-  `ALTER TABLE daily_stats ADD COLUMN total_tokens INTEGER DEFAULT 0`
+  `ALTER TABLE daily_stats ADD COLUMN total_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE sandbox_hosts ADD COLUMN memory_mib_available INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE users ADD COLUMN deletion_state TEXT NOT NULL DEFAULT 'active'`,
+  `ALTER TABLE users ADD COLUMN deletion_requested_at INTEGER`,
+  `ALTER TABLE users ADD COLUMN deletion_id TEXT`
 ];
 
 // Yeaft sessions table — server-side persistence so the unified sidebar
@@ -356,6 +523,165 @@ for (const migration of migrations) {
   }
 }
 
+// One-time fail-closed migration from the PR's opaque TEXT Host epochs. SQLite
+// does not change existing column affinity for CREATE TABLE IF NOT EXISTS, so
+// normalize every live fence explicitly and seed the Server-owned allocator.
+const unmigratedSandboxHosts = db.prepare(`
+  SELECT h.id, h.epoch FROM sandbox_hosts h
+  LEFT JOIN sandbox_host_epochs e ON e.host_id = h.id
+  WHERE e.host_id IS NULL
+`).all();
+for (const host of unmigratedSandboxHosts) {
+  const values = [host.epoch];
+  for (const row of db.prepare('SELECT host_epoch AS epoch FROM sandboxes WHERE host_id = ?').all(host.id)) {
+    values.push(row.epoch);
+  }
+  for (const row of db.prepare(`
+    SELECT o.host_epoch AS epoch FROM sandbox_operations o
+    JOIN sandboxes s ON s.id = o.sandbox_id WHERE s.host_id = ?
+  `).all(host.id)) values.push(row.epoch);
+  const observed = values.map(value => {
+    const numeric = Number(value);
+    if (Number.isSafeInteger(numeric) && numeric >= 1) return numeric;
+    const match = String(value || '').match(/(\d+)$/);
+    return match ? Number(match[1]) : 0;
+  }).filter(value => Number.isSafeInteger(value) && value >= 1);
+  const epoch = Math.max(0, ...observed) + 1;
+  const now = Date.now();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare('UPDATE sandbox_hosts SET epoch = ? WHERE id = ?').run(epoch, host.id);
+    db.prepare('UPDATE sandboxes SET host_epoch = ? WHERE host_id = ?').run(epoch, host.id);
+    db.prepare(`
+      UPDATE sandbox_operations SET host_epoch = ?
+      WHERE sandbox_id IN (SELECT id FROM sandboxes WHERE host_id = ?)
+    `).run(epoch, host.id);
+    db.prepare(`
+      UPDATE sandbox_audit_events SET host_epoch = ?
+      WHERE sandbox_id IN (SELECT id FROM sandboxes WHERE host_id = ?)
+    `).run(epoch, host.id);
+    db.prepare('UPDATE sandbox_host_attestations SET epoch = ? WHERE host_id = ?').run(epoch, host.id);
+    db.prepare('UPDATE sandbox_host_audit_events SET epoch = ? WHERE host_id = ?').run(epoch, host.id);
+    db.prepare(`
+      INSERT INTO sandbox_host_epochs
+        (host_id, source_epoch, epoch, activation_digest, activated_at, updated_at)
+      VALUES (?, ?, ?, NULL, NULL, ?)
+    `).run(host.id, `migrated:${String(host.epoch)}`, epoch, now);
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch {}
+    throw error;
+  }
+}
+
+// SQLite keeps the affinity from the original CREATE TABLE. Rebuild legacy
+// sandbox tables so epoch values are stored and compared as integers, rather
+// than merely writing numeric-looking values into TEXT-affinity columns.
+const sandboxEpochTableRebuilds = [
+  {
+    table: 'sandbox_hosts', column: 'epoch',
+    create: `CREATE TABLE sandbox_hosts (
+      id TEXT PRIMARY KEY, epoch INTEGER NOT NULL, qualified INTEGER NOT NULL DEFAULT 0,
+      controller_healthy INTEGER NOT NULL DEFAULT 0, helper_healthy INTEGER NOT NULL DEFAULT 0,
+      runtime_healthy INTEGER NOT NULL DEFAULT 0, quota_healthy INTEGER NOT NULL DEFAULT 0,
+      network_healthy INTEGER NOT NULL DEFAULT 0, image_digest TEXT NOT NULL,
+      cpu_millis_total INTEGER NOT NULL, memory_mib_total INTEGER NOT NULL,
+      memory_mib_available INTEGER NOT NULL, disk_gib_total INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    )`,
+    columns: 'id, epoch, qualified, controller_healthy, helper_healthy, runtime_healthy, quota_healthy, network_healthy, image_digest, cpu_millis_total, memory_mib_total, memory_mib_available, disk_gib_total, updated_at',
+    select: 'id, CAST(epoch AS INTEGER), qualified, controller_healthy, helper_healthy, runtime_healthy, quota_healthy, network_healthy, image_digest, cpu_millis_total, memory_mib_total, memory_mib_available, disk_gib_total, updated_at',
+    indexes: ['CREATE INDEX IF NOT EXISTS idx_sandboxes_host_reservation ON sandboxes(host_id, reservation_held)']
+  },
+  {
+    table: 'sandbox_host_attestations', column: 'epoch',
+    create: `CREATE TABLE sandbox_host_attestations (
+      nonce TEXT PRIMARY KEY, host_id TEXT NOT NULL REFERENCES sandbox_hosts(id) ON DELETE CASCADE,
+      epoch INTEGER NOT NULL, observed_at INTEGER NOT NULL, created_at INTEGER NOT NULL
+    )`,
+    columns: 'nonce, host_id, epoch, observed_at, created_at',
+    select: 'nonce, host_id, CAST(epoch AS INTEGER), observed_at, created_at',
+    indexes: ['CREATE INDEX IF NOT EXISTS idx_sandbox_host_attestations_host ON sandbox_host_attestations(host_id, created_at DESC)']
+  },
+  {
+    table: 'sandbox_host_audit_events', column: 'epoch',
+    create: `CREATE TABLE sandbox_host_audit_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, host_id TEXT NOT NULL, epoch INTEGER NOT NULL,
+      event_type TEXT NOT NULL, outcome TEXT NOT NULL, error_code TEXT, created_at INTEGER NOT NULL
+    )`,
+    columns: 'id, host_id, epoch, event_type, outcome, error_code, created_at',
+    select: 'id, host_id, CAST(epoch AS INTEGER), event_type, outcome, error_code, created_at',
+    indexes: ['CREATE INDEX IF NOT EXISTS idx_sandbox_host_audit_created ON sandbox_host_audit_events(host_id, created_at DESC, id DESC)']
+  },
+  {
+    table: 'sandboxes', column: 'host_epoch',
+    create: `CREATE TABLE sandboxes (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      host_id TEXT NOT NULL REFERENCES sandbox_hosts(id) ON DELETE RESTRICT, host_epoch INTEGER NOT NULL,
+      agent_name TEXT NOT NULL, size_id TEXT NOT NULL, cpu_millis INTEGER NOT NULL,
+      memory_mib INTEGER NOT NULL, disk_gib INTEGER NOT NULL, desired_state TEXT NOT NULL,
+      observed_state TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1, instance_id TEXT NOT NULL,
+      image_digest TEXT NOT NULL, reservation_held INTEGER NOT NULL DEFAULT 1, last_error_code TEXT,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, removed_at INTEGER
+    )`,
+    columns: 'id, user_id, host_id, host_epoch, agent_name, size_id, cpu_millis, memory_mib, disk_gib, desired_state, observed_state, generation, instance_id, image_digest, reservation_held, last_error_code, created_at, updated_at, removed_at',
+    select: 'id, user_id, host_id, CAST(host_epoch AS INTEGER), agent_name, size_id, cpu_millis, memory_mib, disk_gib, desired_state, observed_state, generation, instance_id, image_digest, reservation_held, last_error_code, created_at, updated_at, removed_at',
+    indexes: [
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_sandboxes_active_user ON sandboxes(user_id) WHERE reservation_held = 1',
+      'CREATE INDEX IF NOT EXISTS idx_sandboxes_host_reservation ON sandboxes(host_id, reservation_held)'
+    ]
+  },
+  {
+    table: 'sandbox_operations', column: 'host_epoch',
+    create: `CREATE TABLE sandbox_operations (
+      id TEXT PRIMARY KEY, sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, idempotency_key TEXT NOT NULL,
+      request_digest TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, stage TEXT NOT NULL,
+      generation INTEGER NOT NULL, host_epoch INTEGER NOT NULL, deadline_at INTEGER NOT NULL,
+      error_code TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      UNIQUE(user_id, idempotency_key)
+    )`,
+    columns: 'id, sandbox_id, user_id, idempotency_key, request_digest, kind, status, stage, generation, host_epoch, deadline_at, error_code, created_at, updated_at',
+    select: 'id, sandbox_id, user_id, idempotency_key, request_digest, kind, status, stage, generation, CAST(host_epoch AS INTEGER), deadline_at, error_code, created_at, updated_at',
+    indexes: ["CREATE UNIQUE INDEX IF NOT EXISTS idx_sandbox_operations_active ON sandbox_operations(sandbox_id) WHERE status IN ('pending', 'running')"]
+  },
+  {
+    table: 'sandbox_audit_events', column: 'host_epoch',
+    create: `CREATE TABLE sandbox_audit_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, operation_id TEXT,
+      event_type TEXT NOT NULL, actor_kind TEXT NOT NULL, generation INTEGER NOT NULL,
+      host_epoch INTEGER NOT NULL, outcome TEXT NOT NULL, error_code TEXT, created_at INTEGER NOT NULL
+    )`,
+    columns: 'id, sandbox_id, user_id, operation_id, event_type, actor_kind, generation, host_epoch, outcome, error_code, created_at',
+    select: 'id, sandbox_id, user_id, operation_id, event_type, actor_kind, generation, CAST(host_epoch AS INTEGER), outcome, error_code, created_at',
+    indexes: ['CREATE INDEX IF NOT EXISTS idx_sandbox_audit_sandbox_created ON sandbox_audit_events(sandbox_id, created_at, id)']
+  }
+];
+
+for (const rebuild of sandboxEpochTableRebuilds) {
+  const affinity = db.prepare(`PRAGMA table_info(${rebuild.table})`).all()
+    .find(column => column.name === rebuild.column)?.type?.toUpperCase();
+  if (affinity === 'INTEGER') continue;
+  const legacyTable = `${rebuild.table}_legacy_epoch`;
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec('PRAGMA legacy_alter_table = ON');
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec(`ALTER TABLE ${rebuild.table} RENAME TO ${legacyTable}`);
+    db.exec(rebuild.create);
+    db.exec(`INSERT INTO ${rebuild.table} (${rebuild.columns}) SELECT ${rebuild.select} FROM ${legacyTable}`);
+    db.exec(`DROP TABLE ${legacyTable}`);
+    for (const index of rebuild.indexes) db.exec(index);
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch {}
+    throw error;
+  } finally {
+    db.exec('PRAGMA legacy_alter_table = OFF');
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
 // User identities table (multi-provider SSO + account binding)
 // One user can have multiple identities (microsoft / github / google / wechat / alipay).
 // UNIQUE(provider, subject) enforces "this provider account is bound to one user only".
@@ -442,7 +768,8 @@ try { db.exec(customExpertTables); } catch (e) { /* tables already exist */ }
 const postMigrationIndexes = [
   `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_users_agent_secret ON users(agent_secret)`,
-  `CREATE INDEX IF NOT EXISTS idx_users_aad_oid ON users(aad_oid)`
+  `CREATE INDEX IF NOT EXISTS idx_users_aad_oid ON users(aad_oid)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_deletion_id ON users(deletion_id)`
 ];
 // Time the post-migration index pass so the operational signal lands in the
 // deploy log on first startup after composite-index addition — a multi-second
@@ -514,8 +841,17 @@ export const stmts = {
     SELECT * FROM users WHERE username = ?
   `),
 
+  getUserDeletionTombstone: db.prepare(`
+    SELECT * FROM user_deletion_tombstones WHERE username = ?
+  `),
+
+  insertUserDeletionTombstone: db.prepare(`
+    INSERT OR IGNORE INTO user_deletion_tombstones (username, deletion_id, deleted_at)
+    VALUES (?, ?, ?)
+  `),
+
   getUserByAgentSecret: db.prepare(`
-    SELECT * FROM users WHERE agent_secret = ?
+    SELECT * FROM users WHERE agent_secret = ? AND deletion_state = 'active'
   `),
 
   getAllUsers: db.prepare(`
@@ -979,6 +1315,11 @@ export const stmts = {
   `),
   deleteCustomExpertRolesForUser: db.prepare(`
     DELETE FROM custom_expert_roles WHERE user_id = ?
+  `),
+  // Remove rows from the retired managed-Sandbox control plane before the user.
+  // Child operations, credentials, and audit rows cascade from sandboxes.
+  deleteLegacySandboxesForUser: db.prepare(`
+    DELETE FROM sandboxes WHERE user_id = ?
   `),
   // Invitations: keep history but null-out the FK so it doesn't block deletion.
   // (created_by is NOT NULL, so for invitations the user created we just delete them.)

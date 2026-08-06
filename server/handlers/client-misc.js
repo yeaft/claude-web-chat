@@ -3,23 +3,19 @@ import {
   sendToWebClient, forwardToAgent, broadcastAgentList
 } from '../ws-utils.js';
 
-// v1.0.342 is the first release with the bootstrap -> detached runner handoff.
-// Older Windows Agents can lose their updater to PM2 tree-kill before npm runs.
-export const MIN_SAFE_REMOTE_UPGRADE_VERSION = '1.0.342';
+// Only Agents that explicitly advertise the package-replacement-safe updater
+// may receive remote upgrade commands. Version thresholds are insufficient:
+// builds without this capability may still inherit the installed package cwd.
+export const SAFE_REMOTE_UPGRADE_CAPABILITY = 'remote_upgrade_safe';
 
-function parseVersion(version) {
-  const match = String(version || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)$/u);
-  return match ? match.slice(1).map(Number) : null;
-}
-
-export function requiresManualUpgradeBridge(version) {
-  const current = parseVersion(version);
-  const minimum = parseVersion(MIN_SAFE_REMOTE_UPGRADE_VERSION);
-  if (!current || !minimum) return true;
-  for (let index = 0; index < minimum.length; index++) {
-    if (current[index] !== minimum[index]) return current[index] < minimum[index];
-  }
-  return false;
+export function requiresManualUpgradeBridge(capabilities, platform = null) {
+  if (Array.isArray(capabilities) && capabilities.includes(SAFE_REMOTE_UPGRADE_CAPABILITY)) return false;
+  const normalizedPlatform = typeof platform === 'string' ? platform.trim().toLowerCase() : '';
+  if (normalizedPlatform) return normalizedPlatform === 'win32';
+  // v1.0.373 predates explicit platform metadata but advertises this Linux-only
+  // capability, so it is safe to distinguish from the affected Windows build.
+  if (Array.isArray(capabilities) && capabilities.includes('work_item_attachments')) return false;
+  return true;
 }
 
 /**
@@ -46,15 +42,15 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       if (!upgradeAgentId) break;
       if (!await checkAgentAccess(upgradeAgentId)) break;
       const upgradeAgent = agents.get(upgradeAgentId);
-      if (requiresManualUpgradeBridge(upgradeAgent?.version)) {
+      if (requiresManualUpgradeBridge(upgradeAgent?.capabilities, upgradeAgent?.platform)) {
         await sendToWebClient(client, {
           type: 'upgrade_agent_ack',
           agentId: upgradeAgentId,
           success: false,
           reason: 'manual_upgrade_required',
           version: upgradeAgent?.version || null,
-          minimumVersion: MIN_SAFE_REMOTE_UPGRADE_VERSION,
-          error: `Agent ${upgradeAgent?.version || 'unknown'} predates the safe remote-upgrade handoff; manually install ${MIN_SAFE_REMOTE_UPGRADE_VERSION} or newer once`,
+          requiredCapability: SAFE_REMOTE_UPGRADE_CAPABILITY,
+          error: `Agent ${upgradeAgent?.version || 'unknown'} does not advertise the safe remote-upgrade contract. First stop the selected Agent/service on that machine: if it runs under PM2 or another service manager, stop that exact instance there; if it runs in a foreground terminal, terminate that process. Confirm that process has exited, then run "npm install -g @yeaft/webchat-agent@latest --registry=https://pkg.yeaft.com/". Finally, restart the same Agent instance with its original configuration.`,
         });
         break;
       }

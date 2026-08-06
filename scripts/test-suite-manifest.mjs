@@ -19,6 +19,7 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/agent/yeaft/session-config.test.js',
   'test/agent/yeaft/session-recovery.test.js',
   'test/agent/yeaft/sessions/pre-flow.test.js',
+  'test/agent/yeaft/stdio-protocol.test.js',
   'test/agent/yeaft/task-result-reentry.test.js',
   'test/agent/yeaft/tasks/manager.test.js',
   'test/agent/yeaft/web-bridge-fast-history.test.js',
@@ -57,6 +58,16 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/web/yeaft-history-search-ui.test.js',
   'test/web/yeaft-page-setup.test.js',
   'test/web/turn-debug-eyes.test.js',
+]);
+
+export const SANDBOX_TEST_FILES = Object.freeze([
+  'test/agent/container-manager.test.js',
+  'test/web/sandbox-settings.test.js',
+]);
+
+export const REVIEWED_TEST_FILES = Object.freeze([
+  ...CORE_TEST_FILES,
+  ...SANDBOX_TEST_FILES,
 ]);
 
 export function normalizeTestPath(filePath) {

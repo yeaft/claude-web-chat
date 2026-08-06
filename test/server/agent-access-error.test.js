@@ -13,7 +13,7 @@ import { handleAgentOutput } from '../../server/handlers/agent-output.js';
 import { handleAgentConversation } from '../../server/handlers/agent-conversation.js';
 import { handleClientConversation } from '../../server/handlers/client-conversation.js';
 import {
-  MIN_SAFE_REMOTE_UPGRADE_VERSION,
+  SAFE_REMOTE_UPGRADE_CAPABILITY,
   handleClientMisc,
   requiresManualUpgradeBridge,
 } from '../../server/handlers/client-misc.js';
@@ -427,14 +427,17 @@ describe('resolveAgentAccessError', () => {
     ]);
   });
 
-  it('blocks legacy self-updaters before they can take the Agent offline', async () => {
-    expect(MIN_SAFE_REMOTE_UPGRADE_VERSION).toBe('1.0.342');
-    expect(requiresManualUpgradeBridge('1.0.337')).toBe(true);
-    expect(requiresManualUpgradeBridge('1.0.341')).toBe(true);
-    expect(requiresManualUpgradeBridge(null)).toBe(true);
-    expect(requiresManualUpgradeBridge('not-semver')).toBe(true);
-    expect(requiresManualUpgradeBridge('1.0.342')).toBe(false);
-    expect(requiresManualUpgradeBridge('v1.0.350')).toBe(false);
+  it('blocks Agents without the safe remote-upgrade capability before they can take the Agent offline', async () => {
+    expect(SAFE_REMOTE_UPGRADE_CAPABILITY).toBe('remote_upgrade_safe');
+    expect(requiresManualUpgradeBridge(undefined)).toBe(true);
+    expect(requiresManualUpgradeBridge([])).toBe(true);
+    expect(requiresManualUpgradeBridge(['plaintext-ok'])).toBe(true);
+    expect(requiresManualUpgradeBridge(['plaintext-ok'], 'win32')).toBe(true);
+    expect(requiresManualUpgradeBridge(['plaintext-ok', 'work_item_attachments'], 'win32')).toBe(true);
+    expect(requiresManualUpgradeBridge(['plaintext-ok'], 'linux')).toBe(false);
+    expect(requiresManualUpgradeBridge(['plaintext-ok'], 'darwin')).toBe(false);
+    expect(requiresManualUpgradeBridge(['plaintext-ok', 'work_item_attachments'])).toBe(false);
+    expect(requiresManualUpgradeBridge(['plaintext-ok', SAFE_REMOTE_UPGRADE_CAPABILITY])).toBe(false);
 
     const client = {
       encryptOutbound: false,
@@ -446,7 +449,8 @@ describe('resolveAgentAccessError', () => {
     };
     const legacyCommands = [];
     agents.set('agent-old', {
-      version: '1.0.337',
+      version: '1.0.369',
+      capabilities: ['plaintext-ok'],
       encryptOutbound: false,
       ws: { readyState: 1, send(payload) { legacyCommands.push(JSON.parse(payload)); } },
     });
@@ -457,18 +461,30 @@ describe('resolveAgentAccessError', () => {
     }, async () => true);
 
     expect(legacyCommands).toEqual([]);
-    expect(client.sent.at(-1)).toMatchObject({
+    const manualAck = client.sent.at(-1);
+    expect(manualAck).toMatchObject({
       type: 'upgrade_agent_ack',
       agentId: 'agent-old',
       success: false,
       reason: 'manual_upgrade_required',
-      version: '1.0.337',
-      minimumVersion: '1.0.342',
+      version: '1.0.369',
+      requiredCapability: SAFE_REMOTE_UPGRADE_CAPABILITY,
     });
+    expect(manualAck.error).toContain('PM2 or another service manager');
+    expect(manualAck.error).toContain('foreground terminal');
+    const stopIndex = manualAck.error.indexOf('First stop the selected Agent/service');
+    const exitIndex = manualAck.error.indexOf('Confirm that process has exited');
+    const installIndex = manualAck.error.indexOf('npm install -g @yeaft/webchat-agent@latest --registry=https://pkg.yeaft.com/');
+    const restartIndex = manualAck.error.indexOf('restart the same Agent instance with its original configuration');
+    expect(stopIndex).toBeGreaterThanOrEqual(0);
+    expect(exitIndex).toBeGreaterThan(stopIndex);
+    expect(installIndex).toBeGreaterThan(exitIndex);
+    expect(restartIndex).toBeGreaterThan(installIndex);
 
     const safeCommands = [];
     agents.set('agent-safe', {
-      version: '1.0.342',
+      version: '1.0.369',
+      capabilities: ['plaintext-ok', SAFE_REMOTE_UPGRADE_CAPABILITY],
       encryptOutbound: false,
       ws: { readyState: 1, send(payload) { safeCommands.push(JSON.parse(payload)); } },
     });
@@ -477,6 +493,19 @@ describe('resolveAgentAccessError', () => {
       agentId: 'agent-safe',
     }, async () => true);
     expect(safeCommands).toEqual([{ type: 'upgrade_agent' }]);
+
+    const legacyLinuxCommands = [];
+    agents.set('agent-linux-legacy', {
+      version: '1.0.373',
+      capabilities: ['plaintext-ok', 'work_item_attachments'],
+      encryptOutbound: false,
+      ws: { readyState: 1, send(payload) { legacyLinuxCommands.push(JSON.parse(payload)); } },
+    });
+    await handleClientMisc('client-1', client, {
+      type: 'upgrade_agent',
+      agentId: 'agent-linux-legacy',
+    }, async () => true);
+    expect(legacyLinuxCommands).toEqual([{ type: 'upgrade_agent' }]);
   });
 
   it('preserves safe self-upgrades through the real SKIP_AUTH registration handshake', async () => {
@@ -490,13 +519,15 @@ describe('resolveAgentAccessError', () => {
       },
     };
 
-    for (const [agentId, version, shouldUpgrade] of [
-      ['skip-old', '1.0.337', false],
-      ['skip-minimum', '1.0.342', true],
-      ['skip-current', '1.0.350', true],
+    for (const [agentId, version, capabilities, platform, shouldUpgrade] of [
+      ['skip-legacy', '1.0.369', ['plaintext-ok'], null, false],
+      ['skip-windows', '1.0.373', ['plaintext-ok'], 'win32', false],
+      ['skip-windows-legacy-signal', '1.0.373', ['plaintext-ok', 'work_item_attachments'], 'win32', false],
+      ['skip-linux', '1.0.373', ['plaintext-ok'], 'linux', true],
+      ['skip-safe', '1.0.369', ['plaintext-ok', SAFE_REMOTE_UPGRADE_CAPABILITY], null, true],
     ]) {
       const socket = new MockWebSocket(WS_OPEN);
-      const url = new URL(`ws://localhost/?type=agent&id=${agentId}&name=${agentId}&instanceId=${agentId}&capabilities=plaintext-ok`);
+      const url = new URL(`ws://localhost/?type=agent&id=${agentId}&name=${agentId}&instanceId=${agentId}&capabilities=${capabilities.join(',')}`);
       expect(url.searchParams.has('version')).toBe(false);
 
       handleAgentConnection(socket, url);
@@ -506,13 +537,16 @@ describe('resolveAgentAccessError', () => {
         type: 'auth',
         tempId: challenge.tempId,
         secret: '',
-        capabilities: ['plaintext-ok'],
+        capabilities,
         version,
+        platform,
       });
       await new Promise(resolve => setTimeout(resolve, 0));
 
       expect(agents.get(agentId)).toMatchObject({
         version,
+        capabilities,
+        platform,
         ownerId: null,
         encryptOutbound: false,
       });
@@ -532,6 +566,7 @@ describe('resolveAgentAccessError', () => {
           type: 'upgrade_agent_ack',
           reason: 'manual_upgrade_required',
           version,
+          requiredCapability: SAFE_REMOTE_UPGRADE_CAPABILITY,
         });
       }
     }

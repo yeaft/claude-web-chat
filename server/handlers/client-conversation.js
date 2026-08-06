@@ -8,7 +8,14 @@ import {
   yeaftSessionDb,
   sessionUiMetadataDb,
 } from '../database.js';
-import { agents, pendingFiles, trackUserTurn, webClients } from '../context.js';
+import {
+  agents,
+  deleteYeaftDebugRequest,
+  pendingFiles,
+  registerYeaftDebugRequest,
+  trackUserTurn,
+  webClients,
+} from '../context.js';
 import {
   sendToWebClient, forwardToAgent,
   broadcastAgentList, broadcastSessionCatalog, buildSessionCatalog, buildHiddenSessionCatalog,
@@ -1285,6 +1292,45 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         });
       }
       await forwardToAgent(histAgentId, forwarded);
+      break;
+    }
+
+    case 'yeaft_fetch_debug_history': {
+      // Debug traces can contain raw prompts, provider payloads, and tool
+      // output. Treat this as a precise Session-owned request instead of the
+      // generic Yeaft relay: require the compound Agent + Session identity and
+      // correlate the response back to the requesting browser tab.
+      const debugAgentId = msg.agentId;
+      const debugSessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
+      const debugRequestId = typeof msg.requestId === 'string' ? msg.requestId : '';
+      if (!debugAgentId || !debugSessionId || !debugRequestId) return;
+      if (!await checkAgentAccess(debugAgentId)) return;
+      if (!CONFIG.skipAuth && !yeaftSessionDb.getForAgent(client.userId, debugAgentId, debugSessionId)) return;
+      const registered = registerYeaftDebugRequest({
+        agentId: debugAgentId,
+        requestId: debugRequestId,
+        sessionId: debugSessionId,
+        clientId,
+        userId: client.userId,
+      });
+      if (!registered) return;
+      try {
+        await forwardToAgent(debugAgentId, {
+          type: 'yeaft_fetch_debug_history',
+          sessionId: debugSessionId,
+          requestId: debugRequestId,
+          requestKind: msg.requestKind === 'detail' ? 'detail' : 'list',
+          limit: typeof msg.limit === 'number' ? msg.limit : 10,
+          dreamLimit: typeof msg.dreamLimit === 'number' ? msg.dreamLimit : 5,
+          indexOnly: msg.indexOnly === true,
+          detailTurnId: typeof msg.detailTurnId === 'string' ? msg.detailTurnId : null,
+          search: typeof msg.search === 'string' ? msg.search.slice(0, 500) : '',
+          _requestClientId: clientId,
+        });
+      } catch (err) {
+        deleteYeaftDebugRequest({ agentId: debugAgentId, requestId: debugRequestId, clientId });
+        throw err;
+      }
       break;
     }
 

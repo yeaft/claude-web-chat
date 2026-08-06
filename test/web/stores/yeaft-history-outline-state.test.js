@@ -118,6 +118,36 @@ async function runConsolidatedHistoryScenarios() {
 describe('Yeaft history outline state', () => {
   beforeEach(() => vi.useFakeTimers());
 
+  it('keeps automatic page-restore history out of the manual message refresh spinner', async () => {
+    const store = primeStore();
+    store.yeaftSessionHistoryState = {};
+    store._yeaftManualHistoryRefresh = null;
+
+    const automatic = store.beginYeaftHistoryLoad({
+      agentId: 'agent-a', sessionId: 'same', mode: 'recent', preserveLoaded: false,
+    });
+    expect(store.yeaftLoadingMoreHistory).toBe(true);
+    expect(store.yeaftManualHistoryRefreshLoading).toBe(false);
+
+    expect(store.reloadYeaftMessages()).toBe(automatic.requestId);
+    expect(store.yeaftManualHistoryRefreshLoading).toBe(true);
+    expect(store._sent).toEqual([]);
+
+    store.finishYeaftHistoryLoad({
+      agentId: 'agent-a', sessionId: 'same', requestId: automatic.requestId,
+    }, { loaded: true, hasMore: false, oldestSeq: 1 }, 'chunk');
+    expect(store.yeaftLoadingMoreHistory).toBe(false);
+    expect(store.yeaftManualHistoryRefreshLoading).toBe(false);
+
+    expect(store.reloadYeaftMessages()).toBe(true);
+    expect(store.yeaftManualHistoryRefreshLoading).toBe(true);
+    expect(store._sent.at(-1)).toMatchObject({
+      type: 'yeaft_load_history', agentId: 'agent-a', sessionId: 'same',
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(store.yeaftManualHistoryRefreshLoading).toBe(false);
+  });
+
   it('sends sender-only searches, rejects stale responses, and tracks unread Sessions', () => {
     const store = primeStore();
     store.activeVpTurns = {
@@ -185,6 +215,217 @@ describe('Yeaft history outline state', () => {
       agentId: 'agent-a', sessionId: 'same', requestId: second.requestId,
       query: '', senderKey: 'vp:linus', results: [],
     })).toBe(false);
+  });
+
+  it('reloads an outdated search locator before revealing an uncached message', async () => {
+    const store = primeStore();
+    store.currentAgentInfo.capabilities.push('session_history_search', 'session_history_window_prefetch');
+    store.agents[0].capabilities.push('session_history_search', 'session_history_window_prefetch');
+    const staleResult = indexedHistoryResult({ indexGeneration: 6, snippet: 'target text' });
+    store.yeaftHistorySearchState = {
+      requestId: null,
+      agentId: 'agent-a',
+      sessionId: 'same',
+      query: 'target text',
+      senderKey: '',
+      loading: false,
+      results: [staleResult],
+      hasMore: false,
+      nextBeforeSeq: null,
+      nextCursor: null,
+      error: null,
+    };
+
+    const clicked = store.revealYeaftHistoryResult(staleResult);
+    const staleRequest = store._sent.at(-1);
+    expect(staleRequest).toMatchObject({
+      type: 'yeaft_load_history_window',
+      indexGeneration: 6,
+      anchorMessageId: 'm42',
+    });
+    expect(store.handleYeaftHistoryWindow({
+      ...indexedHistoryResponse(staleRequest),
+      error: 'stale_result',
+      messages: [],
+    }, null)).toBe(false);
+    await Promise.resolve();
+
+    const refresh = store._sent.at(-1);
+    expect(refresh).toMatchObject({
+      type: 'yeaft_search_history',
+      query: 'target text',
+      senderKey: '',
+      sessionId: 'same',
+    });
+    expect(store.handleYeaftHistorySearchResult({
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: refresh.requestId,
+      query: 'target text',
+      senderKey: '',
+      results: [indexedHistoryResult({ indexGeneration: 7, snippet: 'target text' })],
+      hasMore: false,
+    })).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const retry = store._sent.at(-1);
+    expect(retry).toMatchObject({
+      type: 'yeaft_load_history_window',
+      indexGeneration: 7,
+      anchorMessageId: 'm42',
+    });
+    const response = indexedHistoryResponse(retry, {
+      messages: [{ id: 'm42', role: 'assistant', content: 'old answer', createdAt: 42 }],
+    });
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+    expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(true);
+
+    await expect(clicked).resolves.toBe(true);
+    expect(store.isYeaftMessageCached('same', 'm42')).toBe(true);
+    expect(store._yeaftHistoryRevealLeases).toEqual({});
+  });
+
+  it('does not retry a permanent unloaded-window failure', async () => {
+    const store = primeStore();
+    store.currentAgentInfo.capabilities.push('session_history_search', 'session_history_window_prefetch');
+    store.agents[0].capabilities.push('session_history_search', 'session_history_window_prefetch');
+    const result = indexedHistoryResult();
+    store.yeaftHistorySearchState = {
+      requestId: null, agentId: 'agent-a', sessionId: 'same', query: 'target text', senderKey: '',
+      loading: false, results: [result], hasMore: false, nextBeforeSeq: null, error: null,
+    };
+
+    const clicked = store.revealYeaftHistoryResult(result);
+    const request = store._sent.at(-1);
+    store.handleYeaftHistoryWindow({
+      ...indexedHistoryResponse(request), error: 'window_load_failed', messages: [],
+    }, null);
+
+    await expect(clicked).resolves.toBe(false);
+    expect(store._sent).toHaveLength(1);
+  });
+
+  it('refreshes an outline locator after its search panel has closed', async () => {
+    const store = primeStore();
+    store.currentAgentInfo.capabilities.push('session_history_window_prefetch');
+    store.agents[0].capabilities.push('session_history_window_prefetch');
+    const staleResult = indexedHistoryResult({ indexGeneration: 6 });
+    store.yeaftHistoryOutlineBySession[yeaftHistoryIdentityKey('agent-a', 'same')] = {
+      agentId: 'agent-a', sessionId: 'same', loaded: true, loading: false,
+      results: [staleResult], hasMore: false, nextBeforeSeq: null, totalCount: 1, error: null,
+    };
+    store.yeaftHistorySearchState = {
+      requestId: null, agentId: 'agent-a', sessionId: 'same', query: '', senderKey: '',
+      loading: false, results: [], hasMore: false, nextBeforeSeq: null, error: null,
+    };
+
+    const clicked = store.revealYeaftHistoryResult(staleResult);
+    const staleRequest = store._sent.at(-1);
+    store.handleYeaftHistoryWindow({
+      ...indexedHistoryResponse(staleRequest), error: 'stale_result', messages: [],
+    }, null);
+    await Promise.resolve();
+
+    const refresh = store._sent.at(-1);
+    expect(refresh).toMatchObject({ type: 'yeaft_load_history_outline', sessionId: 'same' });
+    expect(store.handleYeaftHistoryOutline({
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: refresh.requestId,
+      results: [indexedHistoryResult({ indexGeneration: 7 })],
+      hasMore: false,
+    })).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const retry = store._sent.at(-1);
+    expect(retry).toMatchObject({
+      type: 'yeaft_load_history_window', indexGeneration: 7, anchorMessageId: 'm42',
+    });
+    const response = indexedHistoryResponse(retry, {
+      messages: [{ id: 'm42', role: 'assistant', content: 'old answer', createdAt: 42 }],
+    });
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+    store.handleYeaftHistoryWindow(response, conversationId);
+    await expect(clicked).resolves.toBe(true);
+  });
+
+  it('binds stale outline relocation to an exact Session refresh already in flight', async () => {
+    const store = primeStore();
+    store.currentAgentInfo.capabilities.push('session_history_window_prefetch');
+    store.agents[0].capabilities.push('session_history_window_prefetch');
+    const key = yeaftHistoryIdentityKey('agent-a', 'same');
+    const staleResult = indexedHistoryResult({ indexGeneration: 6 });
+    store.yeaftHistoryOutlineBySession[key] = {
+      agentId: 'agent-a', sessionId: 'same', loaded: true, loading: false,
+      results: [staleResult], hasMore: false, nextBeforeSeq: null, totalCount: 1, error: null,
+    };
+    store.yeaftHistorySearchState = {
+      requestId: null, agentId: 'agent-a', sessionId: 'same', query: '', senderKey: '',
+      loading: false, results: [], hasMore: false, nextBeforeSeq: null, error: null,
+    };
+
+    expect(store.loadYeaftHistoryOutline({
+      force: true,
+      targetSessionId: 'same',
+      targetAgentId: 'agent-a',
+    })).toBe(true);
+    const inFlightRefresh = store._sent.at(-1);
+    const clicked = store.revealYeaftHistoryResult(staleResult);
+    const staleRequest = store._sent.at(-1);
+    expect(staleRequest).toMatchObject({
+      type: 'yeaft_load_history_window', indexGeneration: 6, anchorMessageId: 'm42',
+    });
+    store.handleYeaftHistoryWindow({
+      ...indexedHistoryResponse(staleRequest), error: 'stale_result', messages: [],
+    }, null);
+    await Promise.resolve();
+
+    expect(store._sent.filter(msg => msg.type === 'yeaft_load_history_outline')).toHaveLength(1);
+    expect(store.handleYeaftHistoryOutline({
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: inFlightRefresh.requestId,
+      results: [indexedHistoryResult({ indexGeneration: 7 })],
+      hasMore: false,
+    })).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const retry = store._sent.at(-1);
+    expect(retry).toMatchObject({
+      type: 'yeaft_load_history_window', indexGeneration: 7, anchorMessageId: 'm42',
+    });
+    const response = indexedHistoryResponse(retry, {
+      messages: [{ id: 'm42', role: 'assistant', content: 'old answer', createdAt: 42 }],
+    });
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+    store.handleYeaftHistoryWindow(response, conversationId);
+    await expect(clicked).resolves.toBe(true);
+  });
+
+  it('cancels a stale-result refresh before exact Session history cleanup', async () => {
+    const store = primeStore();
+    store.currentAgentInfo.capabilities.push('session_history_search', 'session_history_window_prefetch');
+    store.agents[0].capabilities.push('session_history_search', 'session_history_window_prefetch');
+    const staleResult = indexedHistoryResult({ indexGeneration: 6 });
+    store.yeaftHistorySearchState = {
+      requestId: null, agentId: 'agent-a', sessionId: 'same', query: 'target text', senderKey: '',
+      loading: false, results: [staleResult], hasMore: false, nextBeforeSeq: null, error: null,
+    };
+
+    const clicked = store.revealYeaftHistoryResult(staleResult);
+    const staleRequest = store._sent.at(-1);
+    store.handleYeaftHistoryWindow({
+      ...indexedHistoryResponse(staleRequest), error: 'stale_result', messages: [],
+    }, null);
+    await Promise.resolve();
+    expect(Object.keys(store._yeaftHistoryResultRefreshByRequestId)).toHaveLength(1);
+
+    store.clearYeaftHistoryMemory({ agentId: 'agent-a', sessionId: 'same' });
+    await expect(clicked).resolves.toBe(false);
+    expect(store._yeaftHistoryResultRefreshByRequestId).toEqual({});
   });
 
   it('loads and expands an uncached old anchor through the click action', async () => {

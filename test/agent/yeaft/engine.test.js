@@ -21,10 +21,12 @@ import { readScope } from '../../../agent/yeaft/memory/segment-store.js';
 import { syncAll } from '../../../agent/yeaft/memory/segment-sync.js';
 import { Engine, buildResidentEntries, selectCanonicalMemoryScopes, selectResidentTopicScopes, selectRelatedSessionIds } from '../../../agent/yeaft/engine.js';
 import { flushAgentPerfTrace } from '../../../agent/yeaft/perf-trace.js';
+import { AdapterRouter } from '../../../agent/yeaft/llm/router.js';
+import { withUsageAccounting } from '../../../agent/yeaft/llm/usage-accounting.js';
 import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js';
 import { AmsRegistry } from '../../../agent/yeaft/memory/ams-registry.js';
 import { writeContent, writeSummary } from '../../../agent/yeaft/memory/store.js';
-import { NullTrace, DebugTrace } from '../../../agent/yeaft/debug-trace.js';
+import { NullTrace, DebugTrace, projectDebugDetailForWire } from '../../../agent/yeaft/debug-trace.js';
 import { consolidateSessionTopics } from '../../../agent/yeaft/dream/topic-consolidation.js';
 import { resolveTopicRedirect } from '../../../agent/yeaft/memory/topic-redirect.js';
 import { runDream } from '../../../agent/yeaft/dream/runner.js';
@@ -32,6 +34,20 @@ import { extractAndWriteMemorySegments } from '../../../agent/yeaft/dream/segmen
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
 import { defineTool } from '../../../agent/yeaft/tools/types.js';
 import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
+import { loadConfig } from '../../../agent/yeaft/config.js';
+import {
+  CONDITIONAL_BUILTIN_TOOL_NAMES,
+  resolveActiveToolNames,
+} from '../../../agent/yeaft/tools/activation.js';
+import discoverToolsTool, {
+  TOOL_DISCOVERY_MAX_OUTPUT_BYTES,
+  discoverToolCapabilities,
+} from '../../../agent/yeaft/tools/discover-tools.js';
+import {
+  inferProjectDocScopes,
+  projectDocWriteScopesNeedingReload,
+  selectProjectDocContext,
+} from '../../../agent/yeaft/sessions/project-doc.js';
 import todoWriteTool from '../../../agent/yeaft/tools/todo-write.js';
 import startPlanTool from '../../../agent/yeaft/tools/start-plan.js';
 import {
@@ -123,6 +139,685 @@ afterEach(() => {
 
 // ─── Tests ────────────────────────────────────────────────────
 
+describe('active tool exposure and scoped prompts', () => {
+  it('keeps the user-required tools visible and activates other built-ins by condition', () => {
+    const registry = createFullRegistry();
+    const toolNames = registry.getToolNames();
+    const baseline = resolveActiveToolNames({ toolNames, prompt: 'Explain this code.' });
+
+    expect([...baseline]).toEqual(expect.arrayContaining([
+      'WebSearch',
+      'WebFetch',
+      'ViewImage',
+      'EnterWorktree',
+      'ExitWorktree',
+      'StartPlan',
+      'TodoWrite',
+      'FileRead',
+      'FileEdit',
+      'Bash',
+    ]));
+    expect([...baseline]).not.toEqual(expect.arrayContaining([
+      'HistorySearch',
+      'DiskUsage',
+      'SpawnAgent',
+      'ListAgents',
+      'CreateWorkItem',
+      'NotebookEdit',
+      'ImageGeneration',
+      'JsReplReset',
+    ]));
+
+    const contextual = resolveActiveToolNames({
+      toolNames,
+      prompt: 'Search the previous conversation, inspect disk usage, delegate an independent review, edit analysis.ipynb, and create a durable Work Item.',
+      collabToolPolicy: 'multi-vp',
+      activeTasks: [{ id: 'task_1', kind: 'shell' }],
+      imageGenerationConfigured: true,
+    });
+    expect([...contextual]).toEqual(expect.arrayContaining([
+      'HistorySearch',
+      'DiskUsage',
+      'SpawnAgent',
+      'ListAgents',
+      'ListTasks',
+      'ReadTaskLog',
+      'CancelTask',
+      'RouteForward',
+      'CreateWorkItem',
+      'NotebookEdit',
+    ]));
+    expect(contextual.has('ListAgents')).toBe(true);
+    expect(resolveActiveToolNames({
+      toolNames,
+      prompt: 'Run the task.',
+    }).has('SpawnAgent')).toBe(true);
+
+    const ordinaryLanguageCases = [
+      ['What did we decide about authentication?', 'HistorySearch', {}],
+      ['Please have another worker inspect this independently.', 'SpawnAgent', {}],
+      ['Make me a logo for this project.', 'ImageGeneration', { imageGenerationConfigured: true }],
+      ['Track this until it is finished across multiple sessions.', 'CreateWorkItem', {}],
+      ['The server says ENOSPC. Investigate the cause.', 'DiskUsage', {}],
+    ];
+    for (const [request, expectedTool, extra] of ordinaryLanguageCases) {
+      expect(resolveActiveToolNames({
+        toolNames,
+        prompt: request,
+        ...extra,
+      }).has(expectedTool), `${expectedTool} should activate for: ${request}`).toBe(true);
+    }
+
+    const withSubAgent = resolveActiveToolNames({
+      toolNames,
+      prompt: 'continue',
+      subAgentToolsActivated: true,
+    });
+    expect([...withSubAgent]).toEqual(expect.arrayContaining([
+      'SpawnAgent',
+      'PromptAgent',
+      'WaitAgent',
+      'CloseAgent',
+      'ListAgents',
+    ]));
+  });
+
+  it('discovers conditional and flattened MCP capabilities without lexical reachability gaps', async () => {
+    const registry = createFullRegistry();
+    const mcpManager = {
+      listTools: () => [{
+        name: 'tracker__enumerate_open_defects',
+        server: 'tracker',
+        description: 'Enumerate open defect records from the project tracker.',
+        inputSchema: {
+          type: 'object',
+          properties: { owner: { type: 'string' } },
+        },
+      }],
+      callTool: async () => ({ content: [{ type: 'text', text: '[]' }] }),
+    };
+    registry.registerAll(buildMcpFlattenedTools(mcpManager));
+    const toolNames = registry.getToolNames();
+    const candidates = registry.getAllTools()
+      .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name) || tool.name.startsWith('mcp__'))
+      .map(tool => ({
+        name: tool.name,
+        description: typeof tool.description === 'object' ? tool.description.en : tool.description,
+        parameters: tool.parameters,
+      }));
+    const paraphrases = [
+      ['Bring back the approach we used for login.', 'HistorySearch'],
+      ['Ask a separate specialist to examine this.', 'SpawnAgent'],
+      ['I need artwork for the launch header.', 'ImageGeneration'],
+      ['Make sure this objective keeps progressing after this chat.', 'CreateWorkItem'],
+      ['Tell me what is consuming the drive.', 'DiskUsage'],
+      ['显示分配给我的工单。', 'mcp__tracker__enumerate_open_defects'],
+    ];
+    for (const [prompt, expectedTool] of paraphrases) {
+      const active = resolveActiveToolNames({
+        toolNames,
+        prompt,
+        imageGenerationConfigured: true,
+      });
+      expect(active.has(expectedTool), `${expectedTool} starts hidden for: ${prompt}`).toBe(false);
+      expect(active.has('DiscoverTools')).toBe(true);
+      const directory = discoverToolCapabilities({ query: prompt, candidates });
+      expect(directory.tools.map(tool => tool.name), `discovery directory for: ${prompt}`).toContain(expectedTool);
+    }
+    for (const query of ['Show me tickets I own.', 'List my unresolved work.', '列出我尚未解决的工作。']) {
+      const directory = discoverToolCapabilities({ query, candidates });
+      expect(directory.tools.map(tool => tool.name), `semantic MCP directory for: ${query}`)
+        .toContain('mcp__tracker__enumerate_open_defects');
+    }
+
+    mockAdapter.pushResponse([
+      {
+        type: 'tool_call',
+        id: 'discover_tracker',
+        name: 'DiscoverTools',
+        input: { query: 'Show me tickets I own.' },
+      },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    mockAdapter.pushResponse([
+      {
+        type: 'tool_call',
+        id: 'call_tracker',
+        name: 'mcp__tracker__enumerate_open_defects',
+        input: { owner: '@me' },
+      },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    mockAdapter.pushResponse([
+      { type: 'text_delta', text: 'No matching defects.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const engine = new Engine({
+      adapter: mockAdapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+      mcpManager,
+    });
+    const events = [];
+    for await (const event of engine.query({
+      prompt: 'Show me tickets I own.',
+    })) events.push(event);
+
+    expect(mockAdapter.callLog[0].tools.map(tool => tool.name)).toContain('DiscoverTools');
+    expect(mockAdapter.callLog[0].tools.map(tool => tool.name)).not.toContain('mcp__tracker__enumerate_open_defects');
+    const discoveryEvent = events.find(event => event.type === 'tool_end' && event.name === 'DiscoverTools');
+    expect(discoveryEvent).toMatchObject({ isError: false });
+    const discoveryResult = JSON.parse(discoveryEvent.output);
+    expect(discoveryResult.tools.map(tool => tool.name)).toContain('mcp__tracker__enumerate_open_defects');
+    expect(discoveryResult.tools.length).toBeLessThanOrEqual(24);
+    expect(discoveryResult.tools.every(tool => !Object.hasOwn(tool, 'parameters'))).toBe(true);
+    expect(Buffer.byteLength(discoveryEvent.output, 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+    expect(mockAdapter.callLog[1].tools.map(tool => tool.name)).toContain('mcp__tracker__enumerate_open_defects');
+    expect(events.find(event => event.type === 'tool_end' && event.name === 'mcp__tracker__enumerate_open_defects')).toMatchObject({
+      output: '[]',
+      isError: false,
+    });
+  });
+
+  it('keeps real Engine discovery pagination stable and restarts after dynamic MCP changes', async () => {
+    const toolRecords = Array.from({ length: 53 }, (_, index) => ({
+      name: `catalog__capability_${String(index).padStart(2, '0')}`,
+      server: 'catalog',
+      description: `Capability ${index}`,
+      inputSchema: { type: 'object', properties: { value: { type: 'number' } } },
+    }));
+    const calls = [];
+    const mcpManager = {
+      listTools: () => toolRecords,
+      callTool: async (name, input) => {
+        calls.push({ name, input });
+        return { content: [{ type: 'text', text: `called ${name}` }] };
+      },
+    };
+    const registry = createFullRegistry();
+    registry.registerAll(buildMcpFlattenedTools(mcpManager));
+    const adapter = new MockAdapter();
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'page-1', name: 'DiscoverTools', input: { query: '没有词法匹配' } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'page-2', name: 'DiscoverTools', input: { query: '没有词法匹配', cursor: 24 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'call-middle', name: 'mcp__catalog__capability_30', input: { value: 30 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'page-3', name: 'DiscoverTools', input: { query: '没有词法匹配', cursor: 48 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'stale-sequence', name: 'DiscoverTools', input: { query: '没有词法匹配', cursor: 48 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'text_delta', text: 'All discovery pages were reachable.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const engine = new Engine({
+      adapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+      mcpManager,
+    });
+    const events = [];
+    for await (const event of engine.query({ prompt: 'Inspect the complete hidden catalogue.' })) events.push(event);
+
+    const staleSequence = JSON.parse(events.find(event => event.id === 'stale-sequence' && event.type === 'tool_end').output);
+    expect(staleSequence).toMatchObject({ tools: [], next_cursor: null, restart_required: true });
+    const pages = events
+      .filter(event => event.type === 'tool_end' && event.name === 'DiscoverTools' && event.id !== 'stale-sequence')
+      .map(event => JSON.parse(event.output));
+    const expectedDirectoryNames = registry.getAllTools()
+      .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name) || tool.name.startsWith('mcp__'))
+      .map(tool => tool.name);
+    expect(pages.map(page => ({ count: page.tools.length, next: page.next_cursor, total: page.total, restart: page.restart_required })))
+      .toEqual([
+        { count: 24, next: 24, total: expectedDirectoryNames.length, restart: undefined },
+        { count: 24, next: 48, total: expectedDirectoryNames.length, restart: undefined },
+        { count: expectedDirectoryNames.length - 48, next: null, total: expectedDirectoryNames.length, restart: undefined },
+      ]);
+    expect(pages.map(page => page.next_cursor)).toEqual([24, 48, null]);
+    expect(pages.map(page => page.total)).toEqual([
+      expectedDirectoryNames.length,
+      expectedDirectoryNames.length,
+      expectedDirectoryNames.length,
+    ]);
+    const pageNames = pages.flatMap(page => page.tools.map(tool => tool.name));
+    expect(pageNames).toHaveLength(expectedDirectoryNames.length);
+    expect(new Set(pageNames)).toEqual(new Set(expectedDirectoryNames));
+    expect(pageNames.filter(name => name === 'mcp__catalog__capability_30')).toHaveLength(1);
+    expect(adapter.callLog[2].tools.map(tool => tool.name)).toContain('mcp__catalog__capability_30');
+    expect(adapter.callLog[3].tools.map(tool => tool.name)).toContain('mcp__catalog__capability_30');
+    expect(events.find(event => event.id === 'call-middle' && event.type === 'tool_end')).toMatchObject({
+      isError: false,
+      output: 'called catalog__capability_30',
+    });
+    expect(calls).toEqual([{ name: 'catalog__capability_30', input: { value: 30 } }]);
+
+    const schemaChangedRecords = toolRecords.map((tool, index) => index === 0
+      ? { ...tool, description: 'Capability zero changed during traversal' }
+      : tool);
+    mcpManager.listTools = () => schemaChangedRecords;
+    registry.replaceMcpTools(mcpManager, buildMcpFlattenedTools);
+    const schemaChangedAdapter = new MockAdapter();
+    schemaChangedAdapter.pushResponse([
+      { type: 'tool_call', id: 'schema-start', name: 'DiscoverTools', input: { query: 'schema-changing catalogue' } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    schemaChangedAdapter.pushResponse([
+      { type: 'tool_call', id: 'schema-stale', name: 'DiscoverTools', input: { query: 'schema-changing catalogue', cursor: 24 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    schemaChangedAdapter.pushResponse([
+      { type: 'text_delta', text: 'The schema change required a restart.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const schemaChangedEngine = new Engine({
+      adapter: schemaChangedAdapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+      mcpManager,
+    });
+    const schemaEvents = [];
+    const schemaQuery = schemaChangedEngine.query({ prompt: 'Inspect a schema-changing catalogue.' });
+    const originalStream = schemaChangedAdapter.stream.bind(schemaChangedAdapter);
+    let streamCalls = 0;
+    schemaChangedAdapter.stream = async function* (params) {
+      streamCalls += 1;
+      if (streamCalls === 2) {
+        const mutated = schemaChangedRecords.map((tool, index) => index === 0
+          ? { ...tool, description: 'Capability zero changed again', inputSchema: { type: 'object', properties: { changed: { type: 'boolean' } } } }
+          : tool);
+        mcpManager.listTools = () => mutated;
+        registry.replaceMcpTools(mcpManager, buildMcpFlattenedTools);
+      }
+      yield* originalStream(params);
+    };
+    for await (const event of schemaQuery) schemaEvents.push(event);
+    const schemaStale = JSON.parse(schemaEvents.find(event => event.id === 'schema-stale' && event.type === 'tool_end').output);
+    expect(schemaStale).toMatchObject({ tools: [], next_cursor: null, restart_required: true });
+
+    const changedRecords = [
+      toolRecords[0],
+      { name: 'catalog__replacement', server: 'catalog', description: 'Replacement capability', inputSchema: { type: 'object', properties: {} } },
+    ];
+    const boundedRestart = await discoverToolsTool.execute(
+      { query: 'changed catalogue', cursor: 24 },
+      {
+        discoverTools: () => ({
+          tools: [],
+          next_cursor: null,
+          total: 2,
+          omitted_invalid: 0,
+          restart_required: true,
+          message: 'Restart discovery without a cursor.',
+        }),
+      },
+    );
+    expect(Buffer.byteLength(boundedRestart, 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+    expect(JSON.parse(boundedRestart)).toMatchObject({ restart_required: true, next_cursor: null });
+    mcpManager.listTools = () => changedRecords;
+    registry.replaceMcpTools(mcpManager, buildMcpFlattenedTools);
+    const changedAdapter = new MockAdapter();
+    changedAdapter.pushResponse([
+      { type: 'tool_call', id: 'stale-page', name: 'DiscoverTools', input: { query: '没有词法匹配', cursor: 24 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    changedAdapter.pushResponse([
+      { type: 'tool_call', id: 'restart-page', name: 'DiscoverTools', input: { query: '没有词法匹配' } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    changedAdapter.pushResponse([
+      { type: 'text_delta', text: 'Restarted against the changed directory.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const changedEngine = new Engine({
+      adapter: changedAdapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+      mcpManager,
+    });
+    const changedEvents = [];
+    for await (const event of changedEngine.query({ prompt: 'Inspect the changed hidden catalogue.' })) changedEvents.push(event);
+    const stale = JSON.parse(changedEvents.find(event => event.id === 'stale-page' && event.type === 'tool_end').output);
+    expect(stale).toMatchObject({ tools: [], next_cursor: null, restart_required: true });
+    const restarted = JSON.parse(changedEvents.find(event => event.id === 'restart-page' && event.type === 'tool_end').output);
+    const restartedNames = restarted.tools.map(tool => tool.name);
+    expect(restarted.next_cursor).toBeNull();
+    expect(restarted.restart_required).not.toBe(true);
+    expect(restartedNames).toContain('mcp__catalog__capability_00');
+    expect(restartedNames).toContain('mcp__catalog__replacement');
+    expect(restartedNames.some(name => name.startsWith('mcp__catalog__capability_01'))).toBe(false);
+  });
+
+  it('pages the complete hidden directory and bounds hostile metadata before serialization', () => {
+    const candidates = Array.from({ length: 53 }, (_, index) => ({
+      name: `mcp__catalog__capability_${String(index).padStart(2, '0')}`,
+      description: `Capability ${index}`,
+      parameters: { type: 'object', properties: {} },
+    }));
+    const seen = new Set();
+    let cursor = 0;
+    do {
+      const result = discoverToolCapabilities({ query: '没有词法匹配', candidates, cursor });
+      expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+      for (const tool of result.tools) seen.add(tool.name);
+      cursor = result.next_cursor;
+    } while (cursor != null);
+    expect(seen).toEqual(new Set(candidates.map(tool => tool.name)));
+
+    const hostile = Array.from({ length: 24 }, (_, index) => ({
+      name: `mcp__hostile__${index}_${'x'.repeat(10_000)}`,
+      description: 'y'.repeat(10_000),
+      parameters: { type: 'object', properties: {} },
+    }));
+    const bounded = discoverToolCapabilities({ query: 'anything', candidates: hostile });
+    expect(bounded.tools).toEqual([]);
+    expect(bounded.next_cursor).toBeNull();
+    expect(bounded.omitted_invalid).toBe(24);
+    expect(Buffer.byteLength(JSON.stringify(bounded), 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+
+    const metadataBounded = discoverToolCapabilities({
+      query: 'anything',
+      candidates: [{ name: `mcp__near_limit__${'n'.repeat(200)}`, description: 'z'.repeat(10_000) }],
+    });
+    expect(metadataBounded.tools).toHaveLength(1);
+    expect(Buffer.byteLength(JSON.stringify(metadataBounded), 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+
+    const invalidCursor = discoverToolCapabilities({ query: 'anything', candidates, cursor: 54 });
+    expect(invalidCursor).toMatchObject({
+      tools: [],
+      next_cursor: null,
+      total: 53,
+      restart_required: true,
+    });
+    expect(Buffer.byteLength(JSON.stringify(invalidCursor), 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+  });
+
+  it('filters provider schemas and fences execution with canonical alias activation', async () => {
+    const registry = createFullRegistry();
+    const baseline = resolveActiveToolNames({
+      toolNames: registry.getToolNames(),
+      prompt: 'Explain this code.',
+    });
+    const defs = registry.getToolDefs('en', { activeToolNames: baseline });
+    const names = defs.map(def => def.name);
+    const hiddenDirectory = discoverToolCapabilities({
+      query: 'reset the JavaScript scratchpad',
+      candidates: registry.getAllTools()
+        .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name))
+        .map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters })),
+    });
+
+    expect(names).toContain('WebSearch');
+    expect(names).toContain('EnterWorktree');
+    expect(names).not.toContain('SpawnAgent');
+    expect(hiddenDirectory.tools.map(tool => tool.name)).not.toContain('JsReplReset');
+    expect(registry.isAllowed('Agent', { activeToolNames: baseline })).toBe(false);
+    expect(registry.has('Agent')).toBe(true);
+    expect(registry.isAllowed('Agent', {
+      activeToolNames: new Set([...baseline, 'SpawnAgent']),
+    })).toBe(true);
+  });
+
+  it('keeps custom tools visible and blocks a hidden built-in hallucination in the Engine', async () => {
+    const registry = new ToolRegistry();
+    let hiddenExecutions = 0;
+    registry.register({
+      name: 'DiskUsage',
+      description: 'Conditionally active disk tool',
+      parameters: { type: 'object', properties: {} },
+      isReadOnly: () => true,
+      execute: async () => {
+        hiddenExecutions += 1;
+        return 'should not run';
+      },
+    });
+    registry.register({
+      name: 'CustomHostTool',
+      description: 'Embedding-defined tool',
+      parameters: { type: 'object', properties: {} },
+      isReadOnly: () => true,
+      execute: async () => 'custom',
+    });
+
+    mockAdapter.pushResponse([
+      { type: 'tool_call', id: 'hidden', name: 'DiskUsage', input: { path: '.' } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    mockAdapter.pushResponse([
+      { type: 'text_delta', text: 'The tool was inactive.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const engine = new Engine({
+      adapter: mockAdapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+    });
+    const events = [];
+    for await (const event of engine.query({ prompt: 'Explain this code.' })) events.push(event);
+
+    const firstNames = mockAdapter.callLog[0].tools.map(tool => tool.name);
+    expect(firstNames).toContain('CustomHostTool');
+    expect(firstNames).not.toContain('DiskUsage');
+    expect(hiddenExecutions).toBe(0);
+    expect(events.find(event => event.type === 'tool_end')).toMatchObject({ isError: true });
+    expect(events.find(event => event.type === 'tool_end').output).toContain('not active');
+  });
+
+  it('selects project core and task-scoped sections while preserving a directory', () => {
+    const padding = 'core rule '.repeat(900);
+    const projectDoc = [
+      '# Example Project',
+      '',
+      'Project overview.',
+      '',
+      '## Product Model and Terminology',
+      padding,
+      '',
+      '## Agent Runtime',
+      'AGENT_RUNTIME_RULE',
+      '',
+      '## Web and Server',
+      'WEB_SERVER_RULE',
+      '',
+      '## UI Rules',
+      'UI_RULE',
+      '',
+      '## Worktree Review and Release',
+      'RELEASE_RULE',
+      '',
+      '## Operations and Security',
+      'SECURITY_RULE',
+    ].join('\n');
+
+    const selected = selectProjectDocContext(projectDoc, {
+      prompt: 'Change agent/yeaft/engine.js prompt assembly.',
+      language: 'en',
+    });
+    expect(selected.scoped).toBe(true);
+    expect(selected.text).toContain('AGENT_RUNTIME_RULE');
+    expect(selected.text).toContain('SECURITY_RULE');
+    expect(selected.text).not.toContain('\nWEB_SERVER_RULE\n');
+    expect(selected.text).toContain('Project Rules Available On Demand');
+    expect(selected.text).toContain('- Web and Server');
+
+    const missingWebRules = projectDocWriteScopesNeedingReload(selected, ['web/stores/chat.js']);
+    expect([...missingWebRules]).toContain('web');
+    const reloaded = selectProjectDocContext(projectDoc, {
+      prompt: 'Change agent/yeaft/engine.js prompt assembly.',
+      pathHints: ['web/stores/chat.js'],
+      forcedScopes: missingWebRules,
+      language: 'en',
+    });
+    expect(reloaded.text).toContain('WEB_SERVER_RULE');
+    expect(projectDocWriteScopesNeedingReload(reloaded, ['web/stores/chat.js']).size).toBe(0);
+    expect([...inferProjectDocScopes({ pathHints: ['web/stores/chat.js'] })]).toContain('web');
+  });
+
+  it('uses stable core plus active guidance without repeating the tool catalogue', () => {
+    const concise = buildSystemPrompt({ language: 'en', toolNames: ['WebSearch', 'FileRead'] });
+    const planned = buildSystemPrompt({ language: 'en', toolNames: ['FileRead', 'StartPlan', 'TodoWrite'] });
+
+    expect(concise).toContain('Session Participant');
+    expect(concise).toContain('Active Tool Guidance');
+    expect(concise).toContain('Read existing files before editing');
+    expect(concise).toContain('do not revert changes you did not make');
+    expect(concise).toContain('Do not amend commits unless the user explicitly asks');
+    expect(concise).toContain('Do not use `git reset --hard` or `git clean -f` without user approval');
+    expect(concise).not.toContain('Available tools:');
+    expect(concise).not.toContain('For non-trivial multi-step work');
+    expect(planned).toContain('For non-trivial multi-step work');
+    expect(planned).not.toContain('Available tools: FileRead');
+  });
+
+  it('preserves image generation configuration through the authoritative loader', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-image-config-'));
+    try {
+      writeFileSync(join(dir, 'config.json'), JSON.stringify({
+        primaryModel: 'test-model',
+        imageApiUrl: 'https://images.example.test/generate',
+      }));
+      expect(loadConfig({ dir }).imageApiUrl).toBe('https://images.example.test/generate');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshes task-management schemas after a current-turn background task starts', async () => {
+    const registry = new ToolRegistry();
+    const activeTasks = [];
+    registry.register({
+      name: 'Bash',
+      description: 'Start a shell command.',
+      parameters: { type: 'object', properties: {} },
+      isReadOnly: () => false,
+      execute: async () => {
+        activeTasks.push({ id: 'task_live', kind: 'shell', status: 'running' });
+        return 'Started background task task_live.';
+      },
+    });
+    for (const name of ['ListTasks', 'ReadTaskLog', 'CancelTask']) {
+      registry.register({
+        name,
+        description: `${name} description`,
+        parameters: { type: 'object', properties: {} },
+        isReadOnly: () => true,
+        execute: async () => 'ok',
+      });
+    }
+    const taskManager = {
+      listActiveTasks: () => [...activeTasks],
+      renderActiveTasksForPrompt: () => activeTasks.length > 0 ? 'task_live is running' : '',
+    };
+    mockAdapter.pushResponse([
+      { type: 'tool_call', id: 'start_bg', name: 'Bash', input: { command: 'npm start', background: true } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    mockAdapter.pushResponse([
+      { type: 'text_delta', text: 'The server is running in the background.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const engine = new Engine({
+      adapter: mockAdapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+      taskManager,
+    });
+    for await (const _event of engine.query({ prompt: 'Start the dev server and leave it running.' })) { /* drain */ }
+
+    expect(mockAdapter.callLog[0].tools.map(tool => tool.name)).not.toContain('ListTasks');
+    expect(mockAdapter.callLog[1].tools.map(tool => tool.name)).toEqual(expect.arrayContaining([
+      'ListTasks',
+      'ReadTaskLog',
+      'CancelTask',
+    ]));
+    expect(mockAdapter.callLog[1].system).toContain('task_live is running');
+  });
+
+  it('reloads unclassified and Bash write rules before executing against a large project doc', async () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'yeaft-project-doc-reload-'));
+    const projectDoc = [
+      '# Example Project',
+      'Project preamble.',
+      '## Product Model and Terminology',
+      'CORE_RULE '.repeat(900),
+      '## Naming and Compatibility Rules',
+      'PARENT_CORE_RULE',
+      '### No Version-Suffix Filenames',
+      'CORE_CHILD_RULE',
+      '## Database Migrations',
+      'DATABASE_MIGRATION_RULE',
+      '## Web and Server',
+      'WEB_RULE',
+    ].join('\n');
+    writeFileSync(join(workDir, 'CLAUDE.md'), projectDoc);
+    try {
+      for (const toolCall of [
+        { name: 'FileWrite', input: { file_path: 'db/migrations/002.sql', content: 'ALTER TABLE example;' } },
+        { name: 'Bash', input: { command: 'node scripts/migrate.js' } },
+      ]) {
+        const adapter = new MockAdapter();
+        let executions = 0;
+        const registry = new ToolRegistry();
+        registry.register({
+          name: toolCall.name,
+          description: `${toolCall.name} test tool`,
+          parameters: { type: 'object', properties: {} },
+          isReadOnly: () => false,
+          execute: async () => {
+            executions += 1;
+            return 'executed';
+          },
+        });
+        adapter.pushResponse([
+          { type: 'tool_call', id: `write_${toolCall.name}`, ...toolCall },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        adapter.pushResponse([
+          { type: 'text_delta', text: 'Reviewed the newly loaded rules.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024, projectDocMaxBytes: 64 * 1024 },
+          toolRegistry: registry,
+        });
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'Update the deployment state.',
+          workDir,
+        })) events.push(event);
+
+        expect(executions).toBe(0);
+        expect(events.find(event => event.type === 'tool_end')).toMatchObject({
+          isError: true,
+          skipped: true,
+        });
+        expect(adapter.callLog[1].system).toContain('DATABASE_MIGRATION_RULE');
+        expect(adapter.callLog[1].system).toContain('CORE_CHILD_RULE');
+      }
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('Engine memory prompt hygiene', () => {
   it('normalizes current and related Session summaries into separate resident sources', () => {
     const currentEntries = buildResidentEntries({
@@ -162,7 +857,7 @@ describe('Engine memory prompt hygiene', () => {
     ]);
   });
 
-  it('deduplicates repeated memory text across resident, recent, and onDemand layers', () => {
+  it('deduplicates AMS layers without dropping needed on-demand memory', () => {
     const ams = new ActiveMemorySet({
       budget: { total: 1000, resident: 400, recent: 300, onDemand: 300 },
     });
@@ -179,38 +874,36 @@ describe('Engine memory prompt hygiene', () => {
     expect(snap.resident.map(entry => entry.summary)).toEqual([repeated]);
     expect(snap.recent).toEqual([]);
     expect(snap.onDemand.map(seg => seg.body)).toEqual(['A distinct implementation detail remains available.']);
-  });
 
-  it('keeps onDemand memory when resident entries are over budget or only prefixes', () => {
     const overBudget = new ActiveMemorySet({
       budget: { total: 100, resident: 1, recent: 1, onDemand: 80 },
     });
-    const repeated = 'Budget-sensitive Dream memory detail should remain available from onDemand when the resident copy is too large for the resident budget.';
-    overBudget.setResident([{ scope: 'sessions/s1', summary: repeated }]);
+    const overBudgetRepeated = 'Budget-sensitive Dream memory detail should remain available from onDemand when the resident copy is too large for the resident budget.';
+    overBudget.setResident([{ scope: 'sessions/s1', summary: overBudgetRepeated }]);
     overBudget.setOnDemand([
-      { id: 'od-1', scope: 'sessions/s1/topic/dream', body: repeated, kind: 'context', tags: [], sourceMessages: [] },
+      { id: 'od-1', scope: 'sessions/s1/topic/dream', body: overBudgetRepeated, kind: 'context', tags: [], sourceMessages: [] },
     ]);
     const overBudgetSnap = overBudget.snapshot();
     expect(overBudgetSnap.resident).toEqual([]);
-    expect(overBudgetSnap.onDemand.map(seg => seg.body)).toEqual([repeated]);
+    expect(overBudgetSnap.onDemand.map(seg => seg.body)).toEqual([overBudgetRepeated]);
 
-    const ams = new ActiveMemorySet({
+    const prefixAms = new ActiveMemorySet({
       budget: { total: 1000, resident: 300, recent: 100, onDemand: 600 },
     });
     const summary = 'Dream recall should include topic memory generated by Dream and avoid noisy repeated scope path labels in prompts.';
     const detail = `${summary} Critical extra detail: FTS fallback must use topic-prioritized round-robin so user/session oversized segments cannot starve topic memory.`;
-    ams.setResident([{ scope: 'sessions/s1', summary }]);
-    ams.setOnDemand([
+    prefixAms.setResident([{ scope: 'sessions/s1', summary }]);
+    prefixAms.setOnDemand([
       { id: 'od-detail', scope: 'sessions/s1/topic/dream', body: detail, kind: 'context', tags: [], sourceMessages: [] },
     ]);
 
-    const snap = ams.snapshot();
+    const prefixSnap = prefixAms.snapshot();
 
-    expect(snap.resident.map(entry => entry.summary)).toEqual([summary]);
-    expect(snap.onDemand.map(seg => seg.body)).toEqual([detail]);
+    expect(prefixSnap.resident.map(entry => entry.summary)).toEqual([summary]);
+    expect(prefixSnap.onDemand.map(seg => seg.body)).toEqual([detail]);
   });
 
-  it('drops unrelated transient work-item state from the prompt snapshot', () => {
+  it('filters transient WorkItem state by query relevance', () => {
     const ams = new ActiveMemorySet({
       budget: { total: 1000, resident: 500, recent: 200, onDemand: 300 },
     });
@@ -251,13 +944,11 @@ describe('Engine memory prompt hygiene', () => {
     expect(snap.onDemand.map(seg => seg.body)).toEqual([
       'Dream memory relevance should keep stable topic recall facts available.',
     ]);
-  });
 
-  it('keeps transient work-item state when the user asks about the same task', () => {
-    const ams = new ActiveMemorySet({
+    const relatedAms = new ActiveMemorySet({
       budget: { total: 1000, resident: 500, recent: 200, onDemand: 300 },
     });
-    ams.setOnDemand([
+    relatedAms.setOnDemand([
       {
         id: 'billing-work-item',
         scope: 'sessions/s1/topic/billing',
@@ -268,9 +959,9 @@ describe('Engine memory prompt hygiene', () => {
       },
     ]);
 
-    const snap = ams.snapshot({ userMsg: '继续 billing dashboard export 的 work item' });
+    const relatedSnap = relatedAms.snapshot({ userMsg: '继续 billing dashboard export 的 work item' });
 
-    expect(snap.onDemand.map(seg => seg.body)).toEqual([
+    expect(relatedSnap.onDemand.map(seg => seg.body)).toEqual([
       'Work Item #884: billing dashboard export is in progress and awaiting review.',
     ]);
   });
@@ -683,7 +1374,7 @@ describe('Engine', () => {
       expect(typeof engine.traceId).toBe('string');
     });
 
-    it('refreshes the fast-model config without rebuilding the engine', () => {
+    it('refreshes Engine config and preserves captured request snapshots', async () => {
       const engine = new Engine({
         adapter: mockAdapter,
         trace,
@@ -693,7 +1384,306 @@ describe('Engine', () => {
       engine.refreshConfig({ model: 'new-primary', fastModelId: 'new-fast', maxOutputTokens: 2048 });
 
       expect(engine.fastConfig).toMatchObject({ model: 'new-fast', maxOutputTokens: 2048 });
+
+      const adapter = new MockAdapter();
+      adapter.pushResponse([
+        { type: 'tool_call', id: 'call_refresh', name: 'refresh_config', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      adapter.pushResponse([
+        { type: 'text_delta', text: 'done' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const refreshedEngine = new Engine({
+        adapter,
+        trace,
+        config: { model: 'provider/old', maxOutputTokens: 111 },
+      });
+      refreshedEngine.registerTool({
+        name: 'refresh_config',
+        description: 'publish a later runtime config',
+        parameters: {},
+        execute: async () => {
+          refreshedEngine.refreshConfig({ model: 'provider/new', maxOutputTokens: 222 });
+          return 'published';
+        },
+      });
+
+      for await (const _event of refreshedEngine.query({ prompt: 'update after tool use' })) {
+        // Consume the complete query.
+      }
+
+      expect(adapter.callLog).toHaveLength(2);
+      expect(adapter.callLog[0]).toMatchObject({ model: 'provider/old', maxTokens: 111 });
+      expect(adapter.callLog[1]).toMatchObject({ model: 'provider/new', maxTokens: 222 });
+
+      const oldFetch = globalThis.fetch;
+      let dispatches = 0;
+      globalThis.fetch = async () => {
+        dispatches += 1;
+        return new Response(
+          'event: response.completed\n' +
+          'data: {"type":"response.completed","response":{"status":"completed","output":[],"usage":{}}}\n\n',
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      };
+
+      try {
+        const router = new AdapterRouter({
+          providers: [{
+            name: 'capture',
+            baseUrl: 'https://capture.example/v1',
+            apiKey: 'capture-key',
+            protocol: 'openai-responses',
+            models: ['capture-model'],
+          }],
+        });
+        const engine = new Engine({
+          adapter: withUsageAccounting(router, () => {}),
+          trace,
+          config: { model: 'capture/capture-model', maxOutputTokens: 111 },
+        });
+        const iterator = engine.query({ prompt: 'capture without dispatch' })[Symbol.asyncIterator]();
+        let sawTurnStart = false;
+        while (true) {
+          const step = await iterator.next();
+          if (step.done) break;
+          if (step.value.type === 'turn_start') {
+            sawTurnStart = true;
+            break;
+          }
+        }
+        expect(sawTurnStart).toBe(true);
+        expect(dispatches).toBe(0);
+        await iterator.return();
+        expect(dispatches).toBe(0);
+      } finally {
+        globalThis.fetch = oldFetch;
+      }
+
+      const snapshotFetch = globalThis.fetch;
+      const requests = [];
+      globalThis.fetch = async (url, init) => {
+        requests.push({ url: String(url), body: JSON.parse(init.body) });
+        return new Response(
+          'event: response.completed\n' +
+          'data: {"type":"response.completed","response":{"status":"completed","output":[],"usage":{}}}\n\n',
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      };
+
+      try {
+        const router = new AdapterRouter({
+          providers: [{
+            name: 'old',
+            baseUrl: 'https://old.example/v1',
+            apiKey: 'old-key',
+            protocol: 'openai-responses',
+            models: ['old-model'],
+          }],
+        });
+        const adapter = withUsageAccounting(router, () => {});
+        let refreshDelivered = false;
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'old/old-model', modelEffort: 'low', maxOutputTokens: 111 },
+        });
+        const iterator = engine.query({ prompt: 'freeze this request', userEffort: 'low' });
+        let sawTurnStart = false;
+        while (true) {
+          const step = await iterator.next();
+          if (step.done) break;
+          if (step.value.type === 'turn_start') {
+            sawTurnStart = true;
+            router.refreshProviders([{
+              name: 'new',
+              baseUrl: 'https://new.example/v1',
+              apiKey: 'new-key',
+              protocol: 'openai-responses',
+              models: ['new-model'],
+            }]);
+            engine.refreshConfig({ model: 'new/new-model', modelEffort: 'high', maxOutputTokens: 222 });
+            refreshDelivered = true;
+            break;
+          }
+        }
+        expect(sawTurnStart).toBe(true);
+        expect(refreshDelivered).toBe(true);
+        for await (const _event of { [Symbol.asyncIterator]: () => iterator }) {
+          // Consume the frozen first request.
+        }
+
+        expect(requests).toEqual([
+          expect.objectContaining({
+            url: 'https://old.example/v1/responses',
+            body: expect.objectContaining({ model: 'old-model', max_output_tokens: 111 }),
+          }),
+        ]);
+      } finally {
+        globalThis.fetch = snapshotFetch;
+      }
+
+      const preflightFetch = globalThis.fetch;
+      const preflightRequests = [];
+      globalThis.fetch = async (url, init) => {
+        preflightRequests.push({ url: String(url), body: JSON.parse(init.body) });
+        return new Response(
+          'event: response.completed\n' +
+          'data: {"type":"response.completed","response":{"status":"completed","output":[],"usage":{}}}\n\n',
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      };
+
+      try {
+        const router = new AdapterRouter({
+          providers: [{
+            name: 'old',
+            baseUrl: 'https://old.example/v1',
+            apiKey: 'old-key',
+            protocol: 'openai-responses',
+            models: ['old-model'],
+          }],
+        });
+        const adapter = withUsageAccounting(router, () => {});
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'old/old-model', maxOutputTokens: 111 },
+        });
+        let refreshed = false;
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'keep one config revision',
+          drainPendingUserMessages: () => {
+            if (refreshed) return [];
+            refreshed = true;
+            router.refreshProviders([{
+              name: 'new',
+              baseUrl: 'https://new.example/v1',
+              apiKey: 'new-key',
+              protocol: 'openai-responses',
+              models: ['new-model'],
+            }]);
+            engine.refreshConfig({ model: 'new/new-model', maxOutputTokens: 222 });
+            return [{ content: 'refresh raced preflight', preview: 'refresh raced preflight' }];
+          },
+        })) {
+          events.push(event);
+        }
+
+        expect(events.some(event => event.type === 'error')).toBe(false);
+        expect(preflightRequests).toEqual([
+          expect.objectContaining({
+            url: 'https://old.example/v1/responses',
+            body: expect.objectContaining({ model: 'old-model', max_output_tokens: 111 }),
+          }),
+        ]);
+      } finally {
+        globalThis.fetch = preflightFetch;
+      }
     });
+
+    it('refreshes configured effort at tool and retry request boundaries while preserving an explicit override', async () => {
+      const { LLMServerError } = await import('../../../agent/yeaft/llm/adapter.js');
+      let engine;
+      let calls = 0;
+      const adapter = {
+        callLog: [],
+        async *stream(params) {
+          this.callLog.push(params);
+          calls += 1;
+          if (calls === 1) {
+            yield { type: 'tool_call', id: 'call_refresh_effort', name: 'refresh_effort', input: {} };
+            yield { type: 'stop', stopReason: 'tool_use' };
+            return;
+          }
+          if (calls === 2) {
+            engine.refreshConfig({
+              model: 'provider/current',
+              modelEffort: 'max',
+              maxOutputTokens: 222,
+              llmRetry: { maxRetries: 1, baseDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 },
+            });
+            throw new LLMServerError('retry after config save', 503);
+          }
+          yield { type: 'text_delta', text: 'done' };
+          yield { type: 'stop', stopReason: 'end_turn' };
+        },
+      };
+      engine = new Engine({
+        adapter,
+        trace,
+        config: {
+          model: 'provider/current',
+          modelEffort: 'low',
+          maxOutputTokens: 111,
+          llmRetry: { maxRetries: 1, baseDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 },
+        },
+      });
+      engine.registerTool({
+        name: 'refresh_effort',
+        description: 'publish a later Session effort',
+        parameters: {},
+        execute: async () => {
+          engine.refreshConfig({
+            model: 'provider/current',
+            modelEffort: 'high',
+            maxOutputTokens: 222,
+            llmRetry: { maxRetries: 1, baseDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 },
+          });
+          return 'published';
+        },
+      });
+
+      for await (const _event of engine.query({ prompt: 'refresh effort while running' })) {
+        // Consume the complete query.
+      }
+
+      expect(adapter.callLog).toHaveLength(3);
+      expect(adapter.callLog.map(call => [call.maxTokens, call.effort])).toEqual([
+        [111, 'low'],
+        [222, 'high'],
+        [222, 'max'],
+      ]);
+
+      const overrideAdapter = new MockAdapter();
+      overrideAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_explicit_effort', name: 'refresh_effort', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      overrideAdapter.pushResponse([
+        { type: 'text_delta', text: 'done' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const overrideEngine = new Engine({
+        adapter: overrideAdapter,
+        trace,
+        config: { model: 'provider/current', modelEffort: 'low', maxOutputTokens: 111 },
+      });
+      overrideEngine.registerTool({
+        name: 'refresh_effort',
+        description: 'publish a later Session effort',
+        parameters: {},
+        execute: async () => {
+          overrideEngine.refreshConfig({ model: 'provider/current', modelEffort: 'max', maxOutputTokens: 222 });
+          return 'published';
+        },
+      });
+
+      for await (const _event of overrideEngine.query({
+        prompt: 'explicit effort must stay fixed',
+        userEffort: 'medium',
+      })) {
+        // Consume the complete query.
+      }
+
+      expect(overrideAdapter.callLog.map(call => [call.maxTokens, call.effort])).toEqual([
+        [111, 'medium'],
+        [222, 'medium'],
+      ]);
+    });
+
   });
 
   describe('perf trace', () => {
@@ -776,7 +1766,7 @@ describe('Engine', () => {
   });
 
   describe('tool registration', () => {
-    it('should register, list, and unregister tools', () => {
+    it('registers, lists, and unregisters tools', () => {
       const engine = new Engine({
         adapter: mockAdapter,
         trace,
@@ -1466,7 +2456,7 @@ describe('Engine', () => {
         const engine = new Engine({
           adapter,
           trace,
-          config: { model: 'test-model', maxOutputTokens: 1024, maxContextTokens: 1000 },
+          config: { model: 'test-model', maxOutputTokens: 1024, maxContextTokens: 400 },
           conversationStore,
           yeaftDir,
         });
@@ -1480,6 +2470,7 @@ describe('Engine', () => {
         for await (const _event of engine.query({
           prompt: 'run thirty tools',
           sessionId: 'session-t1-fold',
+          causalRootId: 'root-t1-fold',
         })) {
           // consume
         }
@@ -1491,7 +2482,10 @@ describe('Engine', () => {
           { includeReflections: true },
         );
         expect(durable.filter(message => message._reflection)).toEqual([
-          expect.objectContaining({ content: expect.stringContaining('durable reflection summary') }),
+          expect.objectContaining({
+            content: expect.stringContaining('durable reflection summary'),
+            causalRootId: 'root-t1-fold',
+          }),
         ]);
         expect(durable.some(message => message.role === 'tool')).toBe(false);
         expect(durable.some(message => Array.isArray(message.toolCalls) && message.toolCalls.length > 0)).toBe(false);
@@ -1530,7 +2524,7 @@ describe('Engine', () => {
         const engine = new Engine({
           adapter,
           trace,
-          config: { model: 'test-model', maxOutputTokens: 1024, maxContextTokens: 1000 },
+          config: { model: 'test-model', maxOutputTokens: 1024, maxContextTokens: 400 },
           conversationStore,
           yeaftDir,
         });
@@ -1544,6 +2538,7 @@ describe('Engine', () => {
         for await (const _event of engine.query({
           prompt: 'run nine tools',
           sessionId: 'session-t2-fold',
+          causalRootId: 'root-t2-origin',
         })) {
           // consume
         }
@@ -1553,6 +2548,7 @@ describe('Engine', () => {
           prompt: 'continue after t2',
           messages: firstTurn,
           sessionId: 'session-t2-fold',
+          causalRootId: 'root-t2-current',
         })) {
           // consume
         }
@@ -1564,7 +2560,10 @@ describe('Engine', () => {
           { includeReflections: true },
         );
         expect(durable.filter(message => message._reflection)).toEqual([
-          expect.objectContaining({ content: expect.stringContaining('durable t2 reflection summary') }),
+          expect.objectContaining({
+            content: expect.stringContaining('durable t2 reflection summary'),
+            causalRootId: 'root-t2-origin',
+          }),
         ]);
         expect(durable.some(message => message.role === 'tool')).toBe(false);
         expect(durable.some(message => Array.isArray(message.toolCalls) && message.toolCalls.length > 0)).toBe(false);
@@ -1631,6 +2630,7 @@ describe('Engine', () => {
         for await (const _event of engine.query({
           prompt: 'write a long answer',
           sessionId: 'session-continue-persist',
+          causalRootId: 'root-max-token',
         })) {
           // consume
         }
@@ -1639,10 +2639,11 @@ describe('Engine', () => {
           role: message.role,
           content: message.content,
           userAuthored: message.userAuthored,
+          causalRootId: message.causalRootId,
         }))).toEqual([
-          { role: 'user', content: 'write a long answer', userAuthored: true },
-          { role: 'assistant', content: 'first part', userAuthored: undefined },
-          { role: 'user', content: 'Continue', userAuthored: false },
+          { role: 'user', content: 'write a long answer', userAuthored: true, causalRootId: 'root-max-token' },
+          { role: 'assistant', content: 'first part', userAuthored: undefined, causalRootId: 'root-max-token' },
+          { role: 'user', content: 'Continue', userAuthored: false, causalRootId: 'root-max-token' },
         ]);
         expect(conversationStore.loadVisibleBySession('session-continue-persist', null, 10).messages).toEqual([
           expect.objectContaining({ role: 'user', content: 'write a long answer', userAuthored: true }),
@@ -1700,6 +2701,14 @@ describe('Engine', () => {
           speakerVpId: 'vp-linus',
           responseKind: 'result',
           stopReason: 'end_turn',
+        });
+        const requestRoot = join(`${join(yeaftDir, 'debug-trace.db')}.files`, 'sessions', 'session-turn-id', 'debug', 'requests');
+        const [requestDir] = readdirSync(requestRoot);
+        const meta = JSON.parse(readFileSync(join(requestRoot, requestDir, 'meta.json'), 'utf8'));
+        expect(meta).toMatchObject({
+          requestId: 'vp-turn-ui-1',
+          active: false,
+          finalStopReason: 'end_turn',
         });
         const debug = await debugTrace.fetchTurnDebug({
           sessionId: 'session-turn-id',
@@ -4046,7 +5055,7 @@ describe('Engine', () => {
       expect(turnEnds[0].stopReason).toBe('error');
     });
 
-    it('should mark LLMRateLimitError as retryable', async () => {
+    it('marks rate-limit and server errors retryable without retries', async () => {
       const { LLMRateLimitError } = await import('../../../agent/yeaft/llm/adapter.js');
 
       const engine = new Engine({
@@ -4069,12 +5078,10 @@ describe('Engine', () => {
       const errorEvents = events.filter(e => e.type === 'error');
       expect(errorEvents).toHaveLength(1);
       expect(errorEvents[0].retryable).toBe(true);
-    });
 
-    it('should mark LLMServerError as retryable', async () => {
       const { LLMServerError } = await import('../../../agent/yeaft/llm/adapter.js');
 
-      const engine = new Engine({
+      const serverEngine = new Engine({
         adapter: {
           async *stream() {
             throw new LLMServerError('Internal error', 500);
@@ -4084,14 +5091,14 @@ describe('Engine', () => {
         config: { model: 'test-model', maxOutputTokens: 1024, llmRetry: { maxRetries: 0 } },
       });
 
-      const events = [];
-      for await (const event of engine.query({ prompt: 'hello' })) {
-        events.push(event);
+      const serverEvents = [];
+      for await (const event of serverEngine.query({ prompt: 'hello' })) {
+        serverEvents.push(event);
       }
 
-      const errorEvents = events.filter(e => e.type === 'error');
-      expect(errorEvents).toHaveLength(1);
-      expect(errorEvents[0].retryable).toBe(true);
+      const serverErrorEvents = serverEvents.filter(e => e.type === 'error');
+      expect(serverErrorEvents).toHaveLength(1);
+      expect(serverErrorEvents[0].retryable).toBe(true);
     });
   });
 
@@ -4559,11 +5566,125 @@ describe('Engine', () => {
       expect(events).not.toContainEqual(expect.objectContaining({ type: 'turn_end', stopReason: 'end_turn' }));
     });
 
-    it('settles retry persistence for boundary teardown and later textless failure', async () => {
+    it('settles retry persistence at dispatch, close, and terminal failure boundaries', async () => {
       const { LLMServerError } = await import('../../../agent/yeaft/llm/adapter.js');
-      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-retry-abort-partial-'));
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-retry-turn-start-close-'));
       try {
         const conversationStore = new ConversationStore(yeaftDir);
+        let attempts = 0;
+        const engine = new Engine({
+          adapter: {
+            async *stream() {
+              attempts += 1;
+              if (attempts === 1) {
+                yield { type: 'text_delta', text: 'visible partial before retry' };
+                throw new LLMServerError('temporary upstream failure', 503);
+              }
+              yield { type: 'stop', stopReason: 'end_turn' };
+            },
+          },
+          trace,
+          conversationStore,
+          yeaftDir,
+          config: {
+            model: 'test-model',
+            maxOutputTokens: 1024,
+            llmRetry: { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 },
+          },
+        });
+
+        const iterator = engine.query({
+          prompt: 'hi',
+          sessionId: 'session-retry-turn-start-close',
+          vpTurnId: 'turn-retry-turn-start-close',
+        })[Symbol.asyncIterator]();
+        let secondTurnStart = false;
+        while (true) {
+          const step = await iterator.next();
+          if (step.done) throw new Error('retry ended before its next turn_start');
+          if (step.value.type === 'turn_start' && step.value.turnNumber === 2) {
+            secondTurnStart = true;
+            break;
+          }
+        }
+        expect(secondTurnStart).toBe(true);
+        expect(attempts).toBe(1);
+        await iterator.return();
+
+        expect(attempts).toBe(1);
+        expect(conversationStore.loadRecentBySession('session-retry-turn-start-close', Infinity)).toEqual([
+          expect.objectContaining({ role: 'user', content: 'hi' }),
+          expect.objectContaining({
+            role: 'assistant',
+            content: 'visible partial before retry',
+            incomplete: true,
+            stopReason: 'aborted',
+            turnId: 'turn-retry-turn-start-close',
+          }),
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+
+      const routerDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-router-retry-close-'));
+      const routerFetch = globalThis.fetch;
+      try {
+        const conversationStore = new ConversationStore(routerDir);
+        let fetches = 0;
+        globalThis.fetch = async () => {
+          fetches += 1;
+          return new Response(
+            'event: response.output_text.delta\n' +
+            'data: {"type":"response.output_text.delta","delta":"visible router partial"}\n\n',
+            { status: 200, headers: { 'content-type': 'text/event-stream' } },
+          );
+        };
+        const router = new AdapterRouter({
+          providers: [{
+            name: 'retry-router',
+            baseUrl: 'https://retry-router.example/v1',
+            apiKey: 'retry-router-key',
+            protocol: 'openai-responses',
+            models: ['retry-router-model'],
+          }],
+        });
+        const routerEngine = new Engine({
+          adapter: router,
+          trace,
+          conversationStore,
+          yeaftDir: routerDir,
+          config: {
+            model: 'retry-router/retry-router-model',
+            maxOutputTokens: 1024,
+            llmRetry: { maxRetries: 1, baseDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 },
+          },
+        });
+        const iterator = routerEngine.query({
+          prompt: 'router retry',
+          sessionId: 'session-router-retry-close',
+          vpTurnId: 'turn-router-retry-close',
+        })[Symbol.asyncIterator]();
+        while (true) {
+          const step = await iterator.next();
+          if (step.done) throw new Error('retry ended before second turn_start');
+          if (step.value.type === 'turn_start' && step.value.turnNumber === 2) break;
+        }
+        expect(fetches).toBe(1);
+        await iterator.return();
+        expect(fetches).toBe(1);
+        expect(conversationStore.loadRecentBySession('session-router-retry-close', Infinity))
+          .not.toContainEqual(expect.objectContaining({
+            role: 'user',
+            content: expect.stringContaining('Continue from the exact point'),
+          }));
+      } finally {
+        globalThis.fetch = routerFetch;
+        rmSync(routerDir, { recursive: true, force: true });
+      }
+
+      const boundaryDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-retry-abort-partial-'));
+      try {
+        const conversationStore = new ConversationStore(boundaryDir);
         let attempts = 0;
         const engine = new Engine({
           adapter: {
@@ -4575,7 +5696,7 @@ describe('Engine', () => {
           },
           trace,
           conversationStore,
-          yeaftDir,
+          yeaftDir: boundaryDir,
           config: {
             model: 'test-model',
             maxOutputTokens: 1024,
@@ -4611,7 +5732,7 @@ describe('Engine', () => {
           }),
         ]);
       } finally {
-        rmSync(yeaftDir, { recursive: true, force: true });
+        rmSync(boundaryDir, { recursive: true, force: true });
       }
       const errorDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-retry-final-partial-'));
       try {
@@ -4701,7 +5822,7 @@ describe('Engine', () => {
   });
 
   describe('abort signal', () => {
-    it('should propagate abort signal to adapter', async () => {
+    it('links normal signals and handles pre-aborted signals', async () => {
       const ac = new AbortController();
       let receivedSignal = null;
 
@@ -4736,13 +5857,11 @@ describe('Engine', () => {
       // Verify normal completion when signal is not aborted
       const textEvents = events.filter(e => e.type === 'text_delta');
       expect(textEvents).toHaveLength(1);
-    });
 
-    it('should handle pre-aborted signal', async () => {
-      const ac = new AbortController();
-      ac.abort(); // Pre-abort
+      const preAbortedController = new AbortController();
+      preAbortedController.abort(); // Pre-abort
 
-      const abortAdapter = {
+      const preAbortedAdapter = {
         async *stream(params) {
           if (params.signal?.aborted) {
             throw new Error('Request aborted');
@@ -4752,24 +5871,24 @@ describe('Engine', () => {
         },
       };
 
-      const engine = new Engine({
-        adapter: abortAdapter,
+      const preAbortedEngine = new Engine({
+        adapter: preAbortedAdapter,
         trace,
         config: { model: 'test-model', maxOutputTokens: 1024 },
       });
 
-      const events = [];
-      for await (const event of engine.query({ prompt: 'hello', signal: ac.signal })) {
-        events.push(event);
+      const preAbortedEvents = [];
+      for await (const event of preAbortedEngine.query({ prompt: 'hello', signal: preAbortedController.signal })) {
+        preAbortedEvents.push(event);
       }
 
       // task-325a: pre-aborted external signal now converges on the
       // typed `aborted` event (not a generic `error`), and the turn
       // ends with stopReason 'aborted'.
-      const abortedEvents = events.filter(e => e.type === 'aborted');
+      const abortedEvents = preAbortedEvents.filter(e => e.type === 'aborted');
       expect(abortedEvents).toHaveLength(1);
       expect(abortedEvents[0].reason).toBe('external');
-      const turnEnds = events.filter(e => e.type === 'turn_end');
+      const turnEnds = preAbortedEvents.filter(e => e.type === 'turn_end');
       expect(turnEnds.at(-1).stopReason).toBe('aborted');
     });
 
@@ -5034,14 +6153,40 @@ describe('Engine', () => {
             responseText: '',
             rawResponse,
             stopReason: 'tool_use',
+            model: 'gateway-search-model',
+            usage: { inputTokens: 2, outputTokens: 1, totalTokens: 3 },
+            latencyMs: 5,
             messages: [{ role: 'user', content: 'do long work' }],
           });
+          if (i === 1) boundedTrace.logTool(turnId, { toolName: 'search', toolOutput: 'ok' });
         }
-        await boundedTrace.close();
+        boundedTrace.finalizeQuery('long-tool-turn', { sessionId: 's-long', stopReason: 'end_turn' });
+        await boundedTrace.flush();
+
+        const beforeEviction = await boundedTrace.fetchRecentDebugHistory({
+          sessionId: 's-long',
+          indexOnly: true,
+          search: '/gateway-search-model|search|tool_use|end_turn/',
+        });
+        expect(beforeEviction.turns).toEqual([
+          expect.objectContaining({
+            turnId: 'long-tool-turn',
+            loopCount: 100,
+            totalTokens: 300,
+            totalMs: 500,
+          }),
+        ]);
 
         const requestRoot = join(traceRoot, 'sessions', 's-long', 'debug', 'requests');
         const [requestDir] = readdirSync(requestRoot);
         const eventFile = join(requestRoot, requestDir, 'events.jsonl');
+        const savedEvents = readFileSync(eventFile, 'utf8');
+        writeFileSync(eventFile, '', 'utf8');
+        const evictedDetail = await boundedTrace.fetchTurnDebug({ sessionId: 's-long', turnId: 'long-tool-turn' });
+        expect(evictedDetail.loops).toEqual([]);
+        writeFileSync(eventFile, savedEvents, 'utf8');
+        await boundedTrace.close();
+
         const storedLoops = readFileSync(eventFile, 'utf8')
           .trim()
           .split('\n')
@@ -5055,10 +6200,93 @@ describe('Engine', () => {
         expect(lstatSync(eventFile).size).toBeLessThan(8 * 1024 * 1024);
 
         const reopened = new DebugTrace(traceRoot);
+        const reopenedStats = await reopened.stats();
+        expect(reopenedStats.turnCount).toBeGreaterThanOrEqual(100);
         const detail = await reopened.fetchTurnDebug({ sessionId: 's-long', turnId: 'long-tool-turn' });
         expect(detail.turns).toHaveLength(1);
         expect(detail.loops).toHaveLength(100);
         expect(detail.loops.at(-1)?.loopNumber).toBe(100);
+        expect(Buffer.byteLength(JSON.stringify(detail), 'utf8')).toBeLessThan(6 * 1024 * 1024);
+
+        const oversizedDetail = {
+          loops: Array.from({ length: 4 }, (_, index) => ({
+            turnId: 'oversized-turn',
+            loopNumber: index + 1,
+            systemPrompt: 'system prompt',
+            response: 'R'.repeat(3 * 1024 * 1024),
+            rawResponse: { body: 'X'.repeat(3 * 1024 * 1024) },
+          })),
+          turns: [{ turnId: 'oversized-turn', loopCount: 4 }],
+          dreamEvents: [],
+          detailTurnId: 'oversized-turn',
+        };
+        const projectedDetail = projectDebugDetailForWire(oversizedDetail);
+        expect(Buffer.byteLength(JSON.stringify(projectedDetail), 'utf8')).toBeLessThan(6 * 1024 * 1024);
+        expect(projectedDetail.projection).toMatchObject({
+          truncated: true,
+          reason: 'debug_detail_wire_budget',
+          maxBytes: 6 * 1024 * 1024,
+        });
+        expect(projectedDetail.loops.some(loop => (
+          loop.rawResponse?.__truncated === true
+          && loop.rawResponse?.reason === 'debug_detail_wire_budget'
+        ))).toBe(true);
+
+        for (const toolCount of [24, 100]) {
+          const toolDetail = {
+            loops: [],
+            turns: [{
+              turnId: `tool-turn-${toolCount}`,
+              tools: Array.from({ length: toolCount }, (_, index) => ({
+                name: 'large-tool',
+                toolInput: `input-${index}`,
+                toolOutput: 'T'.repeat(256 * 1024),
+              })),
+            }],
+            dreamEvents: [],
+          };
+          const projectedTools = projectDebugDetailForWire(toolDetail);
+          expect(Buffer.byteLength(JSON.stringify(projectedTools), 'utf8')).toBeLessThan(6 * 1024 * 1024);
+          expect(projectedTools.turns[0].tools).toHaveLength(toolCount);
+          expect(projectedTools.turns[0].tools.every(tool => (
+            typeof tool.toolOutput === 'string' && tool.toolOutput.includes('wire truncated')
+          ))).toBe(true);
+        }
+
+        const cumulativeRequest = { body: 'Q'.repeat(2 * 1024 * 1024) };
+        const cumulativeDetail = {
+          loops: Array.from({ length: 50 }, (_, index) => ({
+            turnId: 'cumulative-turn',
+            loopNumber: index + 1,
+            rawRequest: cumulativeRequest,
+            response: 'ok',
+          })),
+          turns: [{ turnId: 'cumulative-turn' }],
+          dreamEvents: [],
+        };
+        const projectionStartedAt = performance.now();
+        const projectedCumulative = projectDebugDetailForWire(cumulativeDetail);
+        const projectionElapsedMs = performance.now() - projectionStartedAt;
+        expect(Buffer.byteLength(JSON.stringify(projectedCumulative), 'utf8')).toBeLessThan(6 * 1024 * 1024);
+        expect(projectedCumulative.projection.truncatedFields).toBe(50);
+        // The old implementation re-stringified the entire 100 MiB payload for
+        // every loop and independently took over 13 seconds for this shape.
+        // Leave ample CI headroom while fencing it below the browser's 10s timer.
+        expect(projectionElapsedMs).toBeLessThan(5_000);
+        // The wire projection is derived after persistence; canonical event
+        // records retain their normal per-field storage bounds.
+        expect(storedLoops.every(loop => loop.rawResponse?.maxBytes === 64 * 1024)).toBe(true);
+
+        // Aggregate queries must not pin every full request payload in memory.
+        // After stats(), detail still comes from disk rather than a process-life
+        // cache populated by a global hydrate.
+        writeFileSync(eventFile, '', 'utf8');
+        const detailAfterDiskChange = await reopened.fetchTurnDebug({
+          sessionId: 's-long',
+          turnId: 'long-tool-turn',
+        });
+        expect(detailAfterDiskChange.loops).toEqual([]);
+        writeFileSync(eventFile, savedEvents, 'utf8');
         await reopened.close();
 
         appendFileSync(eventFile, '{"type":"loop"', 'utf8');
@@ -5093,7 +6321,7 @@ describe('Engine', () => {
           appendFileSync(continuedEvents, '{"type":"loop"', 'utf8');
 
           const continued = new DebugTrace(continuationRoot);
-          await continued.fetchTurnDebug({ sessionId: 'continued-session', turnId: 'continued-turn' });
+          await continued.resumeTrace({ sessionId: 'continued-session', turnId: 'continued-turn' });
           const secondTurn = continued.startTurn({ traceId: 'continued-turn', turnNumber: 2, sessionId: 'continued-session' });
           continued.endTurn(secondTurn, { responseText: 'loop-2', stopReason: 'end_turn' });
           await continued.close();
@@ -5123,16 +6351,59 @@ describe('Engine', () => {
             tools: [],
           }), 'utf8');
           const legacyWriter = new DebugTrace(legacyRoot);
-          await legacyWriter.fetchTurnDebug({ sessionId: 'legacy-session', turnId: 'legacy-turn' });
+          await legacyWriter.resumeTrace({ sessionId: 'legacy-session', turnId: 'legacy-turn' });
           const legacyNext = legacyWriter.startTurn({ traceId: 'legacy-turn', turnNumber: 2, sessionId: 'legacy-session' });
           legacyWriter.endTurn(legacyNext, { responseText: 'legacy-2', stopReason: 'end_turn' });
           await legacyWriter.close();
           const legacyReader = new DebugTrace(legacyRoot);
+          const legacyStats = await legacyReader.stats();
+          expect(legacyStats).toMatchObject({ turnCount: 2, toolCount: 0, requestCount: 1 });
           const legacyDetail = await legacyReader.fetchTurnDebug({ sessionId: 'legacy-session', turnId: 'legacy-turn' });
           expect(legacyDetail.loops.map(loop => loop.response)).toEqual(['legacy-1', 'legacy-2']);
+          const rawPayloadSearch = await legacyReader.fetchRecentDebugHistory({
+            sessionId: 'legacy-session',
+            indexOnly: true,
+            search: 'legacy-1',
+          });
+          expect(rawPayloadSearch.turns).toEqual([]);
           await legacyReader.close();
         } finally {
           rmSync(legacyRoot, { recursive: true, force: true });
+        }
+
+        const safeDirRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-safe-dir-'));
+        try {
+          const sessionId = 'legacy/session';
+          const safeWriter = new DebugTrace(safeDirRoot);
+          const oldSafeTurn = safeWriter.startTurn({ traceId: 'old-safe-turn', turnNumber: 1, sessionId });
+          safeWriter.endTurn(oldSafeTurn, { responseText: 'old-response', stopReason: 'end_turn' });
+          safeWriter.finalizeQuery('old-safe-turn', { sessionId });
+          const safeTurn = safeWriter.startTurn({ traceId: 'safe-turn', turnNumber: 1, sessionId });
+          safeWriter.logTool(safeTurn, { toolName: 'legacy_tool', toolOutput: 'needle-tool-output' });
+          safeWriter.endTurn(safeTurn, { responseText: 'needle-response', stopReason: 'end_turn' });
+          safeWriter.finalizeQuery('safe-turn', { sessionId });
+          await safeWriter.close();
+
+          const sessionsDir = join(safeDirRoot, 'sessions');
+          const [currentSessionName] = readdirSync(sessionsDir);
+          const currentSessionDir = join(sessionsDir, currentSessionName);
+          const legacySessionDir = join(sessionsDir, 'legacy_session');
+          renameSync(currentSessionDir, legacySessionDir);
+
+          const safeReader = new DebugTrace(safeDirRoot);
+          expect(await safeReader.stats()).toMatchObject({ turnCount: 2, toolCount: 1, requestCount: 2 });
+          const safeDetail = await safeReader.fetchTurnDebug({ sessionId, turnId: 'safe-turn' });
+          expect(safeDetail.loops.map(loop => loop.response)).toEqual(['needle-response']);
+          expect(await safeReader.queryTools({ name: 'legacy_tool' })).toHaveLength(1);
+          expect(await safeReader.search('needle-response')).toHaveLength(1);
+          expect(await safeReader.cleanup(1)).toMatchObject({ deletedRequests: 1 });
+          const afterPrune = await safeReader.fetchTurnDebug({ sessionId, turnId: 'safe-turn' });
+          expect(afterPrune.loops.map(loop => loop.response)).toEqual(['needle-response']);
+          const prunedSafe = await safeReader.fetchTurnDebug({ sessionId, turnId: 'old-safe-turn' });
+          expect(prunedSafe.loops).toEqual([]);
+          await safeReader.close();
+        } finally {
+          rmSync(safeDirRoot, { recursive: true, force: true });
         }
 
         const retentionRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-retention-'));
@@ -5213,7 +6484,7 @@ describe('Engine', () => {
           }), 'utf8');
 
           const migrationWriter = new DebugTrace(duplicateRoot);
-          await migrationWriter.fetchTurnDebug({ sessionId, turnId: 'legacy-active-turn' });
+          await migrationWriter.resumeTrace({ sessionId, turnId: 'legacy-active-turn' });
           const migratedTurn = migrationWriter.startTurn({ traceId: 'legacy-active-turn', turnNumber: 2, sessionId });
           migrationWriter.endTurn(migratedTurn, { responseText: 'legacy-active-2', stopReason: 'tool_use' });
           await migrationWriter.flush();
@@ -5313,6 +6584,54 @@ describe('Engine', () => {
   });
 
   describe('tools passed to adapter', () => {
+    it('passes tool definitions only when tools are registered', async () => {
+      const withToolsAdapter = new MockAdapter();
+      withToolsAdapter.pushResponse([
+        { type: 'text_delta', text: 'ok' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const withToolsEngine = new Engine({
+        adapter: withToolsAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+
+      withToolsEngine.registerTool({
+        name: 'calculator',
+        description: 'Calculate math',
+        parameters: { type: 'object', properties: { expr: { type: 'string' } } },
+        execute: async () => '42',
+      });
+
+      for await (const _event of withToolsEngine.query({ prompt: 'test' })) {
+        // consume
+      }
+
+      const withToolsCall = withToolsAdapter.callLog[0];
+      expect(withToolsCall.tools).toHaveLength(1);
+      expect(withToolsCall.tools[0].name).toBe('calculator');
+      expect(withToolsCall.tools[0].description).toBe('Calculate math');
+
+      const withoutToolsAdapter = new MockAdapter();
+      withoutToolsAdapter.pushResponse([
+        { type: 'text_delta', text: 'ok' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const withoutToolsEngine = new Engine({
+        adapter: withoutToolsAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+
+      for await (const _event of withoutToolsEngine.query({ prompt: 'test' })) {
+        // consume
+      }
+
+      const withoutToolsCall = withoutToolsAdapter.callLog[0];
+      expect(withoutToolsCall.tools).toBeUndefined();
+    });
+
     it('filters plugin-disabled tools and MCP servers from adapter definitions and execution', async () => {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'ok' },
@@ -5388,7 +6707,7 @@ describe('Engine', () => {
         toolRegistry: registry,
       });
       const events = [];
-      for await (const event of filteredEngine.query({ prompt: 'try disabled tool' })) events.push(event);
+      for await (const event of filteredEngine.query({ prompt: 'use MCP github and try disabled tool' })) events.push(event);
       expect(mockAdapter.callLog.at(-2).tools.map(tool => tool.name)).toEqual([
         'EnabledTool',
         'mcp__github__list_prs',
@@ -5505,25 +6824,6 @@ describe('Engine', () => {
       });
     });
 
-    it('should not pass tools when none are registered', async () => {
-      mockAdapter.pushResponse([
-        { type: 'text_delta', text: 'ok' },
-        { type: 'stop', stopReason: 'end_turn' },
-      ]);
-
-      const engine = new Engine({
-        adapter: mockAdapter,
-        trace,
-        config: { model: 'test-model', maxOutputTokens: 1024 },
-      });
-
-      for await (const _event of engine.query({ prompt: 'test' })) {
-        // consume
-      }
-
-      const call = mockAdapter.callLog[0];
-      expect(call.tools).toBeUndefined();
-    });
   });
 
   describe('active scope in system prompt', () => {
@@ -5682,7 +6982,8 @@ describe('Engine', () => {
       }
 
       const toolGuidanceCall = mockAdapter.callLog[0];
-      expect(toolGuidanceCall.system).toContain('可用工具：search');
+      expect(toolGuidanceCall.tools.map(tool => tool.name)).toContain('search');
+      expect(toolGuidanceCall.system).not.toContain('可用工具：search');
 
       const enSystem = buildSystemPrompt({
         language: 'en',
@@ -5711,14 +7012,14 @@ describe('Engine', () => {
       })).toContain('当前 Session 隶属于当前 Project。当前 Project 的统一 instruction 是：');
       expect(buildSystemPrompt({ language: 'en', projectInstruction: '   ' }))
         .not.toContain('[Project Instruction]');
-      expect(enSystem).toContain('Avoid an intermediate `TodoWrite`-only model round');
-      expect(enSystem).toMatch(/mark work completed only after\s+evidence/);
-      expect(enSystem).toContain('A standalone `TodoWrite` remains valid');
+      expect(enSystem).toContain('use `StartPlan` before execution');
+      expect(enSystem).toContain('keep the visible `TodoWrite` checklist current');
+      expect(enSystem).toContain('do not stop after planning');
       expect(zhSystem).toContain('当前 Session 隶属于 Project Yeaft（project-123）。当前 Project 的统一 instruction 是：');
       expect(zhSystem).toContain('发布前执行统一验证。');
-      expect(zhSystem).toContain('不要让中间状态的 `TodoWrite` 单独占一个');
-      expect(zhSystem).toContain('只有已有证据时才能把工作标记为完成');
-      expect(zhSystem).toContain('`TodoWrite` 仍可单独调用');
+      expect(zhSystem).toContain('使用 `StartPlan`');
+      expect(zhSystem).toContain('持续更新可见的 `TodoWrite` checklist');
+      expect(zhSystem).toContain('只有用户信息确实阻塞第一步时才在规划后停下');
 
       expect(todoWriteTool.description.en).toContain('BATCH WITH WORK');
       expect(todoWriteTool.description.en).toContain('same assistant response');

@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { WebSocket } from 'ws';
 import { CONFIG } from './config.js';
 import { verifyAgent } from './auth.js';
+
 import { encodeKey } from './encryption.js';
 import { agents, pendingAgentConnections } from './context.js';
 import { userDb } from './database.js';
@@ -53,6 +54,7 @@ export function handleAgentConnection(ws, url) {
   const agentName = url.searchParams.get('name') || `Agent-${clientAgentId.slice(0, 8)}`;
   const instanceId = url.searchParams.get('instanceId') || clientAgentId;
   const workDir = url.searchParams.get('workDir') || '';
+  const urlPlatform = url.searchParams.get('platform') || null;
 
   // Both authenticated and SKIP_AUTH connections use the existing auth frame
   // for registration metadata. Released Agents already send their version there;
@@ -103,9 +105,11 @@ export function handleAgentConnection(ws, url) {
           clearTimeout(pending.timeout);
           pendingAgentConnections.delete(tempId);
 
-          const authResult = skipAgentAuth
-            ? { valid: true, sessionKey: null, userId: null, username: null }
-            : verifyAgent(msg.secret);
+          const authResult = msg.authKind
+            ? { valid: false, sessionKey: null, userId: null, username: null }
+            : skipAgentAuth
+              ? { valid: true, sessionKey: null, userId: null, username: null }
+              : verifyAgent(msg.secret);
           if (!authResult.valid) {
             pruneAgentConnectionGenerations();
             console.log(`Agent auth failed: ${agentName}`);
@@ -115,6 +119,9 @@ export function handleAgentConnection(ws, url) {
 
           const capabilities = Array.isArray(msg.capabilities) ? msg.capabilities : urlCapabilities;
           const agentVersion = msg.version || null;
+          const agentPlatform = typeof msg.platform === 'string' && msg.platform
+            ? msg.platform
+            : urlPlatform;
           // Local no-auth mode still has one durable browser owner. This makes
           // the server-side Session catalog persistent without changing generic
           // development-server behavior, which remains ownerless.
@@ -122,12 +129,13 @@ export function handleAgentConnection(ws, url) {
             ? userDb.getOrCreate('dev-user')
             : null;
           const ownerId = localOwner?.id || authResult.userId;
-          const ownerUsername = localOwner?.username || authResult.username;
+          const ownerUsername = localOwner?.username || authResult.username || null;
+          const registeredInstanceId = pending.instanceId || pending.agentId || pending.agentName;
           // Authenticated Agents use an owner-scoped key. SKIP_AUTH preserves
           // its historical unscoped id while still receiving version metadata.
           resolvedAgentId = skipAgentAuth
             ? clientAgentId
-            : buildAgentMapKey(ownerId, pending.instanceId || pending.agentId || pending.agentName);
+            : buildAgentMapKey(ownerId, registeredInstanceId);
           if (!claimAgentConnection(resolvedAgentId, connectionGeneration)) {
             resolvedAgentId = null;
             pruneAgentConnectionGenerations();
@@ -144,7 +152,8 @@ export function handleAgentConnection(ws, url) {
             ownerId,
             ownerUsername,
             agentVersion,
-            pending.instanceId || pending.agentId || pending.agentName,
+            registeredInstanceId,
+            agentPlatform,
           );
           pruneAgentConnectionGenerations();
         }
@@ -158,6 +167,10 @@ export function handleAgentConnection(ws, url) {
       const agent = agents.get(resolvedAgentId);
       if (!agent || agent.ws !== ws) {
         if (!agent) console.error(`[Agent] No agent found for id: ${resolvedAgentId}`);
+        return;
+      }
+      if (!skipAgentAuth && agent.ownerId && !userDb.isActive(agent.ownerId)) {
+        ws.close(1008, 'Account disabled');
         return;
       }
       markAgentHeartbeatSeen(agent);
@@ -225,7 +238,7 @@ function handleAgentDisconnect(agentId, agentName, ws) {
   broadcastAgentList();
 }
 
-function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, capabilities = [], ownerId = null, ownerUsername = null, agentVersion = null, instanceId = null) {
+function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, capabilities = [], ownerId = null, ownerUsername = null, agentVersion = null, instanceId = null, agentPlatform = null) {
   // 如果是重连，保留 conversations；否则（server 重启）创建空 Map
   const existingAgent = agents.get(agentId);
   const conversations = existingAgent?.conversations || new Map();
@@ -262,10 +275,10 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
     ownerId,
     ownerUsername,
     version: agentVersion,
+    platform: agentPlatform,
     encryptOutbound
   });
 
-  // 同步超时保护：30 秒后强制 ready
   const syncTimeout = setTimeout(() => {
     const ag = agents.get(agentId);
     if (ag?.ws === ws && ag.status === 'syncing') {

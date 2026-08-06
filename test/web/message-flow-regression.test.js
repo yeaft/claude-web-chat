@@ -207,6 +207,40 @@ describe('message flow regressions', () => {
     expect(store.yeaftMcpError).toBeNull();
   });
 
+  it('keeps the manual upgrade bridge in stop-install-start order in both languages', () => {
+    const installCommand = 'npm install -g @yeaft/webchat-agent@latest --registry=https://pkg.yeaft.com/';
+    const guides = [
+      {
+        message: enMessages['chat.agent.manualUpgradeRequired'],
+        stopAnchor: 'First stop the selected Agent/service',
+        managerAnchor: 'PM2 or another service manager',
+        foregroundAnchor: 'foreground terminal',
+        exitAnchor: 'Confirm that process has exited',
+        startAnchor: 'start the same Agent instance again with its original configuration',
+      },
+      {
+        message: zhCNMessages['chat.agent.manualUpgradeRequired'],
+        stopAnchor: '先停止该机器上所选的 Agent/服务',
+        managerAnchor: 'PM2 或其他服务管理器',
+        foregroundAnchor: '前台终端',
+        exitAnchor: '确认该进程已经退出',
+        startAnchor: '使用原配置启动同一 Agent 实例',
+      },
+    ];
+
+    for (const guide of guides) {
+      expect(guide.message).toContain(guide.managerAnchor);
+      expect(guide.message).toContain(guide.foregroundAnchor);
+      const stopIndex = guide.message.indexOf(guide.stopAnchor);
+      const exitIndex = guide.message.indexOf(guide.exitAnchor);
+      const installIndex = guide.message.indexOf(installCommand);
+      const startIndex = guide.message.indexOf(guide.startAnchor);
+      expect(stopIndex).toBeGreaterThanOrEqual(0);
+      expect(exitIndex).toBeGreaterThan(stopIndex);
+      expect(installIndex).toBeGreaterThan(exitIndex);
+      expect(startIndex).toBeGreaterThan(installIndex);
+    }
+  });
   it('does not refresh Work Center for routine agent inventory broadcasts', () => {
     const store = useChatStore();
     store.workCenterOpen = true;
@@ -361,7 +395,7 @@ describe('message flow regressions', () => {
     store.vpStatuses = {};
     store.yeaftProcessingSessions = {};
 
-    const turnCount = Math.ceil(YEAFT_HISTORY_CACHE_LIMITS.maxRowsPerSession / 2) + 20;
+    const turnCount = YEAFT_HISTORY_CACHE_LIMITS.maxTurnsPerSession + 20;
     for (let index = 1; index <= turnCount; index += 1) {
       store.messagesMap[conversationId].push(
         {
@@ -397,10 +431,65 @@ describe('message flow regressions', () => {
     });
 
     const kept = store.messagesMap[conversationId];
-    expect(kept.length).toBeLessThanOrEqual(YEAFT_HISTORY_CACHE_LIMITS.maxRowsPerSession);
+    expect(kept.length).toBeLessThanOrEqual(YEAFT_HISTORY_CACHE_LIMITS.maxTurnsPerSession * 2);
     expect(kept.some(row => row.id === `user-${turnCount}`)).toBe(true);
     expect(kept.some(row => row.id === `assistant-${turnCount}`)).toBe(true);
     expect(kept.some(row => row.id === 'user-1')).toBe(false);
+  });
+
+  it('schedules one idle background page and de-duplicates the Session timer', async () => {
+    const store = useChatStore();
+    const sessionId = 'session-prefetch';
+    const agentId = 'agent-prefetch';
+    const conversationId = 'yeaft-prefetch';
+    const sessionKey = yeaftHistoryIdentityKey(agentId, sessionId);
+    store.currentView = 'yeaft';
+    store.currentAgent = agentId;
+    store.yeaftConversationId = conversationId;
+    store.yeaftConversationIdsByAgent = { [agentId]: conversationId };
+    store.yeaftSessionAgentById = { [sessionId]: agentId };
+    store.yeaftActiveSessionFilter = sessionId;
+    store.messagesMap = {
+      [conversationId]: [
+        { id: 'm0100', messageId: 'm0100', seq: 100, type: 'user', content: 'q', sessionId, isHistory: true },
+        { id: 'm0101', messageId: 'm0101', seq: 101, type: 'assistant', content: 'a', sessionId, isHistory: true },
+      ],
+    };
+    store.yeaftHistoryCacheState = {
+      [sessionKey]: { ranges: [{ startSeq: 100, endSeq: 101 }], rangeEpoch: 1 },
+    };
+    store.yeaftSessionHistoryState = {
+      [sessionKey]: {
+        loaded: true, loading: false, hasMore: true, serverHasMore: true,
+        oldestSeq: 100, serverOldestFetchedSeq: 100, latestSeq: 101,
+      },
+    };
+    const idleCallbacks = [];
+    vi.stubGlobal('requestIdleCallback', callback => {
+      idleCallbacks.push(callback);
+      return idleCallbacks.length;
+    });
+    const sent = [];
+    store.sendWsMessage = message => { sent.push(message); return true; };
+
+    expect(store.scheduleYeaftHistoryPrefetch(sessionId, agentId)).toBe(true);
+    expect(store.scheduleYeaftHistoryPrefetch(sessionId, agentId)).toBe(false);
+    expect(idleCallbacks).toHaveLength(1);
+    idleCallbacks[0]();
+
+    expect(sent).toEqual([expect.objectContaining({
+      type: 'yeaft_load_more_history',
+      agentId,
+      sessionId,
+      beforeSeq: 100,
+      turns: 50,
+    })]);
+    expect(store.yeaftSessionHistoryState[sessionKey]).toMatchObject({
+      loading: true,
+      mode: 'prefetch',
+      background: true,
+    });
+    vi.unstubAllGlobals();
   });
 
   it('drops oversized live debug detail from legacy Agent events', async () => {
@@ -1713,13 +1802,13 @@ describe('message flow regressions', () => {
       agentId: 'agent-a',
       success: false,
       reason: 'manual_upgrade_required',
-      version: '1.0.337',
-      minimumVersion: '1.0.342',
+      version: '1.0.369',
+      requiredCapability: 'remote_upgrade_safe',
     });
     expect(upgradeAckDetail).toMatchObject({
       reason: 'manual_upgrade_required',
-      version: '1.0.337',
-      minimumVersion: '1.0.342',
+      version: '1.0.369',
+      requiredCapability: 'remote_upgrade_safe',
     });
     expect(alertSpy).toHaveBeenLastCalledWith('chat.agent.manualUpgradeRequired');
     parentStore.mutateProject.mockResolvedValueOnce({ ok: false, error: { code: 'timeout' } });
@@ -1772,8 +1861,8 @@ describe('message flow regressions', () => {
         agentId: 'agent-a',
         success: false,
         reason: 'manual_upgrade_required',
-        version: '1.0.337',
-        minimumVersion: '1.0.342',
+        version: '1.0.369',
+        requiredCapability: 'remote_upgrade_safe',
       },
     }));
     expect(alertSpy).toHaveBeenLastCalledWith('chat.agent.manualUpgradeRequired');

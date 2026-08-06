@@ -1,7 +1,9 @@
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
-const TERMINAL_STOP_REASONS = new Set(['end_turn', 'max_tokens', 'stop_sequence', 'aborted', 'error']);
+const TERMINAL_STOP_REASONS = new Set([
+  'end_turn', 'max_tokens', 'stop_sequence', 'aborted', 'error', 'tool_handoff', 'plan_recorded',
+]);
 
 function snakeUsage(usage) {
   const inputTokens = usage.inputTokens || 0;
@@ -32,10 +34,52 @@ export function extractPrompt(message) {
     .join('');
 }
 
+/**
+ * Parse per-turn VP selectors without reading or mutating formal Session
+ * metadata. Membership is validated later by the Session runner against its
+ * canonical persisted roster.
+ */
+export function normalizeStreamRoutingIntent(message) {
+  if (!message || typeof message !== 'object') return null;
+  const hasSelector = Object.hasOwn(message, 'targetVps')
+    || Object.hasOwn(message, 'targets')
+    || Object.hasOwn(message, 'targetVpId')
+    || Object.hasOwn(message, 'broadcast');
+  if (!hasSelector) return null;
+
+  const rawTargets = [];
+  for (const key of ['targetVps', 'targets']) {
+    if (!Object.hasOwn(message, key)) continue;
+    if (!Array.isArray(message[key])) {
+      throw new Error(`stream-json ${key} must be an array`);
+    }
+    rawTargets.push(...message[key]);
+  }
+  if (Object.hasOwn(message, 'targetVpId')) rawTargets.push(message.targetVpId);
+
+  const targetVpIds = [];
+  let broadcast = message.broadcast === true;
+  for (const rawTarget of rawTargets) {
+    if (typeof rawTarget !== 'string' || !rawTarget.trim()) {
+      throw new Error('stream-json target VP must be a non-empty string');
+    }
+    const target = rawTarget.trim();
+    if (target === 'all' || target === 'everyone') {
+      broadcast = true;
+    } else if (!targetVpIds.includes(target)) {
+      targetVpIds.push(target);
+    }
+  }
+
+  return Object.freeze({
+    targetVpIds: Object.freeze(targetVpIds),
+    broadcast,
+    explicit: true,
+  });
+}
+
 export function createJsonlWriter(output = process.stdout) {
-  return (event) => {
-    output.write(`${JSON.stringify(event)}\n`);
-  };
+  return event => { output.write(`${JSON.stringify(event)}\n`); };
 }
 
 export class JsonlInput {
@@ -126,15 +170,245 @@ export class JsonlInput {
     if (this.#answerRequestIds.has(requestId)) {
       throw new Error(`Duplicate AskUser request_id: ${requestId}`);
     }
-    if (this.#error) throw this.#error;
     if (this.#closed) throw new Error('stdin closed before AskUser response');
     this.#answerRequestIds.add(requestId);
     return new Promise((resolve, reject) => this.#answerWaiters.set(requestId, { resolve, reject }));
   }
 
-  close() {
-    this.#rl.close();
-  }
+  close() { this.#rl.close(); }
+}
+
+function makeUsageState() {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    cacheInputDeltaTokens: 0,
+  };
+}
+
+function finalUsage(state) {
+  return {
+    input_tokens: state.inputTokens,
+    output_tokens: state.outputTokens,
+    cache_read_input_tokens: state.cacheReadTokens,
+    cache_creation_input_tokens: state.cacheWriteTokens,
+    total_input_tokens: state.inputTokens + state.cacheInputDeltaTokens,
+    total_tokens: state.inputTokens + state.cacheInputDeltaTokens + state.outputTokens,
+  };
+}
+
+/**
+ * One Engine-event projector shared by single- and multi-VP stream-json paths.
+ */
+export function createStreamProjector({
+  sessionId,
+  write,
+  workDir = process.cwd(),
+  model = null,
+  modelEffort = null,
+  defaultVpId = null,
+  defaultThreadId = 'main',
+  clientTurnId = randomUUID(),
+} = {}) {
+  const states = new Map();
+  let failed = null;
+  const keyFor = vpId => vpId || '__single__';
+  const stateFor = (vpId = null) => {
+    const key = keyFor(vpId);
+    let state = states.get(key);
+    if (!state) {
+      state = {
+        vpId: vpId || defaultVpId || null,
+        threadId: defaultThreadId || 'main',
+        turnId: clientTurnId,
+        resultText: '',
+        stopReason: 'end_turn',
+        usage: makeUsageState(),
+        asyncWaitPendingByLoop: new Map(),
+      };
+      states.set(key, state);
+    } else if (vpId && !state.vpId) {
+      state.vpId = vpId;
+    }
+    return state;
+  };
+  const scopeFor = state => ({
+    session_id: sessionId,
+    turn_id: state.turnId || clientTurnId,
+    ...(state.vpId ? { vp_id: state.vpId, vpId: state.vpId } : {}),
+    thread_id: state.threadId || 'main',
+    threadId: state.threadId || 'main',
+  });
+
+  const project = ({ vpId = null, event, turnId: fallbackTurnId = null } = {}) => {
+    if (!event || typeof event !== 'object') return;
+    const state = stateFor(vpId);
+    if (event.type === 'turn_open') {
+      if (event.turnId) state.turnId = event.turnId;
+      if (event.vpId) state.vpId = event.vpId;
+      if (event.threadId) state.threadId = event.threadId;
+    } else if (event.threadId) {
+      state.threadId = event.threadId;
+    }
+    if (!state.turnId && fallbackTurnId) state.turnId = fallbackTurnId;
+    const base = scopeFor(state);
+    switch (event.type) {
+      case 'turn_open':
+        write({ ...event, ...base, type: 'turn', subtype: 'start', model, model_effort: modelEffort, cwd: workDir });
+        break;
+      case 'text_delta':
+        state.resultText += event.text || '';
+        write({ ...base, type: 'assistant', subtype: 'text_delta', delta: { type: 'text_delta', text: event.text || '' } });
+        break;
+      case 'thinking_delta':
+        write({ ...base, type: 'assistant', subtype: 'thinking_delta', delta: { type: 'thinking_delta', thinking: event.text || '' } });
+        break;
+      case 'skill_loaded':
+        write({ ...base, type: 'skill', subtype: 'loaded', skill: event.skill });
+        break;
+      case 'skill_error':
+        write({ ...base, type: 'skill', subtype: 'error', skill_name: event.skillName, error: event.message });
+        break;
+      case 'tool_call':
+        write({ ...base, type: 'assistant', subtype: 'tool_use', content: [{ type: 'tool_use', id: event.id, name: event.name, input: event.input }] });
+        if (event.name === 'TodoWrite') {
+          write({ ...base, type: 'todo', subtype: 'update', tool_use_id: event.id, todos: event.input?.todos || [] });
+        }
+        break;
+      case 'tool_start':
+        write({ ...base, type: 'tool', subtype: 'start', tool_use_id: event.id, name: event.name, input: event.input });
+        break;
+      case 'tool_end':
+        write({
+          ...base,
+          type: 'tool',
+          subtype: 'result',
+          tool_use_id: event.id,
+          name: event.name,
+          content: event.output,
+          is_error: !!event.isError,
+          ...(Array.isArray(event.displayImages) && event.displayImages.length > 0
+            ? { display_images: event.displayImages }
+            : {}),
+        });
+        break;
+      case 'usage': {
+        const cacheDelta = event.cacheTokensAreIncludedInInput
+          ? 0
+          : (event.cacheReadTokens || 0) + (event.cacheWriteTokens || 0);
+        state.usage.inputTokens += event.inputTokens || 0;
+        state.usage.outputTokens += event.outputTokens || 0;
+        state.usage.cacheReadTokens += event.cacheReadTokens || 0;
+        state.usage.cacheWriteTokens += event.cacheWriteTokens || 0;
+        state.usage.cacheInputDeltaTokens += cacheDelta;
+        write({ ...base, type: 'usage', usage: snakeUsage(event) });
+        break;
+      }
+      case 'async_task_wait_start': {
+        const loopKey = event.loopNumber ?? state.turnId;
+        const pendingTaskIds = Array.isArray(event.pendingTaskIds) ? event.pendingTaskIds.slice() : [];
+        state.asyncWaitPendingByLoop.set(loopKey, pendingTaskIds);
+        write({
+          ...base,
+          type: 'async_task',
+          subtype: 'wait_start',
+          loop_number: event.loopNumber,
+          pending_task_ids: pendingTaskIds,
+        });
+        break;
+      }
+      case 'async_task_wait_end': {
+        const loopKey = event.loopNumber ?? state.turnId;
+        const pendingTaskIds = state.asyncWaitPendingByLoop.get(loopKey) || [];
+        write({
+          ...base,
+          type: 'async_task',
+          subtype: 'wait_end',
+          loop_number: event.loopNumber,
+          aborted: !!event.aborted,
+          timed_out: !!event.timedOut,
+          pending_task_ids: pendingTaskIds,
+          remaining_task_ids: Array.isArray(event.remainingTaskIds) ? event.remainingTaskIds.slice() : [],
+          deferred_task_ids: Array.isArray(event.deferredTaskIds) ? event.deferredTaskIds.slice() : [],
+        });
+        state.asyncWaitPendingByLoop.delete(loopKey);
+        break;
+      }
+      case 'aborted':
+        state.stopReason = 'aborted';
+        write({ ...base, type: 'aborted', reason: event.reason || 'external' });
+        break;
+      case 'stop':
+        if (event.stopReason) state.stopReason = event.stopReason;
+        break;
+      case 'turn_end':
+        if (event.stopReason && (event.terminal || TERMINAL_STOP_REASONS.has(event.stopReason))) {
+          state.stopReason = event.stopReason;
+        }
+        break;
+      case 'turn_close':
+        write({ ...base, type: 'turn', subtype: 'stop', duration_ms: event.totalMs, loop_count: event.loopCount, total_tokens: event.totalTokens });
+        break;
+      case 'error': {
+        const error = event.error instanceof Error
+          ? event.error
+          : new Error(event.error?.message || String(event.error || 'Unknown error'));
+        failed ||= error;
+        state.stopReason = 'error';
+        write({ ...base, type: 'error', error: { name: error.name, message: error.message }, retryable: !!event.retryable });
+        break;
+      }
+      case 'fallback':
+      case 'llm_retry':
+      case 'memory_used':
+      case 'recall':
+      case 'consolidate':
+      case 'reflection':
+      case 'tool_result_update':
+      case 'user_append':
+        write({ ...event, ...base });
+        break;
+    }
+  };
+
+  const recordFailure = (error, { vpId = null, threadId = null, turnId = null, writeError = true } = {}) => {
+    const normalized = error instanceof Error ? error : new Error(String(error || 'Unknown error'));
+    failed ||= normalized;
+    const state = stateFor(vpId);
+    if (threadId) state.threadId = threadId;
+    if (turnId) state.turnId = turnId;
+    state.stopReason = 'error';
+    if (writeError) {
+      write({
+        ...scopeFor(state),
+        type: 'error',
+        error: { name: normalized.name || 'Error', message: normalized.message || String(normalized) },
+        retryable: false,
+      });
+    }
+    return normalized;
+  };
+
+  const perVpResults = () => Array.from(states.values()).map(state => ({
+    ...(state.vpId ? { vp_id: state.vpId } : {}),
+    turn_id: state.turnId,
+    thread_id: state.threadId || 'main',
+    stop_reason: state.stopReason,
+    result: state.resultText,
+    usage: finalUsage(state.usage),
+  }));
+
+  return {
+    clientTurnId,
+    project,
+    recordFailure,
+    stateFor,
+    scopeFor,
+    get failure() { return failed; },
+    perVpResults,
+  };
 }
 
 export async function runStreamTurn({
@@ -149,38 +423,30 @@ export async function runStreamTurn({
   write,
   getCurrentTodos = null,
   setCurrentTodos = null,
+  vpPersona = null,
+  sessionMembers = null,
+  router = null,
+  inboundEnvelope = null,
+  taskId = null,
+  taskMembers = null,
+  threadId = 'main',
+  vpTurnId = null,
+  userAlreadyPersisted = false,
 }) {
-  const clientTurnId = randomUUID();
-  let engineTurnId = null;
-  let resultText = '';
-  let stopReason = 'end_turn';
-  let failed = null;
-  const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheInputDeltaTokens: 0 };
-
+  const vpId = typeof vpPersona?.vpId === 'string' ? vpPersona.vpId : null;
+  const projector = createStreamProjector({
+    sessionId, write, workDir, model, modelEffort, defaultVpId: vpId, defaultThreadId: threadId,
+  });
   const askUser = async ({ question, options }) => {
     const requestId = randomUUID();
-    write({
-      type: 'ask_user',
-      subtype: 'request',
-      request_id: requestId,
-      session_id: sessionId,
-      turn_id: engineTurnId || clientTurnId,
-      question,
-      options: Array.isArray(options) ? options : [],
-    });
+    const state = projector.stateFor(vpId);
+    const scope = projector.scopeFor(state);
+    write({ ...scope, type: 'ask_user', subtype: 'request', request_id: requestId, question, options: Array.isArray(options) ? options : [] });
     if (!input) throw new Error('AskUser requires --input-format stream-json');
     const answers = await input.waitForAnswer(requestId);
-    write({
-      type: 'ask_user',
-      subtype: 'response',
-      request_id: requestId,
-      session_id: sessionId,
-      turn_id: engineTurnId || clientTurnId,
-      answers,
-    });
+    write({ ...scope, type: 'ask_user', subtype: 'response', request_id: requestId, answers });
     return answers;
   };
-
   try {
     for await (const event of engine.query({
       prompt,
@@ -191,118 +457,45 @@ export async function runStreamTurn({
       askUser,
       getCurrentTodos,
       setCurrentTodos,
+      vpPersona,
+      senderVpId: vpId,
+      sessionMembers,
+      router,
+      inboundEnvelope,
+      taskId,
+      taskMembers,
+      threadId,
+      vpTurnId,
+      userAlreadyPersisted,
     })) {
-      if (event.type === 'turn_open') engineTurnId = event.turnId;
-      const turnId = engineTurnId || clientTurnId;
-      switch (event.type) {
-        case 'turn_open':
-          write({ ...event, type: 'turn', subtype: 'start', session_id: sessionId, turn_id: event.turnId, model, model_effort: modelEffort, cwd: workDir });
-          break;
-        case 'text_delta':
-          resultText += event.text || '';
-          write({ type: 'assistant', subtype: 'text_delta', session_id: sessionId, turn_id: turnId, delta: { type: 'text_delta', text: event.text || '' } });
-          break;
-        case 'thinking_delta':
-          write({ type: 'assistant', subtype: 'thinking_delta', session_id: sessionId, turn_id: turnId, delta: { type: 'thinking_delta', thinking: event.text || '' } });
-          break;
-        case 'skill_loaded':
-          write({ type: 'skill', subtype: 'loaded', session_id: sessionId, turn_id: turnId, skill: event.skill });
-          break;
-        case 'skill_error':
-          write({ type: 'skill', subtype: 'error', session_id: sessionId, turn_id: turnId, skill_name: event.skillName, error: event.message });
-          break;
-        case 'tool_call':
-          write({ type: 'assistant', subtype: 'tool_use', session_id: sessionId, turn_id: turnId, content: [{ type: 'tool_use', id: event.id, name: event.name, input: event.input }] });
-          if (event.name === 'TodoWrite') {
-            write({ type: 'todo', subtype: 'update', session_id: sessionId, turn_id: turnId, tool_use_id: event.id, todos: event.input?.todos || [] });
-          }
-          break;
-        case 'tool_start':
-          write({ type: 'tool', subtype: 'start', session_id: sessionId, turn_id: turnId, tool_use_id: event.id, name: event.name, input: event.input });
-          break;
-        case 'tool_end':
-          write({
-            type: 'tool',
-            subtype: 'result',
-            session_id: sessionId,
-            turn_id: turnId,
-            tool_use_id: event.id,
-            name: event.name,
-            content: event.output,
-            is_error: !!event.isError,
-            ...(Array.isArray(event.displayImages) && event.displayImages.length > 0
-              ? { display_images: event.displayImages }
-              : {}),
-          });
-          break;
-        case 'usage': {
-          const cacheDelta = event.cacheTokensAreIncludedInInput ? 0 : (event.cacheReadTokens || 0) + (event.cacheWriteTokens || 0);
-          usage.inputTokens += event.inputTokens || 0;
-          usage.outputTokens += event.outputTokens || 0;
-          usage.cacheReadTokens += event.cacheReadTokens || 0;
-          usage.cacheWriteTokens += event.cacheWriteTokens || 0;
-          usage.cacheInputDeltaTokens += cacheDelta;
-          write({ type: 'usage', session_id: sessionId, turn_id: turnId, usage: snakeUsage(event) });
-          break;
-        }
-        case 'stop':
-          if (event.stopReason) stopReason = event.stopReason;
-          break;
-        case 'turn_end':
-          if (event.stopReason && TERMINAL_STOP_REASONS.has(event.stopReason)) stopReason = event.stopReason;
-          break;
-        case 'turn_close':
-          write({ type: 'turn', subtype: 'stop', session_id: sessionId, turn_id: turnId, duration_ms: event.totalMs, loop_count: event.loopCount, total_tokens: event.totalTokens });
-          break;
-        case 'error':
-          failed = event.error instanceof Error ? event.error : new Error(event.error?.message || String(event.error || 'Unknown error'));
-          write({ type: 'error', session_id: sessionId, turn_id: turnId, error: { name: failed.name, message: failed.message }, retryable: !!event.retryable });
-          break;
-        case 'fallback':
-        case 'llm_retry':
-        case 'memory_used':
-        case 'recall':
-        case 'consolidate':
-        case 'reflection':
-          write({ ...event, session_id: sessionId, turn_id: turnId });
-          break;
-      }
+      projector.project({ vpId, event, turnId: vpTurnId });
     }
-  } catch (err) {
-    failed = err;
-    write({ type: 'error', session_id: sessionId, turn_id: engineTurnId || clientTurnId, error: { name: err.name || 'Error', message: err.message || String(err) } });
+  } catch (error) {
+    projector.recordFailure(error, { vpId, threadId });
   }
-
-  const finalUsage = {
-    input_tokens: usage.inputTokens,
-    output_tokens: usage.outputTokens,
-    cache_read_input_tokens: usage.cacheReadTokens,
-    cache_creation_input_tokens: usage.cacheWriteTokens,
-    total_input_tokens: usage.inputTokens + usage.cacheInputDeltaTokens,
-    total_tokens: usage.inputTokens + usage.cacheInputDeltaTokens + usage.outputTokens,
-  };
+  const perVp = projector.perVpResults();
+  const state = perVp[0] || { turn_id: projector.clientTurnId, thread_id: threadId, stop_reason: 'end_turn', result: '', usage: finalUsage(makeUsageState()) };
+  const failed = projector.failure;
   const result = {
     type: 'result',
     subtype: failed ? 'error' : 'success',
     session_id: sessionId,
-    turn_id: engineTurnId || clientTurnId,
+    turn_id: state.turn_id,
+    ...(vpId ? { vp_id: vpId, vpId } : {}),
+    thread_id: state.thread_id || 'main',
+    threadId: state.thread_id || 'main',
     model,
     model_effort: modelEffort,
-    stop_reason: failed ? 'error' : stopReason,
+    stop_reason: failed ? 'error' : state.stop_reason,
     is_error: !!failed,
-    result: resultText,
-    usage: finalUsage,
+    result: state.result,
+    usage: state.usage,
     ...(failed ? { error: failed.message || String(failed) } : {}),
   };
   write(result);
   return result;
 }
 
-/**
- * Run one prompt through the multi-VP CLI Session runner. Engine events keep
- * the stream-json shape used by runStreamTurn and add `vp_id`, allowing
- * concurrent VP streams to be demultiplexed without imposing output order.
- */
 export async function runStreamSessionTurn({
   runner,
   prompt,
@@ -312,149 +505,79 @@ export async function runStreamSessionTurn({
   modelEffort = null,
   input = null,
   write,
+  routingIntent = null,
+  internal = false,
+  taskId = null,
+  meta = null,
 }) {
-  const clientTurnId = randomUUID();
-  const states = new Map();
-  let failed = null;
-
-  const stateFor = (vpId) => {
-    let state = states.get(vpId);
-    if (!state) {
-      state = {
-        turnId: clientTurnId,
-        resultText: '',
-        stopReason: 'end_turn',
-        usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheInputDeltaTokens: 0 },
-      };
-      states.set(vpId, state);
-    }
-    return state;
-  };
-
-  const askUser = async ({ question, options }, vpId = null, turnId = clientTurnId) => {
+  const projector = createStreamProjector({ sessionId, write, workDir, model, modelEffort });
+  const askUser = async ({ question, options }, vpId = null, turnId = projector.clientTurnId, threadId = 'main') => {
     const requestId = randomUUID();
-    write({
-      type: 'ask_user', subtype: 'request', request_id: requestId,
-      session_id: sessionId, turn_id: turnId, vp_id: vpId,
-      question, options: Array.isArray(options) ? options : [],
-    });
+    const state = projector.stateFor(vpId);
+    state.turnId = turnId || state.turnId;
+    state.threadId = threadId || state.threadId;
+    const scope = projector.scopeFor(state);
+    write({ ...scope, type: 'ask_user', subtype: 'request', request_id: requestId, question, options: Array.isArray(options) ? options : [] });
     if (!input) throw new Error('AskUser requires --input-format stream-json');
     const answers = await input.waitForAnswer(requestId);
-    write({
-      type: 'ask_user', subtype: 'response', request_id: requestId,
-      session_id: sessionId, turn_id: turnId, vp_id: vpId, answers,
-    });
+    write({ ...scope, type: 'ask_user', subtype: 'response', request_id: requestId, answers });
     return answers;
   };
 
-  const onEvent = async ({ vpId, event, turnId: fallbackTurnId }) => {
-    const state = stateFor(vpId);
-    if (event.type === 'turn_open' && event.turnId) state.turnId = event.turnId;
-    const turnId = state.turnId || fallbackTurnId || clientTurnId;
-    const base = { session_id: sessionId, turn_id: turnId, vp_id: vpId };
-    switch (event.type) {
-      case 'turn_open':
-        write({ ...event, type: 'turn', subtype: 'start', ...base, model, model_effort: modelEffort, cwd: workDir });
-        break;
-      case 'text_delta':
-        state.resultText += event.text || '';
-        write({ type: 'assistant', subtype: 'text_delta', ...base, delta: { type: 'text_delta', text: event.text || '' } });
-        break;
-      case 'thinking_delta':
-        write({ type: 'assistant', subtype: 'thinking_delta', ...base, delta: { type: 'thinking_delta', thinking: event.text || '' } });
-        break;
-      case 'skill_loaded':
-        write({ type: 'skill', subtype: 'loaded', ...base, skill: event.skill });
-        break;
-      case 'skill_error':
-        write({ type: 'skill', subtype: 'error', ...base, skill_name: event.skillName, error: event.message });
-        break;
-      case 'tool_call':
-        write({ type: 'assistant', subtype: 'tool_use', ...base, content: [{ type: 'tool_use', id: event.id, name: event.name, input: event.input }] });
-        if (event.name === 'TodoWrite') {
-          write({ type: 'todo', subtype: 'update', ...base, tool_use_id: event.id, todos: event.input?.todos || [] });
-        }
-        break;
-      case 'tool_start':
-        write({ type: 'tool', subtype: 'start', ...base, tool_use_id: event.id, name: event.name, input: event.input });
-        break;
-      case 'tool_end':
-        write({ type: 'tool', subtype: 'result', ...base, tool_use_id: event.id, name: event.name, content: event.output, is_error: !!event.isError });
-        break;
-      case 'usage': {
-        const cacheDelta = event.cacheTokensAreIncludedInInput ? 0 : (event.cacheReadTokens || 0) + (event.cacheWriteTokens || 0);
-        state.usage.inputTokens += event.inputTokens || 0;
-        state.usage.outputTokens += event.outputTokens || 0;
-        state.usage.cacheReadTokens += event.cacheReadTokens || 0;
-        state.usage.cacheWriteTokens += event.cacheWriteTokens || 0;
-        state.usage.cacheInputDeltaTokens += cacheDelta;
-        write({ type: 'usage', ...base, usage: snakeUsage(event) });
-        break;
-      }
-      case 'stop':
-      case 'turn_end':
-        if (event.stopReason && TERMINAL_STOP_REASONS.has(event.stopReason)) state.stopReason = event.stopReason;
-        break;
-      case 'turn_close':
-        write({ type: 'turn', subtype: 'stop', ...base, duration_ms: event.totalMs, loop_count: event.loopCount, total_tokens: event.totalTokens });
-        break;
-      case 'error':
-        failed ||= event.error instanceof Error ? event.error : new Error(event.error?.message || String(event.error || 'Unknown error'));
-        write({ type: 'error', ...base, error: { name: failed.name, message: failed.message }, retryable: !!event.retryable });
-        break;
-      case 'fallback':
-      case 'llm_retry':
-      case 'memory_used':
-      case 'recall':
-      case 'consolidate':
-      case 'reflection':
-        write({ ...event, ...base });
-        break;
-    }
-  };
-
-  let outcome;
+  let outcome = { report: { dispatched: [] }, results: [] };
   try {
     outcome = await runner.run(prompt, {
       modelEffort,
-      onEvent,
+      routingIntent,
+      internal,
+      taskId,
+      meta,
+      onEvent: event => projector.project(event),
       askUser,
     });
   } catch (error) {
-    failed = error;
-    write({ type: 'error', session_id: sessionId, turn_id: clientTurnId, error: { name: error.name || 'Error', message: error.message || String(error) } });
-    outcome = { report: { dispatched: [] }, results: [] };
+    projector.recordFailure(error);
+  }
+  for (const row of outcome?.results || []) {
+    if (row?.error) projector.recordFailure(row.error, { vpId: row.vpId, writeError: false });
+  }
+  const dispatchedVpIds = Array.isArray(outcome?.report?.dispatched)
+    ? outcome.report.dispatched
+    : [];
+  if (dispatchedVpIds.length === 0 && !projector.failure) {
+    const reportErrors = Array.isArray(outcome?.report?.errors)
+      ? outcome.report.errors
+        .map(entry => entry?.error || entry?.message)
+        .filter(Boolean)
+      : [];
+    const detail = reportErrors.join(', ') || outcome?.report?.reason || 'no_vp_dispatched';
+    projector.recordFailure(new Error(`stream-json Session turn dispatched no VP: ${detail}`));
   }
 
-  const perVp = Array.from(states, ([vpId, state]) => ({
-    vp_id: vpId,
-    turn_id: state.turnId,
-    stop_reason: state.stopReason,
-    result: state.resultText,
-    usage: {
-      input_tokens: state.usage.inputTokens,
-      output_tokens: state.usage.outputTokens,
-      cache_read_input_tokens: state.usage.cacheReadTokens,
-      cache_creation_input_tokens: state.usage.cacheWriteTokens,
-      total_input_tokens: state.usage.inputTokens + state.usage.cacheInputDeltaTokens,
-      total_tokens: state.usage.inputTokens + state.usage.cacheInputDeltaTokens + state.usage.outputTokens,
-    },
-  }));
+  const perVp = projector.perVpResults();
   const stopReasons = perVp.map(item => item.stop_reason);
-  const aggregateStopReason = failed || stopReasons.includes('error')
+  if (stopReasons.includes('error') && !projector.failure) {
+    projector.recordFailure(new Error('stream-json VP turn ended with stop reason error'), { writeError: false });
+  }
+  const failed = projector.failure;
+  const aggregateStopReason = failed
     ? 'error'
     : stopReasons.length > 0 && stopReasons.every(reason => reason === 'aborted')
       ? 'aborted'
-      : 'end_turn';
-  const isError = !!failed || aggregateStopReason === 'error';
+      : stopReasons.length > 0 && stopReasons.every(reason => reason === 'tool_handoff')
+        ? 'tool_handoff'
+        : 'end_turn';
   const result = {
-    type: 'result', subtype: isError ? 'error' : 'success',
-    session_id: sessionId, turn_id: clientTurnId,
-    model, model_effort: modelEffort,
+    type: 'result',
+    subtype: failed ? 'error' : 'success',
+    session_id: sessionId,
+    turn_id: projector.clientTurnId,
+    model,
+    model_effort: modelEffort,
     stop_reason: aggregateStopReason,
-    is_error: isError,
+    is_error: !!failed,
     result: perVp.map(item => item.result).filter(Boolean).join('\n'),
-    dispatched_vp_ids: outcome?.report?.dispatched || [],
+    dispatched_vp_ids: dispatchedVpIds,
     vp_results: perVp,
     ...(failed ? { error: failed.message || String(failed) } : {}),
   };

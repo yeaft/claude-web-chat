@@ -48,7 +48,7 @@ function isLocalizedTextObject(value) {
   return ['en', 'zh', 'zh-CN', 'en-US', 'default'].some(key => typeof value[key] === 'string' || typeof value[key] === 'function');
 }
 
-function localizeVisibleText(value, language, toolName) {
+export function localizeVisibleText(value, language, toolName) {
   const lang = normalizeLanguage(language);
   if (typeof value === 'function') return localizeVisibleText(value(lang), lang, toolName);
   if (isLocalizedTextObject(value)) {
@@ -408,17 +408,25 @@ export class ToolRegistry {
 
   /**
    * Get tool definitions for the LLM adapter.
-   * Returns all registered tools unless the current session shape makes a
-   * specific collaboration tool invalid, such as RouteForward in single-VP
-   * sessions.
+   *
+   * Registration and exposure are separate: `activeToolNames` limits which
+   * canonical schemas enter this provider request, while aliases remain
+   * registered for replay compatibility. Collaboration policy is an additional
+   * structural fence (for example, RouteForward is invalid in single-VP
+   * Sessions).
+   *
    * @param {string} [language='en']
-   * @param {{ collabToolPolicy?: string, plugins?: object }} [opts]
+   * @param {{ collabToolPolicy?: string, plugins?: object, activeToolNames?: Set<string>|string[] }} [opts]
    * @returns {{ name: string, description: string, parameters: object }[]}
    */
   getToolDefs(language = 'en', opts = {}) {
     const lang = normalizeLanguage(language);
     const collabToolPolicy = normalizeCollabToolPolicy(opts?.collabToolPolicy);
+    const activeToolNames = opts?.activeToolNames instanceof Set
+      ? opts.activeToolNames
+      : (Array.isArray(opts?.activeToolNames) ? new Set(opts.activeToolNames) : null);
     return this.getAllTools()
+      .filter(t => !activeToolNames || activeToolNames.has(t.name))
       .filter(t => !isToolHiddenByCollabPolicy(t.name, collabToolPolicy))
       .filter(t => !isToolHiddenByPluginPolicy(t, opts?.plugins))
       .map(t => {
@@ -431,16 +439,24 @@ export class ToolRegistry {
   }
 
   /**
-   * Check whether a tool may be called under the current collaboration policy.
-   * Unknown / absent policy keeps the historical behavior: all registered
-   * tools remain callable.
+   * Check whether a tool may be called under the current exposure and
+   * collaboration policies. Unknown / absent policies keep the historical
+   * behavior for direct registry callers.
+   *
+   * Aliases inherit the canonical tool's activation: an old `Agent` tool call
+   * may execute only when canonical `SpawnAgent` is active for this request.
+   *
    * @param {string} name
-   * @param {{ collabToolPolicy?: string, plugins?: object }} [opts]
+   * @param {{ collabToolPolicy?: string, plugins?: object, activeToolNames?: Set<string>|string[] }} [opts]
    * @returns {boolean}
    */
   isAllowed(name, opts = {}) {
     const tool = this.#tools.get(name);
     if (!tool) return false;
+    const activeToolNames = opts?.activeToolNames instanceof Set
+      ? opts.activeToolNames
+      : (Array.isArray(opts?.activeToolNames) ? new Set(opts.activeToolNames) : null);
+    if (activeToolNames && !activeToolNames.has(tool.name)) return false;
     return !isToolHiddenByCollabPolicy(tool.name, opts?.collabToolPolicy)
       && !isToolHiddenByPluginPolicy(tool, opts?.plugins);
   }
@@ -448,12 +464,16 @@ export class ToolRegistry {
   /**
    * Get registered canonical tool names under an optional policy. Aliases are
    * excluded so debug surfaces still show one row per real tool.
-   * @param {{ collabToolPolicy?: string, plugins?: object }} [opts]
+   * @param {{ collabToolPolicy?: string, plugins?: object, activeToolNames?: Set<string>|string[] }} [opts]
    * @returns {string[]}
    */
   getToolNames(opts = {}) {
     const collabToolPolicy = normalizeCollabToolPolicy(opts?.collabToolPolicy);
+    const activeToolNames = opts?.activeToolNames instanceof Set
+      ? opts.activeToolNames
+      : (Array.isArray(opts?.activeToolNames) ? new Set(opts.activeToolNames) : null);
     return this.getAllTools()
+      .filter(t => !activeToolNames || activeToolNames.has(t.name))
       .filter(t => !isToolHiddenByCollabPolicy(t.name, collabToolPolicy))
       .filter(t => !isToolHiddenByPluginPolicy(t, opts?.plugins))
       .map(t => t.name);

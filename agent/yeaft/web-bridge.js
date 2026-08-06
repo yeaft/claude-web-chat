@@ -98,6 +98,7 @@ import { consumeNotificationForAgent } from './sub-agent/notifications.js';
 import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
 import { recordAgentSessionCreated, recordAgentTurn } from '../metrics.js';
 import { TASK_RESULT_DELIVERY, isTerminalTaskStatus, taskResultDeliveryFor } from './tasks/store.js';
+import { formatTaskResultForVp } from './tasks/result-format.js';
 
 const LEGACY_SKILL_COMMAND_PREFIX = 'skill:';
 const YEAFT_SKILL_COMMAND_PREFIX = 'yeaft-skills:';
@@ -189,12 +190,24 @@ function modelRefsEquivalent(left, right) {
 function resolveLiveSessionConfig(baseConfig, sessionId, options = {}) {
   const configRoot = baseConfig?.dir || liveConfigRoot();
   const sessionConfig = normalizeSessionConfig(configRoot, sessionId, baseConfig, options);
-  return resolveSessionConfig(baseConfig, sessionConfig);
+  const resolved = resolveSessionConfig(baseConfig, sessionConfig);
+  // Session config lives in the agent-local root. `resolveSessionConfig()`
+  // intentionally returns a fresh object without its storage hint, so restore
+  // it for the next cached-engine lookup.
+  return configRoot && !resolved.dir ? { ...resolved, dir: configRoot } : resolved;
 }
 
 let sessionConfigRefreshRevision = 0;
 
-/** Reload the Agent-owned config and install it into every live Engine. */
+/**
+ * Reload the Agent-owned config and install it into every live Engine.
+ *
+ * This deliberately mutates only runtime snapshots. Model/config saves must
+ * not retire cached engines, clear task owners, invalidate the coordinator, or
+ * abort a request that has already started. Engine.query() captures its LLM
+ * request values at each loop boundary, so an active stream completes with its
+ * original config and a following tool loop uses the published snapshot.
+ */
 export async function refreshLiveSessionConfig(options = {}) {
   sessionConfigRefreshRevision += 1;
   if (!session && sessionLoadPromise) {
@@ -616,13 +629,16 @@ const vpCurrentTodos = new Map();
  * that nobody consumes — exactly the pre-707 bug).
  *
  * Purge sites:
- *   - `invalidateGroupContext(sessionId)` — called from every group CRUD
- *     handler that mutates roster / meta / lifecycle state on disk
- *     (rename, update announcement, archive, delete, add/remove member,
- *     set default VP).
- *   - `handleYeaftSessionSend` — invalidates inline when its own
- *     auto-add / default-VP-heal pass mutated the roster.
+ *   - `invalidateGroupContext(sessionId)` — called from Session CRUD handlers
+ *     that mutate roster / metadata / lifecycle state on disk (rename, update
+ *     announcement, archive, delete, add/remove member, set default VP).
+ *   - `handleYeaftSessionSend` — invalidates inline when its own auto-add /
+ *     default-VP-heal pass mutated the roster.
  *   - `resetYeaftSession` and `__testResetVpState` clear the whole map.
+ *
+ * Model/config saves deliberately do not purge this map: they publish a new
+ * in-memory runtime snapshot and the active engine adopts it at its next LLM
+ * loop boundary without aborting the request already in flight.
  *
  * @type {Map<string, { coord: ReturnType<typeof createCoordinator>,
  *                     router: ReturnType<typeof createRouter>,
@@ -990,7 +1006,12 @@ function registerRoutePromise(msgId, promise) {
     routePromisesByMsgId.set(msgId, set);
   }
   set.add(promise);
-  promise.finally(() => set.delete(promise)).catch(() => {});
+  promise.finally(() => {
+    set.delete(promise);
+    if (set.size === 0 && routePromisesByMsgId.get(msgId) === set) {
+      routePromisesByMsgId.delete(msgId);
+    }
+  }).catch(() => {});
 }
 
 
@@ -1837,8 +1858,16 @@ function getOrCreateVpEngine(sessionId, vpId, threadId = 'main') {
   const effectiveConfig = resolveLiveSessionConfig(session.config, sessionId);
   const configKey = engineConfigKey(effectiveConfig);
   let eng = vpEngines.get(key);
-  if (eng && vpEngineConfigKeys.get(key) === configKey) return eng;
-  if (eng) retireCachedVpEngine(key, { reason: 'config_changed', rescue: true, expectedEngine: eng });
+  if (eng) {
+    // Config changes are snapshots, not a lifecycle boundary. The save handler
+    // publishes the snapshot to every cached engine. The next query loop reads
+    // it before invoking its adapter; no engine replacement or abort needed.
+    if (vpEngineConfigKeys.get(key) !== configKey) {
+      eng.refreshConfig?.(effectiveConfig);
+      vpEngineConfigKeys.set(key, configKey);
+    }
+    return eng;
+  }
   eng = new Engine({
     adapter: session.adapter,
     trace: session.trace,
@@ -1898,7 +1927,12 @@ function getOrCreateVpEngine(sessionId, vpId, threadId = 'main') {
  */
 function getOrCreateSessionContext(sessionId, sessionHandle) {
   let entry = sessionContexts.get(sessionId);
-  if (entry && entry.coord && entry.router) return entry;
+  if (entry && entry.coord && entry.router) {
+    if (sessionHandle && sessionHandle !== entry.sessionHandle) {
+      try { sessionHandle.close?.(); } catch { /* best-effort unused handle cleanup */ }
+    }
+    return entry;
+  }
   // Either no entry, or a partial entry seeded by `getOrCreateSessionHistory`
   // (no coord/router yet). Build the coord/router and merge into the
   // existing record so the per-group history reference and hydration
@@ -1951,29 +1985,6 @@ function enqueueForVp(sessionId, vpId, envelope) {
   }
   const routePromise = routeEnvelopeToVpThread(sessionId, vpId, envelope);
   registerRoutePromise(envelope?.msg?.id, routePromise);
-}
-
-function formatTaskResultForVp(task) {
-  const result = task?.result || {};
-  const log = task?.log || {};
-  const lines = [
-    `<task-result id="${task.id}" kind="${task.kind}" status="${task.status}">`,
-    `title: ${task.title || task.kind || task.id}`,
-  ];
-  if (task?.runtime?.command) lines.push(`command: ${task.runtime.command}`);
-  if (result.exitCode !== undefined && result.exitCode !== null) lines.push(`exitCode: ${result.exitCode}`);
-  if (result.signal) lines.push(`signal: ${result.signal}`);
-  if (result.error) lines.push(`error: ${result.error}`);
-  if (result.summary) lines.push(`summary: ${result.summary}`);
-  if (log.path) lines.push(`log: ${log.path}`);
-  if (log.preview) {
-    const preview = String(log.preview).slice(-4000);
-    lines.push('logTail:');
-    lines.push(preview.split('\n').map(line => `  ${line}`).join('\n'));
-  }
-  lines.push('</task-result>');
-  lines.push('This is an asynchronous tool result from a background task, not a user message. Consume it now: tell the user the outcome or continue the work. Do not wait for another user turn.');
-  return lines.join('\n');
 }
 
 function scheduleTaskResultRescue({ taskId, sessionId, vpId, threadId = 'main', content, taskKind, taskStatus }) {
@@ -3529,12 +3540,14 @@ export function handleYeaftUpdateSession(msg) {
 }
 
 /**
- * Persist the model selected in the group conversation header. Cache invalidation:
- * drop every cached Engine whose key starts with `${sessionId}::` so the
- * next turn picks up the new model. The group meta itself is untouched.
+ * Persist the model selected in the Session conversation header.
+ *
+ * Cached engines remain alive. This handler publishes their updated effective
+ * config; `Engine.refreshConfig()` applies it at the next LLM loop boundary.
+ * The current stream and its AbortController are untouched.
  *
  * Payload: { sessionId, requestId, config: { model?: string|null } }
- *  - `model: ''` or `null` clears the selected group model (falls back to user default).
+ *  - `model: ''` or `null` clears the selected Session model (falls back to user default).
  */
 export function handleYeaftUpdateSessionConfig(msg) {
   const requestId = msg && msg.requestId;
@@ -3546,15 +3559,23 @@ export function handleYeaftUpdateSessionConfig(msg) {
     if (!partial) throw new SessionConfigError('invalid_patch', 'config object required');
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const savedConfig = updateSessionConfig(yeaftDir, sessionId, partial);
-    // Retire cached engines so accepted terminal task results are rescued
-    // before the next VP turn rebuilds with the new model.
+    const effectiveBaseConfig = session?.config || loadConfig({ dir: yeaftDir });
+    // The write above is the source of truth. Merge it directly instead of
+    // reopening the file so cached engines cannot observe an unrelated stale
+    // read between persistence and publication.
+    const sessionConfig = resolveSessionConfig(effectiveBaseConfig, savedConfig);
+    const publishedSessionConfig = sessionConfig.dir || !effectiveBaseConfig?.dir
+      ? sessionConfig
+      : { ...sessionConfig, dir: effectiveBaseConfig.dir };
     const prefix = `${sessionId}::`;
-    for (const k of Array.from(vpEngines.keys())) {
-      if (k.startsWith(prefix)) {
-        retireCachedVpEngine(k, { reason: 'session_config_changed', rescue: true });
-      }
+    for (const [key, engine] of vpEngines) {
+      if (!key.startsWith(prefix)) continue;
+      engine.refreshConfig?.(publishedSessionConfig);
+      vpEngineConfigKeys.set(key, engineConfigKey(publishedSessionConfig));
     }
-    invalidateGroupContext(sessionId);
+    // Do not invalidate the Session coordinator or abort active VP turns.
+    // The next adapter loop sees this config; the stream already underway
+    // completes with the values captured for that request.
     sendSessionCrudResult({ op: 'update_config', requestId, ok: true, sessionId, config: savedConfig });
     sendSessionSnapshotBroadcast();
   } catch (err) {
@@ -6571,11 +6592,13 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
   const search = typeof msg?.search === 'string' ? msg.search.trim() : '';
   const requestId = typeof msg?.requestId === 'string' && msg.requestId ? msg.requestId : null;
   const requestKind = typeof msg?.requestKind === 'string' && msg.requestKind ? msg.requestKind : null;
+  const requestClientId = typeof msg?._requestClientId === 'string' && msg._requestClientId ? msg._requestClientId : null;
   const indexOnly = !!msg?.indexOnly;
   const detailTurnId = typeof msg?.detailTurnId === 'string' && msg.detailTurnId ? msg.detailTurnId : null;
   let loops = [];
   let turns = [];
   let dreamEvents = [];
+  let projection = null;
   let hasMore = false;
   try {
     if (session?.trace && detailTurnId && sessionId && typeof session.trace.fetchTurnDebug === 'function') {
@@ -6583,12 +6606,14 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
       loops = Array.isArray(out?.loops) ? out.loops : [];
       turns = Array.isArray(out?.turns) ? out.turns : [];
       dreamEvents = Array.isArray(out?.dreamEvents) ? out.dreamEvents : [];
+      projection = out?.projection && typeof out.projection === 'object' ? out.projection : null;
       hasMore = false;
     } else if (session?.trace && typeof session.trace.fetchRecentDebugHistory === 'function') {
       const out = await session.trace.fetchRecentDebugHistory({ limit, dreamLimit, sessionId, threadId, indexOnly, detailTurnId, search });
       loops = Array.isArray(out?.loops) ? out.loops : [];
       turns = Array.isArray(out?.turns) ? out.turns : [];
       dreamEvents = Array.isArray(out?.dreamEvents) ? out.dreamEvents : [];
+      projection = out?.projection && typeof out.projection === 'object' ? out.projection : null;
       hasMore = !!out?.hasMore;
     }
   } catch (err) {
@@ -6599,6 +6624,7 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
       dreamEvents: [],
       requestId,
       requestKind,
+      ...(requestClientId ? { _requestClientId: requestClientId } : {}),
       sessionId,
       threadId,
       search,
@@ -6614,8 +6640,10 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
     loops,
     turns,
     dreamEvents,
+    ...(projection ? { projection } : {}),
     requestId,
     requestKind,
+    ...(requestClientId ? { _requestClientId: requestClientId } : {}),
     sessionId,
     threadId,
     search,
@@ -8046,6 +8074,20 @@ export const __testHooks = {
   resolveDreamTriggerSessionId,
   async loadProjectRuntime(workDir) {
     return loadProjectRuntime(workDir);
+  },
+  registerRoutePromiseForTest(msgId, promise) {
+    registerRoutePromise(msgId, promise);
+  },
+  routePromiseEntryCountForTest() {
+    return routePromisesByMsgId.size;
+  },
+  getOrCreateSessionContextForTest(sessionId, sessionHandle) {
+    return getOrCreateSessionContext(sessionId, sessionHandle);
+  },
+  clearSessionContextForTest(sessionId) {
+    const entry = sessionContexts.get(sessionId);
+    try { entry?.sessionHandle?.close?.(); } catch { /* best-effort test cleanup */ }
+    sessionContexts.delete(sessionId);
   },
   seedSessionContext(sessionId, meta) {
     const group = {

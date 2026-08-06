@@ -1,4 +1,5 @@
 import { ensureMessageUiKeys, mergeMessagesByStableId } from './messages.js';
+import { conversationRepositoryFor } from './conversation-repository.js';
 import { retireYeaftConversation } from './yeaft-conversation-generation.js';
 import { startYeaftWatchdog, stopProcessingWatchdog } from './watchdog.js';
 
@@ -8,7 +9,7 @@ function mergeRows(store, sourceConversationId, targetConversationId) {
   if (!store.messagesMap) store.messagesMap = {};
   ensureMessageUiKeys(store, sourceConversationId, sourceRows);
   ensureMessageUiKeys(store, targetConversationId, targetRows);
-  store.messagesMap[targetConversationId] = mergeMessagesByStableId(targetRows, sourceRows)
+  const merged = mergeMessagesByStableId(targetRows, sourceRows)
     .sort((a, b) => {
       const aSeq = Number.isFinite(a?.seq) ? a.seq : null;
       const bSeq = Number.isFinite(b?.seq) ? b.seq : null;
@@ -17,6 +18,7 @@ function mergeRows(store, sourceConversationId, targetConversationId) {
       if (aSeq === null && bSeq !== null) return 1;
       return (a?.timestamp || 0) - (b?.timestamp || 0);
     });
+  conversationRepositoryFor(store).replaceProjection(targetConversationId, merged);
 }
 
 function copyRuntimeValue(value) {

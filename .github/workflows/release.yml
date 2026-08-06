@@ -14,6 +14,7 @@ env:
   IMAGE_NAME: ${{ github.repository }}
   # Legacy image name for deployments that still pull the pre-rename package.
   LEGACY_IMAGE_NAME: ${{ github.repository_owner }}/claude-web-chat
+  AGENT_IMAGE_NAME: ${{ github.repository }}-agent
 
 jobs:
   # Ensure tag is on main branch — reject tags from feature branches
@@ -96,13 +97,24 @@ jobs:
             type=raw,value=${{ steps.version.outputs.version }}
             type=raw,value=latest
 
-      - name: Build and push
+      - name: Build and push Server image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: BUILD_VERSION=${{ github.ref_name }}
+
+      - name: Build and push Agent image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: agent/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.AGENT_IMAGE_NAME }}:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.AGENT_IMAGE_NAME }}:latest
           build-args: BUILD_VERSION=${{ github.ref_name }}
 
   # Create GitHub Release

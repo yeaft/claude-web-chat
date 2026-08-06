@@ -105,6 +105,7 @@ role: user
 time: 2026-05-12T09:00:00Z
 sessionId: session_demo
 clientMessageId: u_local_123
+causalRootId: root_123
 tokens_est: 4
 ---
 
@@ -114,6 +115,7 @@ Hello`;
     expect(msg.role).toBe('user');
     expect(msg.sessionId).toBe('session_demo');
     expect(msg.clientMessageId).toBe('u_local_123');
+    expect(msg.causalRootId).toBe('root_123');
     expect(msg.content).toBe('Hello');
   });
 

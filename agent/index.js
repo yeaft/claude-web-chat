@@ -21,6 +21,7 @@ import {
 import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
+import { SAFE_REMOTE_UPGRADE_CAPABILITY } from './upgrade-command.js';
 import { loadConfig as loadYeaftConfig } from './yeaft/config.js';
 import {
   ensureManagedCliTools,
@@ -110,6 +111,10 @@ try {
   console.warn(`[Agent] Could not ensure yeaft dir ${YEAFT_DIR}: ${err?.message || err}`);
 }
 
+const agentSecret = process.env.AGENT_SECRET_FILE
+  ? readFileSync(process.env.AGENT_SECRET_FILE, 'utf8').trim()
+  : (process.env.AGENT_SECRET || fileConfig.agentSecret);
+
 const CONFIG = {
   instanceId: INSTANCE_ID,
   serverUrl: process.env.SERVER_URL || fileConfig.serverUrl,
@@ -118,7 +123,7 @@ const CONFIG = {
   yeaftDir: YEAFT_DIR,
   telemetry: loadYeaftConfig({ dir: YEAFT_DIR }).telemetry,
   reconnectInterval: fileConfig.reconnectInterval,
-  agentSecret: process.env.AGENT_SECRET || fileConfig.agentSecret,
+  agentSecret,
   // 显式禁用的工具（非 MCP 相关）
   explicitDisallowedTools: (() => {
     const raw = process.env.DISALLOWED_TOOLS || fileConfig.disallowedTools || '';
@@ -154,7 +159,7 @@ async function detectCapabilities() {
   // agent build can speak plaintext WS frames. New servers see this and
   // flip `agent.encryptOutbound = false`, stopping outbound encryption
   // to this peer. Old servers ignore the unknown capability token.
-  const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center', 'work_center_message_v2', 'session_history_search', 'session_history_outline', 'session_history_window_prefetch'];
+  const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', SAFE_REMOTE_UPGRADE_CAPABILITY, 'work_center', 'work_center_message_v2', 'session_history_search', 'session_history_outline', 'session_history_window_prefetch'];
   if (process.platform === 'linux') capabilities.push('work_item_attachments');
   const pty = await loadNodePty();
   if (pty) capabilities.push('terminal');

@@ -3,6 +3,7 @@ import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { userDb } from './database.js';
+import { homedir } from 'node:os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -114,6 +115,15 @@ export const CONFIG = {
   // Agent authentication (global fallback — per-user agent_secret is preferred)
   agentSecret: process.env.AGENT_SECRET || DEFAULT_AGENT_SECRET,
 
+  // A Sandbox is an ordinary yeaft-agent container managed by this Server's Docker daemon.
+  // The Server controls only the container lifecycle; Agent behavior stays on the existing wire.
+  sandbox: {
+    enabled: process.env.SANDBOX_ENABLED === 'true',
+    image: process.env.SANDBOX_AGENT_IMAGE || 'ghcr.io/yeaft/yeaft-web-code-agent-agent:dev',
+    serverUrl: process.env.SANDBOX_SERVER_URL || '',
+    stateDir: process.env.SANDBOX_STATE_DIR || join(homedir(), '.yeaft', 'container-agents')
+  },
+
   // File upload settings
   maxFileSize: parseInt(process.env.MAX_FILE_SIZE, 10) || 50 * 1024 * 1024, // 50MB
   fileCleanupInterval: parseInt(process.env.FILE_CLEANUP_INTERVAL, 10) || 600000, // 10 minutes
@@ -192,6 +202,7 @@ export function getUserByUsername(username) {
   // Query database first (includes migrated, registered, and SSO-only users).
   const dbUser = userDb.getByUsername(username);
   if (dbUser) {
+    if (dbUser.deletion_state && dbUser.deletion_state !== 'active') return null;
     return {
       username: dbUser.username,
       passwordHash: dbUser.password_hash || null,
@@ -202,7 +213,9 @@ export function getUserByUsername(username) {
       id: dbUser.id
     };
   }
-  // Fallback to CONFIG.users (only relevant before first migration)
+  // A finalized deletion remains authoritative after the users row is erased.
+  if (userDb.isDeletionTombstoned(username)) return null;
+  // Fallback to CONFIG.users only when no authoritative database state exists.
   return CONFIG.users.find(u => u.username === username) || null;
 }
 
@@ -255,6 +268,10 @@ export function validateProductionConfig() {
   // Check JWT_SECRET
   if (CONFIG.jwtSecret === DEFAULT_JWT_SECRET) {
     errors.push('JWT_SECRET must be set to a secure value in production mode');
+  }
+
+  if (CONFIG.sandbox.enabled && !/^wss?:\/\//.test(CONFIG.sandbox.serverUrl)) {
+    errors.push('SANDBOX_SERVER_URL must be the ws:// or wss:// URL that container Agents use to connect');
   }
 
   // Check that at least one user with a password exists (in DB or config)

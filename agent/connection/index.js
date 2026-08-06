@@ -25,6 +25,7 @@ export function connect(WebSocketImpl = WebSocket) {
     name: ctx.CONFIG.agentName,
     instanceId,
     workDir: ctx.CONFIG.workDir,
+    platform: process.platform,
     capabilities: ctx.agentCapabilities.join(',')
   });
 
@@ -66,13 +67,14 @@ export function connect(WebSocketImpl = WebSocket) {
       if (msg.type === 'auth_required' && msg.tempId) {
         console.log('Received auth challenge, sending credentials...');
         ctx.pendingAuthTempId = msg.tempId;
-        // Send authentication via WebSocket (not URL)
+        // Send the ordinary Agent credential via WebSocket (not URL).
         socket.send(JSON.stringify({
           type: 'auth',
           tempId: msg.tempId,
           secret: ctx.CONFIG.agentSecret,
           capabilities: ctx.agentCapabilities,
-          version: ctx.agentVersion
+          version: ctx.agentVersion,
+          platform: process.platform
         }));
         return;
       }

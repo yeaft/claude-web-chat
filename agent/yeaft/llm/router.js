@@ -302,6 +302,22 @@ export class AdapterRouter extends LLMAdapter {
   }
 
   /**
+   * Capture the current routing table for one request before it reaches an
+   * async boundary. A later config save may replace the live catalog, but an
+   * already-created stream must dispatch through this immutable revision.
+   *
+   * @returns {{providers: object[], modelToProvider: Map<string, {provider: object, entry: {id: string, protocol?: string}}>, authoritativeManagedProviders: Set<string>, adapterCache: Map<string, LLMAdapter>}}
+   */
+  #captureDispatchSnapshot() {
+    return {
+      providers: this.#providers,
+      modelToProvider: this.#modelToProvider,
+      authoritativeManagedProviders: this.#authoritativeManagedProviders,
+      adapterCache: this.#adapterCache,
+    };
+  }
+
+  /**
    * Resolve an explicit provider/model ref against a provider row even when
    * the local model catalog is stale. The provider name still must exist; the
    * fallback only skips the per-provider models[] membership check.
@@ -309,16 +325,19 @@ export class AdapterRouter extends LLMAdapter {
    * @param {string} modelRef
    * @returns {{provider: object, entry: {id: string, protocol?: string}} | null}
    */
-  #resolveProviderQualifiedFallback(modelRef) {
+  #resolveProviderQualifiedFallback(modelRef, snapshot = null) {
     const parsed = parseModelRef(modelRef);
     if (!parsed.providerName || !parsed.modelId) return null;
 
-    const candidates = this.#providers.filter(p => p && p.name === parsed.providerName);
+    const providers = snapshot?.providers || this.#providers;
+    const authoritativeManagedProviders = snapshot?.authoritativeManagedProviders
+      || this.#authoritativeManagedProviders;
+    const candidates = providers.filter(p => p && p.name === parsed.providerName);
     if (candidates.length === 0) return null;
     // An explicit managed catalog is authoritative. A qualified ref is not
     // permission to resurrect a model that catalog just removed. Legacy rows
     // with no models still use the bundled fallback catalog above.
-    if (this.#authoritativeManagedProviders.has(parsed.providerName)) return null;
+    if (authoritativeManagedProviders.has(parsed.providerName)) return null;
 
     const inferred = inferProtocolFromModelId(parsed.modelId);
     if (!inferred) return null;
@@ -355,12 +374,14 @@ export class AdapterRouter extends LLMAdapter {
     return null;
   }
 
-  #unknownModelError(modelRef) {
+  #unknownModelError(modelRef, snapshot = null) {
     const parsed = parseModelRef(modelRef);
+    const providers = snapshot?.providers || this.#providers;
+    const modelToProvider = snapshot?.modelToProvider || this.#modelToProvider;
     if (parsed.providerName) {
       const providerModels = [];
       let sawProvider = false;
-      for (const provider of this.#providers) {
+      for (const provider of providers) {
         if (!provider || provider.name !== parsed.providerName) continue;
         sawProvider = true;
         for (const raw of Array.isArray(provider.models) ? provider.models : []) {
@@ -378,7 +399,7 @@ export class AdapterRouter extends LLMAdapter {
     }
     return new Error(
       `Model "${modelRef}" not found in any provider. ` +
-      `Available models: ${[...this.#modelToProvider.keys()].join(', ') || '(none)'}. ` +
+      `Available models: ${[...modelToProvider.keys()].join(', ') || '(none)'}. ` +
       `Check your config.json providers[].models arrays.`
     );
   }
@@ -434,10 +455,11 @@ export class AdapterRouter extends LLMAdapter {
    * @param {string} modelId
    * @returns {Promise<{adapter: LLMAdapter, modelId: string}>}
    */
-  async #resolveAdapter(modelRef) {
-    const hit = this.#modelToProvider.get(modelRef) || this.#resolveProviderQualifiedFallback(modelRef);
+  async #resolveAdapter(modelRef, snapshot = null) {
+    const modelToProvider = snapshot?.modelToProvider || this.#modelToProvider;
+    const hit = modelToProvider.get(modelRef) || this.#resolveProviderQualifiedFallback(modelRef, snapshot);
     if (!hit) {
-      throw this.#unknownModelError(modelRef);
+      throw this.#unknownModelError(modelRef, snapshot);
     }
     const { provider, entry } = hit;
 
@@ -463,7 +485,8 @@ export class AdapterRouter extends LLMAdapter {
       : null;
     const authModeKey = anthropicAuthHeaderMode || 'default';
     const cacheKey = `${provider.name}::${protocol}::${authModeKey}::${apiKeyFp}`;
-    const cached = this.#adapterCache.get(cacheKey);
+    const adapterCache = snapshot?.adapterCache || this.#adapterCache;
+    const cached = adapterCache.get(cacheKey);
     if (cached) return { adapter: cached, modelId: entry.id, protocol, entry };
 
     // Token rotation eviction: when a credential provider hands us a NEW
@@ -473,8 +496,8 @@ export class AdapterRouter extends LLMAdapter {
     // change fingerprint, so this loop never finds anything to evict for
     // them — back-compat preserved.
     const prefix = `${provider.name}::${protocol}::${authModeKey}::`;
-    for (const key of this.#adapterCache.keys()) {
-      if (key.startsWith(prefix)) this.#adapterCache.delete(key);
+    for (const key of adapterCache.keys()) {
+      if (key.startsWith(prefix)) adapterCache.delete(key);
     }
 
     let adapter;
@@ -503,7 +526,7 @@ export class AdapterRouter extends LLMAdapter {
       );
     }
 
-    this.#adapterCache.set(cacheKey, adapter);
+    adapterCache.set(cacheKey, adapter);
     return { adapter, modelId: entry.id, protocol, entry };
   }
 
@@ -563,7 +586,7 @@ export class AdapterRouter extends LLMAdapter {
    * @param {import('./adapter.js').StreamParams} params
    * @returns {AsyncGenerator<import('./adapter.js').StreamEvent>}
    */
-  async #refreshRejectedCredential(provider, model) {
+  async #refreshRejectedCredential(provider, model, adapterCache = this.#adapterCache) {
     if (!provider?.credentialProvider) return false;
     try {
       if (provider.credentialProvider === 'github-copilot' && provider.githubToken) {
@@ -584,7 +607,7 @@ export class AdapterRouter extends LLMAdapter {
         credentialRefreshable: true,
       });
     }
-    this.#adapterCache.clear();
+    adapterCache.clear();
     return true;
   }
 
@@ -595,11 +618,32 @@ export class AdapterRouter extends LLMAdapter {
     err.credentialRefreshable = Boolean(provider?.credentialProvider);
   }
 
-  async *stream(params) {
+  captureRequest() {
+    // Engine captures this object in the same synchronous boundary as its
+    // config snapshot. The returned closure keeps the matching provider
+    // catalog even when request preflight yields before stream construction.
+    const dispatchSnapshot = this.#captureDispatchSnapshot();
+    return {
+      captureStream: params => this.#streamWithSnapshot(params, dispatchSnapshot),
+    };
+  }
+
+  captureStream(params) {
+    // `async *stream()` does not execute until its first `next()`. Capture the
+    // route in this ordinary method so a config save after capture returns
+    // cannot replace the catalog before the request actually dispatches.
+    return this.captureRequest().captureStream(params);
+  }
+
+  stream(params) {
+    return this.captureStream(params);
+  }
+
+  async *#streamWithSnapshot(params, dispatchSnapshot) {
     let refreshedCredential = false;
     while (true) {
-      const resolved = await this.#resolveAdapter(params.model);
-      const provider = this.getProviderForModel(params.model);
+      const resolved = await this.#resolveAdapter(params.model, dispatchSnapshot);
+      const provider = this.#getProviderForModel(params.model, dispatchSnapshot);
       const effortContext = {
         protocol: resolved.protocol,
         supportsEffort: resolved.entry?.supportsEffort,
@@ -615,7 +659,7 @@ export class AdapterRouter extends LLMAdapter {
       } catch (err) {
         this.#annotateAuthError(err, provider, params.model);
         if (err?.statusCode !== 401 || refreshedCredential
-          || !(await this.#refreshRejectedCredential(provider, params.model))) throw err;
+          || !(await this.#refreshRejectedCredential(provider, params.model, dispatchSnapshot.adapterCache))) throw err;
         refreshedCredential = true;
       }
     }
@@ -628,10 +672,11 @@ export class AdapterRouter extends LLMAdapter {
    * @returns {Promise<{ text: string, usage: { inputTokens: number, outputTokens: number } }>}
    */
   async call(params) {
+    const dispatchSnapshot = this.#captureDispatchSnapshot();
     let refreshedCredential = false;
     while (true) {
-      const resolved = await this.#resolveAdapter(params.model);
-      const provider = this.getProviderForModel(params.model);
+      const resolved = await this.#resolveAdapter(params.model, dispatchSnapshot);
+      const provider = this.#getProviderForModel(params.model, dispatchSnapshot);
       const effortContext = {
         protocol: resolved.protocol,
         supportsEffort: resolved.entry?.supportsEffort,
@@ -646,10 +691,25 @@ export class AdapterRouter extends LLMAdapter {
       } catch (err) {
         this.#annotateAuthError(err, provider, params.model);
         if (err?.statusCode !== 401 || refreshedCredential
-          || !(await this.#refreshRejectedCredential(provider, params.model))) throw err;
+          || !(await this.#refreshRejectedCredential(provider, params.model, dispatchSnapshot.adapterCache))) throw err;
         refreshedCredential = true;
       }
     }
+  }
+
+  /**
+   * Resolve a provider from either the live routing table or a captured
+   * request snapshot. Keeping this lookup private prevents callers from
+   * accidentally retaining a mutable catalog reference.
+   *
+   * @param {string} modelId
+   * @param {{modelToProvider?: Map<string, {provider: object, entry: object}>}|null} snapshot
+   * @returns {object|null}
+   */
+  #getProviderForModel(modelId, snapshot = null) {
+    const modelToProvider = snapshot?.modelToProvider || this.#modelToProvider;
+    const hit = modelToProvider.get(modelId) || this.#resolveProviderQualifiedFallback(modelId, snapshot);
+    return hit ? hit.provider : null;
   }
 
   /**
@@ -659,8 +719,7 @@ export class AdapterRouter extends LLMAdapter {
    * @returns {object|null} — Provider config or null
    */
   getProviderForModel(modelId) {
-    const hit = this.#modelToProvider.get(modelId) || this.#resolveProviderQualifiedFallback(modelId);
-    return hit ? hit.provider : null;
+    return this.#getProviderForModel(modelId);
   }
 
   /**

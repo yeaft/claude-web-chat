@@ -112,15 +112,21 @@ describe('YeaftPage setup', () => {
     expect(css).toMatch(/\.sp-subtab\.active::after[^}]*\{[^}]*background:\s*var\(--text-primary\);/s);
     expect(css).not.toMatch(/\.sp-subtab-bar\s*\{[^}]*border-radius:/s);
     expect(css).not.toMatch(/\.sp-subtab\.active\s*\{[^}]*box-shadow:/s);
+
+    expect(panel).toContain(":class=\"{ 'settings-scroll-yeaft': activeTab === 'yeaft' }\"");
+    expect(css).toMatch(/\.settings-scroll-yeaft\s*\{[^}]*overflow-y:\s*hidden;/s);
+    expect(css).toMatch(/\.settings-scroll-yeaft\s+\.settings-pane-yeaft\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;/s);
+    expect(css).toMatch(/\.settings-scroll-yeaft\s+\.sp-subpane\s*\{[^}]*overflow-y:\s*auto;/s);
   });
 
-  it('keeps Session inventory hydration separate from the message refresh spinner', () => {
+  it('keeps automatic history hydration and Session inventory out of the manual refresh spinner', () => {
     const source = YeaftPage.template;
     const actionsStart = source.indexOf('<YeaftSessionActions');
     const actionsEnd = source.indexOf('/>', actionsStart);
     const actions = source.slice(actionsStart, actionsEnd);
 
-    expect(actions).toContain(':loading-more-history="store.yeaftLoadingMoreHistory"');
+    expect(actions).toContain(':loading-more-history="store.yeaftManualHistoryRefreshLoading"');
+    expect(actions).not.toContain('store.yeaftLoadingMoreHistory');
     expect(actions).not.toContain('yeaftSessionHydrateRequestId');
     expect(actions).toContain('@reload-messages="reloadMessages"');
   });
@@ -283,12 +289,20 @@ describe('YeaftPage setup', () => {
     }
   });
 
-  it('follows the store debug panel state and routes header toggles through the panel actions', () => {
+  it('keeps debug scoped to finished AI messages and removes the header entry', () => {
     const page = YeaftPage.setup();
+    const source = YeaftPage.template;
+    const actionsStart = source.indexOf('<YeaftSessionActions');
+    const actionsEnd = source.indexOf('/>', actionsStart);
+    const actions = source.slice(actionsStart, actionsEnd);
+
     expect(page.debugMode.value).toBe(false);
+    expect(actions).not.toContain(':debug-mode=');
+    expect(actions).not.toContain('@toggle-debug=');
+    expect(page.toggleDebug).toBeUndefined();
 
     // The per-turn debug icon opens the panel via the store; YeaftPage
-    // must render the detail panel as soon as the store opens it.
+    // renders the detail panel as soon as the store opens it.
     chatStore.yeaftDebugPanel = {
       open: true,
       status: 'loading',
@@ -299,18 +313,7 @@ describe('YeaftPage setup', () => {
       error: null,
     };
     expect(page.debugMode.value).toBe(true);
-
-    // Header entry closes the panel through the store, not a local ref.
-    page.toggleDebug();
+    page.closeDebug();
     expect(chatStore.closeYeaftDebugPanel).toHaveBeenCalled();
-
-    // Re-opening via the header opens an empty panel (no turn scoping).
-    chatStore.yeaftDebugPanel.open = false;
-    page.toggleDebug();
-    expect(chatStore.openYeaftTurnDebug).toHaveBeenCalledWith({});
-    expect(page.debugMode.value).toBe(false);
-
-    chatStore.yeaftDebugPanel.open = true;
-    expect(page.debugMode.value).toBe(true);
   });
 });

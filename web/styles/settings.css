@@ -151,6 +151,25 @@
 
 /* Yeaft settings tabs follow the same flat, content-first treatment used by
    the workbench and other primary tab bars. */
+.settings-scroll-yeaft {
+  display: flex;
+  flex-direction: column;
+  overflow-y: hidden;
+}
+
+.settings-scroll-yeaft .settings-pane-yeaft {
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-scroll-yeaft .sp-subpane {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
 .settings-pane-yeaft {
   display: flex;
   flex-direction: column;
@@ -418,6 +437,12 @@
 .sp-label {
   font-size: 14px;
   color: var(--text-primary);
+}
+
+.sp-text-wrap {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .sp-value {

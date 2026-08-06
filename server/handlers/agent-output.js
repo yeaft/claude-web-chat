@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { messageDb, sessionUiMetadataDb, yeaftProjectDb, yeaftSessionDb } from '../database.js';
 import { transaction } from '../db/connection.js';
 import { broadcastAgentList, broadcastSessionCatalog, forwardToClients, sendToAgent, sendToWebClient } from '../ws-utils.js';
-import { webClients, previewFiles } from '../context.js';
+import { consumeYeaftDebugRequest, webClients, previewFiles } from '../context.js';
 import { CONFIG } from '../config.js';
 import { yeaftAssetStore } from '../yeaft-asset-store.js';
 import { recordPerfTraceEvent } from '../perf-trace.js';
@@ -1001,32 +1001,43 @@ export async function handleAgentOutput(agentId, agent, msg) {
       break;
     }
 
-    case 'yeaft_debug_history':
-      // Relay the file-backed debug trace snapshot from the agent to the web
-      // client that requested it via `yeaft_fetch_debug_history`. Keep the
-      // paging/detail flags intact; otherwise the store cannot distinguish a
-      // bounded index refresh from a single-request detail hydration.
-      for (const [, c] of webClients) {
-        if (c.authenticated && (CONFIG.skipAuth || c.userId === agent.ownerId)) {
-          await sendToWebClient(c, {
-            type: 'yeaft_debug_history',
-            loops: Array.isArray(msg.loops) ? msg.loops : [],
-            turns: Array.isArray(msg.turns) ? msg.turns : [],
-            dreamEvents: Array.isArray(msg.dreamEvents) ? msg.dreamEvents : [],
-            ...(msg.sessionId != null ? { sessionId: msg.sessionId } : {}),
-            ...(msg.threadId != null ? { threadId: msg.threadId } : {}),
-            ...(msg.requestId != null ? { requestId: msg.requestId } : {}),
-            ...(msg.requestKind != null ? { requestKind: msg.requestKind } : {}),
-            ...(msg.search != null ? { search: msg.search } : {}),
-            ...(msg.hasMore != null ? { hasMore: !!msg.hasMore } : {}),
-            ...(msg.limit != null ? { limit: msg.limit } : {}),
-            ...(msg.indexOnly != null ? { indexOnly: !!msg.indexOnly } : {}),
-            ...(msg.detailTurnId != null ? { detailTurnId: msg.detailTurnId } : {}),
-            ...(msg.error != null ? { error: msg.error } : {}),
-          });
-        }
+    case 'yeaft_debug_history': {
+      // Debug history is request/Turn scoped and may contain raw provider or
+      // tool payloads. The Server registered this Agent + requestId after the
+      // compound Session ownership check, so rolling upgrades remain safe even
+      // when an older Agent does not echo the private browser client id.
+      const pending = consumeYeaftDebugRequest({
+        agentId,
+        requestId: msg.requestId,
+        sessionId: msg.sessionId,
+      });
+      const targetClient = pending ? webClients.get(pending.clientId) : null;
+      const ownerMatches = CONFIG.skipAuth || (
+        pending?.userId === agent.ownerId
+        && targetClient?.userId === pending.userId
+      );
+      if (targetClient?.authenticated && ownerMatches) {
+        await sendToWebClient(targetClient, {
+          type: 'yeaft_debug_history',
+          agentId,
+          loops: Array.isArray(msg.loops) ? msg.loops : [],
+          turns: Array.isArray(msg.turns) ? msg.turns : [],
+          dreamEvents: Array.isArray(msg.dreamEvents) ? msg.dreamEvents : [],
+          ...(msg.projection && typeof msg.projection === 'object' ? { projection: msg.projection } : {}),
+          ...(msg.sessionId != null ? { sessionId: msg.sessionId } : {}),
+          ...(msg.threadId != null ? { threadId: msg.threadId } : {}),
+          ...(msg.requestId != null ? { requestId: msg.requestId } : {}),
+          ...(msg.requestKind != null ? { requestKind: msg.requestKind } : {}),
+          ...(msg.search != null ? { search: msg.search } : {}),
+          ...(msg.hasMore != null ? { hasMore: !!msg.hasMore } : {}),
+          ...(msg.limit != null ? { limit: msg.limit } : {}),
+          ...(msg.indexOnly != null ? { indexOnly: !!msg.indexOnly } : {}),
+          ...(msg.detailTurnId != null ? { detailTurnId: msg.detailTurnId } : {}),
+          ...(msg.error != null ? { error: msg.error } : {}),
+        });
       }
       break;
+    }
 
     default:
       return false; // Not handled

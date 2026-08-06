@@ -434,6 +434,7 @@ function serializeMessage(msg) {
   // Defaults to 'main' for legacy messages (see migrate-messages-threadid.js).
   fm.push(`threadId: ${msg.threadId || 'main'}`);
   if (msg.turnId) fm.push(`turnId: ${msg.turnId}`);
+  if (msg.causalRootId) fm.push(`causalRootId: ${msg.causalRootId}`);
   if (msg.executionOrigin === 'route_forward') fm.push('executionOrigin: route_forward');
   if (msg.imageAssetAnchor) fm.push('imageAssetAnchor: true');
   // task-313: when a thread is merged into another, the messages keep
@@ -581,6 +582,7 @@ export function parseMessage(raw) {
       case 'tokens_est': msg.tokens_est = parseInt(value, 10); break;
       case 'threadId': msg.threadId = value; break;
       case 'turnId': msg.turnId = value; break;
+      case 'causalRootId': msg.causalRootId = value; break;
       case 'executionOrigin':
         if (value === 'route_forward') msg.executionOrigin = value;
         break;

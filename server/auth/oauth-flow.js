@@ -214,8 +214,8 @@ export async function handleCallback({ provider, code, state }) {
   // intent='login' (or anything else — default to login).
   if (existing) {
     const user = userDb.get(existing.user_id);
-    if (!user) {
-      return { kind: 'error', status: 500, error: 'Bound user no longer exists' };
+    if (!user || user.deletion_state !== 'active') {
+      return { kind: 'error', status: 403, error: 'Account is disabled' };
     }
     // Backfill display_name on subsequent logins if it was never set away
     // from the auto-generated username (e.g. early logins before this code

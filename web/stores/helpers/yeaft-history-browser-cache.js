@@ -1,5 +1,6 @@
 import {
   isDurableYeaftHistoryRow,
+  YEAFT_HISTORY_MAX_TURNS,
   yeaftHistoryRowSeq,
   yeaftHistoryUnitKey,
 } from './yeaft-history-cache.js';
@@ -11,12 +12,11 @@ const METADATA_STORE = 'metadata';
 const ACTIVE_OWNER_KEY = 'active-owner';
 const CACHE_SCHEMA_VERSION = 3;
 
+// A Session keeps at most 500 complete user turns. Row count, serialized size,
+// Session count, and age are deliberately not independent eviction criteria:
+// cutting on any of them can split one large turn or silently discard a Session.
 export const YEAFT_HISTORY_BROWSER_CACHE_LIMITS = Object.freeze({
-  maxSessionsPerOwner: 12,
-  maxTurnsPerSession: 500,
-  maxRowsPerSession: 600,
-  maxBytesPerSession: 4 * 1024 * 1024,
-  maxAgeMs: 30 * 24 * 60 * 60 * 1000,
+  maxTurnsPerSession: YEAFT_HISTORY_MAX_TURNS,
 });
 
 let browserOwnerId = null;
@@ -142,7 +142,7 @@ function rowCacheKey(row) {
   return `${unit}:projection:${projection}`;
 }
 
-function chooseRows(rows, limits) {
+export function chooseYeaftHistoryBrowserRows(rows, limits = YEAFT_HISTORY_BROWSER_CACHE_LIMITS) {
   const turns = [];
   let currentTurn = null;
   for (const [index, sourceRow] of (Array.isArray(rows) ? rows : []).entries()) {
@@ -174,21 +174,11 @@ function chooseRows(rows, limits) {
     rowCount: turn.entries.length,
     bytes: turn.entries.reduce((sum, entry) => sum + rowBytes(entry.row), 0),
   }));
-  const selectedTurns = [];
-  let rowCount = 0;
-  let bytes = 0;
   const maxTurns = Number.isFinite(limits.maxTurnsPerSession)
     ? Math.max(0, Math.floor(limits.maxTurnsPerSession))
     : YEAFT_HISTORY_BROWSER_CACHE_LIMITS.maxTurnsPerSession;
-  for (const turn of newest) {
-    const exceedsTurnLimit = selectedTurns.length >= maxTurns;
-    const exceedsCapacity = rowCount + turn.rowCount > limits.maxRowsPerSession
-      || bytes + turn.bytes > limits.maxBytesPerSession;
-    if (exceedsTurnLimit || (selectedTurns.length > 0 && exceedsCapacity)) break;
-    selectedTurns.push(turn);
-    rowCount += turn.rowCount;
-    bytes += turn.bytes;
-  }
+  const selectedTurns = newest.slice(0, maxTurns);
+  const bytes = selectedTurns.reduce((sum, turn) => sum + turn.bytes, 0);
   const selected = selectedTurns
     .flatMap(turn => turn.entries)
     .sort((left, right) => left.index - right.index)
@@ -242,30 +232,6 @@ function queueOwnerTransition(fence) {
   return ownerCleanupPromise;
 }
 
-async function pruneOwnerRecords(fence, limits) {
-  const db = await openCacheDatabase();
-  if (!db) return;
-  const transaction = db.transaction([METADATA_STORE, SESSION_STORE], 'readwrite');
-  const activeOwner = await requestPromise(
-    transaction.objectStore(METADATA_STORE).get(ACTIVE_OWNER_KEY),
-  );
-  const store = transaction.objectStore(SESSION_STORE);
-  if (!persistentFenceMatches(activeOwner, fence)) {
-    await transactionComplete(transaction);
-    return;
-  }
-  const records = (await requestPromise(store.getAll()))
-    .filter(record => record?.ownerId === fence.ownerId)
-    .sort((left, right) => (Number(right.lastAccessed) || 0) - (Number(left.lastAccessed) || 0));
-  const expiredBefore = Date.now() - limits.maxAgeMs;
-  records.forEach((record, index) => {
-    if (index >= limits.maxSessionsPerOwner || (Number(record.lastAccessed) || 0) < expiredBefore) {
-      store.delete(record.key);
-    }
-  });
-  await transactionComplete(transaction);
-}
-
 export function bindYeaftHistoryBrowserOwner(value) {
   const ownerId = normalizeId(value);
   if (!ownerId) {
@@ -298,7 +264,6 @@ export async function readYeaftHistoryBrowserCache({
   fence,
   agentId,
   sessionId,
-  limits = YEAFT_HISTORY_BROWSER_CACHE_LIMITS,
 } = {}) {
   const normalizedAgentId = normalizeId(agentId);
   const normalizedSessionId = normalizeId(sessionId);
@@ -318,11 +283,8 @@ export async function readYeaftHistoryBrowserCache({
       return null;
     }
     const record = await requestPromise(store.get(key));
-    const expiredBefore = Date.now() - limits.maxAgeMs;
-    const expired = !!record && (Number(record.lastAccessed) || 0) < expiredBefore;
-    if (expired) store.delete(key);
     await transactionComplete(transaction);
-    if (expired || !isFenceCurrent(fence) || record?.schemaVersion !== CACHE_SCHEMA_VERSION
+    if (!isFenceCurrent(fence) || record?.schemaVersion !== CACHE_SCHEMA_VERSION
         || record.ownerId !== fence.ownerId || record.agentId !== normalizedAgentId
         || record.sessionId !== normalizedSessionId || !Array.isArray(record.rows)) return null;
     return record;
@@ -342,7 +304,7 @@ export async function writeYeaftHistoryBrowserCache({
   const normalizedAgentId = normalizeId(agentId);
   const normalizedSessionId = normalizeId(sessionId);
   if (!isFenceCurrent(fence) || !normalizedAgentId || !normalizedSessionId) return false;
-  const selected = chooseRows(rows, limits);
+  const selected = chooseYeaftHistoryBrowserRows(rows, limits);
   if (selected.rows.length === 0) return false;
   try {
     await ownerCleanupPromise;
@@ -376,7 +338,6 @@ export async function writeYeaftHistoryBrowserCache({
     });
     await transactionComplete(transaction);
     if (!isFenceCurrent(fence)) return false;
-    void pruneOwnerRecords(fence, limits).catch(() => {});
     return true;
   } catch {
     return false;

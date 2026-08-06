@@ -51,6 +51,7 @@ export default {
             <svg v-if="tab.key === 'general'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
             <svg v-else-if="tab.key === 'account'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
             <svg v-else-if="tab.key === 'security'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
+            <svg v-else-if="tab.key === 'sandbox'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M7 2h10v2h-1v3h1.5A3.5 3.5 0 0 1 21 10.5v7a3.5 3.5 0 0 1-3.5 3.5h-11A3.5 3.5 0 0 1 3 17.5v-7A3.5 3.5 0 0 1 6.5 7H8V4H7V2zm3 2v3h4V4h-4zm-3.5 5A1.5 1.5 0 0 0 5 10.5v7A1.5 1.5 0 0 0 6.5 19h11a1.5 1.5 0 0 0 1.5-1.5v-7A1.5 1.5 0 0 0 17.5 9h-11zM8 12h2v2H8v-2zm6 0h2v2h-2v-2zm-6 4h8v2H8v-2z"/></svg>
             <svg v-else-if="tab.key === 'invitations'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
             <svg v-else-if="tab.key === 'dashboard'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
             <svg v-else-if="tab.key === 'tools'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z"/></svg>
@@ -68,7 +69,7 @@ export default {
               <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>
           </div>
-          <div class="settings-scroll">
+          <div class="settings-scroll" :class="{ 'settings-scroll-yeaft': activeTab === 'yeaft' }">
             <!-- Account -->
             <div v-show="activeTab === 'account'" class="settings-pane">
               <div class="sp-group">
@@ -309,6 +310,60 @@ export default {
                 </div>
               </div>
             </div>
+
+            <!-- Managed Sandbox -->
+            <div v-show="activeTab === 'sandbox'" class="settings-pane">
+              <div class="sp-group">
+                <div v-if="sandboxLoading" class="sp-desc" role="status">{{ $t('common.loading') }}</div>
+                <div v-else-if="sandboxLoadError" class="sp-error" role="alert">
+                  {{ $t('settings.sandbox.error.SANDBOX_LOAD_FAILED') }}
+                </div>
+                <template v-else-if="sandboxSnapshot">
+                  <div class="sp-row">
+                    <div class="sp-row-left">
+                      <span class="sp-label sp-text-wrap">{{ sandboxSnapshot.agentName }}</span>
+                      <span class="sp-desc-small">{{ $t('settings.sandbox.containerAgent') }}</span>
+                    </div>
+                    <span class="sp-badge">{{ $t('settings.sandbox.state.' + sandboxSnapshot.observedState) }}</span>
+                  </div>
+                  <p class="sp-desc" v-if="sandboxSnapshot.operation">
+                    {{ $t('settings.sandbox.stage.' + sandboxSnapshot.operation.stage) }}
+                  </p>
+                  <p class="sp-error" v-if="sandboxSnapshot.lastErrorCode">
+                    {{ $t('settings.sandbox.error.' + sandboxSnapshot.lastErrorCode) }}
+                  </p>
+                  <div class="sp-actions-row">
+                    <button v-if="sandboxSnapshot.observedState === 'running'" class="btn-secondary" @click="requestSandboxAction('stop')" :disabled="sandboxSubmitting">
+                      {{ $t('settings.sandbox.stop') }}
+                    </button>
+                    <button v-if="sandboxSnapshot.observedState === 'stopped'" class="btn-primary" @click="requestSandboxAction('start')" :disabled="sandboxSubmitting">
+                      {{ $t('settings.sandbox.start') }}
+                    </button>
+                    <button v-if="['failed', 'remove_failed'].includes(sandboxSnapshot.observedState)" class="btn-secondary" @click="requestSandboxAction('retry')" :disabled="sandboxSubmitting">
+                      {{ $t('settings.sandbox.retry') }}
+                    </button>
+                    <button class="btn-secondary" @click="confirmRemoveSandbox" :disabled="sandboxSubmitting">
+                      {{ $t('settings.sandbox.remove') }}
+                    </button>
+                  </div>
+                </template>
+                <template v-else>
+                  <p class="sp-desc">{{ $t('settings.sandbox.description') }}</p>
+                  <div v-if="!sandboxCapability.available" class="sp-info">
+                    {{ sandboxUnavailableText }}
+                  </div>
+                  <template v-else>
+                    <p class="sp-desc">{{ $t('settings.sandbox.serverManaged') }}</p>
+                    <div class="sp-actions-row">
+                      <button class="btn-primary" @click="createSandbox" :disabled="sandboxSubmitting">
+                        {{ sandboxSubmitting ? $t('settings.sandbox.creating') : $t('settings.sandbox.enable') }}
+                      </button>
+                    </div>
+                  </template>
+                </template>
+              </div>
+            </div>
+
             <div v-show="activeTab === 'invitations'" class="settings-pane" v-if="authStore.role === 'admin'">
               <div class="sp-group">
                 <div class="sp-row">
@@ -505,7 +560,15 @@ export default {
       telemetrySaving: false,
       ssoBoundMessage: '',
       ssoConflictMessage: '',
-      qrDataUrl: ''
+      qrDataUrl: '',
+      sandboxLoading: false,
+      sandboxSubmitting: false,
+      sandboxLoadError: false,
+      sandboxCapability: { available: false, reasonCode: 'SANDBOX_DISABLED', catalog: [] },
+      sandboxSnapshot: null,
+      sandboxAgentName: '',
+      sandboxSizeId: 'normal',
+      sandboxIdempotencyKeys: {}
     };
   },
   computed: {
@@ -535,7 +598,8 @@ export default {
       const tabs = [
         { key: 'general', label: this.$t('settings.tabs.general') },
         { key: 'account', label: this.$t('settings.tabs.account') },
-        { key: 'security', label: this.$t('settings.tabs.security') }
+        { key: 'security', label: this.$t('settings.tabs.security') },
+        { key: 'sandbox', label: this.$t('settings.tabs.sandbox') }
       ];
       if (this.authStore.role === 'admin' || this.authStore.role === 'pro') {
         tabs.push({ key: 'yeaft', label: this.$t('settings.tabs.yeaft') });
@@ -635,6 +699,15 @@ export default {
           identity: linked.get(r.key) || null
         }));
     },
+    sandboxUnavailableText() {
+      const code = this.sandboxCapability.reasonCode || 'SANDBOX_CAPACITY_UNAVAILABLE';
+      const keys = {
+        SANDBOX_DISABLED: 'disabled',
+        SANDBOX_NOT_ENTITLED: 'notEntitled',
+        SANDBOX_CAPACITY_UNAVAILABLE: 'capacityUnavailable'
+      };
+      return this.$t('settings.sandbox.unavailable.' + (keys[code] || 'capacityUnavailable'));
+    },
     qrModalTitle() {
       const p = this.authStore.qrPanel?.provider;
       if (p === 'alipay') return this.$t('login.qr.titleAlipay');
@@ -650,13 +723,18 @@ export default {
     }
     return undefined;
   },
+  beforeUnmount() {
+    this.stopSandboxPolling();
+  },
   watch: {
     visible(val) {
       if (val) {
         this.applyInitialEntryPoint();
         this.loadTelemetry();
         this.loadData();
+        if (this.activeTab === 'sandbox') this.loadSandbox();
       } else {
+        this.stopSandboxPolling();
         // Closing settings while a bind QR is up should tear it down too.
         if (this.authStore.qrPanel) this.cancelQrBind();
       }
@@ -665,6 +743,8 @@ export default {
       if (tab === 'invitations' && this.authStore.role === 'admin') {
         this.loadInvitations();
       }
+      if (tab === 'sandbox') this.loadSandbox();
+      else this.stopSandboxPolling();
     },
     // When the bind QR completes (server reports status='bound'), close the
     // modal, refresh the linked-identities list, and surface a success toast.
@@ -687,6 +767,125 @@ export default {
     }
   },
   methods: {
+    sandboxNeedsPolling(snapshot = this.sandboxSnapshot) {
+      return snapshot?.operation?.status === 'pending' || snapshot?.operation?.status === 'running';
+    },
+
+    syncSandboxPolling() {
+      if (!this.visible || this.activeTab !== 'sandbox' || !this.sandboxNeedsPolling()) {
+        this.stopSandboxPolling();
+        return;
+      }
+      if (!this._sandboxPollTimer) {
+        this._sandboxPollTimer = setTimeout(async () => {
+          this._sandboxPollTimer = null;
+          await this.loadSandbox({ background: true });
+        }, 2000);
+      }
+    },
+
+    stopSandboxPolling() {
+      if (this._sandboxPollTimer) {
+        clearTimeout(this._sandboxPollTimer);
+        this._sandboxPollTimer = null;
+      }
+    },
+
+    async loadSandbox({ background = false } = {}) {
+      if (!background) this.sandboxLoading = true;
+      if (!background) this.sandboxLoadError = false;
+      try {
+        const headers = this.getHeaders();
+        const [capabilityResponse, snapshotResponse] = await Promise.all([
+          fetch('/api/sandbox/capability', { headers }),
+          fetch('/api/sandbox', { headers })
+        ]);
+        if (!capabilityResponse.ok || !snapshotResponse.ok) throw new Error('SANDBOX_LOAD_FAILED');
+        this.sandboxCapability = await capabilityResponse.json();
+        this.sandboxSnapshot = (await snapshotResponse.json()).sandbox;
+      } catch {
+        this.sandboxLoadError = true;
+        this.sandboxCapability = { available: false, reasonCode: 'SANDBOX_CAPACITY_UNAVAILABLE', catalog: [] };
+        if (background) this.stopSandboxPolling();
+      } finally {
+        if (!background) this.sandboxLoading = false;
+        this.syncSandboxPolling();
+      }
+    },
+
+    sandboxIdempotencyKey(action) {
+      if (!this.sandboxIdempotencyKeys[action]) {
+        this.sandboxIdempotencyKeys[action] = crypto.randomUUID();
+      }
+      return this.sandboxIdempotencyKeys[action];
+    },
+
+    clearSandboxIdempotencyKey(action) {
+      delete this.sandboxIdempotencyKeys[action];
+    },
+
+    async createSandbox() {
+      if (!this.sandboxCapability.available || this.sandboxSubmitting) return;
+      this.sandboxSubmitting = true;
+      try {
+        const response = await fetch('/api/sandbox', {
+          method: 'POST',
+          headers: {
+            ...this.getHeaders(),
+            'Content-Type': 'application/json',
+            'Idempotency-Key': this.sandboxIdempotencyKey('create')
+          },
+          body: JSON.stringify({})
+        });
+        const body = await response.json();
+        if (!response.ok) {
+          this.clearSandboxIdempotencyKey('create');
+          throw new Error(body.code || 'SANDBOX_CREATE_FAILED');
+        }
+        this.clearSandboxIdempotencyKey('create');
+        this.sandboxSnapshot = body.snapshot;
+        this.syncSandboxPolling();
+      } catch (err) {
+        this.message = this.$t('settings.sandbox.error.' + (err.message || 'SANDBOX_CREATE_FAILED'));
+        this.isError = true;
+      } finally {
+        this.sandboxSubmitting = false;
+      }
+    },
+
+    confirmRemoveSandbox() {
+      if (window.confirm(this.$t('settings.sandbox.removeConfirm'))) {
+        this.requestSandboxAction('remove');
+      }
+    },
+
+    async requestSandboxAction(action) {
+      if (this.sandboxSubmitting) return;
+      this.sandboxSubmitting = true;
+      try {
+        const response = await fetch('/api/sandbox/' + action, {
+          method: 'POST',
+          headers: {
+            ...this.getHeaders(),
+            'Idempotency-Key': this.sandboxIdempotencyKey(action)
+          }
+        });
+        const body = await response.json();
+        if (!response.ok) {
+          this.clearSandboxIdempotencyKey(action);
+          throw new Error(body.code || 'SANDBOX_ACTION_FAILED');
+        }
+        this.clearSandboxIdempotencyKey(action);
+        this.sandboxSnapshot = body.snapshot;
+        this.syncSandboxPolling();
+      } catch (err) {
+        this.message = this.$t('settings.sandbox.error.' + (err.message || 'SANDBOX_ACTION_FAILED'));
+        this.isError = true;
+      } finally {
+        this.sandboxSubmitting = false;
+      }
+    },
+
     trackOverlayPointerDown,
     trackOverlayPointerUp,
     clearOverlayPointerGesture,
@@ -1140,13 +1339,6 @@ export default {
 
     onLlmMessage(msg, isError) {
       this.showMessage(msg, isError);
-    },
-    onYeaftLlmSaved() {
-      // Mirror old YeaftSettings: bounce engine so new LLM config takes effect.
-      const agentId = this.chatStore?.currentAgent;
-      if (agentId) {
-        this.chatStore.sendWsMessage({ type: 'yeaft_reset', agentId });
-      }
     }
   }
 };
