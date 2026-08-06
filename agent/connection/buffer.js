@@ -46,7 +46,8 @@ function bufferMessage(msg, reason) {
     || Number(ctx.messageBufferBytes || 0) + bytes > maxBytes
   )) {
     const nonTerminal = ctx.messageBuffer.findIndex(m => !TERMINAL_TYPES.has(m.type));
-    removeBufferedAt(nonTerminal >= 0 ? nonTerminal : 0);
+    if (nonTerminal < 0) break;
+    removeBufferedAt(nonTerminal);
   }
   if (ctx.messageBuffer.length >= ctx.messageBufferMaxSize
       || Number(ctx.messageBufferBytes || 0) + bytes > maxBytes) return 'dropped';

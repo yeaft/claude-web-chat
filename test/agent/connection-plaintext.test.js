@@ -683,6 +683,27 @@ describe('sendToServer: encrypt vs plaintext gate', () => {
       );
       await expect(sendToServer({ type: 'yeaft_output', payload: { text: 'x'.repeat(1024) } })).resolves.toBe('dropped');
 
+      for (const terminalType of ['turn_completed', 'conversation_closed']) {
+        for (const saturation of ['bytes', 'count']) {
+          const terminalMessage = { type: terminalType, conversationId: `${terminalType}-${saturation}` };
+          const ordinaryMessage = { type: 'yeaft_output', payload: { text: 'x'.repeat(80) } };
+          Object.assign(ctx, {
+            messageBuffer: [],
+            messageBufferBytes: 0,
+            messageBufferMaxBytes: saturation === 'bytes' ? 140 : 1024,
+            messageBufferMaxSize: saturation === 'count' ? 1 : 5000,
+          });
+          await expect(sendToServer(terminalMessage)).resolves.toBe('buffered');
+          await expect(sendToServer(ordinaryMessage)).resolves.toBe('dropped');
+          expect(ctx.messageBuffer).toEqual([terminalMessage]);
+
+          Object.assign(ctx, { messageBuffer: [], messageBufferBytes: 0 });
+          await expect(sendToServer(ordinaryMessage)).resolves.toBe('buffered');
+          await expect(sendToServer(terminalMessage)).resolves.toBe('buffered');
+          expect(ctx.messageBuffer).toEqual([terminalMessage]);
+        }
+      }
+
       const blockedWs = new MockWebSocket();
       Object.assign(ctx, {
         ws: blockedWs,
