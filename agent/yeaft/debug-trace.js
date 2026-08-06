@@ -127,9 +127,19 @@ function regexHasUnsafeQuantifiedGroup(pattern) {
 function buildTraceSearchDocument(trace) {
   const loops = Array.isArray(trace?.loops) ? trace.loops : [];
   const tools = Array.isArray(trace?.tools) ? trace.tools : [];
-  const toolNames = tools.map(t => t?.toolName || t?.name || '').filter(Boolean).join(' ');
-  const loopModels = loops.map(l => l?.model || '').filter(Boolean).join(' ');
-  const stopReasons = loops.map(l => l?.stopReason || '').filter(Boolean).join(' ');
+  const toolNames = [
+    ...tools.map(t => t?.toolName || t?.name || '').filter(Boolean),
+    ...(Array.isArray(trace?.toolNames) ? trace.toolNames : []),
+  ].join(' ');
+  const loopModels = [
+    ...loops.map(l => l?.model || '').filter(Boolean),
+    ...(Array.isArray(trace?.loopModels) ? trace.loopModels : []),
+  ].join(' ');
+  const stopReasons = [
+    ...loops.map(l => l?.stopReason || '').filter(Boolean),
+    ...(Array.isArray(trace?.stopReasons) ? trace.stopReasons : []),
+    trace?.finalStopReason || '',
+  ].filter(Boolean).join(' ');
   return [
     trace?.requestId,
     trace?.traceId,
@@ -596,7 +606,24 @@ function turnLocatorPath(rootDir, sessionId, turnId) {
 }
 
 function serializableTraceMeta(trace) {
-  const meta = { ...trace };
+  const loops = Array.isArray(trace?.loops) ? trace.loops : [];
+  const tools = Array.isArray(trace?.tools) ? trace.tools : [];
+  const usage = loops.reduce((acc, loop) => {
+    const normalized = normalizeUsage(loop?.usage || {});
+    acc.totalMs += Number(loop?.latencyMs || 0);
+    acc.totalTokens += Number(normalized.totalTokens || 0);
+    acc.summaryInputTokens += Number(normalized.totalInputTokens || 0);
+    acc.summaryOutputTokens += Number(normalized.outputTokens || 0);
+    return acc;
+  }, { totalMs: 0, totalTokens: 0, summaryInputTokens: 0, summaryOutputTokens: 0 });
+  const meta = {
+    ...trace,
+    loopCount: loops.length,
+    ...usage,
+    loopModels: [...new Set(loops.map(loop => loop?.model).filter(Boolean))],
+    stopReasons: [...new Set(loops.map(loop => loop?.stopReason).filter(Boolean))],
+    toolNames: [...new Set(tools.map(tool => tool?.toolName || tool?.name).filter(Boolean))],
+  };
   delete meta._lastSnapshot;
   delete meta._persistedFormat;
   delete meta._persistedRequestDir;
@@ -689,11 +716,11 @@ function summarizeTrace(trace, detailsLoaded = false) {
     threadId: trace?.threadId || null,
     openedAt: trace?.openedAt || 0,
     closedAt: trace?.closedAt || null,
-    totalMs: usage.totalMs,
-    totalTokens: usage.totalTokens,
-    summaryInputTokens: usage.summaryInputTokens,
-    summaryOutputTokens: usage.summaryOutputTokens,
-    loopCount: loops.length,
+    totalMs: loops.length > 0 ? usage.totalMs : Number(trace?.totalMs || 0),
+    totalTokens: loops.length > 0 ? usage.totalTokens : Number(trace?.totalTokens || 0),
+    summaryInputTokens: loops.length > 0 ? usage.summaryInputTokens : Number(trace?.summaryInputTokens || 0),
+    summaryOutputTokens: loops.length > 0 ? usage.summaryOutputTokens : Number(trace?.summaryOutputTokens || 0),
+    loopCount: loops.length > 0 ? loops.length : Number(trace?.loopCount || 0),
     memoryLoaded: null,
     memoryAdjust: null,
     tools: Array.isArray(trace?.tools) ? trace.tools.map(t => ({
@@ -1152,7 +1179,7 @@ export class DebugTrace {
       trace.closedAt ||= Date.now();
       trace.updatedAt = Date.now();
       trace.finalStopReason = stopReason;
-      this.#appendTraceRecord(trace, 'finalize', { at: trace.updatedAt, stopReason }, { writeMeta: true });
+      this.#appendTraceRecord(trace, 'finalize', { at: trace.updatedAt, stopReason }, { writeMeta: true, evictAfterWrite: true });
     }
   }
 
@@ -1475,7 +1502,7 @@ export class DebugTrace {
     return tracePathFor(this.#rootDir, trace.sessionId || null, trace.requestKey);
   }
 
-  #appendTraceRecord(trace, type, record, { writeMeta = false } = {}) {
+  #appendTraceRecord(trace, type, record, { writeMeta = false, evictAfterWrite = false } = {}) {
     if (!this.#acceptingWrites || !trace?.requestKey || !record) return;
     this.#requestCache.set(trace.requestKey, trace);
     const initialize = !this.#initializedRequestKeys.has(trace.requestKey);
@@ -1486,6 +1513,7 @@ export class DebugTrace {
       record: cloneJsonValue(record),
       initialize,
       writeMeta: !!writeMeta,
+      evictAfterWrite: !!evictAfterWrite,
     });
     if (writeMeta) {
       this.#flushPending();
@@ -1525,15 +1553,16 @@ export class DebugTrace {
       for (const entry of entries) {
         if (!this.#requestCache.has(entry.trace.requestKey)) continue;
         const requestDir = requestDirFor(this.#rootDir, entry.trace.sessionId || null, entry.trace.requestKey);
-        const batch = batches.get(requestDir) || { trace: entry.trace, initialize: false, writeMeta: false, lines: [] };
+        const batch = batches.get(requestDir) || { trace: entry.trace, initialize: false, writeMeta: false, evictAfterWrite: false, lines: [] };
         batch.trace = entry.trace;
         batch.initialize ||= entry.initialize;
         batch.writeMeta ||= entry.writeMeta;
+        batch.evictAfterWrite ||= entry.evictAfterWrite;
         batch.lines.push(`${JSON.stringify({ type: entry.type, record: entry.record })}\n`);
         batches.set(requestDir, batch);
       }
       for (const [requestDir, batch] of batches) {
-        const { trace, initialize, writeMeta } = batch;
+        const { trace, initialize, writeMeta, evictAfterWrite } = batch;
         const lines = [...batch.lines];
         const legacyRequestDir = trace._persistedFormat === 'legacy'
           ? trace._persistedRequestDir || null
@@ -1569,6 +1598,7 @@ export class DebugTrace {
           if (legacyRequestDir && legacyRequestDir !== requestDir) {
             await removeRequestDirIfIdentityMatches(legacyRequestDir, trace);
           }
+          if (evictAfterWrite) this.#requestCache.delete(trace.requestKey);
         } catch (err) {
           console.warn('[Yeaft] debug trace append failed:', err?.message || err);
         }

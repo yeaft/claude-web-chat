@@ -17,9 +17,17 @@ function messageBytes(msg) {
   catch { return 0; }
 }
 
+const TERMINAL_TYPES = new Set(['turn_completed', 'conversation_closed']);
+
 function removeBufferedAt(index) {
   const [removed] = ctx.messageBuffer.splice(index, 1);
   ctx.messageBufferBytes = Math.max(0, Number(ctx.messageBufferBytes || 0) - messageBytes(removed));
+}
+
+function removeOutboundAt(index, outcome = 'dropped') {
+  const [removed] = ctx.outboundSendQueue.splice(index, 1);
+  ctx.outboundSendQueueBytes = Math.max(0, Number(ctx.outboundSendQueueBytes || 0) - Number(removed?.bytes || 0));
+  removed?.resolve?.(outcome);
 }
 
 function bufferMessage(msg, reason) {
@@ -37,7 +45,7 @@ function bufferMessage(msg, reason) {
     ctx.messageBuffer.length >= ctx.messageBufferMaxSize
     || Number(ctx.messageBufferBytes || 0) + bytes > maxBytes
   )) {
-    const nonTerminal = ctx.messageBuffer.findIndex(m => m.type !== 'turn_completed');
+    const nonTerminal = ctx.messageBuffer.findIndex(m => !TERMINAL_TYPES.has(m.type));
     removeBufferedAt(nonTerminal >= 0 ? nonTerminal : 0);
   }
   if (ctx.messageBuffer.length >= ctx.messageBufferMaxSize
@@ -89,7 +97,17 @@ export async function sendToServer(msg) {
   if (!ctx.ws || ctx.ws.readyState !== WebSocket.OPEN) return bufferMessage(msg, 'Disconnected');
   const bytes = messageBytes(msg);
   const maxBytes = Math.max(1, Number(ctx.outboundSendQueueMaxBytes) || 8 * 1024 * 1024);
-  if (bytes > maxBytes || Number(ctx.outboundSendQueueBytes || 0) + bytes > maxBytes) {
+  if (bytes > maxBytes) {
+    console.warn(`[WS] Outbound message exceeds byte budget, dropping: ${msg.type}`);
+    return 'dropped';
+  }
+  while (TERMINAL_TYPES.has(msg.type)
+      && Number(ctx.outboundSendQueueBytes || 0) + bytes > maxBytes) {
+    const nonTerminal = ctx.outboundSendQueue.findIndex(item => !TERMINAL_TYPES.has(item?.msg?.type));
+    if (nonTerminal < 0) break;
+    removeOutboundAt(nonTerminal);
+  }
+  if (Number(ctx.outboundSendQueueBytes || 0) + bytes > maxBytes) {
     console.warn(`[WS] Outbound queue byte budget exceeded, dropping: ${msg.type}`);
     return 'dropped';
   }

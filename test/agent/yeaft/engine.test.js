@@ -5041,14 +5041,40 @@ describe('Engine', () => {
             responseText: '',
             rawResponse,
             stopReason: 'tool_use',
+            model: 'gateway-search-model',
+            usage: { inputTokens: 2, outputTokens: 1, totalTokens: 3 },
+            latencyMs: 5,
             messages: [{ role: 'user', content: 'do long work' }],
           });
+          if (i === 1) boundedTrace.logTool(turnId, { toolName: 'search', toolOutput: 'ok' });
         }
-        await boundedTrace.close();
+        boundedTrace.finalizeQuery('long-tool-turn', { sessionId: 's-long', stopReason: 'end_turn' });
+        await boundedTrace.flush();
+
+        const beforeEviction = await boundedTrace.fetchRecentDebugHistory({
+          sessionId: 's-long',
+          indexOnly: true,
+          search: '/gateway-search-model|search|tool_use|end_turn/',
+        });
+        expect(beforeEviction.turns).toEqual([
+          expect.objectContaining({
+            turnId: 'long-tool-turn',
+            loopCount: 100,
+            totalTokens: 300,
+            totalMs: 500,
+          }),
+        ]);
 
         const requestRoot = join(traceRoot, 'sessions', 's-long', 'debug', 'requests');
         const [requestDir] = readdirSync(requestRoot);
         const eventFile = join(requestRoot, requestDir, 'events.jsonl');
+        const savedEvents = readFileSync(eventFile, 'utf8');
+        writeFileSync(eventFile, '', 'utf8');
+        const evictedDetail = await boundedTrace.fetchTurnDebug({ sessionId: 's-long', turnId: 'long-tool-turn' });
+        expect(evictedDetail.loops).toEqual([]);
+        writeFileSync(eventFile, savedEvents, 'utf8');
+        await boundedTrace.close();
+
         const storedLoops = readFileSync(eventFile, 'utf8')
           .trim()
           .split('\n')

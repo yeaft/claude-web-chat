@@ -682,6 +682,28 @@ describe('sendToServer: encrypt vs plaintext gate', () => {
         ctx.messageBuffer.reduce((total, msg) => total + Buffer.byteLength(JSON.stringify(msg)), 0),
       );
       await expect(sendToServer({ type: 'yeaft_output', payload: { text: 'x'.repeat(1024) } })).resolves.toBe('dropped');
+
+      const blockedWs = new MockWebSocket();
+      Object.assign(ctx, {
+        ws: blockedWs,
+        outboundSendQueue: [],
+        outboundSendQueueBytes: 0,
+        outboundSendQueueMaxBytes: 220,
+        outboundSendQueueActive: true,
+      });
+      let resolveOrdinary;
+      const ordinary = new Promise(resolve => { resolveOrdinary = resolve; });
+      const ordinaryMessage = { type: 'yeaft_output', payload: { text: 'x'.repeat(120) } };
+      const ordinaryBytes = Buffer.byteLength(JSON.stringify(ordinaryMessage));
+      ctx.outboundSendQueue.push({ msg: ordinaryMessage, bytes: ordinaryBytes, resolve: resolveOrdinary });
+      ctx.outboundSendQueueBytes = ordinaryBytes;
+      const terminal = sendToServer({ type: 'turn_completed', conversationId: 'conv-terminal' });
+      await expect(ordinary).resolves.toBe('dropped');
+      expect(ctx.outboundSendQueue.map(item => item.msg.type)).toEqual(['turn_completed']);
+      ctx.outboundSendQueueActive = false;
+      await sendToServer({ type: 'auth' });
+      await expect(terminal).resolves.toBe('sent');
+      expect(blockedWs.getSentMessages().map(message => message.type)).toContain('turn_completed');
     } finally {
       Object.assign(ctx, original);
     }
