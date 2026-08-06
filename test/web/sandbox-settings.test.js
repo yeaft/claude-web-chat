@@ -44,6 +44,13 @@ describe('Sandbox Settings contract', () => {
     expect(component).not.toContain("'Idempotency-Key': crypto.randomUUID()");
   });
 
+  it('explains that Sandbox creates a separate managed Agent', () => {
+    expect(en).toContain("'settings.sandbox.description': 'Create a separate, persistent managed Yeaft Agent on a qualified dedicated Sandbox Host.'");
+    expect(zh).toContain("'settings.sandbox.description': '在合格的专用 Sandbox Host 上创建一个独立、持久化的托管 Yeaft Agent。'");
+    expect(en).toContain("'settings.sandbox.unavailable.disabled': 'The server-side managed Sandbox service is not enabled for this deployment. Updating an existing Agent does not enable it.'");
+    expect(zh).toContain("'settings.sandbox.unavailable.disabled': '此部署尚未启用服务器端托管 Sandbox 服务；升级现有 Agent 不会启用它。'");
+  });
+
   it('uses stable, non-sensitive unavailable messages in both locales', () => {
     for (const locale of [en, zh]) {
       expect(locale).toContain("'settings.sandbox.unavailable.disabled'");
@@ -52,6 +59,11 @@ describe('Sandbox Settings contract', () => {
     }
     const template = component.slice(component.indexOf('template: `'), component.indexOf('directives:'));
     expect(template).not.toMatch(/hostId|host_id|reservedCount|other users/i);
+  });
+
+  it('renders a dedicated Sandbox navigation icon like the other settings tabs', () => {
+    expect(component).toContain("v-else-if=\"tab.key === 'sandbox'\"");
+    expect(component).toContain('M7 2h10');
   });
 
   it('covers loading, empty, disabled, error, and long-name states', () => {
