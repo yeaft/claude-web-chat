@@ -41,9 +41,11 @@ const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/ye
 const {
   bindYeaftHistoryBrowserOwner,
   clearYeaftHistoryBrowserOwner,
+  chooseYeaftHistoryBrowserRows,
   currentYeaftHistoryBrowserFence,
   readYeaftHistoryBrowserCache,
   writeYeaftHistoryBrowserCache,
+  YEAFT_HISTORY_BROWSER_CACHE_LIMITS,
 } = await import('../../../web/stores/helpers/yeaft-history-browser-cache.js');
 const {
   isDurableYeaftHistoryRow,
@@ -61,6 +63,7 @@ const {
   failYeaftHistoryLoad,
   finishYeaftHistoryLoad,
   isCurrentYeaftHistoryResponse,
+  syncActiveYeaftHistoryLoad,
 } = await import('../../../web/stores/helpers/yeaft-history-load.js');
 const { shouldShowYeaftOnboardingGuide } = await import('../../../web/utils/yeaftOnboarding.js');
 const {
@@ -337,6 +340,49 @@ describe('Conversation Repository', () => {
 });
 
 describe('Yeaft conversation loading state', () => {
+  it('uses 500 complete turns as the only browser-cache retention limit', () => {
+    expect(YEAFT_HISTORY_BROWSER_CACHE_LIMITS).toEqual({ maxTurnsPerSession: 500 });
+
+    const rows = [];
+    for (let turn = 1; turn <= 501; turn += 1) {
+      rows.push(
+        {
+          id: `m${turn}-user`, messageId: `m${turn}-user`, stableKey: `turn-${turn}:user`,
+          seq: turn * 10, type: 'user', content: `question ${turn}`, sessionId: 'session-a', isHistory: true,
+        },
+        ...Array.from({ length: turn === 2 ? 700 : 1 }, (_, index) => ({
+          id: `m${turn}-assistant-${index}`, messageId: `m${turn}-assistant-${index}`,
+          stableKey: `turn-${turn}:assistant:${index}`, seq: turn * 10 + index + 1,
+          type: 'assistant', content: 'x'.repeat(8192), sessionId: 'session-a', isHistory: true,
+        })),
+      );
+    }
+
+    const retained = chooseYeaftHistoryBrowserRows(rows);
+    expect(retained.turns).toBe(500);
+    expect(retained.rows[0].content).toBe('question 2');
+    expect(retained.rows.filter(row => row.content === 'question 2')).toHaveLength(1);
+    expect(retained.rows.length).toBeGreaterThan(600);
+    expect(retained.bytes).toBeGreaterThan(4 * 1024 * 1024);
+  });
+
+  it('keeps background prefetch off the visible older-history spinner', () => {
+    const sessionKey = yeaftHistoryIdentityKey('agent-1', 'session-a');
+    const store = mkStore({
+      currentAgent: 'agent-1',
+      yeaftActiveSessionFilter: 'session-a',
+      yeaftSessionHistoryState: {
+        [sessionKey]: { loading: true, mode: 'prefetch', hasMore: true, oldestSeq: 10 },
+      },
+    });
+
+    syncActiveYeaftHistoryLoad(store);
+
+    expect(store.yeaftLoadingMoreHistory).toBe(false);
+    expect(store.yeaftHasMoreHistory).toBe(true);
+    expect(store.yeaftOldestLoadedSeq).toBe(10);
+  });
+
   async function verifyBrowserHistoryCache() {
     class MemoryRequest {
       constructor(run) {
@@ -419,13 +465,6 @@ describe('Yeaft conversation loading state', () => {
         sessionId: 'session-a',
         rows: projectedRows,
         historyState: { latestSeq: 1, oldestSeq: 1, hasMore: true },
-        limits: {
-          maxSessionsPerOwner: 12,
-          maxTurnsPerSession: 500,
-          maxRowsPerSession: 2,
-          maxBytesPerSession: 4 * 1024 * 1024,
-          maxAgeMs: 30 * 24 * 60 * 60 * 1000,
-        },
       })).toBe(true);
       await new Promise(resolve => setTimeout(resolve, 0));
       expect(await readYeaftHistoryBrowserCache({
@@ -446,12 +485,12 @@ describe('Yeaft conversation loading state', () => {
       const persisted = records.get('owner-a\u001fagent-a\u001fsession-a');
       records.set(persisted.key, {
         ...persisted,
-        lastAccessed: Date.now() - (31 * 24 * 60 * 60 * 1000),
+        lastAccessed: Date.now() - (365 * 24 * 60 * 60 * 1000),
       });
       expect(await readYeaftHistoryBrowserCache({
         fence: ownerA, agentId: 'agent-a', sessionId: 'session-a',
-      })).toBeNull();
-      expect(records.has(persisted.key)).toBe(false);
+      })).toMatchObject({ sessionId: 'session-a', rowCount: 4 });
+      expect(records.has(persisted.key)).toBe(true);
 
       const ownerB = bindYeaftHistoryBrowserOwner('owner-b');
       expect(await readYeaftHistoryBrowserCache({
@@ -798,6 +837,63 @@ describe('Yeaft conversation loading state', () => {
         isHistory: true,
       }),
     ]);
+  });
+
+  it('schedules the next bounded background page after a committed recent chunk', () => {
+    const scheduleYeaftHistoryPrefetch = vi.fn();
+    const store = mkStore({
+      scheduleYeaftHistoryPrefetch,
+      messagesMap: { 'yeaft-1': [] },
+    });
+
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      agentId: 'agent-1',
+      sessionId: 'g1',
+      mode: 'recent',
+      messages: [
+        { id: 'm0100', role: 'user', content: 'recent-q', sessionId: 'g1' },
+        { id: 'm0101', role: 'assistant', content: 'recent-a', sessionId: 'g1' },
+      ],
+      oldestSeq: 100,
+      nextBeforeSeq: 100,
+      hasMore: true,
+    });
+
+    expect(scheduleYeaftHistoryPrefetch).toHaveBeenCalledWith('g1', 'agent-1');
+  });
+
+  it('stops background scheduling once 500 complete turns are resident', () => {
+    const scheduleYeaftHistoryPrefetch = vi.fn();
+    const rows = [];
+    for (let turn = 1; turn <= 499; turn += 1) {
+      rows.push(
+        { id: `m${turn * 2}`, messageId: `m${turn * 2}`, seq: turn * 2, type: 'user', content: `q${turn}`, sessionId: 'g1', isHistory: true },
+        { id: `m${turn * 2 + 1}`, messageId: `m${turn * 2 + 1}`, seq: turn * 2 + 1, type: 'assistant', content: `a${turn}`, sessionId: 'g1', isHistory: true },
+      );
+    }
+    const store = mkStore({
+      scheduleYeaftHistoryPrefetch,
+      messagesMap: { 'yeaft-1': rows },
+    });
+
+    handleYeaftHistoryChunk(store, {
+      conversationId: 'yeaft-1',
+      agentId: 'agent-1',
+      sessionId: 'g1',
+      messages: [
+        { id: 'm0000', role: 'user', content: 'oldest-q', sessionId: 'g1' },
+        { id: 'm0001', role: 'assistant', content: 'oldest-a', sessionId: 'g1' },
+      ],
+      oldestSeq: 0,
+      nextBeforeSeq: 0,
+      hasMore: true,
+    });
+
+    expect(scheduleYeaftHistoryPrefetch).not.toHaveBeenCalled();
+    expect(store.messagesMap['yeaft-1'].filter(row => row.type === 'user')).toHaveLength(500);
+    expect(store.yeaftSessionHistoryState[yeaftHistoryIdentityKey('agent-1', 'g1')])
+      .toMatchObject({ hasMore: false, retentionLimitReached: true });
   });
 
   it('prepends user + assistant rows at index 0 with isStreaming=false', () => {
@@ -1883,16 +1979,12 @@ describe('Yeaft conversation loading state', () => {
       conversationId,
       agentId: 'agent-live',
       sessionId: targetSessionId,
-      limits: {
-        maxRowsPerSession: 9,
-        maxBytesPerSession: 100_000,
-        recentRowsFloor: 3,
-      },
+      limits: { maxTurnsPerSession: 2 },
     });
 
     const kept = store.messagesMap[conversationId];
     expect(result.evictedRows).toBeGreaterThan(0);
-    expect(kept.filter(row => row.sessionId === targetSessionId)).toHaveLength(9);
+    expect(kept.filter(row => row.sessionId === targetSessionId)).toHaveLength(6);
     expect(kept).toContain(otherSessionRow);
     expect(kept.some(row => row.id === 'optimistic-user')).toBe(true);
     expect(kept.some(row => row.id === 'streaming-assistant')).toBe(true);
@@ -1961,11 +2053,7 @@ describe('Yeaft conversation loading state', () => {
       conversationId,
       agentId,
       sessionId,
-      limits: {
-        maxRowsPerSession: 4,
-        maxBytesPerSession: 100_000,
-        recentRowsFloor: 1,
-      },
+      limits: { maxTurnsPerSession: 2 },
     });
 
     const cache = store.yeaftHistoryCacheState[sessionKey];
@@ -2046,11 +2134,7 @@ describe('Yeaft conversation loading state', () => {
       conversationId,
       agentId: backgroundAgentId,
       sessionId: backgroundSessionId,
-      limits: {
-        maxRowsPerSession: 4,
-        maxBytesPerSession: 100_000,
-        recentRowsFloor: 1,
-      },
+      limits: { maxTurnsPerSession: 2 },
     });
 
     expect(store.yeaftSessionHistoryState[backgroundKey]).toEqual(expect.objectContaining({
@@ -2084,11 +2168,7 @@ describe('Yeaft conversation loading state', () => {
       conversationId,
       agentId: 'agent-large',
       sessionId,
-      limits: {
-        maxRowsPerSession: 4,
-        maxBytesPerSession: 300,
-        recentRowsFloor: 1,
-      },
+      limits: { maxTurnsPerSession: 1 },
     });
 
     expect(store.messagesMap[conversationId].map(row => row.id)).toEqual([
@@ -2123,14 +2203,7 @@ describe('Yeaft conversation loading state', () => {
         ],
       },
     });
-    const limits = {
-      maxSessions: 2,
-      maxRowsPerSession: 4,
-      maxBytesPerSession: 100_000,
-      maxRowsTotal: 10,
-      maxBytesTotal: 100_000,
-      recentRowsFloor: 2,
-    };
+    const limits = { maxTurnsPerSession: 2 };
 
     pruneYeaftHistoryCache(store, {
       conversationId: 'yeaft-1',
@@ -2146,7 +2219,7 @@ describe('Yeaft conversation loading state', () => {
     const rows = store.messagesMap['yeaft-1'];
     expect(rows.filter(isDurableYeaftHistoryRow)).toHaveLength(4);
     expect(rows.some(row => row.content === 'optimistic tail')).toBe(true);
-    expect(rows.some(row => row.stableKey === 'durable-2')).toBe(true);
+    expect(rows.some(row => row.stableKey === 'durable-2')).toBe(false);
     expect(store.yeaftHistoryCacheState[yeaftHistoryIdentityKey('agent-1', 'session-cache')])
       .toMatchObject({ rowCount: 4, ranges: expect.any(Array), lastAccessed: 100 });
 
@@ -2240,7 +2313,7 @@ describe('Yeaft conversation loading state', () => {
         cacheEpoch: nextCacheState.rangeEpoch,
       });
       expect(frontierStore.messagesMap[conversationId].filter(isDurableYeaftHistoryRow).length)
-        .toBeLessThanOrEqual(600);
+        .toBeLessThanOrEqual(YEAFT_HISTORY_CACHE_LIMITS.maxTurnsPerSession * 2);
     }
 
     expect(cursors[0]).toBe(901);
@@ -2250,85 +2323,15 @@ describe('Yeaft conversation loading state', () => {
     expect(frontierStore.messagesMap[conversationId].some(row => row.content === 'optimistic tail survives'))
       .toBe(true);
     const cacheKey = yeaftHistoryIdentityKey('agent-1', sessionId);
-    const initialGapRanges = frontierStore.yeaftHistoryCacheState[cacheKey].ranges;
-    expect(initialGapRanges).toHaveLength(2);
-    expect(initialGapRanges[0].startSeq).toBe(1);
-    expect(initialGapRanges[1].endSeq).toBe(1000);
-    const initialGap = {
-      stopAtSeq: initialGapRanges[0].endSeq + 1,
-      beforeSeq: initialGapRanges[1].startSeq,
-    };
-    const initialMissingSeqs = Array.from(
-      { length: initialGap.beforeSeq - initialGap.stopAtSeq },
-      (_, index) => initialGap.stopAtSeq + index,
-    );
-
-    const gapWorkKeys = [];
-    const refilledSeqs = new Set();
-    let traversalEpoch = null;
-    let completedTraversal = null;
-    for (;;) {
-      const cacheState = frontierStore.yeaftHistoryCacheState[cacheKey];
-      const planned = planNextYeaftHistoryPage(
-        pagination,
-        cacheState.ranges,
-        cacheState.rangeEpoch,
-      );
-      if (!planned.request) {
-        completedTraversal = planned;
-        break;
-      }
-      expect(planned.request).toMatchObject({ kind: 'gap', stopAtSeq: 1 });
-      traversalEpoch ??= planned.request.cacheEpoch;
-      expect(planned.request.cacheEpoch).toBe(traversalEpoch);
-      expect(planned.request.beforeSeq).toBeGreaterThan(planned.request.stopAtSeq);
-      gapWorkKeys.push(planned.request.workKey);
-      const oldestSeq = Math.max(planned.request.stopAtSeq, planned.request.beforeSeq - 20);
-      const incomingRows = Array.from(
-        { length: planned.request.beforeSeq - oldestSeq },
-        (_, index) => {
-          const seq = oldestSeq + index;
-          refilledSeqs.add(seq);
-          return {
-            id: `m${String(seq).padStart(4, '0')}`,
-            messageId: `m${String(seq).padStart(4, '0')}`,
-            seq,
-            stableKey: `frontier-${seq}`,
-            type: seq % 2 ? 'user' : 'assistant',
-            content: `message ${seq}`,
-            sessionId,
-          };
-        },
-      );
-      frontierStore.messagesMap[conversationId].push(...incomingRows);
-      pruneYeaftHistoryCache(frontierStore, {
-        conversationId,
-        agentId: 'agent-1',
-        sessionId,
-        incomingRows,
-        activeAgentId: 'agent-1',
-        activeSessionId: sessionId,
-        now: 100 + gapWorkKeys.length,
-        limits: YEAFT_HISTORY_CACHE_LIMITS,
-      });
-      const nextCacheState = frontierStore.yeaftHistoryCacheState[cacheKey];
-      pagination = commitYeaftHistoryPage(planned.state, {
-        mode: 'older',
-        oldestSeq,
-        hasMore: oldestSeq > planned.request.stopAtSeq,
-        ranges: nextCacheState.ranges,
-        pageKind: planned.request.kind,
-        stopAtSeq: planned.request.stopAtSeq,
-        cacheEpoch: nextCacheState.rangeEpoch,
-      });
-      expect(gapWorkKeys.length).toBeLessThan(50);
-    }
-    expect(new Set(gapWorkKeys).size).toBe(gapWorkKeys.length);
-    expect(initialMissingSeqs.every(seq => refilledSeqs.has(seq))).toBe(true);
-    expect(Array.from({ length: initialGap.beforeSeq - 1 }, (_, index) => index + 1)
-      .every(seq => refilledSeqs.has(seq))).toBe(true);
+    const retainedRanges = frontierStore.yeaftHistoryCacheState[cacheKey].ranges;
+    expect(retainedRanges).toEqual([{ startSeq: 1, endSeq: 1000 }]);
     expect(frontierStore.messagesMap[conversationId].filter(isDurableYeaftHistoryRow).length)
-      .toBeLessThanOrEqual(600);
+      .toBeLessThanOrEqual(YEAFT_HISTORY_CACHE_LIMITS.maxTurnsPerSession * 2);
+    const completedTraversal = planNextYeaftHistoryPage(
+      pagination,
+      retainedRanges,
+      frontierStore.yeaftHistoryCacheState[cacheKey].rangeEpoch,
+    );
     expect(completedTraversal.request).toBeNull();
     expect(completedTraversal.state.hasMore).toBe(false);
 
@@ -2355,19 +2358,11 @@ describe('Yeaft conversation loading state', () => {
     expect(planNextYeaftHistoryPage(noProgress, []).request).toBeNull();
   });
 
-  historyScenario('evicts the least-recent inactive Session without removing its live tail', () => {
+  historyScenario('does not evict another Session as a global capacity side effect', () => {
     const store = mkStore({
       yeaftHistoryCacheState: {},
       messagesMap: { 'yeaft-1': [] },
     });
-    const limits = {
-      maxSessions: 2,
-      maxRowsPerSession: 10,
-      maxBytesPerSession: 100_000,
-      maxRowsTotal: 20,
-      maxBytesTotal: 100_000,
-      recentRowsFloor: 1,
-    };
     for (let index = 1; index <= 3; index += 1) {
       const sessionId = `session-${index}`;
       store.messagesMap['yeaft-1'].push(
@@ -2385,17 +2380,16 @@ describe('Yeaft conversation loading state', () => {
         agentId: 'agent-1',
         sessionId,
         incomingRows: [{ stableKey: `durable-${index}` }],
-        activeAgentId: 'agent-1',
-        activeSessionId: 'session-3',
         now: index,
-        limits,
+        limits: { maxTurnsPerSession: 1 },
       });
     }
 
     const rows = store.messagesMap['yeaft-1'];
-    expect(rows.some(row => row.sessionId === 'session-1' && isDurableYeaftHistoryRow(row))).toBe(false);
-    expect(rows.some(row => row.sessionId === 'session-1' && row.content === 'live 1')).toBe(true);
-    expect(rows.filter(isDurableYeaftHistoryRow)).toHaveLength(2);
+    expect(rows.filter(isDurableYeaftHistoryRow)).toHaveLength(3);
+    expect(rows.filter(row => row.clientMessageId).map(row => row.content)).toEqual([
+      'live 1', 'live 2', 'live 3',
+    ]);
   });
 
   it('keeps chronological order and dedupes rows when older session history overlaps cached rows', async () => {

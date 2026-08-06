@@ -86,10 +86,12 @@ import {
   sliceScopedYeaftMessagesByRecentTurns,
 } from './helpers/yeaft-message-window.js';
 import {
+  countResidentYeaftHistoryTurns,
   isDurableYeaftHistoryRow,
   pruneConversationMessageRetention,
   pruneYeaftHistoryCache,
   touchYeaftHistoryCache,
+  YEAFT_HISTORY_MAX_TURNS,
 } from './helpers/yeaft-history-cache.js';
 import {
   currentYeaftHistoryBrowserFence,
@@ -752,8 +754,8 @@ export const useChatStore = defineStore('chat', {
     // VirtualTranscript already limits DOM work; explicit history navigation may
     // still record a larger value here without hiding resident rows on switches.
     yeaftMessageWindowState: {},
-    // Bounded durable Session ranges keyed by Agent + Session. Optimistic/live
-    // rows stay outside the durable budget and are never evicted here.
+    // Durable Session ranges keyed by Agent + Session. Completed history keeps
+    // at most 500 full turns; optimistic/live rows are never split or dropped.
     yeaftHistoryCacheState: {},
     // IndexedDB hydration is best-effort and fenced by user + Agent + Session.
     // Request tokens prevent a late cache read from changing a newer selection.
@@ -763,6 +765,9 @@ export const useChatStore = defineStore('chat', {
     // yeaftSessionHistoryState[groupId].loading.
     yeaftBootstrapMetaLoadingKey: null,
     yeaftHistoryPerfTraceBySession: {},
+    // One idle prefetch timer per Agent-scoped Session. Timers only start an
+    // older-page request after the shared recent/delta/older fence is idle.
+    _yeaftHistoryPrefetchBySession: {},
     // Session history search is request-scoped. Results are never derived from
     // the bounded render cache, and the request id prevents stale debounce
     // responses from one query/session replacing a newer panel state.
@@ -3541,6 +3546,20 @@ export const useChatStore = defineStore('chat', {
         pending?.resolve?.(false);
       }
       this._yeaftHistoryWindowPendingByKey = remainingPendingWindows;
+      const remainingPrefetches = {};
+      for (const [prefetchKey, pending] of Object.entries(this._yeaftHistoryPrefetchBySession || {})) {
+        if (sessionKey && prefetchKey !== sessionKey) {
+          remainingPrefetches[prefetchKey] = pending;
+          continue;
+        }
+        pending.cancelled = true;
+        if (pending.idle && typeof globalThis.cancelIdleCallback === 'function') {
+          globalThis.cancelIdleCallback(pending.handle);
+        } else {
+          clearTimeout(pending.handle);
+        }
+      }
+      this._yeaftHistoryPrefetchBySession = remainingPrefetches;
       const remainingResultRefreshes = {};
       for (const [requestId, refresh] of Object.entries(this._yeaftHistoryResultRefreshByRequestId || {})) {
         const matches = !sessionKey
@@ -7868,19 +7887,28 @@ export const useChatStore = defineStore('chat', {
       return true;
     },
 
-    loadMoreYeaftHistory(turns = getYeaftWindowLoadStepTurns()) {
-      if (this.currentView !== 'yeaft') return;
-      if (this.yeaftLoadingMoreHistory || !this.yeaftHasMoreHistory) return;
-      const sessionId = resolveActiveYeaftSessionId(this);
-      const targetAgentId = resolveAgentIdForSession(this, sessionId);
-      if (!targetAgentId) return;
-      const requestedTurns = Math.min(50, Math.max(1, Number.isFinite(turns)
-        ? Math.floor(turns)
-        : getYeaftWindowLoadStepTurns()));
-
-      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, sessionId);
-      const cacheRanges = this.yeaftHistoryCacheState?.[sessionKey]?.ranges || [];
+    loadMoreYeaftHistory(turns = getYeaftWindowLoadStepTurns(), {
+      sessionId = null,
+      agentId = null,
+      background = false,
+    } = {}) {
+      if (this.currentView !== 'yeaft') return false;
+      const targetSessionId = sessionId || resolveActiveYeaftSessionId(this);
+      const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
+      if (!targetAgentId || !targetSessionId) return false;
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
       const previousState = this.yeaftSessionHistoryState?.[sessionKey] || {};
+      if (previousState.loading || !previousState.hasMore) return false;
+      const conversationId = resolveYeaftConversationIdForSession(this, targetSessionId, targetAgentId);
+      const residentTurns = countResidentYeaftHistoryTurns(this, conversationId, targetSessionId);
+      if (residentTurns >= YEAFT_HISTORY_MAX_TURNS) return false;
+      const requestedTurns = Math.min(
+        50,
+        YEAFT_HISTORY_MAX_TURNS - residentTurns,
+        Math.max(1, Number.isFinite(turns) ? Math.floor(turns) : getYeaftWindowLoadStepTurns()),
+      );
+
+      const cacheRanges = this.yeaftHistoryCacheState?.[sessionKey]?.ranges || [];
       const cacheEpoch = Number(this.yeaftHistoryCacheState?.[sessionKey]?.rangeEpoch) || 0;
       const planned = planNextYeaftHistoryPage(previousState, cacheRanges, cacheEpoch);
       this.yeaftSessionHistoryState = {
@@ -7889,16 +7917,16 @@ export const useChatStore = defineStore('chat', {
       };
       if (!planned.request) {
         this.syncActiveYeaftHistoryLoad();
-        return;
+        return false;
       }
       const historyRequest = this.beginYeaftHistoryLoad({
         agentId: targetAgentId,
-        sessionId,
-        mode: 'older',
+        sessionId: targetSessionId,
+        mode: background ? 'prefetch' : 'older',
         preserveLoaded: true,
         latestSeq: this.yeaftSessionHistoryState[sessionKey]?.latestSeq ?? null,
       });
-      if (!historyRequest) return;
+      if (!historyRequest) return false;
       const perfTraceId = createPerfTraceId();
       this.yeaftHistoryPerfTraceBySession = {
         ...(this.yeaftHistoryPerfTraceBySession || {}),
@@ -7907,7 +7935,7 @@ export const useChatStore = defineStore('chat', {
       const payload = {
         type: 'yeaft_load_more_history',
         agentId: targetAgentId,
-        sessionId,
+        sessionId: targetSessionId,
         requestId: historyRequest.requestId,
         beforeSeq: planned.request.beforeSeq,
         pageKind: planned.request.kind,
@@ -7920,7 +7948,7 @@ export const useChatStore = defineStore('chat', {
         traceId: perfTraceId,
         phase: 'history_more.request_send',
         agentId: targetAgentId,
-        sessionId,
+        sessionId: targetSessionId,
         messageType: payload.type,
         bytes: JSON.stringify(payload).length,
         detail: {
@@ -7928,9 +7956,49 @@ export const useChatStore = defineStore('chat', {
           turns: payload.turns,
           pageKind: planned.request.kind,
           gapStopAtSeq: planned.request.stopAtSeq,
+          background,
         },
       });
-      this.sendWsMessage(payload);
+      if (!this.sendWsMessage(payload)) {
+        failYeaftHistoryLoad(this, {
+          agentId: targetAgentId,
+          sessionId: targetSessionId,
+          requestId: historyRequest.requestId,
+          error: 'history_load_send_failed',
+        });
+        return false;
+      }
+      return true;
+    },
+
+    scheduleYeaftHistoryPrefetch(sessionId, agentId = null) {
+      const targetSessionId = sessionId || null;
+      const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
+      if (!targetAgentId || !targetSessionId) return false;
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
+      if (this._yeaftHistoryPrefetchBySession?.[sessionKey]) return false;
+      const run = () => {
+        const { [sessionKey]: pending, ...remaining } = this._yeaftHistoryPrefetchBySession || {};
+        this._yeaftHistoryPrefetchBySession = remaining;
+        if (pending?.cancelled) return;
+        this.loadMoreYeaftHistory(50, {
+          sessionId: targetSessionId,
+          agentId: targetAgentId,
+          background: true,
+        });
+      };
+      const token = { cancelled: false, handle: null, idle: false };
+      this._yeaftHistoryPrefetchBySession = {
+        ...(this._yeaftHistoryPrefetchBySession || {}),
+        [sessionKey]: token,
+      };
+      if (typeof globalThis.requestIdleCallback === 'function') {
+        token.idle = true;
+        token.handle = globalThis.requestIdleCallback(run, { timeout: 1000 });
+      } else {
+        token.handle = setTimeout(run, 50);
+      }
+      return true;
     },
 
 
