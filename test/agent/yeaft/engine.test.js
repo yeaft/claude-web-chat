@@ -26,7 +26,7 @@ import { withUsageAccounting } from '../../../agent/yeaft/llm/usage-accounting.j
 import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js';
 import { AmsRegistry } from '../../../agent/yeaft/memory/ams-registry.js';
 import { writeContent, writeSummary } from '../../../agent/yeaft/memory/store.js';
-import { NullTrace, DebugTrace } from '../../../agent/yeaft/debug-trace.js';
+import { NullTrace, DebugTrace, projectDebugDetailForWire } from '../../../agent/yeaft/debug-trace.js';
 import { consolidateSessionTopics } from '../../../agent/yeaft/dream/topic-consolidation.js';
 import { resolveTopicRedirect } from '../../../agent/yeaft/memory/topic-redirect.js';
 import { runDream } from '../../../agent/yeaft/dream/runner.js';
@@ -6205,6 +6205,76 @@ describe('Engine', () => {
         expect(detail.turns).toHaveLength(1);
         expect(detail.loops).toHaveLength(100);
         expect(detail.loops.at(-1)?.loopNumber).toBe(100);
+        expect(Buffer.byteLength(JSON.stringify(detail), 'utf8')).toBeLessThan(6 * 1024 * 1024);
+
+        const oversizedDetail = {
+          loops: Array.from({ length: 4 }, (_, index) => ({
+            turnId: 'oversized-turn',
+            loopNumber: index + 1,
+            systemPrompt: 'system prompt',
+            response: 'R'.repeat(3 * 1024 * 1024),
+            rawResponse: { body: 'X'.repeat(3 * 1024 * 1024) },
+          })),
+          turns: [{ turnId: 'oversized-turn', loopCount: 4 }],
+          dreamEvents: [],
+          detailTurnId: 'oversized-turn',
+        };
+        const projectedDetail = projectDebugDetailForWire(oversizedDetail);
+        expect(Buffer.byteLength(JSON.stringify(projectedDetail), 'utf8')).toBeLessThan(6 * 1024 * 1024);
+        expect(projectedDetail.projection).toMatchObject({
+          truncated: true,
+          reason: 'debug_detail_wire_budget',
+          maxBytes: 6 * 1024 * 1024,
+        });
+        expect(projectedDetail.loops.some(loop => (
+          loop.rawResponse?.__truncated === true
+          && loop.rawResponse?.reason === 'debug_detail_wire_budget'
+        ))).toBe(true);
+
+        for (const toolCount of [24, 100]) {
+          const toolDetail = {
+            loops: [],
+            turns: [{
+              turnId: `tool-turn-${toolCount}`,
+              tools: Array.from({ length: toolCount }, (_, index) => ({
+                name: 'large-tool',
+                toolInput: `input-${index}`,
+                toolOutput: 'T'.repeat(256 * 1024),
+              })),
+            }],
+            dreamEvents: [],
+          };
+          const projectedTools = projectDebugDetailForWire(toolDetail);
+          expect(Buffer.byteLength(JSON.stringify(projectedTools), 'utf8')).toBeLessThan(6 * 1024 * 1024);
+          expect(projectedTools.turns[0].tools).toHaveLength(toolCount);
+          expect(projectedTools.turns[0].tools.every(tool => (
+            typeof tool.toolOutput === 'string' && tool.toolOutput.includes('wire truncated')
+          ))).toBe(true);
+        }
+
+        const cumulativeRequest = { body: 'Q'.repeat(2 * 1024 * 1024) };
+        const cumulativeDetail = {
+          loops: Array.from({ length: 50 }, (_, index) => ({
+            turnId: 'cumulative-turn',
+            loopNumber: index + 1,
+            rawRequest: cumulativeRequest,
+            response: 'ok',
+          })),
+          turns: [{ turnId: 'cumulative-turn' }],
+          dreamEvents: [],
+        };
+        const projectionStartedAt = performance.now();
+        const projectedCumulative = projectDebugDetailForWire(cumulativeDetail);
+        const projectionElapsedMs = performance.now() - projectionStartedAt;
+        expect(Buffer.byteLength(JSON.stringify(projectedCumulative), 'utf8')).toBeLessThan(6 * 1024 * 1024);
+        expect(projectedCumulative.projection.truncatedFields).toBe(50);
+        // The old implementation re-stringified the entire 100 MiB payload for
+        // every loop and independently took over 13 seconds for this shape.
+        // Leave ample CI headroom while fencing it below the browser's 10s timer.
+        expect(projectionElapsedMs).toBeLessThan(5_000);
+        // The wire projection is derived after persistence; canonical event
+        // records retain their normal per-field storage bounds.
+        expect(storedLoops.every(loop => loop.rawResponse?.maxBytes === 64 * 1024)).toBe(true);
 
         // Aggregate queries must not pin every full request payload in memory.
         // After stats(), detail still comes from disk rather than a process-life

@@ -34,9 +34,10 @@ vi.mock('../../server/handlers/session-pin-router.js', () => ({
   routeSessionPin: vi.fn(() => false),
 }));
 
+const { pendingYeaftDebugRequests, webClients } = await import('../../server/context.js');
 const { handleClientConversation } = await import('../../server/handlers/client-conversation.js');
 const allow = async () => true;
-const client = { userId: 'owner-1', username: 'u', currentAgent: 'wrong-agent', sent: [] };
+const client = { authenticated: true, userId: 'owner-1', username: 'u', currentAgent: 'wrong-agent', sent: [] };
 
 afterEach(() => {
   forwardToAgent.mockClear();
@@ -45,6 +46,9 @@ afterEach(() => {
   contextForSession.mockReset();
   contextForSession.mockReturnValue(null);
   sendToWebClient.mockClear();
+  pendingYeaftDebugRequests.clear();
+  webClients.clear();
+  webClients.set('client-1', client);
   client.sent = [];
 });
 
@@ -61,6 +65,7 @@ describe('Yeaft Session history search relay', () => {
 
 
   it('requires explicit compound identity and targets the requesting client', async () => {
+    webClients.set('client-1', client);
     await runConsolidatedHistoryScenarios();
     await handleClientConversation('client-1', client, {
       type: 'yeaft_search_history',
@@ -122,6 +127,38 @@ describe('Yeaft Session history search relay', () => {
       cacheEpoch: 7,
       _requestClientId: 'client-1',
     }));
+
+    forwardToAgent.mockClear();
+    await handleClientConversation('client-1', client, {
+      type: 'yeaft_fetch_debug_history',
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      requestId: 'debug-1',
+      requestKind: 'detail',
+      detailTurnId: 'turn-1',
+      limit: 1,
+      dreamLimit: 5,
+    }, allow);
+    expect(getForAgent).toHaveBeenCalledWith('owner-1', 'agent-1', 'sess-1');
+    expect(forwardToAgent).toHaveBeenCalledWith('agent-1', expect.objectContaining({
+      type: 'yeaft_fetch_debug_history',
+      sessionId: 'sess-1',
+      requestId: 'debug-1',
+      requestKind: 'detail',
+      detailTurnId: 'turn-1',
+      limit: 1,
+      dreamLimit: 5,
+      _requestClientId: 'client-1',
+    }));
+    forwardToAgent.mockClear();
+    await handleClientConversation('client-1', client, {
+      type: 'yeaft_fetch_debug_history',
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      requestId: 'debug-1',
+      detailTurnId: 'turn-collision',
+    }, allow);
+    expect(forwardToAgent).not.toHaveBeenCalled();
 
     contextForSession.mockReturnValue({
       projectId: 'project-1',
@@ -206,6 +243,13 @@ describe('Yeaft Session history search relay', () => {
       sessionId: 'sess-1',
       anchorMessageId: 'm000001',
       anchorSeq: 1,
+    }, allow);
+    await handleClientConversation('client-1', client, {
+      type: 'yeaft_fetch_debug_history',
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      requestId: 'debug-unowned',
+      detailTurnId: 'turn-1',
     }, allow);
     expect(forwardToAgent).not.toHaveBeenCalled();
   });

@@ -1013,6 +1013,7 @@ export const useChatStore = defineStore('chat', {
     yeaftDebugHistoryLoading: false,
     yeaftDebugHistoryError: null,
     yeaftDebugHistoryFetchedAt: 0,
+    yeaftDebugHistoryProjection: null,
     yeaftDebugHistoryLimit: DEFAULT_YEAFT_DEBUG_HISTORY_LIMIT,
     yeaftDebugHistoryHasMore: false,
     // Turn-level debug panel (per-turn action entry). The panel no longer boots
@@ -3047,7 +3048,8 @@ export const useChatStore = defineStore('chat', {
      * `yeaftDebugLoops` / `yeaftDebugTurnsById` / `yeaftDebugTurnOrder`).
      */
     loadYeaftDebugHistory({ groupId, limit, dreamLimit, indexOnly = false, detailTurnId = null, search = undefined } = {}) {
-      if (!this.currentAgent) return;
+      const targetAgentId = resolveAgentIdForSession(this, groupId);
+      if (!targetAgentId) return;
       const searchPattern = typeof search === 'string' ? search.trim() : (this.yeaftDebugSearch || '').trim();
       const isDetailRequest = typeof detailTurnId === 'string' && detailTurnId;
       const maxListLimit = searchPattern && !isDetailRequest ? SEARCH_YEAFT_DEBUG_HISTORY_LIMIT : DEFAULT_YEAFT_DEBUG_HISTORY_LIMIT;
@@ -3056,7 +3058,7 @@ export const useChatStore = defineStore('chat', {
       const requestKind = isDetailRequest ? 'detail' : 'list';
       const requestId = `dbg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
       const requestKey = JSON.stringify({
-        agentId: this.currentAgent,
+        agentId: targetAgentId,
         groupId: groupId || null,
         limit: requestedLimit,
         dreamLimit: Number.isFinite(dreamLimit) && dreamLimit > 0 ? dreamLimit : 5,
@@ -3071,9 +3073,10 @@ export const useChatStore = defineStore('chat', {
       this.yeaftDebugHistoryLimit = requestedLimit;
       this.yeaftDebugHistoryLoading = true;
       this.yeaftDebugHistoryError = null;
+      this.yeaftDebugHistoryProjection = null;
       const payload = {
         type: 'yeaft_fetch_debug_history',
-        agentId: this.currentAgent,
+        agentId: targetAgentId,
         requestId,
         requestKind,
         limit: requestedLimit,
@@ -3085,10 +3088,14 @@ export const useChatStore = defineStore('chat', {
       if (typeof groupId === 'string' && groupId) payload.sessionId = groupId;
       this.sendWsMessage(payload);
       if (this._fetchYeaftDebugHistoryTimer) clearTimeout(this._fetchYeaftDebugHistoryTimer);
+      // Detail replies may be absent because the Agent is offline, the relay was
+      // interrupted, or the transport rejected an oversized payload. Keep the
+      // store error machine-readable so the panel can localize an accurate,
+      // retryable timeout instead of incorrectly blaming reconnect alone.
       this._fetchYeaftDebugHistoryTimer = setTimeout(() => {
         if (this.yeaftDebugHistoryLoading) {
           this.yeaftDebugHistoryLoading = false;
-          this.yeaftDebugHistoryError = 'Debug history is unavailable right now. Try again after the agent reconnects.';
+          this.yeaftDebugHistoryError = 'debug_history_timeout';
           if (this.yeaftDebugPanel?.status === 'loading') {
             this.yeaftDebugPanel = {
               ...this.yeaftDebugPanel,
@@ -3112,23 +3119,21 @@ export const useChatStore = defineStore('chat', {
      * @param {{ sessionId?: string|null, turnId: string }} params
      */
     openYeaftTurnDebug({ sessionId = null, turnId = null } = {}) {
-      if (!this.currentAgent) return;
+      const targetAgentId = resolveAgentIdForSession(this, sessionId);
+      if (!targetAgentId) return;
       const requestId = `dbgpanel_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-      // Turn-scoped entries flip to loading until the detail response
-      // arrives; the header entry opens an empty panel (status idle)
-      // so it can show the empty-state hint instead of a spinner.
+      // Turn-scoped entries flip to loading until the detail response arrives.
       const status = turnId ? 'loading' : 'idle';
       this.yeaftDebugPanel = {
         open: true,
         status,
         requestId,
-        agentId: this.currentAgent,
+        agentId: targetAgentId,
         sessionId: sessionId || null,
         turnId: turnId || null,
         error: null,
       };
-      // Header entry may open an empty panel (no turnId) to show the
-      // empty-state hint; only turn-scoped entries issue a detail fetch.
+      // Only a concrete finished Turn issues a detail fetch.
       if (!turnId) return;
       // Detail fetches carry the full request for one turn; the bounded
       // list limit does not apply (agent returns the complete turn).
@@ -6836,6 +6841,7 @@ export const useChatStore = defineStore('chat', {
       this.yeaftDebugHistoryLoading = false;
       this.yeaftDebugHistoryError = null;
       this.yeaftDebugHistoryFetchedAt = 0;
+      this.yeaftDebugHistoryProjection = null;
       // feat-6af5f9f1 PR C: clear toolbar transient state too. The group
       // filter is intentionally cleared on session reset so a stale pin
       // from a previous session doesn't hide all incoming turns.
