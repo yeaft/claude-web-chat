@@ -781,6 +781,10 @@ export const useChatStore = defineStore('chat', {
     _yeaftHistoryOutlineTimeouts: {},
     _yeaftHistorySearchTimeout: null,
     _yeaftHistoryWindowPendingByKey: {},
+    // A versioned search/outline locator can become stale after transcript
+    // mutation. These request-scoped waiters allow one bounded locator refresh
+    // without weakening Agent/Session/generation ownership checks.
+    _yeaftHistoryResultRefreshByRequestId: {},
     _yeaftHistoryRevealLeases: {},
     _yeaftHistoryRevealSequence: 0,
     // One-shot marker: set true by the websocket onclose handler on a real
@@ -3522,6 +3526,18 @@ export const useChatStore = defineStore('chat', {
         pending?.resolve?.(false);
       }
       this._yeaftHistoryWindowPendingByKey = remainingPendingWindows;
+      const remainingResultRefreshes = {};
+      for (const [requestId, refresh] of Object.entries(this._yeaftHistoryResultRefreshByRequestId || {})) {
+        const matches = !sessionKey
+          || (refresh?.agentId === targetAgentId && refresh?.sessionId === targetSessionId);
+        if (!matches) {
+          remainingResultRefreshes[requestId] = refresh;
+          continue;
+        }
+        clearTimeout(refresh?.timeout);
+        refresh?.resolve?.(null);
+      }
+      this._yeaftHistoryResultRefreshByRequestId = remainingResultRefreshes;
 
       const scopedConversationId = targetAgentId
         ? this.yeaftConversationIdsByAgent?.[targetAgentId] || null
@@ -4038,6 +4054,17 @@ export const useChatStore = defineStore('chat', {
           error: refreshPending ? null : (msg.error || null),
         },
       };
+      const resultRefresh = this._yeaftHistoryResultRefreshByRequestId?.[msg.requestId];
+      if (resultRefresh?.source === 'outline') {
+        clearTimeout(resultRefresh.timeout);
+        const { [msg.requestId]: _resolved, ...rest } = this._yeaftHistoryResultRefreshByRequestId;
+        this._yeaftHistoryResultRefreshByRequestId = rest;
+        const refreshed = results.find(candidate => (
+          (resultRefresh.messageId && candidate?.messageId === resultRefresh.messageId)
+          || (resultRefresh.entryId && candidate?.entryId === resultRefresh.entryId)
+        ));
+        resultRefresh.resolve(refreshed || null);
+      }
       if (refreshPending) {
         this.loadYeaftHistoryOutline({
           force: true,
@@ -4179,16 +4206,90 @@ export const useChatStore = defineStore('chat', {
       for (const result of incoming) {
         if (result?.entryId || result?.messageId) byId.set(yeaftHistoryResultIdentity(result), result);
       }
+      const results = Array.from(byId.values());
       this.yeaftHistorySearchState = {
         ...state,
         loading: false,
-        results: Array.from(byId.values()),
+        results,
         hasMore: !!msg.hasMore,
         nextBeforeSeq: Number.isFinite(msg.nextBeforeSeq) ? msg.nextBeforeSeq : null,
         nextCursor: msg.nextCursor && typeof msg.nextCursor === 'object' ? msg.nextCursor : null,
         error: msg.error || null,
       };
+      const refresh = this._yeaftHistoryResultRefreshByRequestId?.[msg.requestId];
+      if (refresh) {
+        clearTimeout(refresh.timeout);
+        const { [msg.requestId]: _resolved, ...rest } = this._yeaftHistoryResultRefreshByRequestId;
+        this._yeaftHistoryResultRefreshByRequestId = rest;
+        const refreshed = results.find(candidate => (
+          (refresh.messageId && candidate?.messageId === refresh.messageId)
+          || (refresh.entryId && candidate?.entryId === refresh.entryId)
+        ));
+        refresh.resolve(refreshed || null);
+      }
       return true;
+    },
+
+    reloadYeaftHistoryResult(result) {
+      const sessionId = result?.sessionId || null;
+      const agentId = result?.agentId || null;
+      const state = this.yeaftHistorySearchState || {};
+      const searchMatches = state.agentId === agentId
+        && state.sessionId === sessionId
+        && (Array.from(String(state.query || '').trim()).length > 0 || !!state.senderKey);
+      const useSearch = searchMatches;
+      if (!sessionId || !agentId) return Promise.resolve(null);
+      const query = useSearch ? (state.query || '') : '';
+      const senderKey = useSearch ? (state.senderKey || '') : '';
+      let requestId = null;
+      let started = false;
+      if (useSearch) {
+        started = this.searchYeaftHistory(query, { senderKey });
+        requestId = this.yeaftHistorySearchState?.requestId || null;
+      } else {
+        const outlineKey = yeaftHistoryIdentityKey(agentId, sessionId);
+        const outlineState = this.yeaftHistoryOutlineBySession?.[outlineKey] || null;
+        // A newest-page outline refresh already in flight is itself a valid
+        // relocation source. Bind this bounded waiter to its exact request
+        // instead of treating the outline loading guard as a permanent miss.
+        if (outlineState?.loading === true
+          && outlineState.requestAppend !== true
+          && outlineState.requestId) {
+          started = true;
+          requestId = outlineState.requestId;
+        } else {
+          started = this.loadYeaftHistoryOutline({
+            force: true,
+            targetSessionId: sessionId,
+            targetAgentId: agentId,
+          });
+          requestId = this.yeaftHistoryOutlineBySession?.[outlineKey]?.requestId || null;
+        }
+      }
+      if (!started || !requestId) return Promise.resolve(null);
+      return new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          const current = this._yeaftHistoryResultRefreshByRequestId?.[requestId];
+          if (current?.resolve !== resolve) return;
+          const { [requestId]: _expired, ...rest } = this._yeaftHistoryResultRefreshByRequestId;
+          this._yeaftHistoryResultRefreshByRequestId = rest;
+          resolve(null);
+        }, 10000);
+        this._yeaftHistoryResultRefreshByRequestId = {
+          ...(this._yeaftHistoryResultRefreshByRequestId || {}),
+          [requestId]: {
+            agentId,
+            sessionId,
+            query,
+            senderKey,
+            source: useSearch ? 'search' : 'outline',
+            messageId: result?.messageId || null,
+            entryId: result?.entryId || null,
+            resolve,
+            timeout,
+          },
+        };
+      });
     },
 
     loadYeaftHistoryWindow(result, { validateCached = false } = {}) {
@@ -4217,7 +4318,10 @@ export const useChatStore = defineStore('chat', {
 
       const requestId = `history_window_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       let resolvePending = null;
+      let pendingError = null;
       const promise = new Promise((resolve) => { resolvePending = resolve; });
+      Object.defineProperty(promise, 'error', { get: () => pendingError });
+      const setPendingError = error => { pendingError = error || null; };
       const timeout = setTimeout(() => {
         const current = this._yeaftHistoryWindowPendingByKey?.[pendingKey];
         if (current?.requestId !== requestId) return;
@@ -4237,6 +4341,7 @@ export const useChatStore = defineStore('chat', {
           resultId,
           messageId: result.messageId,
           prefetch: !validateCached,
+          setError: setPendingError,
           resolve: resolvePending,
           timeout,
           promise,
@@ -4297,7 +4402,17 @@ export const useChatStore = defineStore('chat', {
         return false;
       }
 
-      const loaded = await this.loadYeaftHistoryWindow(result, { validateCached: true });
+      let revealResult = result;
+      let windowLoad = this.loadYeaftHistoryWindow(revealResult, { validateCached: true });
+      let loaded = await windowLoad;
+      if (!loaded && windowLoad.error === 'stale_result') {
+        const refreshed = await this.reloadYeaftHistoryResult(revealResult);
+        if (refreshed) {
+          revealResult = refreshed;
+          windowLoad = this.loadYeaftHistoryWindow(revealResult, { validateCached: true });
+          loaded = await windowLoad;
+        }
+      }
       if (!loaded) {
         this.finishYeaftHistoryReveal(lease);
         return false;
@@ -4312,7 +4427,7 @@ export const useChatStore = defineStore('chat', {
         this.finishYeaftHistoryReveal(lease);
         return false;
       }
-      const revealed = this.revealYeaftMessage(sessionId, result.messageId, conversationId, agentId);
+      const revealed = this.revealYeaftMessage(sessionId, revealResult.messageId, conversationId, agentId);
       if (!revealed || ownsLease) this.finishYeaftHistoryReveal(lease);
       return revealed;
     },
@@ -4345,6 +4460,7 @@ export const useChatStore = defineStore('chat', {
       const loaded = !msg.error
         && !!conversationId
         && this.isYeaftMessageCached(pending.sessionId, pending.messageId, conversationId, pending.agentId);
+      pending.setError?.(msg.error || null);
       pending.resolve(!!loaded);
       return !!loaded;
     },
