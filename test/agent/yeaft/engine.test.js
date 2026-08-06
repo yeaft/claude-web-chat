@@ -5400,6 +5400,55 @@ describe('Engine', () => {
       });
     });
 
+    it('fails closed for an invalid persisted policy across tools and skills', async () => {
+      const registry = new ToolRegistry();
+      let executions = 0;
+      registry.register(defineTool({
+        name: 'SensitiveTool',
+        description: 'Must not run under a deny-all policy',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => { executions += 1; return 'unexpected'; },
+      }));
+      const skillManager = {
+        has: () => true,
+        list: () => [{ name: 'sensitive-skill', description: 'Sensitive skill' }],
+        get: name => ({ name }),
+        resolve: name => ({ name }),
+        view: name => ({ name }),
+        findRelevant: () => [{ name: 'sensitive-skill', description: 'Sensitive skill' }],
+        getPromptContent: () => 'SENSITIVE SKILL CONTENT',
+      };
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'deny-all-tool', name: 'SensitiveTool', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'done' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          plugins: { tools: [], skills: [], mcpServers: [] },
+          pluginConfigError: 'plugins.tools must be an array',
+        },
+        toolRegistry: registry,
+        skillManager,
+      });
+      const events = [];
+      for await (const event of engine.query({ prompt: 'run sensitive capability' })) events.push(event);
+      expect(mockAdapter.callLog.at(-2).tools).toBeUndefined();
+      expect(mockAdapter.callLog.at(-2).system).not.toContain('SENSITIVE SKILL CONTENT');
+      expect(executions).toBe(0);
+      expect(events.find(event => event.type === 'tool_end')).toMatchObject({
+        name: 'SensitiveTool',
+        isError: true,
+      });
+    });
+
     it('filters disabled skills from automatic and explicit prompt injection', async () => {
       const skillManager = {
         has: name => ['allowed-skill', 'blocked-skill'].includes(name),

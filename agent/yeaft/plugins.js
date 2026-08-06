@@ -27,7 +27,10 @@ function normalizeNameList(value, field) {
 
 /** Normalise persisted Agent plugin config while preserving inheritance. */
 export function normalizePluginConfig(value) {
-  if (value === undefined || value === null) return {};
+  // Only an omitted field inherits the legacy all-enabled behavior. An
+  // explicit `null` is persisted schema, not absence, and must be rejected
+  // so every reader can fail closed consistently.
+  if (value === undefined) return {};
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('plugins must be an object');
   }
@@ -43,6 +46,15 @@ export function normalizePluginConfig(value) {
     }
   }
   return out;
+}
+
+/**
+ * Return an explicit deny-all policy for a persisted plugins schema error.
+ * This is deliberately distinct from `{}`, whose missing fields inherit the
+ * historical all-enabled behavior.
+ */
+export function createDenyAllPluginConfig() {
+  return { tools: [], skills: [], mcpServers: [] };
 }
 
 export function isPluginNameEnabled(plugins, field, name) {

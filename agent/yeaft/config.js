@@ -26,7 +26,7 @@ import { DEFAULT_YEAFT_DIR } from './init.js';
 import { getModelEffortOptions, getThinkingCapability, modelSupportsEffort, resolveModel, parseModelRef, normalizeProviderModels, resolveContextWindow, resolveMaxOutputTokens } from './models.js';
 import { inferProtocolFromModelId } from './llm/router.js';
 import { normalizeKnownProviderForRuntime } from './llm/known-providers.js';
-import { normalizePluginConfig } from './plugins.js';
+import { createDenyAllPluginConfig, normalizePluginConfig } from './plugins.js';
 import { readWorkspaceFile } from './workspace-file.js';
 
 /** Default configuration values. */
@@ -414,12 +414,20 @@ export function loadConfig(overrides = {}) {
   // Determine data directory
   const dir = overrides.dir || process.env.YEAFT_DIR || DEFAULTS.dir;
 
-  // Try config.json first
+  // Try config.json first. A missing file preserves legacy behavior, but an
+  // existing file that cannot be parsed (or is not an object) must not reopen
+  // a persisted Plugin restriction through the legacy fallback.
+  const configPath = join(dir, 'config.json');
+  const hasConfigFile = existsSync(configPath);
   const jsonConfig = readConfigJson(dir);
 
-  if (!jsonConfig) {
-    // No config.json → legacy path
-    return loadLegacyConfig(dir, overrides);
+  if (!jsonConfig || typeof jsonConfig !== 'object' || Array.isArray(jsonConfig)) {
+    const config = loadLegacyConfig(dir, overrides);
+    if (hasConfigFile) {
+      config.plugins = createDenyAllPluginConfig();
+      config.pluginConfigError = 'config.json is invalid or must contain an object';
+    }
+    return config;
   }
 
   // ─── Build config from config.json ────────────────────────
@@ -461,6 +469,18 @@ export function loadConfig(overrides = {}) {
     ?? resolveContextWindow(modelIdForInfo, { modelInfo });
   const resolvedMaxOutput = overrides.maxOutputTokens ?? jsonConfig.maxOutputTokens
     ?? resolveMaxOutputTokens(modelIdForInfo, { modelInfo });
+
+  // Missing plugins keeps the historical all-enabled behavior. A present but
+  // invalid schema must not collapse to `{}` because that is also all-enabled;
+  // use explicit empty allowlists until the user repairs config.json instead.
+  let plugins;
+  let pluginConfigError = null;
+  try {
+    plugins = normalizePluginConfig(jsonConfig.plugins);
+  } catch (err) {
+    plugins = createDenyAllPluginConfig();
+    pluginConfigError = err?.message || String(err);
+  }
 
   const config = {
     // Model
@@ -504,11 +524,11 @@ export function loadConfig(overrides = {}) {
     telemetry: normaliseTelemetrySection(jsonConfig.telemetry),
 
     // Agent-level tools / skills / MCP server allowlists. Missing fields mean
-    // all currently discovered capabilities remain enabled.
-    plugins: (() => {
-      try { return normalizePluginConfig(jsonConfig.plugins); }
-      catch { return {}; }
-    })(),
+    // all currently discovered capabilities remain enabled. A persisted schema
+    // error is represented by explicit empty allowlists so runtime policy fails
+    // closed instead of reopening every capability.
+    plugins,
+    pluginConfigError,
 
     // Legacy fields (null when using config.json)
     apiKey: overrides.apiKey || null,

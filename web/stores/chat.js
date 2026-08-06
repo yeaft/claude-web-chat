@@ -1700,7 +1700,7 @@ export const useChatStore = defineStore('chat', {
           resolve({ plugins: {}, error: 'timeout' });
         }, 10_000);
         this._pluginPending[requestId] = { resolve, timer, kind: 'save', agentId };
-        this.sendWsMessage({ type: 'update_yeaft_plugins', agentId, requestId, plugins: plugins || {} });
+        this.sendWsMessage({ type: 'update_yeaft_plugins', agentId, requestId, plugins });
       });
     },
     loadPluginCatalog(agentId = this.pluginCenterAgentId || this.currentAgent, workDir = '') {

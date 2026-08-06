@@ -441,7 +441,10 @@ export async function handleMessage(msg) {
     }
 
     case 'update_yeaft_plugins': {
-      const result = updatePluginConfig(msg.plugins || msg.config || {}, ctx.CONFIG?.yeaftDir);
+      const hasPlugins = Object.prototype.hasOwnProperty.call(msg, 'plugins');
+      const hasConfig = Object.prototype.hasOwnProperty.call(msg, 'config');
+      const payload = hasPlugins ? msg.plugins : (hasConfig ? msg.config : {});
+      const result = updatePluginConfig(payload, ctx.CONFIG?.yeaftDir);
       if (!result.error) {
         try { await refreshLiveSessionConfig(); } catch { /* next runtime load still sees disk config */ }
       }

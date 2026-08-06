@@ -15,6 +15,8 @@ import { loadSession } from '../../../agent/yeaft/session.js';
 import { MCPManager } from '../../../agent/yeaft/mcp.js';
 import { __testGetOrCreateVpEngine, __testHooks, __testLoadPluginCatalogMcpConfig, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftLoadHistoryOutline, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
 import { _resetAgentRegistry, getAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
+import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
+import { defineTool } from '../../../agent/yeaft/tools/types.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
 import { registerSessionWorkDir, renameSession, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
@@ -103,17 +105,86 @@ describe('Yeaft session-scoped model config', () => {
     expect(persisted.telemetry).toMatchObject({ flushIntervalMs: 250 });
   });
 
-  it('rejects malformed plugin config reads and preserves the file on save attempts', () => {
+  it('fails closed for an invalid config.json root and preserves every bad file', () => {
     const root = makeDir();
     const configPath = join(root, 'config.json');
-    const malformed = '{"plugins":{"tools":["FileRead"]}';
-    writeFileSync(configPath, malformed);
+    for (const invalidRoot of ['{"plugins":{"tools":["FileRead"]}', '[]']) {
+      writeFileSync(configPath, invalidRoot);
 
-    expect(getPluginConfig(root)).toMatchObject({ error: expect.stringContaining('Failed to read plugin config') });
-    expect(updatePluginConfig({ tools: ['Bash'] }, root)).toMatchObject({
-      error: expect.stringContaining('Failed to read plugin config'),
-    });
-    expect(readFileSync(configPath, 'utf8')).toBe(malformed);
+      expect(loadConfig({ dir: root })).toMatchObject({
+        plugins: { tools: [], skills: [], mcpServers: [] },
+        pluginConfigError: expect.stringContaining('config.json is invalid'),
+      });
+      expect(getPluginConfig(root)).toMatchObject({ error: expect.stringContaining('Failed to read plugin config') });
+      expect(updatePluginConfig({ tools: ['Bash'] }, root)).toMatchObject({
+        error: expect.stringContaining('Failed to read plugin config'),
+      });
+      expect(readFileSync(configPath, 'utf8')).toBe(invalidRoot);
+    }
+  });
+
+  it('inherits only a missing plugins field and fails closed for invalid plugin schemas', () => {
+    const root = makeDir();
+    const configPath = join(root, 'config.json');
+    writeFileSync(configPath, JSON.stringify({ providers: [] }, null, 2));
+    expect(loadConfig({ dir: root })).toMatchObject({ plugins: {}, pluginConfigError: null });
+    expect(getPluginConfig(root)).toEqual({ plugins: {} });
+
+    for (const [plugins, error] of [
+      [null, 'plugins must be an object'],
+      [{ tools: 'not-an-array' }, 'plugins.tools must be an array'],
+    ]) {
+      const invalidSchema = JSON.stringify({ providers: [], plugins }, null, 2);
+      writeFileSync(configPath, invalidSchema);
+
+      expect(loadConfig({ dir: root })).toMatchObject({
+        plugins: { tools: [], skills: [], mcpServers: [] },
+        pluginConfigError: error,
+      });
+      expect(getPluginConfig(root)).toMatchObject({ error: expect.stringContaining(error) });
+      expect(updatePluginConfig({ tools: ['FileRead'] }, root)).toMatchObject({
+        error: expect.stringContaining(error),
+      });
+      expect(readFileSync(configPath, 'utf8')).toBe(invalidSchema);
+    }
+  });
+
+  it('rejects falsy plugin update payloads instead of resetting the allowlist', async () => {
+    const root = makeDir();
+    const configPath = join(root, 'config.json');
+    const original = JSON.stringify({ plugins: { tools: ['FileRead'] } }, null, 2);
+    writeFileSync(configPath, original);
+    const previousTransport = {
+      ws: ctx.ws,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+      CONFIG: ctx.CONFIG,
+    };
+    const sent = [];
+    ctx.CONFIG = { yeaftDir: root };
+    ctx.ws = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+    ctx.serverEncryptionRequired = false;
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = false;
+    try {
+      for (const payload of [null, false, '']) {
+        await handleMessage({ type: 'update_yeaft_plugins', plugins: payload });
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      expect(sent.filter(frame => frame.type === 'yeaft_plugins_updated')).toEqual([
+        expect.objectContaining({ error: expect.stringContaining('plugins must be an object') }),
+        expect.objectContaining({ error: expect.stringContaining('plugins must be an object') }),
+        expect.objectContaining({ error: expect.stringContaining('plugins must be an object') }),
+      ]);
+      expect(readFileSync(configPath, 'utf8')).toBe(original);
+    } finally {
+      ctx.ws = previousTransport.ws;
+      ctx.serverEncryptionRequired = previousTransport.serverEncryptionRequired;
+      ctx.outboundSendQueue = previousTransport.outboundSendQueue;
+      ctx.outboundSendQueueActive = previousTransport.outboundSendQueueActive;
+      ctx.CONFIG = previousTransport.CONFIG;
+    }
   });
 
   it('disables bridge traces through the telemetry update message immediately', async () => {
@@ -584,6 +655,120 @@ describe('Yeaft session-scoped model config', () => {
       expect(disconnectedRuntimes).toEqual([]);
     } finally {
       __testHooks.resetRuntimeFactoriesForTest();
+    }
+  });
+
+  it('refreshes an existing VP Engine through update_yeaft_plugins before its next turn', async () => {
+    const root = makeDir();
+    const sessionId = 'session-live-plugin-policy';
+    const streamCalls = [];
+    let executions = 0;
+    const registry = new ToolRegistry();
+    registry.register(defineTool({
+      name: 'SensitiveTool',
+      description: 'Sensitive Tool',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => { executions += 1; return 'executed'; },
+    }));
+    const adapter = {
+      refreshProviders() {},
+      async *stream(request) {
+        streamCalls.push(request);
+        if (streamCalls.length === 1) {
+          yield { type: 'text_delta', text: 'initial turn' };
+          yield { type: 'stop', stopReason: 'end_turn' };
+          return;
+        }
+        if (streamCalls.length === 2) {
+          yield { type: 'tool_call', id: 'blocked-tool', name: 'SensitiveTool', input: {} };
+          yield { type: 'stop', stopReason: 'tool_use' };
+          return;
+        }
+        if (streamCalls.length === 3) {
+          yield { type: 'text_delta', text: 'blocked turn complete' };
+          yield { type: 'stop', stopReason: 'end_turn' };
+          return;
+        }
+        yield { type: 'text_delta', text: 'restored turn' };
+        yield { type: 'stop', stopReason: 'end_turn' };
+      },
+      async call() { return { text: '', usage: {} }; },
+    };
+    const transport = {
+      ws: ctx.ws,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+      CONFIG: ctx.CONFIG,
+    };
+    const sent = [];
+    writeFileSync(join(root, 'config.json'), `${JSON.stringify({
+      providers: [{ name: 'test-provider', baseUrl: 'https://example.invalid/v1', apiKey: 'test-key', protocol: 'openai-responses', models: ['gpt-5'] }],
+      primaryModel: 'test-provider/gpt-5',
+    }, null, 2)}\n`);
+    ctx.CONFIG = { yeaftDir: root };
+    ctx.ws = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+    ctx.serverEncryptionRequired = false;
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = false;
+    __testSetSession({
+      yeaftDir: root,
+      adapter,
+      trace: new NullTrace(),
+      config: loadConfig({ dir: root }),
+      engine: { refreshConfig: vi.fn() },
+      conversationStore: {
+        append: record => ({ id: `message-${record.role}`, ...record }),
+        loadRecentBySession: () => [],
+        readCompactSummary: () => '',
+      },
+      memoryIndex: null,
+      amsRegistry: null,
+      toolRegistry: registry,
+      skillManager: null,
+      mcpManager: { disconnectAll: async () => {}, status: () => [] },
+      taskManager: { renderActiveTasksForPrompt: () => '' },
+      toolStats: null,
+      status: { skills: 0, mcpServers: [], mcpFailed: [], tools: 1 },
+    });
+    __testHooks.setRuntimeFactoriesForTest({
+      createSkillManager: () => ({ size: 0, list: () => [] }),
+      createMcpManager: () => ({
+        connectAll: async () => ({ connected: [], failed: [] }),
+        disconnectAll: async () => {},
+        status: () => [],
+      }),
+      loadMcpConfig: () => ({ servers: [], skipped: [] }),
+    });
+    try {
+      const engine = __testGetOrCreateVpEngine(sessionId, 'vp-a', 'main');
+      for await (const _event of engine.query({ prompt: 'initial', sessionId })) {}
+      expect(streamCalls[0].tools?.map(tool => tool.name) || []).toEqual(['SensitiveTool']);
+
+      await handleMessage({ type: 'update_yeaft_plugins', plugins: { tools: [] } });
+      await new Promise(resolve => setTimeout(resolve, 10));
+      const blockedEvents = [];
+      for await (const event of engine.query({ prompt: 'attempt after disable', sessionId })) blockedEvents.push(event);
+      expect(streamCalls[1].tools).toBeUndefined();
+      expect(executions).toBe(0);
+      expect(blockedEvents.find(event => event.type === 'tool_end')).toMatchObject({
+        name: 'SensitiveTool',
+        isError: true,
+        output: expect.stringContaining('unknown tool'),
+      });
+
+      await handleMessage({ type: 'update_yeaft_plugins', plugins: {} });
+      await new Promise(resolve => setTimeout(resolve, 10));
+      for await (const _event of engine.query({ prompt: 'after restore', sessionId })) {}
+      expect(streamCalls.at(-1).tools.map(tool => tool.name)).toEqual(['SensitiveTool']);
+      expect(sent.filter(frame => frame.type === 'yeaft_plugins_updated')).toHaveLength(2);
+    } finally {
+      __testHooks.resetRuntimeFactoriesForTest();
+      ctx.ws = transport.ws;
+      ctx.serverEncryptionRequired = transport.serverEncryptionRequired;
+      ctx.outboundSendQueue = transport.outboundSendQueue;
+      ctx.outboundSendQueueActive = transport.outboundSendQueueActive;
+      ctx.CONFIG = transport.CONFIG;
     }
   });
 

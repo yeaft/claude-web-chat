@@ -202,10 +202,14 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       const targetAgentId = msg.agentId || client.currentAgent;
       if (!targetAgentId) break;
       if (!await checkAgentAccess(targetAgentId)) break;
+      const hasPlugins = Object.prototype.hasOwnProperty.call(msg, 'plugins');
+      const hasConfig = Object.prototype.hasOwnProperty.call(msg, 'config');
       await forwardToAgent(targetAgentId, {
         type: 'update_yeaft_plugins',
         requestId: msg.requestId || null,
-        plugins: msg.plugins || msg.config || {},
+        // Preserve explicit falsy values so Agent-side schema validation can
+        // reject them. Only an absent payload is the legacy empty selection.
+        plugins: hasPlugins ? msg.plugins : (hasConfig ? msg.config : {}),
       });
       break;
     }

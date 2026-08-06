@@ -543,8 +543,14 @@ export function updatePluginConfig(plugins, dir) {
   let normalized;
   let existing;
   try {
-    normalized = normalizePluginConfig(plugins);
     existing = readPluginConfigJson(configPath);
+    // A syntactically valid config.json can still contain an invalid plugin
+    // schema. Do not let a direct update silently overwrite that evidence and
+    // turn a fail-closed runtime policy back into a successful save.
+    if (Object.prototype.hasOwnProperty.call(existing, 'plugins')) {
+      normalizePluginConfig(existing.plugins);
+    }
+    normalized = normalizePluginConfig(plugins);
   } catch (err) {
     return { error: `Failed to read plugin config: ${err?.message || err}` };
   }
