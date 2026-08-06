@@ -44,7 +44,7 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
           reason: 'manual_upgrade_required',
           version: upgradeAgent?.version || null,
           requiredCapability: SAFE_REMOTE_UPGRADE_CAPABILITY,
-          error: `Agent ${upgradeAgent?.version || 'unknown'} does not advertise the safe remote-upgrade contract; manually install the latest version once`,
+          error: `Agent ${upgradeAgent?.version || 'unknown'} does not advertise the safe remote-upgrade contract. First stop the selected Agent/service on that machine: if it runs under PM2 or another service manager, stop that exact instance there; if it runs in a foreground terminal, terminate that process. Confirm that process has exited, then run "npm install -g @yeaft/webchat-agent@latest --registry=https://pkg.yeaft.com/". Finally, restart the same Agent instance with its original configuration.`,
         });
         break;
       }

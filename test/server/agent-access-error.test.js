@@ -456,7 +456,8 @@ describe('resolveAgentAccessError', () => {
     }, async () => true);
 
     expect(legacyCommands).toEqual([]);
-    expect(client.sent.at(-1)).toMatchObject({
+    const manualAck = client.sent.at(-1);
+    expect(manualAck).toMatchObject({
       type: 'upgrade_agent_ack',
       agentId: 'agent-old',
       success: false,
@@ -464,6 +465,16 @@ describe('resolveAgentAccessError', () => {
       version: '1.0.369',
       requiredCapability: SAFE_REMOTE_UPGRADE_CAPABILITY,
     });
+    expect(manualAck.error).toContain('PM2 or another service manager');
+    expect(manualAck.error).toContain('foreground terminal');
+    const stopIndex = manualAck.error.indexOf('First stop the selected Agent/service');
+    const exitIndex = manualAck.error.indexOf('Confirm that process has exited');
+    const installIndex = manualAck.error.indexOf('npm install -g @yeaft/webchat-agent@latest --registry=https://pkg.yeaft.com/');
+    const restartIndex = manualAck.error.indexOf('restart the same Agent instance with its original configuration');
+    expect(stopIndex).toBeGreaterThanOrEqual(0);
+    expect(exitIndex).toBeGreaterThan(stopIndex);
+    expect(installIndex).toBeGreaterThan(exitIndex);
+    expect(restartIndex).toBeGreaterThan(installIndex);
 
     const safeCommands = [];
     agents.set('agent-safe', {
