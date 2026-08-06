@@ -4206,6 +4206,56 @@ describe('Work Center core', () => {
   });
 
 
+  it('rejects late EngineTurn responses after cancellation or lease expiry', () => {
+    const prepareDispatchedTurn = (suffix, leaseMs = 5_000) => {
+      const item = controller.create(createInput({ title: `Fence late response ${suffix}` }));
+      const claim = store.claimReadyAction(`boot-${suffix}`, leaseMs);
+      controller.input(item.id, {
+        text: `Input ${suffix}`,
+        actionId: claim.action.id,
+        revision: store.getWorkItem(item.id).revision,
+        generation: claim.action.generation,
+      });
+      const inputs = store.listPendingActionInputs(
+        claim.action.id, claim.run.id, `boot-${suffix}`, claim.run.leaseEpoch,
+      );
+      const turn = store.prepareEngineTurn(
+        claim.action.id, claim.run.id, `boot-${suffix}`, claim.run.leaseEpoch,
+        inputs, { requestBody: { messages: [`Input ${suffix}`] } },
+      );
+      expect(store.claimEngineTurn(turn.id, `boot-${suffix}`, claim.run.leaseEpoch))
+        .toMatchObject({ status: 'dispatching' });
+      return { item, claim, turn };
+    };
+
+    const cancelled = prepareDispatchedTurn('cancelled');
+    controller.cancel(cancelled.item.id);
+    expect(store.consumeEngineTurn(
+      cancelled.turn.id, 'boot-cancelled', cancelled.claim.run.leaseEpoch,
+      { responseText: 'late cancelled response', stopReason: 'end_turn' },
+    )).toBe(false);
+    expect(store.failEngineTurn(
+      cancelled.turn.id, 'boot-cancelled', cancelled.claim.run.leaseEpoch,
+      new Error('late cancelled failure'),
+    )).toEqual({ allowRetry: false, status: 'stale' });
+    expect(store.getEngineTurn(cancelled.turn.id)).toMatchObject({ status: 'dispatching', response: null });
+    expect(store.db.prepare(`SELECT consumed_at FROM pending_action_inputs
+      WHERE action_id = ?`).get(cancelled.claim.action.id).consumed_at).toBeNull();
+
+    const expired = prepareDispatchedTurn('expired', 50);
+    now += 51;
+    expect(store.isActiveRun(expired.claim.run.id, 'boot-expired', expired.claim.run.leaseEpoch)).toBe(false);
+    expect(store.consumeEngineTurn(
+      expired.turn.id, 'boot-expired', expired.claim.run.leaseEpoch,
+      { responseText: 'late expired response', stopReason: 'end_turn' },
+    )).toBe(false);
+    expect(store.failEngineTurn(
+      expired.turn.id, 'boot-expired', expired.claim.run.leaseEpoch,
+      new Error('late expired failure'),
+    )).toEqual({ allowRetry: false, status: 'stale' });
+    expect(store.getEngineTurn(expired.turn.id)).toMatchObject({ status: 'dispatching', response: null });
+  });
+
   it('cancels the Run atomically, rejects late writes, and resumes with a new Action identity', () => {
     const item = controller.create(createInput());
     const originalAction = store.getAction(item.currentActionId);

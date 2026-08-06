@@ -2073,7 +2073,8 @@ export class Engine {
     // openai-responses.js:#translateUserContent).
 
     // task-327b: `/max` / `/high` / `/medium` / `/low` prefix override.
-    // Explicit caller-supplied userEffort wins over the prefix.
+    // Explicit caller-supplied userEffort wins over the prefix. Session config
+    // is deliberately excluded here because it may refresh between loops.
     // task-327c nit: defensively normalize caller-supplied userEffort BEFORE
     // the merge, so an invalid caller value (e.g. 'ULTRA') does not shadow a
     // valid prompt prefix.
@@ -2083,8 +2084,10 @@ export class Engine {
     const effectivePromptParts = parsedSkill.skillName
       ? stripLeadingSkillCommandFromPromptParts(promptParts, this.#skillManager)
       : promptParts;
-    const configuredEffort = normalizeEffort(this.#config?.modelEffort);
-    const effectiveUserEffort = normalizeEffort(userEffort) || parsed.effort || configuredEffort || null;
+    // Only actual caller input and a prompt prefix are per-query overrides.
+    // Session-configured effort belongs to the live config and is resolved at
+    // each provider-request boundary, just like the live model snapshot.
+    const explicitUserEffort = normalizeEffort(userEffort) || parsed.effort || null;
     const effectiveCollabToolPolicy = collabToolPolicy === COLLAB_TOOL_POLICY.SINGLE_VP || collabToolPolicy === COLLAB_TOOL_POLICY.MULTI_VP
       ? collabToolPolicy
       : null;
@@ -2131,7 +2134,7 @@ export class Engine {
     };
     try {
       this.#currentThreadId = threadId || MAIN_THREAD_ID;
-      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds, projectInstruction, projectLabel, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, prepareProviderRequest, startProviderRequest, finishProviderRequest, failProviderRequest, closePendingUserInput, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName, retryLifecycle });
+      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: explicitUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds, projectInstruction, projectLabel, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, prepareProviderRequest, startProviderRequest, finishProviderRequest, failProviderRequest, closePendingUserInput, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName, retryLifecycle });
     } finally {
       // Closing the async generator at a visible retry boundary means the
       // continuation never reached a provider. Keep it out of history and
@@ -2697,7 +2700,11 @@ export class Engine {
     let displayImageAnchorMessage = null;
     let lastPersistedAssistantMessage = null;
     let lastPersistedAssistantTextMessage = null;
+    // `refreshConfig()` may publish a new Session model while a stream or a
+    // tool is running. Apply it only before the next provider request; the
+    // current request keeps the snapshot captured below.
     let currentModel = this.#config.model;
+    let primaryModelAtLastBoundary = currentModel;
     let cumulativeInputTokens = 0;
     let cumulativeOutputTokens = 0;
     let activeProviderRequest = null;
@@ -2722,12 +2729,38 @@ export class Engine {
     // gives up: we either fall back to a backup model or surface the
     // error to the user. LLMContextError has its own compact-retry path
     // and does NOT count against this budget.
-    const retryPolicy = resolveRetryPolicy(this.#config);
+    let retryPolicy = resolveRetryPolicy(this.#config);
     let consecutiveRetryableErrors = 0;
     let consecutiveForbiddenErrors = 0;
 
     while (true) {
       turnNumber++;
+
+      // `refreshConfig()` is called by the bridge after a persisted Session or
+      // Agent config update. This is the only point a running query adopts the
+      // new primary model, so an in-flight provider stream is never switched.
+      // Keep a retry fallback selected by this query; replacing it here would
+      // turn an exhausted primary into an endless retry loop.
+      if (currentModel === primaryModelAtLastBoundary) {
+        const refreshedPrimaryModel = this.#config.model;
+        if (refreshedPrimaryModel !== primaryModelAtLastBoundary) {
+          currentModel = refreshedPrimaryModel;
+          primaryModelAtLastBoundary = refreshedPrimaryModel;
+        }
+      }
+
+      // Take one immutable runtime snapshot before any request-specific work.
+      // A Session save racing preflight must be picked up by the next loop, not
+      // this request. Fallback retries intentionally retain their selected
+      // model, but still use the current policy and configured effort.
+      const requestConfig = { ...this.#config };
+      // Capture the matching provider catalog in the same synchronous boundary
+      // as config/model. Preflight may yield user/task events before the stream
+      // is built, but one request must never mix two refresh revisions.
+      const requestAdapter = typeof this.#adapter.captureRequest === 'function'
+        ? this.#adapter.captureRequest()
+        : this.#adapter;
+      retryPolicy = resolveRetryPolicy(requestConfig);
 
       // task-324: no hard MAX_TURNS cap. Loop terminates on end_turn,
       // non-retryable error, LLMContextError (after compact retry), or
@@ -2825,9 +2858,7 @@ export class Engine {
       // actually about to call. Single resolver in models.js owns the
       // fallback ladder (registry → config → default) so engine.js and
       // tools/registry.js can never disagree.
-      const currentContextWindow = resolveContextWindow(currentModel, this.#config);
-
-      yield { type: 'turn_start', turnNumber, threadId };
+      const currentContextWindow = resolveContextWindow(currentModel, requestConfig);
 
       const appendedBeforeStream = this.#drainPendingUserMessages(drainPendingUserMessages);
       if (appendedBeforeStream.length > 0) {
@@ -2887,9 +2918,12 @@ export class Engine {
       systemPrompt = buildCurrentSystemPrompt();
 
       try {
-        // task-327b: resolve effort per-turn so the long-loop auto-bump
-        // kicks in once toolLoopTurns crosses the threshold.
-        let resolvedEffort = pickEffort({ scenario, toolLoopTurns, userEffort });
+        // Resolve effort per provider request so a saved Session effort takes
+        // effect at the next loop. A caller override or `/effort` prefix stays
+        // fixed for this query and still wins over live Session config.
+        const configuredEffort = normalizeEffort(requestConfig.modelEffort);
+        const requestUserEffort = userEffort || configuredEffort || null;
+        let resolvedEffort = pickEffort({ scenario, toolLoopTurns, userEffort: requestUserEffort });
 
         // DESIGN.md §9.16: thinking-mode precedence chain. When a VP
         // persona is active, the router/continuity bookkeeping has more
@@ -2911,7 +2945,7 @@ export class Engine {
             ? vpPlan.thinking
             : null;
           const resolved = resolveThinking({
-            uiOverride: (userEffort === 'max' || userEffort === 'high') ? userEffort : null,
+            uiOverride: (requestUserEffort === 'max' || requestUserEffort === 'high') ? requestUserEffort : null,
             routerPlan: liveRouterThinking,
             priorPlan: priorPlan && priorPlan.thinking ? priorPlan.thinking : null,
             vpDefault: typeof vpPersona.thinking === 'string' ? vpPersona.thinking : null,
@@ -3006,27 +3040,70 @@ export class Engine {
           }
         }
 
-        // Do not durably publish a model-only continuation until every
-        // pre-request await is complete and the fresh provider request is about
-        // to start. Stop at the visible loop boundary must leave no
-        // continuation that the provider never received.
-        if (signal?.aborted) throw new LLMAbortError();
-        if (pendingContinuationForRequest
-            && retryLifecycle.pendingContinuation === pendingContinuationForRequest) {
-          this.#persistConversationMessage(pendingContinuationForRequest, { sessionId: runtimeSessionId });
+        // Capture only the provider route before the visible boundary. The
+        // returned async iterable must not make a request or write durable
+        // state; both the retry continuation and Work Center EngineTurn remain
+        // uncommitted until the consumer resumes this `turn_start`.
+        //
+        // Engine configuration and AdapterRouter catalog were captured together
+        // at the loop boundary above. Building the stream here and refreshing
+        // while `turn_start` is visible cannot alter this request revision.
+        const hasCaptureStream = typeof requestAdapter.captureStream === 'function';
+        const captureStream = hasCaptureStream
+          ? requestAdapter.captureStream.bind(requestAdapter)
+          : requestAdapter.stream.bind(requestAdapter);
+        let continuationCommitted = false;
+        const commitRetryContinuation = () => {
+          if (continuationCommitted
+              || !pendingContinuationForRequest
+              || retryLifecycle.pendingContinuation !== pendingContinuationForRequest) return;
+          const persisted = this.#persistConversationMessage(pendingContinuationForRequest, {
+            sessionId: runtimeSessionId,
+          });
+          if (persisted) pendingContinuationForRequest._persistedMessageId = persisted.id;
           conversationMessages.push(pendingContinuationForRequest);
           retryLifecycle.pendingContinuation = null;
-        }
-
-        activeProviderRequest = typeof prepareProviderRequest === 'function'
-          ? prepareProviderRequest({
+          continuationCommitted = true;
+        };
+        const commitDispatch = () => {
+          if (!activeProviderRequest && typeof prepareProviderRequest === 'function') {
+            activeProviderRequest = prepareProviderRequest({
               turnNumber,
               entries: appendedBeforeStream,
               system: systemPrompt,
               messages: wireMessages.map(mapDebugMessage),
               model: currentModel,
-            }) || null
-          : null;
+            }) || null;
+          }
+          startProviderRequest?.(activeProviderRequest);
+          commitRetryContinuation();
+        };
+        const providerStream = captureStream({
+          model: currentModel,
+          system: systemPrompt,
+          messages: wireMessages,
+          tools: toolDefs.length > 0 ? toolDefs : undefined,
+          maxTokens: requestConfig.maxOutputTokens || 16384,
+          effort: resolvedEffort,
+          effortSource: requestUserEffort ? 'user' : 'auto',
+          signal,
+          onRawExchange: captureRawExchange,
+          rawExchangeMaxBytes,
+          onRequestStart: () => {
+            // Native adapters invoke this immediately before fetch(). A retry
+            // continuation and Work Center EngineTurn become durable only when
+            // their request crosses dispatch, never when turn_start is shown.
+            commitDispatch();
+          },
+        });
+        yield { type: 'turn_start', turnNumber, threadId };
+
+        // Provider iteration begins after the visible boundary. Native adapters
+        // commit in onRequestStart immediately before fetch. A plain legacy
+        // adapter only enters its generator at iteration, so preserve its old
+        // dispatch semantics while keeping captured Router requests inert.
+        if (signal?.aborted) throw new LLMAbortError();
+        if (!hasCaptureStream) commitDispatch();
 
         // Snapshot task results carried by this exact request. Request start
         // is not delivery: fetch may remain pending and then be aborted before
@@ -3034,19 +3111,7 @@ export class Engine {
         // that included the provider's terminal stop event.
         const requestAsyncTaskIds = Array.from(this.#pendingAsyncTaskConfirmIds);
         let sawProviderStop = false;
-        for await (const event of this.#adapter.stream({
-          model: currentModel,
-          system: systemPrompt,
-          messages: wireMessages,
-          tools: toolDefs.length > 0 ? toolDefs : undefined,
-          maxTokens: this.#config.maxOutputTokens || 16384,
-          effort: resolvedEffort,
-          effortSource: userEffort ? 'user' : 'auto',
-          signal,
-          onRawExchange: captureRawExchange,
-          rawExchangeMaxBytes,
-          onRequestStart: () => startProviderRequest?.(activeProviderRequest),
-        })) {
+        for await (const event of providerStream) {
           // task-325a (abort-stop fix): per-event abort short-circuit.
           // The adapter is expected to throw AbortError when fetch's
           // signal fires, but in practice undici/HTTP-2/proxy layers
@@ -3398,7 +3463,7 @@ export class Engine {
           }
         }
 
-        const earlyFallbackModel = this.#config.fallbackModel;
+        const earlyFallbackModel = requestConfig.fallbackModel;
         if (earlyFallbackModel && earlyFallbackModel !== currentModel
           && (earlyIsRateLimit || earlyIsTransient) && canReplayProviderRequest) {
           endAttemptTrace('fallback_retry');

@@ -175,12 +175,24 @@ function modelRefsEquivalent(left, right) {
 function resolveLiveSessionConfig(baseConfig, sessionId, options = {}) {
   const configRoot = baseConfig?.dir || liveConfigRoot();
   const sessionConfig = normalizeSessionConfig(configRoot, sessionId, baseConfig, options);
-  return resolveSessionConfig(baseConfig, sessionConfig);
+  const resolved = resolveSessionConfig(baseConfig, sessionConfig);
+  // Session config lives in the agent-local root. `resolveSessionConfig()`
+  // intentionally returns a fresh object without its storage hint, so restore
+  // it for the next cached-engine lookup.
+  return configRoot && !resolved.dir ? { ...resolved, dir: configRoot } : resolved;
 }
 
 let sessionConfigRefreshRevision = 0;
 
-/** Reload the Agent-owned config and install it into every live Engine. */
+/**
+ * Reload the Agent-owned config and install it into every live Engine.
+ *
+ * This deliberately mutates only runtime snapshots. Model/config saves must
+ * not retire cached engines, clear task owners, invalidate the coordinator, or
+ * abort a request that has already started. Engine.query() captures its LLM
+ * request values at each loop boundary, so an active stream completes with its
+ * original config and a following tool loop uses the published snapshot.
+ */
 export async function refreshLiveSessionConfig(options = {}) {
   sessionConfigRefreshRevision += 1;
   if (!session && sessionLoadPromise) {
@@ -591,13 +603,16 @@ const vpCurrentTodos = new Map();
  * that nobody consumes — exactly the pre-707 bug).
  *
  * Purge sites:
- *   - `invalidateGroupContext(sessionId)` — called from every group CRUD
- *     handler that mutates roster / meta / lifecycle state on disk
- *     (rename, update announcement, archive, delete, add/remove member,
- *     set default VP).
- *   - `handleYeaftSessionSend` — invalidates inline when its own
- *     auto-add / default-VP-heal pass mutated the roster.
+ *   - `invalidateGroupContext(sessionId)` — called from Session CRUD handlers
+ *     that mutate roster / metadata / lifecycle state on disk (rename, update
+ *     announcement, archive, delete, add/remove member, set default VP).
+ *   - `handleYeaftSessionSend` — invalidates inline when its own auto-add /
+ *     default-VP-heal pass mutated the roster.
  *   - `resetYeaftSession` and `__testResetVpState` clear the whole map.
+ *
+ * Model/config saves deliberately do not purge this map: they publish a new
+ * in-memory runtime snapshot and the active engine adopts it at its next LLM
+ * loop boundary without aborting the request already in flight.
  *
  * @type {Map<string, { coord: ReturnType<typeof createCoordinator>,
  *                     router: ReturnType<typeof createRouter>,
@@ -1803,8 +1818,16 @@ function getOrCreateVpEngine(sessionId, vpId, threadId = 'main') {
   const effectiveConfig = resolveLiveSessionConfig(session.config, sessionId);
   const configKey = engineConfigKey(effectiveConfig);
   let eng = vpEngines.get(key);
-  if (eng && vpEngineConfigKeys.get(key) === configKey) return eng;
-  if (eng) retireCachedVpEngine(key, { reason: 'config_changed', rescue: true, expectedEngine: eng });
+  if (eng) {
+    // Config changes are snapshots, not a lifecycle boundary. The save handler
+    // publishes the snapshot to every cached engine. The next query loop reads
+    // it before invoking its adapter; no engine replacement or abort needed.
+    if (vpEngineConfigKeys.get(key) !== configKey) {
+      eng.refreshConfig?.(effectiveConfig);
+      vpEngineConfigKeys.set(key, configKey);
+    }
+    return eng;
+  }
   eng = new Engine({
     adapter: session.adapter,
     trace: session.trace,
@@ -3416,12 +3439,14 @@ export function handleYeaftUpdateSession(msg) {
 }
 
 /**
- * Persist the model selected in the group conversation header. Cache invalidation:
- * drop every cached Engine whose key starts with `${sessionId}::` so the
- * next turn picks up the new model. The group meta itself is untouched.
+ * Persist the model selected in the Session conversation header.
+ *
+ * Cached engines remain alive. This handler publishes their updated effective
+ * config; `Engine.refreshConfig()` applies it at the next LLM loop boundary.
+ * The current stream and its AbortController are untouched.
  *
  * Payload: { sessionId, requestId, config: { model?: string|null } }
- *  - `model: ''` or `null` clears the selected group model (falls back to user default).
+ *  - `model: ''` or `null` clears the selected Session model (falls back to user default).
  */
 export function handleYeaftUpdateSessionConfig(msg) {
   const requestId = msg && msg.requestId;
@@ -3433,15 +3458,23 @@ export function handleYeaftUpdateSessionConfig(msg) {
     if (!partial) throw new SessionConfigError('invalid_patch', 'config object required');
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const savedConfig = updateSessionConfig(yeaftDir, sessionId, partial);
-    // Retire cached engines so accepted terminal task results are rescued
-    // before the next VP turn rebuilds with the new model.
+    const effectiveBaseConfig = session?.config || loadConfig({ dir: yeaftDir });
+    // The write above is the source of truth. Merge it directly instead of
+    // reopening the file so cached engines cannot observe an unrelated stale
+    // read between persistence and publication.
+    const sessionConfig = resolveSessionConfig(effectiveBaseConfig, savedConfig);
+    const publishedSessionConfig = sessionConfig.dir || !effectiveBaseConfig?.dir
+      ? sessionConfig
+      : { ...sessionConfig, dir: effectiveBaseConfig.dir };
     const prefix = `${sessionId}::`;
-    for (const k of Array.from(vpEngines.keys())) {
-      if (k.startsWith(prefix)) {
-        retireCachedVpEngine(k, { reason: 'session_config_changed', rescue: true });
-      }
+    for (const [key, engine] of vpEngines) {
+      if (!key.startsWith(prefix)) continue;
+      engine.refreshConfig?.(publishedSessionConfig);
+      vpEngineConfigKeys.set(key, engineConfigKey(publishedSessionConfig));
     }
-    invalidateGroupContext(sessionId);
+    // Do not invalidate the Session coordinator or abort active VP turns.
+    // The next adapter loop sees this config; the stream already underway
+    // completes with the values captured for that request.
     sendSessionCrudResult({ op: 'update_config', requestId, ok: true, sessionId, config: savedConfig });
     sendSessionSnapshotBroadcast();
   } catch (err) {

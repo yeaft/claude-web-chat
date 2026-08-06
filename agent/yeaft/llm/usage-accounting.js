@@ -90,10 +90,36 @@ export class UsageAccountingAdapter extends LLMAdapter {
     }
   }
 
-  async *stream(params) {
+  captureRequest() {
+    const captured = typeof this.#adapter.captureRequest === 'function'
+      ? this.#adapter.captureRequest()
+      : null;
+    return {
+      captureStream: params => {
+        const requestParams = this.#requestParams(params);
+        const capture = captured?.captureStream
+          || (typeof this.#adapter.captureStream === 'function'
+            ? this.#adapter.captureStream.bind(this.#adapter)
+            : this.#adapter.stream.bind(this.#adapter));
+        return this.#streamWithAccounting(capture(requestParams));
+      },
+    };
+  }
+
+  captureStream(params) {
+    // Preserve the wrapped adapter's request-capture boundary. In particular,
+    // AdapterRouter freezes its provider catalog before the stream is iterated.
+    return this.captureRequest().captureStream(params);
+  }
+
+  stream(params) {
+    return this.captureStream(params);
+  }
+
+  async *#streamWithAccounting(upstreamStream) {
     const total = normalizeTokenUsage();
     try {
-      for await (const event of this.#adapter.stream(this.#requestParams(params))) {
+      for await (const event of upstreamStream) {
         if (event?.type === 'usage') addUsage(total, event);
         yield event;
       }

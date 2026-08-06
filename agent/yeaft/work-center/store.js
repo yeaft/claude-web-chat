@@ -2128,6 +2128,7 @@ export class WorkItemStore {
       const turn = this.getEngineTurn(turnId);
       if (!turn || turn.status !== 'dispatching' || turn.ownerBootId !== ownerBootId
           || turn.leaseEpoch !== leaseEpoch) return false;
+      if (!this.#activeRunRow(turn.runId, ownerBootId, leaseEpoch, true)) return false;
       const now = this.now();
       const response = {
         text: String(result.responseText || ''),
@@ -2161,7 +2162,8 @@ export class WorkItemStore {
   failEngineTurn(turnId, ownerBootId, leaseEpoch, error) {
     return withTransaction(this.db, () => {
       const turn = this.getEngineTurn(turnId);
-      if (!turn || turn.ownerBootId !== ownerBootId || turn.leaseEpoch !== leaseEpoch) {
+      if (!turn || turn.ownerBootId !== ownerBootId || turn.leaseEpoch !== leaseEpoch
+          || !this.#activeRunRow(turn.runId, ownerBootId, leaseEpoch, true)) {
         return { allowRetry: false, status: 'stale' };
       }
       if (turn.status === 'prepared') return { allowRetry: true, status: 'prepared' };

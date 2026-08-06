@@ -256,8 +256,6 @@ export function resolveSessionConfig(userConfig, sessionConfig) {
   }
   if (overrides.modelEffort && typeof overrides.modelEffort === 'string' && ALLOWED_EFFORTS.has(overrides.modelEffort)) {
     base.modelEffort = overrides.modelEffort;
-  } else {
-    delete base.modelEffort;
   }
   return base;
 }
