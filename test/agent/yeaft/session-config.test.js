@@ -371,6 +371,130 @@ describe('Yeaft session-scoped model config', () => {
     }
   });
 
+  it('keeps the reload snapshot when config becomes invalid during runtime work', async () => {
+    const root = makeDir();
+    const configPath = join(root, 'config.json');
+    const previousTransport = {
+      ws: ctx.ws,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+      CONFIG: ctx.CONFIG,
+    };
+    const initialConfig = JSON.stringify({
+      mcpServers: [{ name: 'github', command: 'node', args: [], env: {} }],
+      plugins: {},
+    });
+    const sent = [];
+    const connected = new Set(['github']);
+    const disconnectAll = vi.fn(async () => {
+      connected.clear();
+      writeFileSync(configPath, JSON.stringify({
+        mcpServers: [{ name: 'github', command: 'node', args: [], env: {} }],
+        plugins: { tools: 'invalid-after-reload-started' },
+      }));
+    });
+    const connect = vi.fn(async server => { connected.add(server.name); });
+    const replaceMcpTools = vi.fn(() => ({ removed: 0, added: 1 }));
+    const mcpManager = {
+      get hasServers() { return connected.size > 0; },
+      status: () => [...connected].map(name => ({ name, ready: true, toolCount: 1 })),
+      disconnectAll,
+      disconnect: vi.fn(async name => { connected.delete(name); }),
+      connect,
+    };
+    ctx.CONFIG = { yeaftDir: root };
+    ctx.ws = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+    ctx.serverEncryptionRequired = false;
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = false;
+    __testSetSession({
+      config: { plugins: {} },
+      mcpManager,
+      toolRegistry: { replaceMcpTools },
+    });
+
+    try {
+      writeFileSync(configPath, initialConfig);
+      await handleMessage({ type: 'yeaft_mcp_reload', requestId: 'reload-snapshot-race' });
+      await new Promise(resolve => setImmediate(resolve));
+
+      const reloadResult = sent.find(frame => frame.type === 'yeaft_mcp_reload_result');
+      const reloadBroadcast = sent.find(frame => frame.type === 'yeaft_mcp_updated' && frame.reason === 'reload');
+      expect(disconnectAll).toHaveBeenCalledTimes(1);
+      expect(connect).toHaveBeenCalledWith(expect.objectContaining({ name: 'github' }));
+      expect(replaceMcpTools).toHaveBeenCalledTimes(1);
+      expect(reloadResult).toMatchObject({
+        requestId: 'reload-snapshot-race',
+        servers: [expect.objectContaining({ name: 'github' })],
+        error: null,
+        runtime: expect.objectContaining({ connected: true }),
+      });
+      expect(reloadBroadcast).toMatchObject({
+        reason: 'reload',
+        servers: [expect.objectContaining({ name: 'github' })],
+        error: null,
+        runtime: expect.objectContaining({ connected: true }),
+      });
+      expect(reloadBroadcast).not.toMatchObject({ servers: [] });
+      expect(readFileSync(configPath, 'utf8')).not.toBe(initialConfig);
+      expect(loadConfig({ dir: root })).toMatchObject({
+        plugins: { tools: [], skills: [], mcpServers: [] },
+        pluginConfigError: 'plugins.tools must be an array',
+      });
+    } finally {
+      ctx.ws = previousTransport.ws;
+      ctx.serverEncryptionRequired = previousTransport.serverEncryptionRequired;
+      ctx.outboundSendQueue = previousTransport.outboundSendQueue;
+      ctx.outboundSendQueueActive = previousTransport.outboundSendQueueActive;
+      ctx.CONFIG = previousTransport.CONFIG;
+    }
+  });
+
+  it('reports fallback MCP broadcast read errors without an empty server list', async () => {
+    const root = makeDir();
+    const configPath = join(root, 'config.json');
+    const previousTransport = {
+      ws: ctx.ws,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+      CONFIG: ctx.CONFIG,
+    };
+    const sent = [];
+    ctx.CONFIG = { yeaftDir: root };
+    ctx.ws = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+    ctx.serverEncryptionRequired = false;
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = false;
+    __testSetSession({
+      mcpManager: {
+        hasServers: true,
+        status: () => [{ name: 'github', ready: true, toolCount: 1 }],
+      },
+    });
+
+    try {
+      writeFileSync(configPath, JSON.stringify({ plugins: { tools: 'not-an-array' } }));
+      __testHooks.broadcastMcpUpdatedForTest({ reason: 'base-runtime-load' });
+      await new Promise(resolve => setImmediate(resolve));
+
+      const update = sent.find(frame => frame.type === 'yeaft_mcp_updated');
+      expect(update).toMatchObject({
+        reason: 'base-runtime-load',
+        error: expect.stringContaining('Failed to read config.json'),
+        runtime: expect.objectContaining({ connected: true }),
+      });
+      expect(update).not.toHaveProperty('servers');
+    } finally {
+      ctx.ws = previousTransport.ws;
+      ctx.serverEncryptionRequired = previousTransport.serverEncryptionRequired;
+      ctx.outboundSendQueue = previousTransport.outboundSendQueue;
+      ctx.outboundSendQueueActive = previousTransport.outboundSendQueueActive;
+      ctx.CONFIG = previousTransport.CONFIG;
+    }
+  });
+
   it('rejects feature flag writes that would overwrite an invalid Agent config', () => {
     const root = makeDir();
     const configPath = join(root, 'config.json');

@@ -148,6 +148,27 @@ function makeStore() {
 }
 
 describe('message flow regressions', () => {
+  it('preserves the configured MCP cache when an error broadcast omits servers', () => {
+    const store = useChatStore();
+    store.yeaftMcpServers = [{ name: 'github', command: 'node', args: [], env: {} }];
+    store.yeaftMcpRuntime = { connected: true, toolCount: 1, perServer: [{ name: 'github', ready: true, toolCount: 1 }] };
+    store.yeaftMcpError = null;
+
+    handleMessage(store, {
+      type: 'yeaft_mcp_updated',
+      reason: 'base-runtime-load',
+      runtime: { connected: true, toolCount: 1, perServer: [{ name: 'github', ready: true, toolCount: 1 }] },
+      error: 'Failed to read config.json: plugins.tools must be an array',
+    });
+
+    expect(store.yeaftMcpServers).toEqual([{ name: 'github', command: 'node', args: [], env: {} }]);
+    expect(store.yeaftMcpRuntime).toMatchObject({
+      connected: true,
+      perServer: [expect.objectContaining({ name: 'github', ready: true })],
+    });
+    expect(store.yeaftMcpError).toContain('Failed to read config.json');
+  });
+
   it('does not refresh Work Center for routine agent inventory broadcasts', () => {
     const store = useChatStore();
     store.workCenterOpen = true;

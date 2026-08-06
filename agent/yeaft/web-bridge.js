@@ -7640,17 +7640,27 @@ function hotSwapMcpTools() {
 /**
  * Broadcast a `yeaft_mcp_updated` event so any client subscribed to the
  * Yeaft view (Settings panel, status badge) refreshes without needing
- * to re-open the panel. The current list+runtime are included so the UI
- * is single-source (no separate fetch round-trip needed).
+ * to re-open the panel. A CRUD/reload caller should pass its confirmed
+ * `configuredServers` snapshot rather than rereading config after async
+ * runtime work. Fallback reads preserve an existing UI cache on failure by
+ * omitting `servers` and reporting the strict-read error.
  */
-function broadcastMcpUpdated(extra = {}) {
-  const yeaftDir = ctx.CONFIG?.yeaftDir;
-  const listed = listMcpServers(yeaftDir);
+function broadcastMcpUpdated({ configuredServers, ...extra } = {}) {
+  let servers = configuredServers;
+  let error = null;
+  if (!Array.isArray(servers)) {
+    const yeaftDir = ctx.CONFIG?.yeaftDir;
+    const listed = listMcpServers(yeaftDir);
+    if (listed.error) error = listed.error;
+    else servers = listed.servers;
+  }
+
   sendToServer({
     type: 'yeaft_mcp_updated',
-    servers: listed.servers || [],
     runtime: mcpRuntimeSnapshot(),
     ...extra,
+    ...(Array.isArray(servers) ? { servers } : {}),
+    error,
   });
 }
 
@@ -7708,7 +7718,12 @@ export async function handleYeaftMcpAdd(msg = {}) {
     connectError,
     error: null,
   });
-  broadcastMcpUpdated({ reason: 'add', name: result.server.name, connectError });
+  broadcastMcpUpdated({
+    reason: 'add',
+    name: result.server.name,
+    connectError,
+    configuredServers: result.servers,
+  });
 }
 
 export async function handleYeaftMcpRemove(msg = {}) {
@@ -7745,7 +7760,11 @@ export async function handleYeaftMcpRemove(msg = {}) {
     swap,
     error: null,
   });
-  broadcastMcpUpdated({ reason: 'remove', name });
+  broadcastMcpUpdated({
+    reason: 'remove',
+    name,
+    configuredServers: result.servers,
+  });
 }
 
 export async function handleYeaftMcpReload(msg = {}) {
@@ -7817,7 +7836,12 @@ export async function handleYeaftMcpReload(msg = {}) {
     swap,
     error: null,
   });
-  broadcastMcpUpdated({ reason: 'reload', name: targetName, failures });
+  broadcastMcpUpdated({
+    reason: 'reload',
+    name: targetName,
+    failures,
+    configuredServers: configured,
+  });
 }
 
 export const __testHooks = {
@@ -7840,6 +7864,9 @@ export const __testHooks = {
   },
   setSessionForTest(nextSession) {
     __testSetSession(nextSession || null);
+  },
+  broadcastMcpUpdatedForTest(extra) {
+    return broadcastMcpUpdated(extra);
   },
   setRuntimeFactoriesForTest({
     createSkillManager: nextCreateSkillManager,
