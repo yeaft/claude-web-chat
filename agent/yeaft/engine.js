@@ -24,7 +24,14 @@ import { buildSystemPrompt, buildWorkerPrompt } from './prompts.js';
 import { getRuntimePlatformInfo } from './runtime-platform.js';
 import { LLMContextError, LLMAbortError, LLMAuthError, LLMRateLimitError, LLMServerError, LLMStreamIdleTimeoutError } from './llm/adapter.js';
 import { runMemoryPreflow, buildRelevantScopes, memoryScopeLabel } from './sessions/pre-flow.js';
-import { readProjectDoc, pickProjectDocFile, DEFAULT_PROJECT_DOC_MAX_BYTES } from './sessions/project-doc.js';
+import {
+  readProjectDoc,
+  pickProjectDocFile,
+  selectProjectDocContext,
+  projectDocPathHintsFromToolCall,
+  projectDocWriteScopesNeedingReload,
+  DEFAULT_PROJECT_DOC_MAX_BYTES,
+} from './sessions/project-doc.js';
 import { partitionMessages } from './compact/partition.js';
 import { runCompact as runCompactOrchestrator } from './compact/orchestrator.js';
 import { evaluateCompactTriggers } from './compact/triggers.js';
@@ -45,7 +52,10 @@ import { countTurns } from './turn-utils.js';
 import { attachRouterPlan, extractPriorPlan, stripMetaForWire } from './router/continuity.js';
 import { resolveThinking } from './router/thinking.js';
 import { approxTokens, computeBudget } from './memory/budget.js';
-import { COLLAB_TOOL_POLICY, isToolErrorOutput, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
+import { COLLAB_TOOL_POLICY, isToolErrorOutput, localizeVisibleText, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
+import { CONDITIONAL_BUILTIN_TOOL_NAMES, resolveActiveToolNames } from './tools/activation.js';
+import { discoverToolCapabilities } from './tools/discover-tools.js';
+import { agentBelongsToScope, getAgentRegistry } from './tools/agent.js';
 import { extractDisplayImages, stripDisplayImageData } from './image-assets.js';
 import { acknowledgePendingNotifications, formatNotificationsForPrompt, peekPendingNotifications } from './sub-agent/notifications.js';
 import {
@@ -958,19 +968,22 @@ export class Engine {
   }
 
   /**
-   * Get the list of registered tool definitions (for passing to the adapter).
-   * Prefers ToolRegistry when available, falls back to legacy #tools Map.
+   * Get the active tool definitions for one provider request. The registry keeps
+   * every implementation and compatibility alias loaded; only the active set is
+   * serialized into the request. Legacy standalone engines keep exposing their
+   * explicitly registered tools because they do not use the built-in registry.
    *
-   * task-297: mode-based filtering was removed — all registered tools are
-   * always exposed to the LLM.
-   *
+   * @param {string|null} collabToolPolicy
+   * @param {Set<string>|null} activeToolNames
    * @returns {import('./llm/adapter.js').UnifiedToolDef[]}
    */
-  #getToolDefs(collabToolPolicy = null) {
+  #getToolDefs(collabToolPolicy = null, activeToolNames = null) {
     if (this.#toolRegistry) {
-      return this.#toolRegistry.getToolDefs(this.#config?.language || 'en', { collabToolPolicy });
+      return this.#toolRegistry.getToolDefs(this.#config?.language || 'en', {
+        collabToolPolicy,
+        activeToolNames,
+      });
     }
-    // Legacy path: no mode filtering
     const defs = [];
     for (const [, tool] of this.#tools) {
       defs.push({
@@ -980,6 +993,14 @@ export class Engine {
       });
     }
     return defs;
+  }
+
+  #hasScopedSubAgents({ sessionId, parentVpId, parentThreadId } = {}) {
+    const scope = { sessionId, parentVpId, parentThreadId };
+    for (const agent of getAgentRegistry().values()) {
+      if (agentBelongsToScope(agent, scope)) return true;
+    }
+    return false;
   }
 
   /**
@@ -1196,7 +1217,7 @@ export class Engine {
    * @param {string} [args.explicitSkillName] — leading /skill:<name> command, if present
    * @returns {string}
    */
-  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, projectInstruction, projectLabel, workCenterInstructions, projectDoc, taskCtx, activeTasks, explicitSkillName, resolvedSkillContent = null } = {}) {
+  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, projectInstruction, projectLabel, workCenterInstructions, projectDoc, taskCtx, activeTasks, activeToolNames = null, promptNotices = [], explicitSkillName, resolvedSkillContent = null } = {}) {
     // Skill selection is normally resolved once by #runQuery so the prompt and
     // emitted protocol events describe the exact same skills. Keep the local
     // fallback for internal callers that do not need selection events.
@@ -1210,10 +1231,15 @@ export class Engine {
       }
     }
 
-    // Get tool names from the appropriate source
-    const toolNames = this.#toolRegistry
+    // Use the same active set for the prompt and provider schema. The prompt
+    // only needs these names to select scoped guidance; it does not repeat the
+    // catalogue because the API tool definitions are already authoritative.
+    const registeredToolNames = this.#toolRegistry
       ? this.#toolRegistry.getToolNames()
       : Array.from(this.#tools.keys());
+    const toolNames = activeToolNames instanceof Set
+      ? registeredToolNames.filter(name => activeToolNames.has(name))
+      : registeredToolNames;
 
     return buildWorkerPrompt({
       language: this.#config.language || 'en',
@@ -1230,6 +1256,7 @@ export class Engine {
       runtimePlatform: getRuntimePlatformInfo(),
       taskCtx,
       activeTasks,
+      promptNotices,
       // Worker-shape harness is descriptive metadata for human inspection;
       // production prompts skip it to save tokens. Re-enable via env when
       // diagnosing prompt structure issues.
@@ -1336,6 +1363,7 @@ export class Engine {
       conversationStore: this.#conversationStore,
       adapter: this.#adapter,
       config: this.#config,
+      discoverTools: vpCtx?.discoverTools,
       taskManager: this.#taskManager,
       sessionId: vpCtx?.sessionId || this.#sessionId || null,
       projectSessionIds: Array.isArray(vpCtx?.projectSessionIds)
@@ -2352,12 +2380,71 @@ export class Engine {
       envelope: inboundEnvelope || null,
     };
 
-    const projectDoc = this.#getProjectDocBlock(workDir);
-    const activeTasks = this.#taskManager
+    const projectDocSource = this.#getProjectDocBlock(workDir);
+    let projectDocLoadedPathHints = [];
+    let projectDocContext = selectProjectDocContext(projectDocSource, {
+      prompt,
+      messages,
+      pathHints: projectDocLoadedPathHints,
+      language: this.#config.language || 'en',
+    });
+    let activeTaskSnapshots = this.#taskManager
+      && typeof this.#taskManager.listActiveTasks === 'function'
+      ? this.#taskManager.listActiveTasks(runtimeSessionId)
+      : [];
+    let activeTasks = this.#taskManager
       ? this.#taskManager.renderActiveTasksForPrompt(runtimeSessionId, {
           language: this.#config.language || 'en',
         })
       : '';
+    const registeredToolNames = this.#toolRegistry
+      ? this.#toolRegistry.getToolNames()
+      : Array.from(this.#tools.keys());
+    const resolveCurrentActiveToolNames = () => this.#toolRegistry
+      ? resolveActiveToolNames({
+          toolNames: registeredToolNames,
+          prompt,
+          messages,
+          collabToolPolicy: effectiveCollabToolPolicy,
+          activeTasks: activeTaskSnapshots,
+          subAgentToolsActivated: this.#hasScopedSubAgents({
+            sessionId: runtimeSessionId,
+            parentVpId: queryVpId,
+            parentThreadId: runtimeThreadId,
+          }),
+          imageGenerationConfigured: typeof this.#config?.imageApiUrl === 'string'
+            && this.#config.imageApiUrl.trim().length > 0,
+        })
+      : null;
+    const discoveredToolNames = new Set();
+    const discoveryTraversals = new Map();
+    const currentDiscoverableTools = () => this.#toolRegistry
+      ? this.#toolRegistry.getAllTools()
+          .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name) || tool.name.startsWith('mcp__'))
+      : [];
+    const discoveryDirectorySnapshot = (tools, language) => tools
+      .map(tool => ({
+        name: tool.name,
+        description: localizeVisibleText(tool.description, language, tool.name),
+        parameters: tool.parameters,
+      }));
+    const discoveryDirectoryMatches = (snapshot, liveTools, language) => {
+      const liveSnapshot = discoveryDirectorySnapshot(liveTools, language);
+      if (snapshot.length !== liveSnapshot.length) return false;
+      const byName = new Map(snapshot.map(tool => [tool.name, tool]));
+      return liveSnapshot.every(tool => {
+        const prior = byName.get(tool.name);
+        return prior
+          && prior.description === tool.description
+          && JSON.stringify(prior.parameters) === JSON.stringify(tool.parameters);
+      });
+    };
+    const applyDiscoveredTools = (names) => {
+      for (const name of names) {
+        if (this.#toolRegistry?.has(name)) discoveredToolNames.add(name);
+      }
+    };
+    let activeToolNames = resolveCurrentActiveToolNames();
     let resolvedSkillContent = '';
     let resolvedSkills = [];
     let skillResolutionError = null;
@@ -2385,7 +2472,8 @@ export class Engine {
       }
     }
 
-    const systemPrompt = this.#buildSystemPrompt({
+    let promptNotices = [];
+    const buildCurrentSystemPrompt = () => this.#buildSystemPrompt({
       prompt,
       memoryInjection,
       vpPersona,
@@ -2394,11 +2482,14 @@ export class Engine {
       projectInstruction,
       projectLabel,
       workCenterInstructions,
-      projectDoc,
+      projectDoc: projectDocContext.text,
       activeTasks,
+      activeToolNames,
+      promptNotices,
       explicitSkillName,
       resolvedSkillContent,
     });
+    let systemPrompt = buildCurrentSystemPrompt();
 
     // ─── HARD INVARIANT: Compact ≠ Dream (read DESIGN-COMPACT-VS-DREAM.md) ─
     // Compact summary (this block) ONLY lands in the messages array head as
@@ -2598,7 +2689,7 @@ export class Engine {
       };
     }
 
-    const toolDefs = this.#getToolDefs(effectiveCollabToolPolicy);
+    let toolDefs = this.#getToolDefs(effectiveCollabToolPolicy, activeToolNames);
     let turnNumber = 0;
     let continueTurns = 0; // auto-continue counter
     let toolLoopTurns = 0; // task-327b: tool-use turns for long-loop auto-bump
@@ -2774,6 +2865,26 @@ export class Engine {
           };
         }
       }
+
+      // Tool availability depends on live Session state. A Bash call can start a
+      // background task (or a sub-agent can appear) during the prior loop, so
+      // recompute the schemas and matching guidance before every provider call.
+      activeTaskSnapshots = this.#taskManager
+        && typeof this.#taskManager.listActiveTasks === 'function'
+        ? this.#taskManager.listActiveTasks(runtimeSessionId)
+        : [];
+      activeTasks = this.#taskManager
+        ? this.#taskManager.renderActiveTasksForPrompt(runtimeSessionId, {
+            language: this.#config.language || 'en',
+          })
+        : '';
+      activeToolNames = resolveCurrentActiveToolNames();
+      for (const name of [...discoveredToolNames]) {
+        if (this.#toolRegistry?.has(name)) activeToolNames?.add(name);
+        else discoveredToolNames.delete(name);
+      }
+      toolDefs = this.#getToolDefs(effectiveCollabToolPolicy, activeToolNames);
+      systemPrompt = buildCurrentSystemPrompt();
 
       try {
         // task-327b: resolve effort per-turn so the long-loop auto-bump
@@ -3826,6 +3937,72 @@ export class Engine {
         setCurrentTodos,
         askUser,
         workDir,
+        discoverTools: ({ query, cursor, maxResults } = {}) => {
+          if (!this.#toolRegistry) return { query: String(query || ''), tools: [], activated: 0 };
+          const language = this.#config.language || 'en';
+          const queryText = String(query || '');
+          const traversalKey = queryText.trim();
+          const liveTools = currentDiscoverableTools();
+          const requestedCursor = Number(cursor);
+          const hasCursor = cursor != null && cursor !== '' && Number.isInteger(requestedCursor) && requestedCursor > 0;
+          let traversal = hasCursor ? discoveryTraversals.get(traversalKey) : null;
+          if (hasCursor && (!traversal || !discoveryDirectoryMatches(traversal.candidates, liveTools, language))) {
+            discoveryTraversals.delete(traversalKey);
+            return {
+              query: queryText,
+              tools: [],
+              next_cursor: null,
+              total: liveTools.length,
+              omitted_invalid: 0,
+              activated: 0,
+              restart_required: true,
+              message: 'The hidden tool directory changed or no matching traversal exists. Restart discovery without a cursor.',
+            };
+          }
+          if (!hasCursor) {
+            traversal = {
+              candidates: discoveryDirectorySnapshot(liveTools, language),
+            };
+            discoveryTraversals.set(traversalKey, traversal);
+          } else {
+            const pendingTraversal = discoveryTraversals.get(traversalKey);
+            if (!pendingTraversal || pendingTraversal.nextCursor !== requestedCursor) {
+              discoveryTraversals.delete(traversalKey);
+              return {
+                query: queryText,
+                tools: [],
+                next_cursor: null,
+                total: liveTools.length,
+                omitted_invalid: 0,
+                activated: 0,
+                restart_required: true,
+                message: 'The discovery cursor is stale or out of sequence. Restart discovery without a cursor.',
+              };
+            }
+          }
+          const result = discoverToolCapabilities({
+            query: queryText,
+            candidates: traversal.candidates,
+            language,
+            cursor,
+            maxResults,
+          });
+          if (result.restart_required || result.next_cursor == null) discoveryTraversals.delete(traversalKey);
+          else traversal.nextCursor = result.next_cursor;
+          applyDiscoveredTools(result.tools.map(tool => tool.name));
+          return {
+            query: queryText,
+            ...result,
+            activated: result.tools.length,
+            message: result.restart_required
+              ? (result.message || 'The hidden tool directory changed. Restart discovery without a cursor.')
+              : (result.tools.length > 0
+                  ? (result.next_cursor == null
+                      ? 'This discovery page is active on the next model loop; the hidden directory is exhausted.'
+                      : 'This discovery page is active on the next model loop; use next_cursor if the target is not listed.')
+                  : 'No valid hidden registered tools remain on this directory page.'),
+          };
+        },
         currentToolCall: () => currentToolCallForAsyncTask ? { ...currentToolCallForAsyncTask } : null,
         requestEndTurn: (reason) => {
           // First call wins — preserve the kind/reason of the first tool
@@ -3921,8 +4098,17 @@ export class Engine {
 
         // Resolve tool: prefer ToolRegistry, fallback to legacy #tools Map
         const hasTool = this.#toolRegistry
-          ? this.#toolRegistry.isAllowed(tc.name, { collabToolPolicy: effectiveCollabToolPolicy })
+          ? this.#toolRegistry.isAllowed(tc.name, {
+              collabToolPolicy: effectiveCollabToolPolicy,
+              activeToolNames,
+            })
           : this.#tools.has(tc.name);
+        const toolProjectDocPathHints = projectDocPathHintsFromToolCall(tc.name, tc.input);
+        const readOnlyTool = hasTool ? isReadOnlyTool(this, tc.name, tc.input) : false;
+        const missingProjectDocScopes = hasTool && !readOnlyTool
+          ? projectDocWriteScopesNeedingReload(projectDocContext, toolProjectDocPathHints)
+          : new Set();
+        const needsProjectDocReload = missingProjectDocScopes.size > 0;
 
         if (skipped) {
           const source = activeToolBatchBarrier.sourceToolName || 'a preceding tool';
@@ -3945,12 +4131,42 @@ export class Engine {
             threadId: this.currentThreadId,
           };
         } else if (!hasTool) {
-          output = `Error: unknown tool "${tc.name}"`;
+          const registered = this.#toolRegistry?.has(tc.name) || this.#tools.has(tc.name);
+          output = registered
+            ? `Error: tool "${tc.name}" is not active for this request`
+            : `Error: unknown tool "${tc.name}"`;
           isError = true;
           yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: true, threadId: this.currentThreadId };
+        } else if (needsProjectDocReload) {
+          projectDocLoadedPathHints = [...new Set([
+            ...projectDocLoadedPathHints,
+            ...toolProjectDocPathHints,
+          ])];
+          const previouslySelectedProjectDocScopes = new Set(projectDocContext.selectedScopes);
+          projectDocContext = selectProjectDocContext(projectDocSource, {
+            prompt,
+            messages,
+            pathHints: projectDocLoadedPathHints,
+            language: this.#config.language || 'en',
+            forcedScopes: [...previouslySelectedProjectDocScopes, ...missingProjectDocScopes],
+          });
+          const zh = String(this.#config?.language || '').toLowerCase().startsWith('zh');
+          const notice = zh
+            ? `项目规则已针对路径 ${toolProjectDocPathHints.join(', ')} 重新加载。先复核新载入的规则，再重新提交写操作；本次调用未执行。`
+            : `Project rules were reloaded for ${toolProjectDocPathHints.join(', ')}. Review the newly loaded rules before resubmitting the write; this call was not executed.`;
+          promptNotices = [notice];
+          systemPrompt = buildCurrentSystemPrompt();
+          output = notice;
+          isError = true;
+          toolBatchBarrier = {
+            kind: 'project_rules_reloaded',
+            message: notice,
+            sourceToolCallId: tc.id,
+            sourceToolName: tc.name,
+          };
+          yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: true, skipped: true, threadId: this.currentThreadId };
         } else {
           duplicateKey = `${tc.name}\u001f${argsHashOf(tc.input)}`;
-          const readOnlyTool = isReadOnlyTool(this, tc.name, tc.input);
           cacheableTool = isCacheableTool(this, tc.name, tc.input);
           // The cache is only valid while the workspace has not changed. Clear
           // it before every potential mutation, including a tool that later

@@ -28,6 +28,7 @@ import askUser from './ask-user.js';
 import webSearch from './web-search.js';
 import webFetch from './web-fetch.js';
 import historySearch from './history-search.js';
+import discoverTools from './discover-tools.js';
 
 // --- P0 File tools ---
 import bash from './bash.js';
@@ -94,6 +95,7 @@ export const allTools = [
   webSearch,
   webFetch,
   historySearch,
+  discoverTools,
 
   // P0 File
   bash,
