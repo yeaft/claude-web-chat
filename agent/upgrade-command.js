@@ -4,6 +4,7 @@ import { delimiter, dirname, join, win32 } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export const DEFAULT_UPGRADE_REGISTRY = 'https://pkg.yeaft.com/';
+export const SAFE_REMOTE_UPGRADE_CAPABILITY = 'remote_upgrade_safe';
 
 const WINDOWS_UPGRADE_LOCK_NAME = 'active.lock';
 
@@ -141,6 +142,9 @@ export function buildWindowsUpgradeInvocation({ nodePath, bootstrapPath, runnerP
     command: nodePath,
     args: [bootstrapPath, runnerPath, payloadPath],
     options: {
+      // PM2 starts the Agent inside the installed package. A child that inherits
+      // that cwd keeps the package directory locked against npm's rename step.
+      cwd: dirname(bootstrapPath),
       stdio: 'ignore',
       windowsHide: true,
       env: { ...process.env, YEAFT_UPGRADE_LOG: logPath },

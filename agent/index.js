@@ -22,6 +22,7 @@ import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
 import { getManagedSandboxIdentity } from './managed-sandbox/identity-store.js';
+import { SAFE_REMOTE_UPGRADE_CAPABILITY } from './upgrade-command.js';
 import { loadConfig as loadYeaftConfig } from './yeaft/config.js';
 import {
   ensureManagedCliTools,
@@ -157,7 +158,7 @@ async function detectCapabilities() {
   // agent build can speak plaintext WS frames. New servers see this and
   // flip `agent.encryptOutbound = false`, stopping outbound encryption
   // to this peer. Old servers ignore the unknown capability token.
-  const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center', 'work_center_message_v2', 'session_history_search', 'session_history_outline', 'session_history_window_prefetch'];
+  const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', SAFE_REMOTE_UPGRADE_CAPABILITY, 'work_center', 'work_center_message_v2', 'session_history_search', 'session_history_outline', 'session_history_window_prefetch'];
   if (MANAGED_SANDBOX_IDENTITY) capabilities.push('managed-sandbox');
   if (process.platform === 'linux') capabilities.push('work_item_attachments');
   const pty = await loadNodePty();

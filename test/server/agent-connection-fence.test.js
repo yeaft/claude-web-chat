@@ -54,13 +54,17 @@ function agentUrl(id = 'agent-1') {
   return new URL(`ws://localhost/?type=agent&id=${id}&name=Agent&instanceId=${id}&capabilities=plaintext-ok`);
 }
 
-function authenticate(socket, { secret = 'owner-secret', version = '1.0.0' } = {}) {
+function authenticate(socket, {
+  secret = 'owner-secret',
+  version = '1.0.0',
+  capabilities = ['plaintext-ok'],
+} = {}) {
   const challenge = socket.getLastMessage();
   socket.simulateMessage({
     type: 'auth',
     tempId: challenge.tempId,
     secret,
-    capabilities: ['plaintext-ok'],
+    capabilities,
     version,
   });
 }
@@ -221,6 +225,24 @@ describe('Agent connection replacement fence', () => {
     expect(agents.has('agent-1')).toBe(false);
     expect(oldSocket.readyState).toBe(WS_CLOSED);
     expect(oldSocket.closeCode).toBe(1008);
+  });
+
+  it('preserves the safe remote-upgrade capability after authenticated registration', async () => {
+    CONFIG.skipAuth = false;
+    const socket = new MockWebSocket(WS_OPEN);
+
+    handleAgentConnection(socket, agentUrl());
+    authenticate(socket, {
+      version: '1.0.999',
+      capabilities: ['plaintext-ok', 'remote_upgrade_safe'],
+    });
+    await settleMessages();
+
+    expect(agents.get('owner-1:agent-1')).toMatchObject({
+      ws: socket,
+      version: '1.0.999',
+      capabilities: ['plaintext-ok', 'remote_upgrade_safe'],
+    });
   });
 
   it('applies the same replacement fence after authenticated registration', async () => {
