@@ -332,6 +332,42 @@ describe('managed Sandbox Helper authorization boundary', () => {
     instance.close();
   });
 
+  it('serializes epoch activation with privileged execution across Helper instances', async () => {
+    let finish;
+    const firstExecutor = { execute: vi.fn(() => new Promise(resolve => { finish = resolve; })) };
+    const { activated, instance: first, root } = helper(firstExecutor);
+    await activated;
+    const second = createSandboxHelper({
+      config: {
+        hostId: 'dedicated-1', hostEpoch: 1, imageDigest: 'sha256:fixed',
+        operationSigningPublicKey: publicKey, attestationSigningPrivateKey: attestationPrivateKey,
+        journalPath: join(root, 'helper.db')
+      },
+      executor: { execute: vi.fn(async () => successfulRuntimeResult()) }
+    });
+    const running = first.execute(signedOperation({ operationId: 'cross-process-running' }));
+    await vi.waitFor(() => expect(firstExecutor.execute).toHaveBeenCalledOnce());
+    let activationSettled = false;
+    const activation = second.activateEpoch(signedActivation({
+      operationId: 'cross-process-activate', hostEpoch: 2,
+      requestDigest: 'cross-process-activation-digest', nonce: 'cross-process-activation-nonce'
+    })).then(result => {
+      activationSettled = true;
+      return result;
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(activationSettled).toBe(false);
+    expect(second.activeEpoch().epoch).toBe(1);
+
+    finish(successfulRuntimeResult());
+    await running;
+    await expect(activation).resolves.toMatchObject({ success: true, activated: true });
+    expect(second.activeEpoch().epoch).toBe(2);
+    first.close();
+    second.close();
+  });
+
   it('blocks new executions once activation is pending', async () => {
     let finishFirst;
     const executor = { execute: vi.fn(operation => operation.operationId === 'running'

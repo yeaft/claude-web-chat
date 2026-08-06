@@ -137,6 +137,8 @@ export const CONFIG = {
     hostAttestationClientCa: process.env.SANDBOX_HOST_ATTESTATION_CLIENT_CA || '',
     hostAttestationBodyLimitBytes:
       parseInt(process.env.SANDBOX_HOST_ATTESTATION_BODY_LIMIT_BYTES, 10) || 64 * 1024,
+    hostAttestationShutdownTimeoutMs:
+      parseInt(process.env.SANDBOX_HOST_ATTESTATION_SHUTDOWN_TIMEOUT_MS, 10) || 1_000,
     helperAttestationPublicKey: process.env.SANDBOX_HELPER_ATTESTATION_PUBLIC_KEY || '',
     hostAttestationMaxSkewMs: parseInt(process.env.SANDBOX_HOST_ATTESTATION_MAX_SKEW_MS, 10) || 30_000,
     imageDigest: process.env.SANDBOX_IMAGE_DIGEST || '',
@@ -228,7 +230,8 @@ export function isEmailConfigured() {
 export function getUserByUsername(username) {
   // Query database first (includes migrated, registered, and SSO-only users).
   const dbUser = userDb.getByUsername(username);
-  if (dbUser?.deletion_state === 'active' || (dbUser && !dbUser.deletion_state)) {
+  if (dbUser) {
+    if (dbUser.deletion_state && dbUser.deletion_state !== 'active') return null;
     return {
       username: dbUser.username,
       passwordHash: dbUser.password_hash || null,
@@ -239,7 +242,7 @@ export function getUserByUsername(username) {
       id: dbUser.id
     };
   }
-  // Fallback to CONFIG.users (only relevant before first migration)
+  // Fallback to CONFIG.users only when no authoritative database row exists.
   return CONFIG.users.find(u => u.username === username) || null;
 }
 

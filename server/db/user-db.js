@@ -8,7 +8,15 @@ function deletionRequestDigest() {
 function ensureDeletionRemoval(userId, deletionId, now = Date.now()) {
   const sandbox = db.prepare('SELECT * FROM sandboxes WHERE user_id = ? AND reservation_held = 1').get(userId);
   if (!sandbox) return null;
-  const key = `account-delete:${deletionId}`;
+  const baseKey = `account-delete:${deletionId}`;
+  const attempts = db.prepare(`
+    SELECT * FROM sandbox_operations
+    WHERE user_id = ? AND (idempotency_key = ? OR idempotency_key LIKE ?)
+    ORDER BY created_at DESC, rowid DESC
+  `).all(userId, baseKey, `${baseKey}:attempt:%`);
+  const latest = attempts[0];
+  if (latest && latest.status !== 'failed') return latest;
+  const key = attempts.length === 0 ? baseKey : `${baseKey}:attempt:${attempts.length + 1}`;
   const existing = db.prepare('SELECT * FROM sandbox_operations WHERE user_id = ? AND idempotency_key = ?')
     .get(userId, key);
   if (existing) return existing;
@@ -61,7 +69,7 @@ export const userDb = {
   migrateUser(username, passwordHash, email, role = 'admin') {
     const existing = stmts.getUserByUsername.get(username);
     if (existing) {
-      if (existing.password_hash) {
+      if ((existing.deletion_state && existing.deletion_state !== 'active') || existing.password_hash) {
         return existing;
       }
       const newSecret = generateAgentSecret();

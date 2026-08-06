@@ -1,5 +1,6 @@
 import { X509Certificate } from 'crypto';
 import { request } from 'https';
+import { connect as connectTls } from 'tls';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -78,19 +79,20 @@ const baseConfig = {
   hostAttestationServerKey: SERVER_KEY_PEM,
   hostAttestationClientCa: CA_PEM,
   hostAttestationBodyLimitBytes: 128,
+  hostAttestationShutdownTimeoutMs: 50,
   controllerAttestationFingerprint: fingerprint
 };
 
 function send(options = {}) {
   const {
-    path = '/api/sandbox/hosts/attest', body = '{}'
+    path = '/api/sandbox/hosts/attest', body = '{}', contentType = 'application/json'
   } = options;
   const cert = Object.hasOwn(options, 'cert') ? options.cert : CLIENT_PEM;
   const key = Object.hasOwn(options, 'key') ? options.key : CLIENT_KEY_PEM;
   return new Promise((resolve, reject) => {
     const requestOptions = {
       host: '127.0.0.1', port, path, method: 'POST', ca: CA_PEM,
-      headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }
+      headers: { 'content-type': contentType, 'content-length': Buffer.byteLength(body) }
     };
     if (cert) requestOptions.cert = cert;
     if (key) requestOptions.key = key;
@@ -151,6 +153,35 @@ describe('sandbox Host attestation mTLS listener', () => {
     await expect(send({ cert: null, key: null })).rejects.toThrow();
   });
 
+  it('rejects an unpinned peer before waiting for its body', async () => {
+    const socket = connectTls({
+      host: '127.0.0.1', port, ca: CA_PEM, cert: OTHER_PEM, key: OTHER_KEY_PEM,
+      servername: 'localhost'
+    });
+    await new Promise((resolve, reject) => {
+      socket.once('secureConnect', resolve);
+      socket.once('error', reject);
+    });
+    socket.write([
+      'POST /api/sandbox/hosts/attest HTTP/1.1',
+      `Host: 127.0.0.1:${port}`,
+      'Content-Type: application/json',
+      'Content-Length: 100',
+      'Connection: close', '', ''
+    ].join('\r\n'));
+    const response = await Promise.race([
+      new Promise((resolve, reject) => {
+        let data = '';
+        socket.setEncoding('utf8');
+        socket.on('data', chunk => { data += chunk; });
+        socket.once('end', () => resolve(data));
+        socket.once('error', reject);
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('listener waited for body')), 500))
+    ]);
+    expect(response).toContain('401 Unauthorized');
+  });
+
   it('enforces the dedicated JSON body limit before invoking the handler', async () => {
     const callsBefore = handler.mock.calls.length;
     await expect(send({ body: JSON.stringify({ padding: 'x'.repeat(256) }) })).resolves.toMatchObject({
@@ -158,6 +189,45 @@ describe('sandbox Host attestation mTLS listener', () => {
       body: expect.stringContaining('SANDBOX_ATTESTATION_BODY_TOO_LARGE')
     });
     expect(handler).toHaveBeenCalledTimes(callsBefore);
+  });
+
+  it('enforces the body byte limit for non-JSON content types', async () => {
+    const callsBefore = handler.mock.calls.length;
+    await expect(send({ body: 'x'.repeat(256), contentType: 'text/plain' })).resolves.toMatchObject({
+      status: 413,
+      body: expect.stringContaining('SANDBOX_ATTESTATION_BODY_TOO_LARGE')
+    });
+    expect(handler).toHaveBeenCalledTimes(callsBefore);
+  });
+
+  it('closes within its local deadline with a partial request open', async () => {
+    const dedicated = createSandboxAttestationListener({ config: baseConfig, handler });
+    await new Promise((resolve, reject) => {
+      dedicated.once('error', reject);
+      dedicated.listen(0, '127.0.0.1', resolve);
+    });
+    const dedicatedPort = dedicated.address().port;
+    const socket = connectTls({
+      host: '127.0.0.1', port: dedicatedPort, ca: CA_PEM, cert: CLIENT_PEM,
+      key: CLIENT_KEY_PEM, servername: 'localhost'
+    });
+    await new Promise((resolve, reject) => {
+      socket.once('secureConnect', resolve);
+      socket.once('error', reject);
+    });
+    socket.write([
+      'POST /api/sandbox/hosts/attest HTTP/1.1',
+      `Host: 127.0.0.1:${dedicatedPort}`,
+      'Content-Type: application/json',
+      'Content-Length: 100', '', '{'
+    ].join('\r\n'));
+
+    const socketClosed = new Promise(resolve => socket.once('close', resolve));
+    const startedAt = Date.now();
+    await expect(closeSandboxAttestationListener(dedicated)).resolves.toBeUndefined();
+    await socketClosed;
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    expect(socket.destroyed).toBe(true);
   });
 
   it('does not register Host attestation on the public sandbox routes', () => {

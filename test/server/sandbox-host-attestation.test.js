@@ -1,8 +1,10 @@
 import { createHmac } from 'crypto';
+import { spawnSync } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { DatabaseSync } from 'node:sqlite';
 
 const dataDir = mkdtempSync(join(tmpdir(), 'yeaft-sandbox-host-'));
 process.env.SERVER_DATA_DIR = dataDir;
@@ -61,6 +63,63 @@ function signedAttestation(overrides = {}, key = 'host-attestation-secret') {
 }
 
 describe('sandbox Host qualification attestation', () => {
+  it('rebuilds legacy TEXT-affinity epoch tables with integer values', () => {
+    const legacyDir = mkdtempSync(join(tmpdir(), 'yeaft-sandbox-legacy-epoch-'));
+    try {
+      const legacyPath = join(legacyDir, 'webchat.db');
+      const legacy = new DatabaseSync(legacyPath);
+      legacy.exec(`
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE sandbox_hosts (
+          id TEXT PRIMARY KEY, epoch TEXT NOT NULL, qualified INTEGER NOT NULL DEFAULT 0,
+          controller_healthy INTEGER NOT NULL DEFAULT 0, helper_healthy INTEGER NOT NULL DEFAULT 0,
+          runtime_healthy INTEGER NOT NULL DEFAULT 0, quota_healthy INTEGER NOT NULL DEFAULT 0,
+          network_healthy INTEGER NOT NULL DEFAULT 0, image_digest TEXT NOT NULL,
+          cpu_millis_total INTEGER NOT NULL, memory_mib_total INTEGER NOT NULL,
+          memory_mib_available INTEGER NOT NULL, disk_gib_total INTEGER NOT NULL, updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE sandbox_host_attestations (
+          nonce TEXT PRIMARY KEY, host_id TEXT NOT NULL REFERENCES sandbox_hosts(id) ON DELETE CASCADE,
+          epoch TEXT NOT NULL, observed_at INTEGER NOT NULL, created_at INTEGER NOT NULL
+        );
+        CREATE TABLE sandbox_host_audit_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, host_id TEXT NOT NULL, epoch TEXT NOT NULL,
+          event_type TEXT NOT NULL, outcome TEXT NOT NULL, error_code TEXT, created_at INTEGER NOT NULL
+        );
+        INSERT INTO sandbox_hosts VALUES
+          ('legacy-host', '10.0', 1, 1, 1, 1, 1, 1, 'sha256:fixed', 2000, 4096, 3072, 40, 1);
+        INSERT INTO sandbox_host_attestations VALUES ('legacy-nonce', 'legacy-host', '10.0', 1, 1);
+        INSERT INTO sandbox_host_audit_events
+          (host_id, epoch, event_type, outcome, created_at)
+          VALUES ('legacy-host', '10.0', 'legacy', 'accepted', 1);
+      `);
+      legacy.close();
+
+      const loaded = spawnSync(process.execPath, ['--input-type=module', '-e',
+        "await import('./server/db/connection.js')"], {
+        cwd: process.cwd(),
+        env: { ...process.env, SERVER_DATA_DIR: legacyDir },
+        encoding: 'utf8'
+      });
+      expect(loaded.stderr).toBe('');
+      expect(loaded.status).toBe(0);
+
+      const migrated = new DatabaseSync(legacyPath);
+      expect(migrated.prepare("PRAGMA table_info('sandbox_hosts')").all()
+        .find(column => column.name === 'epoch')?.type).toBe('INTEGER');
+      expect(migrated.prepare("PRAGMA table_info('sandbox_host_attestations')").all()
+        .find(column => column.name === 'epoch')?.type).toBe('INTEGER');
+      expect(migrated.prepare("PRAGMA table_info('sandbox_host_audit_events')").all()
+        .find(column => column.name === 'epoch')?.type).toBe('INTEGER');
+      expect(migrated.prepare(`
+        SELECT epoch, typeof(epoch) AS storage_type FROM sandbox_hosts WHERE id = 'legacy-host'
+      `).get()).toEqual({ epoch: 11, storage_type: 'integer' });
+      migrated.close();
+    } finally {
+      rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+
   it('registers only a correctly scoped, signed, fully healthy dedicated Host', () => {
     const result = registerSandboxHostAttestation(signedAttestation(), config(), 100_500);
 

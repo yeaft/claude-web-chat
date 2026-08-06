@@ -6,7 +6,7 @@ import { registerAuthRoutes } from '../../server/routes/auth-routes.js';
 import { logout, verifyToken } from '../../server/auth/token.js';
 import { generateSessionKey } from '../../server/encryption.js';
 import { activeSessions, revokedTokens } from '../../server/auth/session-store.js';
-import { getUserByUsername } from '../../server/config.js';
+import { CONFIG, getUserByUsername } from '../../server/config.js';
 import { userDb } from '../../server/database.js';
 
 const createdUserIds = [];
@@ -76,6 +76,42 @@ describe('session token issuance', () => {
       passwordHash: null,
       role: 'admin',
     });
+  });
+
+  it('does not fall back to configured credentials for a pending database user', () => {
+    const user = createSsoOnlyUser('pending-config-user');
+    CONFIG.users.push({
+      username: user.username,
+      passwordHash: 'configured-password-hash',
+      email: 'pending-config-user@example.test'
+    });
+    userDb.beginDeletion(user.id);
+
+    expect(getUserByUsername(user.username)).toBeNull();
+
+    CONFIG.users.splice(CONFIG.users.findIndex(candidate => candidate.username === user.username), 1);
+  });
+
+  it('never restores configured credentials when migration sees a deleted database user', () => {
+    const user = createSsoOnlyUser('deleted-config-user');
+    userDb.beginDeletion(user.id);
+    const deleted = userDb.get(user.id);
+    createdUserIds.splice(createdUserIds.indexOf(user.id), 1);
+
+    expect(userDb.migrateUser(
+      user.username, 'restored-password-hash', 'restored@example.test', 'admin'
+    )).toMatchObject({
+      deletion_state: 'pending',
+      password_hash: null,
+      agent_secret: null
+    });
+    expect(userDb.get(user.id)).toMatchObject({
+      deletion_id: deleted.deletion_id,
+      password_hash: null,
+      agent_secret: null
+    });
+
+    userDb.deleteUser(user.id, { requirePending: true });
   });
 
   it('preserves SSO-only user roles when verifying a freshly issued JWT', async () => {

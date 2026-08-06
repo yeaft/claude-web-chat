@@ -157,6 +157,7 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
   };
   mkdirSync(dirname(effectiveConfig.journalPath), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(effectiveConfig.journalPath);
+  const epochLockDb = new DatabaseSync(`${effectiveConfig.journalPath}.epoch-lock`);
   db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = FULL;
@@ -175,6 +176,16 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
       updated_at INTEGER NOT NULL
     );
   `);
+  epochLockDb.exec(`
+    PRAGMA journal_mode = DELETE;
+    PRAGMA synchronous = FULL;
+    PRAGMA busy_timeout = 0;
+    CREATE TABLE IF NOT EXISTS helper_epoch_lock (
+      id INTEGER PRIMARY KEY CHECK(id = 1),
+      holder TEXT
+    );
+    INSERT OR IGNORE INTO helper_epoch_lock(id, holder) VALUES (1, NULL);
+  `);
   const operationColumns = db.prepare('PRAGMA table_info(helper_operations)').all();
   if (!operationColumns.some(column => column.name === 'sandbox_id')) {
     db.exec('ALTER TABLE helper_operations ADD COLUMN sandbox_id TEXT');
@@ -187,6 +198,22 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
   let executionWaiter = null;
   let queuedActivations = 0;
   let activationTail = Promise.resolve();
+
+  async function acquireEpochLock() {
+    while (true) {
+      try {
+        epochLockDb.exec('BEGIN IMMEDIATE');
+        return;
+      } catch (error) {
+        if (!String(error?.message || '').includes('database is locked')) throw error;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    }
+  }
+
+  function releaseEpochLock() {
+    epochLockDb.exec('COMMIT');
+  }
 
   function activeEpoch() {
     const storedEpoch = db.prepare("SELECT value FROM helper_state WHERE key = 'active_epoch'").get()?.value;
@@ -221,23 +248,28 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
     const activation = activationTail.then(async () => {
       try {
         if (executing > 0) await new Promise(resolve => { executionWaiter = resolve; });
-        const current = activeEpoch();
-        if (current?.epoch === epoch) {
-          if (current.digest !== digest) throw new Error('Sandbox Helper rejected conflicting epoch activation');
-          return buildAttestation(operation, { success: true, activated: false }, effectiveConfig, now());
-        }
-        if (current && epoch < current.epoch) {
-          throw new Error('Sandbox Helper rejected epoch rollback');
-        }
-        db.exec('BEGIN IMMEDIATE');
+        await acquireEpochLock();
         try {
-          writeActiveEpoch(epoch, digest);
-          db.exec('COMMIT');
-        } catch (error) {
-          db.exec('ROLLBACK');
-          throw error;
+          const current = activeEpoch();
+          if (current?.epoch === epoch) {
+            if (current.digest !== digest) throw new Error('Sandbox Helper rejected conflicting epoch activation');
+            return buildAttestation(operation, { success: true, activated: false }, effectiveConfig, now());
+          }
+          if (current && epoch < current.epoch) {
+            throw new Error('Sandbox Helper rejected epoch rollback');
+          }
+          db.exec('BEGIN IMMEDIATE');
+          try {
+            writeActiveEpoch(epoch, digest);
+            db.exec('COMMIT');
+          } catch (error) {
+            db.exec('ROLLBACK');
+            throw error;
+          }
+          return buildAttestation(operation, { success: true, activated: true }, effectiveConfig, now());
+        } finally {
+          releaseEpochLock();
         }
-        return buildAttestation(operation, { success: true, activated: true }, effectiveConfig, now());
       } finally {
         queuedActivations--;
       }
@@ -276,14 +308,22 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
     if (operation?.action === 'ACTIVATE_EPOCH') return activateEpoch(operation);
     validateOperation(operation, effectiveConfig, now());
     while (queuedActivations > 0) await activationTail;
+    await acquireEpochLock();
     const epoch = activeEpoch();
     if (!epoch || operation.hostEpoch !== epoch.epoch) {
+      releaseEpochLock();
       throw new Error('Sandbox Helper rejected an inactive Host epoch');
     }
-    assertAvailable(operation);
+    try {
+      assertAvailable(operation);
+    } catch (error) {
+      releaseEpochLock();
+      throw error;
+    }
     const requestDigest = digestOperation(operation);
     const existing = db.prepare('SELECT * FROM helper_operations WHERE operation_id = ?').get(operation.operationId);
     if (existing) {
+      releaseEpochLock();
       if (existing.request_digest !== requestDigest) {
         throw new Error('Sandbox Helper rejected operation ID reuse with a different request');
       }
@@ -303,6 +343,7 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');
+      releaseEpochLock();
       throw error;
     }
 
@@ -326,6 +367,7 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
         .run(status, JSON.stringify(result), now(), operation.operationId);
       return result;
     } finally {
+      releaseEpochLock();
       executing--;
       if (executing === 0 && executionWaiter) {
         const resolve = executionWaiter;
@@ -335,7 +377,10 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
     }
   }
 
-  return { execute, activateEpoch, activeEpoch, close: () => db.close() };
+  return { execute, activateEpoch, activeEpoch, close: () => {
+    db.close();
+    epochLockDb.close();
+  } };
 }
 
 export { canonicalOperation };

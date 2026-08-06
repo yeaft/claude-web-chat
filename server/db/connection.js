@@ -533,7 +533,8 @@ for (const host of unmigratedSandboxHosts) {
     JOIN sandboxes s ON s.id = o.sandbox_id WHERE s.host_id = ?
   `).all(host.id)) values.push(row.epoch);
   const observed = values.map(value => {
-    if (Number.isSafeInteger(value) && value >= 1) return value;
+    const numeric = Number(value);
+    if (Number.isSafeInteger(numeric) && numeric >= 1) return numeric;
     const match = String(value || '').match(/(\d+)$/);
     return match ? Number(match[1]) : 0;
   }).filter(value => Number.isSafeInteger(value) && value >= 1);
@@ -562,6 +563,114 @@ for (const host of unmigratedSandboxHosts) {
   } catch (error) {
     try { db.exec('ROLLBACK'); } catch {}
     throw error;
+  }
+}
+
+// SQLite keeps the affinity from the original CREATE TABLE. Rebuild legacy
+// sandbox tables so epoch values are stored and compared as integers, rather
+// than merely writing numeric-looking values into TEXT-affinity columns.
+const sandboxEpochTableRebuilds = [
+  {
+    table: 'sandbox_hosts', column: 'epoch',
+    create: `CREATE TABLE sandbox_hosts (
+      id TEXT PRIMARY KEY, epoch INTEGER NOT NULL, qualified INTEGER NOT NULL DEFAULT 0,
+      controller_healthy INTEGER NOT NULL DEFAULT 0, helper_healthy INTEGER NOT NULL DEFAULT 0,
+      runtime_healthy INTEGER NOT NULL DEFAULT 0, quota_healthy INTEGER NOT NULL DEFAULT 0,
+      network_healthy INTEGER NOT NULL DEFAULT 0, image_digest TEXT NOT NULL,
+      cpu_millis_total INTEGER NOT NULL, memory_mib_total INTEGER NOT NULL,
+      memory_mib_available INTEGER NOT NULL, disk_gib_total INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    )`,
+    columns: 'id, epoch, qualified, controller_healthy, helper_healthy, runtime_healthy, quota_healthy, network_healthy, image_digest, cpu_millis_total, memory_mib_total, memory_mib_available, disk_gib_total, updated_at',
+    select: 'id, CAST(epoch AS INTEGER), qualified, controller_healthy, helper_healthy, runtime_healthy, quota_healthy, network_healthy, image_digest, cpu_millis_total, memory_mib_total, memory_mib_available, disk_gib_total, updated_at',
+    indexes: ['CREATE INDEX IF NOT EXISTS idx_sandboxes_host_reservation ON sandboxes(host_id, reservation_held)']
+  },
+  {
+    table: 'sandbox_host_attestations', column: 'epoch',
+    create: `CREATE TABLE sandbox_host_attestations (
+      nonce TEXT PRIMARY KEY, host_id TEXT NOT NULL REFERENCES sandbox_hosts(id) ON DELETE CASCADE,
+      epoch INTEGER NOT NULL, observed_at INTEGER NOT NULL, created_at INTEGER NOT NULL
+    )`,
+    columns: 'nonce, host_id, epoch, observed_at, created_at',
+    select: 'nonce, host_id, CAST(epoch AS INTEGER), observed_at, created_at',
+    indexes: ['CREATE INDEX IF NOT EXISTS idx_sandbox_host_attestations_host ON sandbox_host_attestations(host_id, created_at DESC)']
+  },
+  {
+    table: 'sandbox_host_audit_events', column: 'epoch',
+    create: `CREATE TABLE sandbox_host_audit_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, host_id TEXT NOT NULL, epoch INTEGER NOT NULL,
+      event_type TEXT NOT NULL, outcome TEXT NOT NULL, error_code TEXT, created_at INTEGER NOT NULL
+    )`,
+    columns: 'id, host_id, epoch, event_type, outcome, error_code, created_at',
+    select: 'id, host_id, CAST(epoch AS INTEGER), event_type, outcome, error_code, created_at',
+    indexes: ['CREATE INDEX IF NOT EXISTS idx_sandbox_host_audit_created ON sandbox_host_audit_events(host_id, created_at DESC, id DESC)']
+  },
+  {
+    table: 'sandboxes', column: 'host_epoch',
+    create: `CREATE TABLE sandboxes (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      host_id TEXT NOT NULL REFERENCES sandbox_hosts(id) ON DELETE RESTRICT, host_epoch INTEGER NOT NULL,
+      agent_name TEXT NOT NULL, size_id TEXT NOT NULL, cpu_millis INTEGER NOT NULL,
+      memory_mib INTEGER NOT NULL, disk_gib INTEGER NOT NULL, desired_state TEXT NOT NULL,
+      observed_state TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1, instance_id TEXT NOT NULL,
+      image_digest TEXT NOT NULL, reservation_held INTEGER NOT NULL DEFAULT 1, last_error_code TEXT,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, removed_at INTEGER
+    )`,
+    columns: 'id, user_id, host_id, host_epoch, agent_name, size_id, cpu_millis, memory_mib, disk_gib, desired_state, observed_state, generation, instance_id, image_digest, reservation_held, last_error_code, created_at, updated_at, removed_at',
+    select: 'id, user_id, host_id, CAST(host_epoch AS INTEGER), agent_name, size_id, cpu_millis, memory_mib, disk_gib, desired_state, observed_state, generation, instance_id, image_digest, reservation_held, last_error_code, created_at, updated_at, removed_at',
+    indexes: [
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_sandboxes_active_user ON sandboxes(user_id) WHERE reservation_held = 1',
+      'CREATE INDEX IF NOT EXISTS idx_sandboxes_host_reservation ON sandboxes(host_id, reservation_held)'
+    ]
+  },
+  {
+    table: 'sandbox_operations', column: 'host_epoch',
+    create: `CREATE TABLE sandbox_operations (
+      id TEXT PRIMARY KEY, sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, idempotency_key TEXT NOT NULL,
+      request_digest TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, stage TEXT NOT NULL,
+      generation INTEGER NOT NULL, host_epoch INTEGER NOT NULL, deadline_at INTEGER NOT NULL,
+      error_code TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      UNIQUE(user_id, idempotency_key)
+    )`,
+    columns: 'id, sandbox_id, user_id, idempotency_key, request_digest, kind, status, stage, generation, host_epoch, deadline_at, error_code, created_at, updated_at',
+    select: 'id, sandbox_id, user_id, idempotency_key, request_digest, kind, status, stage, generation, CAST(host_epoch AS INTEGER), deadline_at, error_code, created_at, updated_at',
+    indexes: ["CREATE UNIQUE INDEX IF NOT EXISTS idx_sandbox_operations_active ON sandbox_operations(sandbox_id) WHERE status IN ('pending', 'running')"]
+  },
+  {
+    table: 'sandbox_audit_events', column: 'host_epoch',
+    create: `CREATE TABLE sandbox_audit_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, operation_id TEXT,
+      event_type TEXT NOT NULL, actor_kind TEXT NOT NULL, generation INTEGER NOT NULL,
+      host_epoch INTEGER NOT NULL, outcome TEXT NOT NULL, error_code TEXT, created_at INTEGER NOT NULL
+    )`,
+    columns: 'id, sandbox_id, user_id, operation_id, event_type, actor_kind, generation, host_epoch, outcome, error_code, created_at',
+    select: 'id, sandbox_id, user_id, operation_id, event_type, actor_kind, generation, CAST(host_epoch AS INTEGER), outcome, error_code, created_at',
+    indexes: ['CREATE INDEX IF NOT EXISTS idx_sandbox_audit_sandbox_created ON sandbox_audit_events(sandbox_id, created_at, id)']
+  }
+];
+
+for (const rebuild of sandboxEpochTableRebuilds) {
+  const affinity = db.prepare(`PRAGMA table_info(${rebuild.table})`).all()
+    .find(column => column.name === rebuild.column)?.type?.toUpperCase();
+  if (affinity === 'INTEGER') continue;
+  const legacyTable = `${rebuild.table}_legacy_epoch`;
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec('PRAGMA legacy_alter_table = ON');
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec(`ALTER TABLE ${rebuild.table} RENAME TO ${legacyTable}`);
+    db.exec(rebuild.create);
+    db.exec(`INSERT INTO ${rebuild.table} (${rebuild.columns}) SELECT ${rebuild.select} FROM ${legacyTable}`);
+    db.exec(`DROP TABLE ${legacyTable}`);
+    for (const index of rebuild.indexes) db.exec(index);
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch {}
+    throw error;
+  } finally {
+    db.exec('PRAGMA legacy_alter_table = OFF');
+    db.exec('PRAGMA foreign_keys = ON');
   }
 }
 

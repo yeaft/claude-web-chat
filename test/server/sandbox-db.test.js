@@ -302,6 +302,60 @@ describe('sandbox control-plane reservation', () => {
     expect(db.prepare('SELECT id FROM sandboxes WHERE id = ?').get(created.snapshot.id)).toBeUndefined();
   });
 
+  it('retries failed and timed-out account-deletion Removes with durable attempt keys', () => {
+    addQualifiedHost({ id: 'host-account-delete-retry', epoch: 1, cpu: 10000, memory: 20000, disk: 200 });
+    const user = userDb.getOrCreate('sandbox-account-delete-retry');
+    entitle(user.id);
+    sandboxDb.create(user.id, {
+      agentName: 'Account Delete Retry', sizeId: 'small', idempotencyKey: 'account-delete-retry-create'
+    }, sandboxConfig({ maxReservedSandboxes: 20 }));
+
+    const deletion = userDb.beginDeletion(user.id, 10_000);
+    const first = db.prepare(`
+      SELECT * FROM sandbox_operations WHERE user_id = ? AND kind = 'remove'
+      ORDER BY created_at, id
+    `).all(user.id)[0];
+    db.prepare("UPDATE sandbox_operations SET status = 'failed', error_code = 'SANDBOX_RUNTIME_FAILED' WHERE id = ?")
+      .run(first.id);
+
+    userDb.reconcilePendingDeletions(11_000);
+    const afterFailure = db.prepare(`
+      SELECT * FROM sandbox_operations WHERE user_id = ? AND kind = 'remove'
+      ORDER BY created_at, id
+    `).all(user.id);
+    expect(afterFailure).toHaveLength(2);
+    expect(afterFailure[1]).toMatchObject({ status: 'pending', stage: 'removing' });
+    expect(afterFailure[1].idempotency_key).toBe(`account-delete:${deletion.deletionId}:attempt:2`);
+    expect(afterFailure[1].id).not.toBe(first.id);
+
+    db.prepare(`
+      UPDATE sandbox_operations SET status = 'running', deadline_at = ?, updated_at = ? WHERE id = ?
+    `).run(11_500, 11_000, afterFailure[1].id);
+    sandboxDb.listPendingOperations(12_000);
+    expect(db.prepare('SELECT status FROM sandbox_operations WHERE id = ?').get(afterFailure[1].id))
+      .toEqual({ status: 'failed' });
+
+    userDb.reconcilePendingDeletions(13_000);
+    const afterTimeout = db.prepare(`
+      SELECT * FROM sandbox_operations WHERE user_id = ? AND kind = 'remove'
+      ORDER BY created_at, id
+    `).all(user.id);
+    expect(afterTimeout).toHaveLength(3);
+    expect(afterTimeout[2]).toMatchObject({
+      idempotency_key: `account-delete:${deletion.deletionId}:attempt:3`,
+      status: 'pending',
+      stage: 'removing'
+    });
+
+    userDb.reconcilePendingDeletions(14_000);
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM sandbox_operations WHERE user_id = ? AND kind = 'remove'
+    `).get(user.id).count).toBe(3);
+
+    db.prepare('DELETE FROM sandboxes WHERE user_id = ?').run(user.id);
+    userDb.deleteUser(user.id);
+  });
+
   it('does not enter Running without per-Sandbox network isolation proof', () => {
     addQualifiedHost({ id: 'host-network-proof', cpu: 10000, memory: 20000, disk: 200 });
     const user = userDb.getOrCreate('sandbox-network-proof');
