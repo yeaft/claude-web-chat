@@ -297,7 +297,14 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
   const idleAbandonMs = typeof deps.idleAbandonMs === 'number' && deps.idleAbandonMs > 0
     ? deps.idleAbandonMs : IDLE_ABANDON_MS;
 
-  const wrapEvt = (evt) => ({ ...evt, agentId: agent.id, agentName: agent.name });
+  const wrapEvt = (evt) => ({
+    ...evt,
+    agentId: agent.id,
+    agentName: agent.name,
+    parentSessionId: agent.parentSessionId || deps.parentSessionId || null,
+    parentVpId: agent.parentVpId || deps.parentVpId || null,
+    parentThreadId: agent.parentThreadId || deps.parentThreadId || 'main',
+  });
   let lastTaskLogRefreshAt = 0;
   const refreshTaskLog = ({ force = false } = {}) => {
     if (!agent.taskId || !deps.taskManager || !agent.parentSessionId) return;
@@ -599,6 +606,9 @@ function finalizeTerminal(agent, status, { error, deps } = {}) {
     agentName: agent.name,
     status,
     error: error || agent.error || null,
+    parentSessionId: agent.parentSessionId || deps?.parentSessionId || null,
+    parentVpId: agent.parentVpId || deps?.parentVpId || null,
+    parentThreadId: agent.parentThreadId || deps?.parentThreadId || 'main',
   };
   try { agent.outputLog?.write(evt); } catch { /* ignore */ }
   if (agent.taskId && deps?.taskManager && agent.parentSessionId) {

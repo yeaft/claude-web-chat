@@ -4533,6 +4533,12 @@ export class Engine {
     return this.#currentThreadId || MAIN_THREAD_ID;
   }
 
+  /** Stable owner scope for external exactly-once task coordinators. */
+  get sessionId() { return this.#sessionId; }
+
+  /** Stable owner scope for external exactly-once task coordinators. */
+  get vpId() { return this.#vpId; }
+
   /**
    * Append a user message into the currently running query. The loop consumes
    * it only at adapter boundaries, never mid-token and never between an

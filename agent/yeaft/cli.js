@@ -38,8 +38,16 @@ import { ConversationStore } from './conversation/persist.js';
 import { snapshotSessions } from './sessions/session-crud.js';
 import { loadSessionConfig, resolveSessionConfig } from './sessions/session-config.js';
 import { validateSessionId } from './sessions/ids.js';
-import { createJsonlWriter, JsonlInput, runStreamTurn, runStreamSessionTurn } from './stdio-protocol.js';
+import {
+  createJsonlWriter,
+  JsonlInput,
+  normalizeStreamRoutingIntent,
+  runStreamTurn,
+  runStreamSessionTurn,
+} from './stdio-protocol.js';
 import { createCliSessionRunner } from './cli-session-runner.js';
+import { emitStreamTaskEvent, taskResultReentryContext } from './tasks/result-delivery.js';
+import { buildStreamSubAgentFrame } from './sub-agent/public-event.js';
 import {
   cleanupManagedCliRuntimePaths,
   ensureManagedCliTools,
@@ -816,6 +824,34 @@ async function runREPL(config, args) {
 
 // ─── Structured stdio handler ──────────────────────────────────
 
+function writeStreamProtocolError({ write, sessionId, error }) {
+  const turnId = randomUUID();
+  const normalized = error instanceof Error ? error : new Error(String(error || 'Unknown error'));
+  write({
+    type: 'error',
+    session_id: sessionId,
+    turn_id: turnId,
+    thread_id: 'main',
+    threadId: 'main',
+    error: { name: normalized.name || 'Error', message: normalized.message || String(normalized) },
+    retryable: false,
+  });
+  const result = {
+    type: 'result',
+    subtype: 'error',
+    session_id: sessionId,
+    turn_id: turnId,
+    thread_id: 'main',
+    threadId: 'main',
+    stop_reason: 'error',
+    is_error: true,
+    result: '',
+    error: normalized.message || String(normalized),
+  };
+  write(result);
+  return result;
+}
+
 async function runStreamJson(config, args) {
   const sessionId = args.sessionId || `session_cli_${randomUUID()}`;
   const validation = validateSessionId(sessionId);
@@ -854,8 +890,103 @@ async function runStreamJson(config, args) {
     managedCliReady: args.managedCliReady,
   });
   const { engine, conversationStore, skillManager, toolRegistry } = loaded;
-  const sessionRunner = createCliSessionRunner({ loaded, sessionId, workDir });
   const todoState = { value: [] };
+  const asyncTaskOwners = new Map();
+  const rescuedTaskIds = new Set();
+  const pendingTaskRescues = new Set();
+  let sessionRunner = null;
+  let hadError = false;
+
+  const rescueTaskResult = async (context) => {
+    const taskId = context?.task?.id;
+    if (!taskId || !context?.vpId || !context?.content || rescuedTaskIds.has(taskId) || !sessionRunner) return false;
+    rescuedTaskIds.add(taskId);
+    try {
+      const result = await runStreamSessionTurn({
+        runner: sessionRunner,
+        prompt: context.content,
+        sessionId,
+        workDir,
+        model: loaded.config.model,
+        modelEffort: loaded.config.modelEffort || null,
+        input,
+        write,
+        internal: true,
+        taskId,
+        meta: {
+          injectedBy: 'task_result',
+          routeTargetVpId: context.vpId,
+          threadId: context.threadId || 'main',
+        },
+        routingIntent: { targetVpIds: [context.vpId], explicit: true },
+      });
+      hadError ||= result?.is_error === true;
+      return true;
+    } catch (error) {
+      hadError = true;
+      writeStreamProtocolError({ write, sessionId, error });
+      return false;
+    }
+  };
+
+  const queueTaskRescue = (context) => {
+    let rescue;
+    rescue = rescueTaskResult(context).finally(() => pendingTaskRescues.delete(rescue));
+    pendingTaskRescues.add(rescue);
+    return rescue;
+  };
+
+  const configureStreamEngine = (targetEngine, vpId = null) => {
+    if (!targetEngine) return;
+    if (typeof targetEngine.setAsyncTaskCoordinator === 'function') {
+      const removeOwner = (taskId, ownerEngine) => {
+        const owner = asyncTaskOwners.get(taskId);
+        if (!owner || owner.engine !== ownerEngine) return null;
+        asyncTaskOwners.delete(taskId);
+        return owner;
+      };
+      targetEngine.setAsyncTaskCoordinator({
+        onRegister(taskId, ownerEngine) {
+          if (!taskId) return;
+          asyncTaskOwners.set(taskId, {
+            engine: ownerEngine,
+            sessionId,
+            vpId: vpId || null,
+            threadId: ownerEngine.currentThreadId || 'main',
+          });
+        },
+        onUnregister: removeOwner,
+        onConsumed: removeOwner,
+        onDeferred(taskId, ownerEngine) {
+          const owner = removeOwner(taskId, ownerEngine);
+          const task = loaded.taskManager?.getTask?.(sessionId, taskId);
+          if (!owner || !task || !['succeeded', 'failed', 'cancelled', 'orphaned'].includes(task.status)) return;
+          const context = taskResultReentryContext({ event: 'completed', task }, { sessionId, owner });
+          if (context) queueTaskRescue(context);
+        },
+        onUndelivered(taskId, delivery, ownerEngine) {
+          const owner = removeOwner(taskId, ownerEngine);
+          if (!owner || rescuedTaskIds.has(taskId)) return;
+          queueTaskRescue({
+            task: { id: taskId, kind: delivery?.taskKind, status: delivery?.taskStatus },
+            sessionId: delivery?.sessionId || owner.sessionId,
+            vpId: delivery?.vpId || owner.vpId,
+            threadId: delivery?.threadId || owner.threadId,
+            content: delivery?.content,
+          });
+        },
+      });
+    }
+    if (typeof targetEngine.setSubAgentEventSink === 'function') {
+      targetEngine.setSubAgentEventSink((agentId, event) => {
+        const frame = buildStreamSubAgentFrame({ event, agentId, sessionId, vpId, threadId: targetEngine.currentThreadId });
+        if (frame) write(frame);
+      });
+    }
+  };
+
+  configureStreamEngine(engine, null);
+  sessionRunner = createCliSessionRunner({ loaded, sessionId, workDir, configureEngine: configureStreamEngine });
 
   write({
     type: 'system',
@@ -870,7 +1001,18 @@ async function runStreamJson(config, args) {
     output_format: 'stream-json',
   });
 
-  const runPrompt = async (prompt) => {
+  if (loaded.taskManager && typeof loaded.taskManager.setEventSink === 'function') {
+    loaded.taskManager.setEventSink((event) => {
+      const hadExactOwner = asyncTaskOwners.has(event?.task?.id);
+      const delivery = emitStreamTaskEvent({ event, asyncTaskOwners, write, sessionId });
+      if (!delivery.projected || delivery.delivered || hadExactOwner || event?.event !== 'completed') return;
+      const context = taskResultReentryContext(event, { sessionId });
+      if (context) queueTaskRescue(context);
+    });
+  }
+
+  const runPrompt = async (prompt, message = null) => {
+    const routingIntent = normalizeStreamRoutingIntent(message);
     const priorMessages = conversationStore.loadRecentBySession(sessionId, 20).map(message => ({
       role: message.role,
       content: message.content,
@@ -890,31 +1032,47 @@ async function runStreamJson(config, args) {
       setCurrentTodos: todos => { todoState.value = Array.isArray(todos) ? todos.slice() : []; },
     };
     return sessionRunner
-      ? runStreamSessionTurn({ runner: sessionRunner, ...turnOptions })
+      ? runStreamSessionTurn({ runner: sessionRunner, routingIntent, ...turnOptions })
       : runStreamTurn({ engine, ...turnOptions });
   };
 
-  let hadError = false;
   const recordResult = (result) => {
     hadError ||= result?.is_error === true;
     return result;
   };
   try {
     if (args.prompt) {
-      recordResult(await runPrompt(args.prompt));
+      try {
+        recordResult(await runPrompt(args.prompt));
+      } catch (error) {
+        recordResult(writeStreamProtocolError({ write, sessionId, error }));
+      }
     } else if (input) {
       for (;;) {
         const item = await input.nextPrompt();
         if (!item) break;
-        recordResult(await runPrompt(item.prompt));
+        try {
+          recordResult(await runPrompt(item.prompt, item.message));
+        } catch (error) {
+          recordResult(writeStreamProtocolError({ write, sessionId, error }));
+        }
       }
     } else {
       let prompt = '';
       for await (const chunk of process.stdin) prompt += chunk;
-      if (prompt.trim()) recordResult(await runPrompt(prompt.trim()));
+      if (prompt.trim()) {
+        try {
+          recordResult(await runPrompt(prompt.trim()));
+        } catch (error) {
+          recordResult(writeStreamProtocolError({ write, sessionId, error }));
+        }
+      }
     }
   } finally {
     input?.close();
+    while (pendingTaskRescues.size > 0) {
+      await Promise.allSettled(Array.from(pendingTaskRescues));
+    }
     await sessionRunner?.close();
     await loaded.shutdown();
     console.log = originalConsole.log;

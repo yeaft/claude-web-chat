@@ -97,6 +97,7 @@ import { consumeNotificationForAgent } from './sub-agent/notifications.js';
 import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
 import { recordAgentSessionCreated, recordAgentTurn } from '../metrics.js';
 import { TASK_RESULT_DELIVERY, isTerminalTaskStatus, taskResultDeliveryFor } from './tasks/store.js';
+import { formatTaskResultForVp } from './tasks/result-format.js';
 
 const LEGACY_SKILL_COMMAND_PREFIX = 'skill:';
 const YEAFT_SKILL_COMMAND_PREFIX = 'yeaft-skills:';
@@ -1912,29 +1913,6 @@ function enqueueForVp(sessionId, vpId, envelope) {
   }
   const routePromise = routeEnvelopeToVpThread(sessionId, vpId, envelope);
   registerRoutePromise(envelope?.msg?.id, routePromise);
-}
-
-function formatTaskResultForVp(task) {
-  const result = task?.result || {};
-  const log = task?.log || {};
-  const lines = [
-    `<task-result id="${task.id}" kind="${task.kind}" status="${task.status}">`,
-    `title: ${task.title || task.kind || task.id}`,
-  ];
-  if (task?.runtime?.command) lines.push(`command: ${task.runtime.command}`);
-  if (result.exitCode !== undefined && result.exitCode !== null) lines.push(`exitCode: ${result.exitCode}`);
-  if (result.signal) lines.push(`signal: ${result.signal}`);
-  if (result.error) lines.push(`error: ${result.error}`);
-  if (result.summary) lines.push(`summary: ${result.summary}`);
-  if (log.path) lines.push(`log: ${log.path}`);
-  if (log.preview) {
-    const preview = String(log.preview).slice(-4000);
-    lines.push('logTail:');
-    lines.push(preview.split('\n').map(line => `  ${line}`).join('\n'));
-  }
-  lines.push('</task-result>');
-  lines.push('This is an asynchronous tool result from a background task, not a user message. Consume it now: tell the user the outcome or continue the work. Do not wait for another user turn.');
-  return lines.join('\n');
 }
 
 function scheduleTaskResultRescue({ taskId, sessionId, vpId, threadId = 'main', content, taskKind, taskStatus }) {

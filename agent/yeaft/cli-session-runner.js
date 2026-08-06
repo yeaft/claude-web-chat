@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { Engine } from './engine.js';
 import { createRouter } from './routing/router.js';
 import { createCoordinator } from './sessions/coordinator.js';
+import { resolveMemberId } from './sessions/roster.js';
 import { sessionsRoot } from './sessions/session-crud.js';
 import { openSession, loadSessionMeta } from './sessions/session-store.js';
 import { loadSessionConfig, resolveSessionConfig } from './sessions/session-config.js';
@@ -61,6 +62,7 @@ export function createCliSessionRunner({
   workDir = process.cwd(),
   engineFactory = createCliVpEngine,
   personaFactory = buildVpPersona,
+  configureEngine = null,
 } = {}) {
   if (!loaded || !sessionId) return null;
   const sessionDir = join(sessionsRoot(loaded.yeaftDir), sessionId);
@@ -76,6 +78,7 @@ export function createCliSessionRunner({
     let engine = engines.get(vpId);
     if (!engine) {
       engine = engineFactory(loaded, sessionId, vpId);
+      if (typeof configureEngine === 'function') configureEngine(engine, vpId);
       engines.set(vpId, engine);
     }
     return engine;
@@ -86,8 +89,7 @@ export function createCliSessionRunner({
   const runEnvelope = async (vpId, envelope, options) => {
     const meta = handle.getMeta();
     const engine = engineFor(vpId);
-    const promptText = envelope?.msg?.text || '';
-    const prompt = `@vp-${vpId} ${promptText}`;
+    const prompt = envelope?.msg?.text || '';
     const messages = loaded.conversationStore.loadSessionHistoryForVp(sessionId, vpId);
     const todos = [];
     let resultText = '';
@@ -120,7 +122,7 @@ export function createCliSessionRunner({
         todos.splice(0, todos.length, ...(Array.isArray(next) ? next : []));
       },
       askUser: options.askUser
-        ? request => options.askUser(request, vpId, queryOptions.vpTurnId)
+        ? request => options.askUser(request, vpId, queryOptions.vpTurnId, queryOptions.threadId)
         : null,
       userEffort: options.modelEffort || null,
     };
@@ -151,14 +153,17 @@ export function createCliSessionRunner({
     if (closed) throw new Error('CLI Session runner is closed');
     const turnContext = envelope?._cliTurnContext;
     if (!turnContext) throw new Error('CLI Session envelope is missing its turn context');
+    if (turnContext.claimedVpIds.has(vpId)) {
+      return { ok: false, error: 'target_already_claimed' };
+    }
+    turnContext.claimedVpIds.add(vpId);
     const previous = tails.get(vpId) || Promise.resolve();
     const task = previous.catch(() => {}).then(() => runEnvelope(vpId, envelope, turnContext.options));
     tails.set(vpId, task);
     pending.add(task);
-    turnContext.pending.add(task);
+    turnContext.tasks.push(task);
     task.finally(() => {
       pending.delete(task);
-      turnContext.pending.delete(task);
       if (tails.get(vpId) === task) tails.delete(vpId);
     }).catch(() => {});
     return task;
@@ -181,26 +186,79 @@ export function createCliSessionRunner({
     get meta() { return handle.getMeta(); },
     async run(prompt, options = {}) {
       if (closed) throw new Error('CLI Session runner is closed');
-      const turnContext = Object.freeze({ options: Object.freeze({ ...options }), pending: new Set() });
-      const messageId = randomUUID();
-      // The shared user row is the durability boundary. Every VP Engine skips
-      // its own user append, preventing @all from duplicating the prompt N times.
-      loaded.conversationStore.append({
-        role: 'user',
-        content: prompt,
-        sessionId,
-        threadId: 'main',
-        clientMessageId: messageId,
-        userAuthored: true,
+      let routingIntent = options.routingIntent && typeof options.routingIntent === 'object'
+        ? options.routingIntent
+        : null;
+      if (routingIntent) {
+        const meta = handle.getMeta();
+        const rawTargets = Array.isArray(routingIntent.targetVpIds)
+          ? routingIntent.targetVpIds
+          : [];
+        const targetVpIds = [];
+        for (const rawTarget of rawTargets) {
+          const target = typeof rawTarget === 'string' ? rawTarget.trim() : '';
+          const resolved = resolveMemberId(meta, target);
+          if (!resolved) throw new Error(`Unknown stream-json target VP ${target || String(rawTarget)}: not in roster`);
+          if (!targetVpIds.includes(resolved)) targetVpIds.push(resolved);
+        }
+        if (routingIntent.broadcast === true) {
+          for (const vpId of meta.roster) {
+            if (!targetVpIds.includes(vpId)) targetVpIds.push(vpId);
+          }
+        }
+        if (targetVpIds.length === 0) throw new Error('stream-json routing intent requires at least one target VP');
+        routingIntent = Object.freeze({
+          targetVpIds: Object.freeze(targetVpIds),
+          broadcast: routingIntent.broadcast === true,
+          explicit: routingIntent.explicit === true,
+        });
+      }
+      const turnContext = Object.freeze({
+        options: Object.freeze({ ...options }),
+        tasks: [],
+        claimedVpIds: new Set(),
       });
+      const messageId = randomUUID();
+      // The shared user row is the durability boundary. Validate structured
+      // routing above before this append so malformed machine selectors never
+      // enter the transcript or reach a provider.
+      if (!options.internal) {
+        loaded.conversationStore.append({
+          role: 'user',
+          content: prompt,
+          sessionId,
+          threadId: 'main',
+          clientMessageId: messageId,
+          userAuthored: true,
+        });
+      }
       const report = coordinator.ingest({
         id: messageId,
-        from: 'user',
-        role: 'user',
+        from: options.internal ? 'tool' : 'user',
+        role: options.internal ? 'assistant' : 'user',
         text: prompt,
+        ...(options.internal ? {
+          internal: true,
+          taskId: options.taskId || null,
+          meta: {
+            ...(options.meta || {}),
+            injectedBy: 'task_result',
+            ...(routingIntent?.targetVpIds?.[0]
+              ? { routeTargetVpId: routingIntent.targetVpIds[0] }
+              : {}),
+          },
+        } : {}),
+        ...(routingIntent ? { _routingIntent: routingIntent } : {}),
         _cliTurnContext: turnContext,
       });
-      const results = await drain(turnContext.pending);
+      const results = [];
+      let cursor = 0;
+      while (cursor < turnContext.tasks.length) {
+        const batch = turnContext.tasks.slice(cursor);
+        cursor += batch.length;
+        results.push(...await Promise.all(batch));
+        await Promise.resolve();
+      }
       return { report, results };
     },
     abort(reason = 'user') {
