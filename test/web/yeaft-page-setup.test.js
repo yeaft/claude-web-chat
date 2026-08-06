@@ -114,8 +114,20 @@ describe('YeaftPage setup', () => {
     expect(css).not.toMatch(/\.sp-subtab\.active\s*\{[^}]*box-shadow:/s);
   });
 
+  it('keeps Session inventory hydration separate from the message refresh spinner', () => {
+    const source = YeaftPage.template;
+    const actionsStart = source.indexOf('<YeaftSessionActions');
+    const actionsEnd = source.indexOf('/>', actionsStart);
+    const actions = source.slice(actionsStart, actionsEnd);
+
+    expect(actions).toContain(':loading-more-history="store.yeaftLoadingMoreHistory"');
+    expect(actions).not.toContain('yeaftSessionHydrateRequestId');
+    expect(actions).toContain('@reload-messages="reloadMessages"');
+  });
+
   it('defaults Session history search to the user without replacing an explicit sender choice', async () => {
     const page = YeaftPage.setup();
+
 
     expect(page.topbarSessionTitle.value).toBe('Conversation title');
     expect(page.topbarFolderPath.value).toBe('/home/user/projects/yeaft-web-code-agent');
