@@ -47,6 +47,7 @@ const {
 } = await import('../../../web/stores/helpers/yeaft-history-browser-cache.js');
 const {
   isDurableYeaftHistoryRow,
+  pruneConversationMessageRetention,
   pruneYeaftHistoryCache,
   YEAFT_HISTORY_CACHE_LIMITS,
 } = await import('../../../web/stores/helpers/yeaft-history-cache.js');
@@ -1722,6 +1723,292 @@ describe('Yeaft conversation loading state', () => {
       ['session-b', 'm0001'],
     ]);
     expect(new Set(store.messagesMap['yeaft-1'].map(row => row.stableKey)).size).toBe(2);
+  });
+
+  historyScenario('bounds resident live turns while preserving unsafe rows and other Sessions', () => {
+    const conversationId = 'yeaft-live-retention';
+    const targetSessionId = 'session-live';
+    const otherSessionRow = {
+      id: 'other-session',
+      type: 'user',
+      content: 'other Session stays isolated',
+      sessionId: 'session-other',
+    };
+    const rows = [otherSessionRow];
+    for (let turn = 1; turn <= 8; turn += 1) {
+      rows.push(
+        {
+          id: `user-${turn}`,
+          type: 'user',
+          content: `prompt ${turn}`,
+          sessionId: targetSessionId,
+          clientMessageId: `client-${turn}`,
+          dbMessageId: turn,
+        },
+        {
+          id: `assistant-${turn}`,
+          type: 'assistant',
+          content: `response ${turn}`,
+          sessionId: targetSessionId,
+          turnId: `turn-${turn}`,
+          status: 'completed',
+        },
+        {
+          id: `tool-${turn}`,
+          type: 'tool-use',
+          toolName: 'Read',
+          toolResult: `result ${turn}`,
+          hasResult: true,
+          sessionId: targetSessionId,
+          turnId: `turn-${turn}`,
+        },
+      );
+    }
+    rows.push(
+      {
+        id: 'optimistic-user',
+        type: 'user',
+        content: 'pending send',
+        sessionId: targetSessionId,
+        clientMessageId: 'pending-client',
+      },
+      {
+        id: 'streaming-assistant',
+        type: 'assistant',
+        content: 'still streaming',
+        sessionId: targetSessionId,
+        turnId: 'turn-active',
+        status: 'pending',
+        isStreaming: true,
+      },
+      {
+        id: 'pending-ask',
+        type: 'tool-use',
+        toolName: 'AskUserQuestion',
+        askPending: true,
+        hasResult: false,
+        sessionId: targetSessionId,
+        turnId: 'turn-active',
+      },
+    );
+    const store = { messagesMap: { [conversationId]: rows } };
+
+    const result = pruneConversationMessageRetention(store, {
+      conversationId,
+      agentId: 'agent-live',
+      sessionId: targetSessionId,
+      limits: {
+        maxRowsPerSession: 9,
+        maxBytesPerSession: 100_000,
+        recentRowsFloor: 3,
+      },
+    });
+
+    const kept = store.messagesMap[conversationId];
+    expect(result.evictedRows).toBeGreaterThan(0);
+    expect(kept.filter(row => row.sessionId === targetSessionId)).toHaveLength(9);
+    expect(kept).toContain(otherSessionRow);
+    expect(kept.some(row => row.id === 'optimistic-user')).toBe(true);
+    expect(kept.some(row => row.id === 'streaming-assistant')).toBe(true);
+    expect(kept.some(row => row.id === 'pending-ask')).toBe(true);
+    expect(kept.some(row => row.id === 'user-8')).toBe(true);
+    expect(kept.some(row => row.id === 'assistant-8')).toBe(true);
+    expect(kept.some(row => row.id === 'tool-8')).toBe(true);
+    expect(kept.some(row => row.id === 'user-1')).toBe(false);
+  });
+
+  historyScenario('reopens exhausted pagination after resident durable eviction', () => {
+    const conversationId = 'yeaft-reload-evicted';
+    const agentId = 'agent-reload';
+    const sessionId = 'session-reload';
+    const sessionKey = yeaftHistoryIdentityKey(agentId, sessionId);
+    const rows = [];
+    for (let seq = 1; seq <= 12; seq += 1) {
+      rows.push({
+        id: `m${seq}`,
+        messageId: `m${seq}`,
+        persistedMessageId: `m${seq}`,
+        stableKey: `${sessionKey}:${seq}`,
+        type: seq % 2 === 1 ? 'user' : 'assistant',
+        content: `row ${seq}`,
+        sessionId,
+        seq,
+        status: 'completed',
+      });
+    }
+    const sent = [];
+    const store = {
+      currentView: 'yeaft',
+      currentAgent: agentId,
+      yeaftActiveSessionFilter: sessionId,
+      yeaftHasMoreHistory: false,
+      yeaftLoadingMoreHistory: false,
+      yeaftOldestLoadedSeq: 1,
+      resolveYeaftSessionAgentId: id => (id === sessionId ? agentId : null),
+      sendWsMessage: message => sent.push(message),
+      messagesMap: { [conversationId]: rows },
+      yeaftHistoryCacheState: {
+        [sessionKey]: {
+          agentId,
+          sessionId,
+          conversationId,
+          rowCount: 12,
+          byteCount: 1200,
+          ranges: [{ startSeq: 1, endSeq: 12 }],
+          rangeEpoch: 1,
+        },
+      },
+      yeaftSessionHistoryState: {
+        [sessionKey]: {
+          loaded: true,
+          serverOldestFetchedSeq: 1,
+          oldestSeq: 1,
+          serverHasMore: false,
+          hasMore: false,
+          gapTraversalInitialized: true,
+          completedHistoryWorkKeys: ['server:9'],
+        },
+      },
+    };
+
+    pruneConversationMessageRetention(store, {
+      conversationId,
+      agentId,
+      sessionId,
+      limits: {
+        maxRowsPerSession: 4,
+        maxBytesPerSession: 100_000,
+        recentRowsFloor: 1,
+      },
+    });
+
+    const cache = store.yeaftHistoryCacheState[sessionKey];
+    expect(store.messagesMap[conversationId].map(row => row.seq)).toEqual([9, 10, 11, 12]);
+    expect(cache).toEqual(expect.objectContaining({
+      rowCount: 4,
+      ranges: [{ startSeq: 9, endSeq: 12 }],
+      rangeEpoch: 2,
+    }));
+    const plan = planNextYeaftHistoryPage(
+      store.yeaftSessionHistoryState[sessionKey],
+      cache.ranges,
+      cache.rangeEpoch,
+    );
+    expect(plan.request).toEqual(expect.objectContaining({ kind: 'server', beforeSeq: 9 }));
+    expect(plan.state.hasMore).toBe(true);
+    expect(store.yeaftHasMoreHistory).toBe(true);
+    expect(store.yeaftOldestLoadedSeq).toBe(9);
+
+    loadMoreYeaftHistory.call(store, 10);
+    expect(sent).toEqual([expect.objectContaining({
+      type: 'yeaft_load_more_history',
+      agentId,
+      sessionId,
+      beforeSeq: 9,
+    })]);
+  });
+
+  historyScenario('does not mutate active pagination mirrors when pruning a background Session', () => {
+    const conversationId = 'yeaft-background-prune';
+    const activeAgentId = 'agent-active';
+    const activeSessionId = 'session-active';
+    const backgroundAgentId = 'agent-background';
+    const backgroundSessionId = 'session-background';
+    const backgroundKey = yeaftHistoryIdentityKey(backgroundAgentId, backgroundSessionId);
+    const rows = [];
+    for (let seq = 1; seq <= 8; seq += 1) {
+      rows.push({
+        id: `m${seq}`,
+        messageId: `m${seq}`,
+        persistedMessageId: `m${seq}`,
+        type: seq % 2 === 1 ? 'user' : 'assistant',
+        content: `row ${seq}`,
+        sessionId: backgroundSessionId,
+        seq,
+        status: 'completed',
+      });
+    }
+    const store = {
+      currentAgent: activeAgentId,
+      yeaftActiveSessionFilter: activeSessionId,
+      yeaftHasMoreHistory: false,
+      yeaftLoadingMoreHistory: false,
+      yeaftOldestLoadedSeq: 77,
+      resolveYeaftSessionAgentId: id => (id === activeSessionId ? activeAgentId : backgroundAgentId),
+      messagesMap: { [conversationId]: rows },
+      yeaftHistoryCacheState: {
+        [backgroundKey]: {
+          agentId: backgroundAgentId,
+          sessionId: backgroundSessionId,
+          conversationId,
+          rowCount: 8,
+          ranges: [{ startSeq: 1, endSeq: 8 }],
+          rangeEpoch: 1,
+        },
+      },
+      yeaftSessionHistoryState: {
+        [backgroundKey]: {
+          serverOldestFetchedSeq: 1,
+          oldestSeq: 1,
+          serverHasMore: false,
+          hasMore: false,
+        },
+      },
+    };
+
+    pruneConversationMessageRetention(store, {
+      conversationId,
+      agentId: backgroundAgentId,
+      sessionId: backgroundSessionId,
+      limits: {
+        maxRowsPerSession: 4,
+        maxBytesPerSession: 100_000,
+        recentRowsFloor: 1,
+      },
+    });
+
+    expect(store.yeaftSessionHistoryState[backgroundKey]).toEqual(expect.objectContaining({
+      hasMore: true,
+      oldestSeq: 5,
+    }));
+    expect(store.yeaftHasMoreHistory).toBe(false);
+    expect(store.yeaftOldestLoadedSeq).toBe(77);
+  });
+
+  historyScenario('keeps one oversized newest turn instead of splitting its boundary', () => {
+    const conversationId = 'yeaft-oversized-turn';
+    const sessionId = 'session-large';
+    const rows = [
+      { id: 'old-user', type: 'user', content: 'old', sessionId, dbMessageId: 1 },
+      { id: 'old-assistant', type: 'assistant', content: 'old response', sessionId, status: 'completed' },
+      { id: 'new-user', type: 'user', content: 'new', sessionId, dbMessageId: 2 },
+      ...Array.from({ length: 8 }, (_, index) => ({
+        id: `new-tool-${index}`,
+        type: 'tool-use',
+        toolName: 'Read',
+        toolResult: 'x'.repeat(200),
+        hasResult: true,
+        sessionId,
+        turnId: 'new-turn',
+      })),
+    ];
+    const store = { messagesMap: { [conversationId]: rows } };
+
+    pruneConversationMessageRetention(store, {
+      conversationId,
+      agentId: 'agent-large',
+      sessionId,
+      limits: {
+        maxRowsPerSession: 4,
+        maxBytesPerSession: 300,
+        recentRowsFloor: 1,
+      },
+    });
+
+    expect(store.messagesMap[conversationId].map(row => row.id)).toEqual([
+      'new-user',
+      ...Array.from({ length: 8 }, (_, index) => `new-tool-${index}`),
+    ]);
   });
 
   historyScenario('bounds durable ranges while preserving optimistic/live tail rows', () => {

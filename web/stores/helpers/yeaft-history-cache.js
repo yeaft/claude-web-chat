@@ -1,4 +1,5 @@
 import { yeaftHistoryIdentityKey } from './yeaft-history-identity.js';
+import { activeYeaftHistoryIdentity, syncActiveYeaftHistoryLoad } from './yeaft-history-load.js';
 
 export const YEAFT_HISTORY_CACHE_LIMITS = Object.freeze({
   maxSessions: 8,
@@ -41,6 +42,129 @@ export function yeaftHistoryRowSeq(row) {
 function rowBytes(row) {
   try { return new TextEncoder().encode(JSON.stringify(row)).length; }
   catch { return 0; }
+}
+
+function isUnsafeResidentRow(row) {
+  if (!row) return false;
+  if (row.isStreaming || row.status === 'pending') return true;
+  if (row.type === 'tool-use' && (row.askPending || (!row.hasResult
+    && (row.toolName === 'AskUser' || row.toolName === 'AskUserQuestion')))) return true;
+  if (row.type !== 'user' || !row.clientMessageId) return false;
+  return !row.dbMessageId && !persistedMessageId(row);
+}
+
+function residentTurns(rows) {
+  const turns = [];
+  let current = null;
+  for (const row of rows) {
+    if (row?.type === 'user' || !current) {
+      current = { rows: [], bytes: 0, protected: false };
+      turns.push(current);
+    }
+    current.rows.push(row);
+    current.bytes += rowBytes(row);
+    if (isUnsafeResidentRow(row)) current.protected = true;
+  }
+  return turns;
+}
+
+/**
+ * Bound all resident rows for one Session (or one Chat conversation when
+ * sessionId is null). Unlike durable history pruning, this also covers live
+ * assistant/tool projections that have no standalone persisted message id.
+ * Whole user turns are retained so eviction never leaves an orphan response.
+ */
+export function pruneConversationMessageRetention(store, {
+  conversationId,
+  agentId = null,
+  sessionId = null,
+  limits = YEAFT_HISTORY_CACHE_LIMITS,
+} = {}) {
+  const allRows = store?.messagesMap?.[conversationId];
+  if (!Array.isArray(allRows) || allRows.length === 0 || !agentId || !sessionId) {
+    return { evictedRows: 0, keptRows: 0 };
+  }
+  const matchesScope = row => rowSessionId(row) === sessionId;
+  const scopedRows = allRows.filter(matchesScope);
+  const turns = residentTurns(scopedRows);
+  if (turns.length === 0) return { evictedRows: 0, keptRows: 0 };
+
+  const selected = new Set(turns.filter(turn => turn.protected));
+  let rows = turns.filter(turn => selected.has(turn)).reduce((sum, turn) => sum + turn.rows.length, 0);
+  let bytes = turns.filter(turn => selected.has(turn)).reduce((sum, turn) => sum + turn.bytes, 0);
+  let selectedCompletedTurn = false;
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (selected.has(turn)) continue;
+    const exceedsCapacity = rows + turn.rows.length > limits.maxRowsPerSession
+      || bytes + turn.bytes > limits.maxBytesPerSession;
+    const belowFloor = rows < limits.recentRowsFloor;
+    if (selectedCompletedTurn && exceedsCapacity && !belowFloor) continue;
+    selected.add(turn);
+    selectedCompletedTurn = true;
+    rows += turn.rows.length;
+    bytes += turn.bytes;
+  }
+
+  const keptRows = new Set(turns.filter(turn => selected.has(turn)).flatMap(turn => turn.rows));
+  const evicted = scopedRows.filter(row => !keptRows.has(row));
+  if (evicted.length === 0) return { evictedRows: 0, keptRows: keptRows.size, keptBytes: bytes };
+  store.messagesMap[conversationId] = allRows.filter(row => !matchesScope(row) || keptRows.has(row));
+
+  const key = yeaftHistoryIdentityKey(agentId, sessionId);
+  const previousCache = store.yeaftHistoryCacheState?.[key] || null;
+  const summary = summarizeRows(scopedRows.filter(row => keptRows.has(row)));
+  const previousRanges = JSON.stringify(previousCache?.ranges || []);
+  const rangeEpoch = previousRanges === JSON.stringify(summary.ranges)
+    ? (Number(previousCache?.rangeEpoch) || 0)
+    : (Number(previousCache?.rangeEpoch) || 0) + 1;
+  store.yeaftHistoryCacheState = {
+    ...(store.yeaftHistoryCacheState || {}),
+    [key]: {
+      ...(previousCache || {}),
+      agentId,
+      sessionId,
+      conversationId,
+      lastAccessed: Date.now(),
+      rangeEpoch,
+      ...summary,
+    },
+  };
+
+  if (evicted.some(isDurableYeaftHistoryRow)) {
+    const oldestResidentSeq = summary.ranges[0]?.startSeq ?? null;
+    const previousHistory = store.yeaftSessionHistoryState?.[key] || {};
+    store.yeaftSessionHistoryState = {
+      ...(store.yeaftSessionHistoryState || {}),
+      [key]: {
+        ...previousHistory,
+        serverOldestFetchedSeq: oldestResidentSeq,
+        oldestSeq: oldestResidentSeq,
+        serverHasMore: oldestResidentSeq !== null,
+        hasMore: oldestResidentSeq !== null,
+        gapTraversalInitialized: false,
+        gapQueue: [],
+        requestedBeforeSeqs: [],
+        completedHistoryWorkKeys: [],
+        pendingPageKind: null,
+        pendingPageBeforeSeq: null,
+        pendingGapStopAtSeq: null,
+        pendingCacheEpoch: null,
+        pendingHistoryWorkKey: null,
+        paginationError: null,
+        count: summary.rowCount,
+      },
+    };
+    const active = activeYeaftHistoryIdentity(store);
+    if (active.agentId === agentId && active.sessionId === sessionId) {
+      syncActiveYeaftHistoryLoad(store);
+    }
+  }
+  return {
+    evictedRows: evicted.length,
+    keptRows: keptRows.size,
+    keptBytes: bytes,
+  };
 }
 
 export function yeaftHistoryUnitKey(row) {

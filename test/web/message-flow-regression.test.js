@@ -10,6 +10,7 @@ import {
   finishStreamingForConversation,
   maxDbMessageId,
 } from '../../web/stores/helpers/messages.js';
+import { YEAFT_HISTORY_CACHE_LIMITS } from '../../web/stores/helpers/yeaft-history-cache.js';
 import {
   calculateFloatingMenuPosition,
   calculateFloatingSubmenuPosition,
@@ -146,6 +147,64 @@ function makeStore() {
 }
 
 describe('message flow regressions', () => {
+  it('prunes completed Yeaft resident turns at terminal metadata boundaries', async () => {
+    const { useChatStore } = await import('../../web/stores/chat.js');
+    const store = useChatStore();
+    const conversationId = 'yeaft-memory-bound';
+    const sessionId = 'session-memory-bound';
+    store.currentView = 'yeaft';
+    store.currentAgent = 'agent-memory';
+    store.yeaftAgentId = 'agent-memory';
+    store.yeaftConversationId = conversationId;
+    store.yeaftConversationIdsByAgent = { 'agent-memory': conversationId };
+    store.yeaftActiveSessionFilter = sessionId;
+    store.messagesMap = { [conversationId]: [] };
+    store.activeVpTurns = {};
+    store.stoppingVpTurnIds = {};
+    store.vpStatuses = {};
+    store.yeaftProcessingSessions = {};
+
+    const turnCount = Math.ceil(YEAFT_HISTORY_CACHE_LIMITS.maxRowsPerSession / 2) + 20;
+    for (let index = 1; index <= turnCount; index += 1) {
+      store.messagesMap[conversationId].push(
+        {
+          id: `user-${index}`,
+          dbMessageId: index,
+          type: 'user',
+          content: `prompt ${index}`,
+          sessionId,
+          clientMessageId: `client-${index}`,
+        },
+        {
+          id: `assistant-${index}`,
+          type: 'assistant',
+          content: `response ${index}`,
+          sessionId,
+          turnId: `turn-${index}`,
+          status: index === turnCount ? 'pending' : 'completed',
+          isStreaming: false,
+        },
+      );
+    }
+
+    store.handleYeaftOutput({
+      agentId: 'agent-memory',
+      conversationId,
+      event: {
+        type: 'vp_turn_end',
+        sessionId,
+        vpId: 'omni',
+        turnId: `turn-${turnCount}`,
+        reason: 'end_turn',
+      },
+    });
+
+    const kept = store.messagesMap[conversationId];
+    expect(kept.length).toBeLessThanOrEqual(YEAFT_HISTORY_CACHE_LIMITS.maxRowsPerSession);
+    expect(kept.some(row => row.id === `user-${turnCount}`)).toBe(true);
+    expect(kept.some(row => row.id === `assistant-${turnCount}`)).toBe(true);
+    expect(kept.some(row => row.id === 'user-1')).toBe(false);
+  });
   it('keeps same-id streaming updates in one assistant message', () => {
     const store = makeStore();
 
