@@ -17,6 +17,7 @@ import * as handlerHelpers from './helpers/messageHandler.js';
 import * as convHelpers from './helpers/conversation.js';
 import * as sessionHelpers from './helpers/session.js';
 import * as watchdogHelpers from './helpers/watchdog.js';
+import { conversationRepositoryFor } from './helpers/conversation-repository.js';
 import * as yeaftViewHelpers from './helpers/yeaft-view.js';
 import {
   clearYeaftConversationPromotion,
@@ -3230,7 +3231,12 @@ export const useChatStore = defineStore('chat', {
             mimeType: a.mimeType || '',
           }));
         }
-        this.addMessageToConversation(activeYeaftConvId, localMsg);
+        conversationRepositoryFor(this).upsertOverlay({
+          conversationId: activeYeaftConvId,
+          agentId: targetAgentId,
+          sessionId: groupId,
+          row: localMsg,
+        });
         this.processingConversations[activeYeaftConvId] = true;
         if (groupId) {
           const processingKey = yeaftSessionIdentityKey(targetAgentId, groupId);
@@ -3319,17 +3325,14 @@ export const useChatStore = defineStore('chat', {
         if (!record || this._yeaftHistoryBrowserHydrationBySession?.[sessionKey] !== token) return false;
         const conversationId = resolveYeaftConversationIdForSession(this, targetSessionId, targetAgentId);
         if (!conversationId) return false;
-        const existing = this.messagesMap[conversationId] || [];
         msgHelpers.ensureMessageUiKeys(this, conversationId, record.rows);
-        this.messagesMap[conversationId] = msgHelpers.mergeMessagesByStableId(existing, record.rows)
-          .sort((left, right) => {
-            const leftSeq = Number.isFinite(left?.seq) ? left.seq : null;
-            const rightSeq = Number.isFinite(right?.seq) ? right.seq : null;
-            if (leftSeq !== null && rightSeq !== null && leftSeq !== rightSeq) return leftSeq - rightSeq;
-            if (leftSeq !== null && rightSeq === null) return -1;
-            if (leftSeq === null && rightSeq !== null) return 1;
-            return (left?.timestamp || 0) - (right?.timestamp || 0);
-          });
+        conversationRepositoryFor(this).commitDurable({
+          conversationId,
+          agentId: targetAgentId,
+          sessionId: targetSessionId,
+          rows: record.rows,
+          mode: 'hydrate',
+        });
         const previous = this.yeaftSessionHistoryState[sessionKey] || {};
         const latestSeq = Math.max(
           Number.isFinite(previous.latestSeq) ? previous.latestSeq : -1,
@@ -3477,9 +3480,10 @@ export const useChatStore = defineStore('chat', {
         || resolveYeaftConversationIdForSession(this, targetSessionId, targetAgentId);
       if (!fence || !targetAgentId || !targetSessionId || !targetConversationId) return Promise.resolve(false);
       const sessionKey = yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
-      const rows = (this.messagesMap[targetConversationId] || []).filter(row => (
-        (row?.sessionId ?? row?.groupId ?? null) === targetSessionId
-      ));
+      const rows = conversationRepositoryFor(this).durableRows(
+        targetConversationId,
+        targetSessionId,
+      );
       return writeYeaftHistoryBrowserCache({
         fence,
         agentId: targetAgentId,

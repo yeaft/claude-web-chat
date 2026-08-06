@@ -69,6 +69,7 @@ const {
   hasHiddenScopedYeaftMessageTurns,
   sliceScopedYeaftMessagesByRecentTurns,
 } = await import('../../../web/stores/helpers/yeaft-message-window.js');
+const { conversationRepositoryFor } = await import('../../../web/stores/helpers/conversation-repository.js');
 
 // Mirror production's `resolveAgentIdForSession`: prefer the session row's
 // owning agent (sessions store), then the per-session cache, then the single
@@ -135,7 +136,7 @@ function loadMoreYeaftHistory(turns = getYeaftWindowLoadStepTurns()) {
 
 function mkStore(overrides = {}) {
   const sent = [];
-  return {
+  const store = {
     currentView: 'yeaft',
     yeaftConversationId: 'yeaft-1',
     currentAgent: 'agent-1',
@@ -153,6 +154,8 @@ function mkStore(overrides = {}) {
     _sent: sent,
     ...overrides,
   };
+  store.conversationRepository = conversationRepositoryFor(store);
+  return store;
 }
 
 function scopedYeaftMessages(state) {
@@ -249,6 +252,89 @@ async function runConsolidatedHistoryScenarios() {
     catch (error) { error.message = `[${scenario.name}] ${error.message}`; throw error; }
   }
 }
+
+describe('Conversation Repository', () => {
+  it('keeps durable rows and ephemeral overlays in one stable reactive projection', () => {
+    const store = mkStore({ messagesMap: { 'yeaft-1': [] } });
+    const repository = store.conversationRepository;
+
+    repository.commitDurable({
+      conversationId: 'yeaft-1',
+      agentId: 'agent-1',
+      sessionId: 'session-a',
+      rows: [
+        { id: 'm0002', messageId: 'm0002', stableKey: 'durable:m0002', seq: 2, type: 'assistant', content: 'answer', sessionId: 'session-a', isHistory: true },
+        { id: 'm0001', messageId: 'm0001', stableKey: 'durable:m0001', seq: 1, type: 'user', content: 'question', sessionId: 'session-a', isHistory: true },
+      ],
+      mode: 'recent',
+    });
+    const projection = store.messagesMap['yeaft-1'];
+    repository.upsertOverlay({
+      conversationId: 'yeaft-1',
+      agentId: 'agent-1',
+      sessionId: 'session-a',
+      row: { id: 'turn-live', messageId: 'turn-live', type: 'assistant', content: 'stream', sessionId: 'session-a', turnId: 'turn-live', isStreaming: true, status: 'pending' },
+    });
+    repository.appendOverlayText({
+      conversationId: 'yeaft-1', agentId: 'agent-1', sessionId: 'session-a', turnId: 'turn-live', text: 'ing',
+    });
+
+    expect(store.messagesMap['yeaft-1']).toBe(projection);
+    expect(projection.map(row => row.content)).toEqual(['question', 'answer', 'streaming']);
+    expect(repository.snapshot('yeaft-1', 'session-a')).toMatchObject({
+      durableRows: [expect.objectContaining({ id: 'm0001' }), expect.objectContaining({ id: 'm0002' })],
+      overlayRows: [expect.objectContaining({ id: 'turn-live', isStreaming: true })],
+    });
+  });
+
+  it('reconciles optimistic and streaming overlays when persisted history arrives', () => {
+    const store = mkStore({ messagesMap: { 'yeaft-1': [] } });
+    const repository = store.conversationRepository;
+    repository.upsertOverlay({
+      conversationId: 'yeaft-1', agentId: 'agent-1', sessionId: 'session-a',
+      row: { id: 'client-1', messageId: 'client-1', clientMessageId: 'client-1', stableKey: 'optimistic:client-1', type: 'user', content: 'hello', sessionId: 'session-a' },
+    });
+    repository.upsertOverlay({
+      conversationId: 'yeaft-1', agentId: 'agent-1', sessionId: 'session-a',
+      row: { id: 'live-a', messageId: 'live-a', type: 'assistant', content: 'partial', sessionId: 'session-a', turnId: 'turn-1', isStreaming: true, status: 'pending' },
+    });
+
+    repository.commitDurable({
+      conversationId: 'yeaft-1', agentId: 'agent-1', sessionId: 'session-a', mode: 'delta',
+      rows: [
+        { id: 'm0010', messageId: 'm0010', clientMessageId: 'client-1', stableKey: 'durable:m0010', seq: 10, type: 'user', content: 'hello', sessionId: 'session-a', turnId: 'turn-1', isHistory: true },
+        { id: 'm0011', messageId: 'm0011', stableKey: 'durable:m0011', seq: 11, type: 'assistant', content: 'partial complete', sessionId: 'session-a', turnId: 'turn-1', _hasPersistedTurnId: true, isHistory: true },
+      ],
+    });
+
+    expect(store.messagesMap['yeaft-1']).toHaveLength(2);
+    expect(store.messagesMap['yeaft-1']).toEqual([
+      expect.objectContaining({ id: 'm0010', clientMessageId: 'client-1' }),
+      expect.objectContaining({ id: 'm0011', content: 'partial complete', isStreaming: false }),
+    ]);
+    expect(repository.snapshot('yeaft-1', 'session-a').overlayRows).toEqual([]);
+  });
+
+  it('keeps newer overlays while replacing a mismatched durable generation', () => {
+    const store = mkStore({ messagesMap: { 'yeaft-1': [] } });
+    const repository = store.conversationRepository;
+    repository.commitDurable({
+      conversationId: 'yeaft-1', agentId: 'agent-1', sessionId: 'session-a', mode: 'recent',
+      rows: [{ id: 'old', messageId: 'old', stableKey: 'durable:old', seq: 1, type: 'user', content: 'old', sessionId: 'session-a', isHistory: true }],
+    });
+    repository.upsertOverlay({
+      conversationId: 'yeaft-1', agentId: 'agent-1', sessionId: 'session-a',
+      row: { id: 'pending', messageId: 'pending', clientMessageId: 'pending', type: 'user', content: 'pending', sessionId: 'session-a' },
+    });
+    repository.commitDurable({
+      conversationId: 'yeaft-1', agentId: 'agent-1', sessionId: 'session-a', mode: 'recent',
+      replaceDurable: true,
+      rows: [{ id: 'new', messageId: 'new', stableKey: 'durable:new', seq: 2, type: 'assistant', content: 'new', sessionId: 'session-a', isHistory: true }],
+    });
+
+    expect(store.messagesMap['yeaft-1'].map(row => row.content)).toEqual(['new', 'pending']);
+  });
+});
 
 describe('Yeaft conversation loading state', () => {
   async function verifyBrowserHistoryCache() {
