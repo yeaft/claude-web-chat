@@ -64,6 +64,7 @@ import {
   yeaftOptimisticMessageIdentity,
 } from './helpers/yeaft-history-identity.js';
 import {
+  activeYeaftHistoryIdentity,
   activeYeaftHistoryLoadState,
   beginYeaftHistoryLoad,
   failYeaftHistoryLoad,
@@ -738,6 +739,10 @@ export const useChatStore = defineStore('chat', {
     yeaftLoadingMoreHistory: false,
     yeaftOldestLoadedSeq: null,
     yeaftHistoryLoadError: null,
+    // Exact request joined or started by the topbar message-refresh action.
+    // Automatic bootstrap, browser-cache revalidation, reconnect delta, and
+    // older-page loads must not animate or disable that manual control.
+    _yeaftManualHistoryRefresh: null,
     // Group-scoped Yeaft history cursors/cache metadata. The legacy three
     // flags above mirror the currently active group for component
     // compatibility; this map is the source of truth across group switches.
@@ -1231,6 +1236,16 @@ export const useChatStore = defineStore('chat', {
     },
     activeYeaftHistoryState(state) {
       return activeYeaftHistoryLoadState(state);
+    },
+    yeaftManualHistoryRefreshLoading(state) {
+      const manual = state._yeaftManualHistoryRefresh || null;
+      if (!manual?.requestId) return false;
+      const sessionKey = yeaftHistoryIdentityKey(manual.agentId, manual.sessionId);
+      const activeIdentity = activeYeaftHistoryIdentity(state);
+      const load = state.yeaftSessionHistoryState?.[sessionKey] || null;
+      return activeIdentity.sessionKey === sessionKey
+        && load?.loading === true
+        && load.requestId === manual.requestId;
     },
     yeaftInitialHistoryLoading(state) {
       const load = activeYeaftHistoryLoadState(state);
@@ -7797,7 +7812,15 @@ export const useChatStore = defineStore('chat', {
       // empty conversation during the round trip.
 
       const activeRequest = this.yeaftSessionHistoryState?.[sessionKey];
-      if (activeRequest?.loading) return activeRequest.requestId || false;
+      if (activeRequest?.loading) {
+        if (!activeRequest.requestId) return false;
+        this._yeaftManualHistoryRefresh = {
+          agentId: targetAgentId,
+          sessionId,
+          requestId: activeRequest.requestId,
+        };
+        return activeRequest.requestId;
+      }
       const historyRequest = this.beginYeaftHistoryLoad({
         agentId: targetAgentId,
         sessionId,
@@ -7805,6 +7828,11 @@ export const useChatStore = defineStore('chat', {
         preserveLoaded: false,
       });
       if (!historyRequest) return false;
+      this._yeaftManualHistoryRefresh = {
+        agentId: targetAgentId,
+        sessionId,
+        requestId: historyRequest.requestId,
+      };
 
       const perfTraceId = createPerfTraceId();
       this.yeaftHistoryPerfTraceBySession = {
