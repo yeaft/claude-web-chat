@@ -219,10 +219,23 @@ export default {
 
       const scroller = scrollEl.value;
       const wasNearBottom = bottomFollowEnabled && isNearBottom(scroller);
+      // A newly mounted Session tail has no cached DOM heights yet. Measuring the
+      // first virtual window replaces estimates and can grow scrollHeight before
+      // any row has a finite previousHeight. Preserve tail ownership for that
+      // initial settling pass; otherwise the browser remains at the old maximum,
+      // mounts a different estimated window, and repeatedly oscillates until a
+      // user upward scroll disables bottom following.
+      const isInitialMeasurementBatch = measurements.some(measurement => !Number.isFinite(measurement.previousHeight));
       const windowStart = virtualWindow.value.visibleStart;
       const shouldRealignTarget = !!activeTargetKey && measurements.some(measurement => measurement.key === activeTargetKey);
       let anchorDelta = 0;
-      let shouldScrollToBottom = false;
+      // Geometry can already report "not near bottom" by the time a first DOM
+      // measurement observes that actual rows grew beyond their estimates. For
+      // an end-aligned transcript, follow intent—not that transient geometry—is
+      // authoritative until the user explicitly pauses following.
+      let shouldScrollToBottom = bottomFollowEnabled
+        && props.initialAlign === 'end'
+        && isInitialMeasurementBatch;
 
       // Do not read virtualWindow or virtualLayout in this loop. Vue can then
       // collapse all cache invalidations into one render/layout recomputation.

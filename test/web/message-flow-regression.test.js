@@ -147,6 +147,40 @@ function makeStore() {
 }
 
 describe('message flow regressions', () => {
+  it('does not refresh Work Center for routine agent inventory broadcasts', () => {
+    const store = useChatStore();
+    store.workCenterOpen = true;
+    store.workCenterAgentId = 'agent-work-center';
+    store.currentAgent = 'agent-work-center';
+    store.currentView = 'yeaft';
+    store._hasHandledAgentList = true;
+    store._yeaftReconnectCatchUpPending = false;
+    store.agents = [{
+      id: 'agent-work-center',
+      name: 'server',
+      online: true,
+      version: '1.0.369',
+      capabilities: ['work_center'],
+      conversations: [],
+    }];
+    store.currentAgentInfo = store.agents[0];
+    store.listWorkItems = vi.fn(() => Promise.resolve([]));
+    store.loadOpenedYeaftSessionsForConnectedAgents = vi.fn();
+    store.requestYeaftSessionBootstrap = vi.fn();
+    store.sendWsMessage = vi.fn(() => true);
+
+    handleMessage(store, {
+      type: 'agent_list',
+      agents: [{ ...store.agents[0], latency: 12 }],
+    });
+    handleMessage(store, {
+      type: 'agent_list',
+      agents: [{ ...store.agents[0], latency: 18 }],
+    });
+
+    expect(store.listWorkItems).not.toHaveBeenCalled();
+  });
+
   it('prunes completed Yeaft resident turns at terminal metadata boundaries', async () => {
     const { useChatStore } = await import('../../web/stores/chat.js');
     const store = useChatStore();
