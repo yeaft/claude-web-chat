@@ -13,7 +13,6 @@ import { isRetiredYeaftConversation } from '../yeaft-conversation-generation.js'
 import { clearSessionLoading } from '../session.js';
 import { sameUserMessage } from '../dedup.js';
 import { ensureMessageUiKeys, maxDbMessageId } from '../messages.js';
-import { summarizeHistoricalToolMessages } from '../tool-window.js';
 import { t } from '../../../utils/i18n.js';
 import { recordPerfTrace, measureNextPaint } from '../perfTrace.js';
 import { activeYeaftHistoryIdentity } from '../yeaft-history-load.js';
@@ -63,13 +62,6 @@ function latestTodoSnapshot(toolCalls) {
     if (call?.name === 'TodoWrite' && Array.isArray(call?.input?.todos)) return call.input.todos;
   }
   return null;
-}
-
-function visibleToolSummaryCount(message) {
-  if (Array.isArray(message?.toolCalls)) {
-    return message.toolCalls.filter(call => call?.name !== 'TodoWrite').length;
-  }
-  return Number(message?.toolSummaryCount || 0) || 0;
 }
 
 function resolveGroupDefaultVpId(groupId) {
@@ -397,11 +389,10 @@ export function handleConversationResumed(store, msg) {
   console.log('dbMessages received:', msg.dbMessages?.length || 0, 'dbMessageCount:', msg.dbMessageCount || 0);
   if (msg.dbMessages && msg.dbMessages.length > 0) {
     const formatted = filterEmptyUserMessages(
-      msg.dbMessages.map(m => store.formatDbMessageForHistoryHydration(m)).flat().filter(Boolean)
+      msg.dbMessages.map(m => store.formatDbMessage(m)).flat().filter(Boolean)
     );
-    const summarized = summarizeHistoricalToolMessages(formatted);
     const msgs = store.messagesMap[msg.conversationId] || [];
-    for (const m of summarized) {
+    for (const m of formatted) {
       msgs.push(m);
     }
   }
@@ -581,9 +572,9 @@ export function handleSyncMessagesResult(store, msg) {
   const isDeltaSync = msg.mode === 'delta' ||
     typeof msg.afterMessageId === 'number' && msg.afterMessageId > 0;
   if (msg.conversationId && store.activeConversations.includes(msg.conversationId)) {
-    const formatted = summarizeHistoricalToolMessages(filterEmptyUserMessages(
-      (msg.messages || []).map(m => store.formatDbMessageForHistoryHydration(m)).flat().filter(Boolean)
-    ));
+    const formatted = filterEmptyUserMessages(
+      (msg.messages || []).map(m => store.formatDbMessage(m)).flat().filter(Boolean)
+    );
 
     if (formatted.length > 0) {
       const firstDbMsg = msgs.find(m => m.dbMessageId);
@@ -894,6 +885,29 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           hasResult: true,
         });
       }
+      for (const [index, toolCall] of (Array.isArray(m.toolCalls) ? m.toolCalls : []).entries()) {
+        if (!toolCall || toolCall.name === 'TodoWrite') continue;
+        const toolIdentity = toolCall.id || `index:${index}`;
+        const toolIdentityKey = encodeURIComponent(String(toolIdentity));
+        formatted.push({
+          ...(stableId ? { id: `${stableId}:tool:${toolIdentityKey}`, messageId: `${stableId}:tool:${toolIdentityKey}`, persistedMessageId: stableId } : {}),
+          ...(durableKey ? { stableKey: `${durableKey}:tool:${toolIdentityKey}` } : {}),
+          ...historyEntryMeta,
+          seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
+          type: 'tool-use',
+          toolId: toolCall.id || null,
+          toolName: toolCall.name || 'unknown',
+          toolInput: toolCall.input || {},
+          timestamp,
+          sessionId: rowSessionId,
+          turnId,
+          ...executionOriginMeta,
+          ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
+          isStreaming: false,
+          isHistory: true,
+          hasResult: true,
+        });
+      }
       for (const image of Array.isArray(m.images) ? m.images : []) {
         if (!image?.assetId) continue;
         formatted.push({
@@ -928,6 +942,11 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
         if (existing) {
           Object.assign(existing, historyEntryMeta);
           applyAskUserHistoryResult(existing, result, questions);
+          const matchingToolIndex = formatted.findIndex(row => row?.type === 'tool-use'
+            && row.toolId === result.toolCallId
+            && (row.sessionId ?? row.groupId ?? null) === (existing.sessionId ?? existing.groupId ?? null)
+            && (row.turnId || '') === (existing.turnId || ''));
+          if (matchingToolIndex >= 0) formatted.splice(matchingToolIndex, 1);
           continue;
         }
         const askRow = applyAskUserHistoryResult({
@@ -947,26 +966,12 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
         }, result, questions);
         const identity = askUserHistoryIdentity(askRow);
         if (!identity || !formatted.some(row => askUserHistoryIdentity(row) === identity)) formatted.push(askRow);
-      }
-      const toolSummaryCount = visibleToolSummaryCount(m);
-      if (toolSummaryCount > 0) {
-        formatted.push({
-          ...(stableId ? { id: `${stableId}:tool-summary`, messageId: `${stableId}:tool-summary`, persistedMessageId: stableId } : {}),
-          ...(durableKey ? { stableKey: `${durableKey}:tool-summary` } : {}),
-          ...historyEntryMeta,
-          seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
-          type: 'tool-summary',
-          count: toolSummaryCount,
-          omittedCount: toolSummaryCount,
-          source: 'history',
-          timestamp,
-          sessionId: rowSessionId,
-          turnId,
-          ...executionOriginMeta,
-          ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
-          isStreaming: false,
-          isHistory: true,
-        });
+        const matchingToolIndex = formatted.findIndex(row => row !== askRow
+          && row?.type === 'tool-use'
+          && row.toolId === result.toolCallId
+          && (row.sessionId ?? row.groupId ?? null) === (askRow.sessionId ?? askRow.groupId ?? null)
+          && (row.turnId || '') === (askRow.turnId || ''));
+        if (matchingToolIndex >= 0) formatted.splice(matchingToolIndex, 1);
       }
     }
   }

@@ -72,10 +72,9 @@ export function quoteFromAssistantTurn(turn, author) {
   const toolNames = Array.isArray(turn?.toolMsgs)
     ? turn.toolMsgs.map(tool => text(tool?.toolName)).filter(Boolean)
     : [];
-  const toolSummaryCount = Number(turn?.toolSummaryCount || 0) || 0;
   const fallbackContent = toolNames.length > 0
     ? `Tool actions: ${toolNames.join(', ')}`
-    : (toolSummaryCount > 0 ? `Tool actions: ${toolSummaryCount}` : '');
+    : '';
   return normalizeSessionMessageQuote({
     id: turn?.atMessageId || turn?.messageId || turn?.id || turn?.turnId || null,
     role: 'assistant',

@@ -7436,7 +7436,6 @@ export const useChatStore = defineStore('chat', {
     addMessage(msg) { this.addMessageToConversation(this.currentConversation, msg); },
     loadHistoryMessages(historyMessages) { msgHelpers.loadHistoryMessages(this, historyMessages); },
     formatDbMessage(dbMsg) { return msgHelpers.formatDbMessage(dbMsg); },
-    formatDbMessageForHistoryHydration(dbMsg) { return msgHelpers.formatDbMessageForHistoryHydration(dbMsg); },
 
     // =====================
     // Conversation lifecycle

@@ -86,18 +86,6 @@ function latestTodoWriteSnapshot(toolCalls) {
   return null;
 }
 
-function projectAssistantToolsForVisibleHistory(message) {
-  const { toolCalls, ...rest } = message;
-  if (!Array.isArray(toolCalls) || toolCalls.length === 0) return rest;
-  const todos = latestTodoWriteSnapshot(toolCalls);
-  const toolSummaryCount = toolCalls.filter(call => call?.name !== 'TodoWrite').length;
-  return {
-    ...rest,
-    ...(todos ? { todos } : {}),
-    ...(toolSummaryCount > 0 ? { toolSummaryCount } : {}),
-  };
-}
-
 function emptySegmentIndex() {
   return {
     version: 2,
@@ -370,7 +358,7 @@ export function projectVisibleSessionMessages(messages) {
     if (!isVisibleConversationRow(row)) continue;
     if (row.role !== 'assistant' || !Array.isArray(row.toolCalls) || row.toolCalls.length === 0) {
       if (row.role === 'assistant' && !row.content && !row.attachments && !row.images
-          && !row.todos && !row.toolSummaryCount && !row.askUserResults) continue;
+          && !row.todos && !row.askUserResults) continue;
       const responseKind = row.role === 'assistant' ? projectedResponseKind(row) : null;
       visible.push(responseKind && row.responseKind !== responseKind
         ? { ...row, responseKind }
@@ -379,13 +367,13 @@ export function projectVisibleSessionMessages(messages) {
     }
 
     const askUserResults = [];
-    let omittedToolCount = 0;
+    const visibleToolCalls = [];
     for (const toolCall of row.toolCalls) {
       if (toolCall?.name === 'TodoWrite') continue;
       const identity = askUserToolIdentity(row, toolCall?.id);
       const result = parseAskUserResult(toolCall, identity ? toolResults.get(identity) : null);
       if (result) askUserResults.push(result);
-      else omittedToolCount += 1;
+      visibleToolCalls.push(toolCall);
     }
     const { toolCalls, ...rowWithoutToolCalls } = row;
     const responseKind = projectedResponseKind(rowWithoutToolCalls);
@@ -396,11 +384,11 @@ export function projectVisibleSessionMessages(messages) {
     const projected = {
       ...rest,
       ...(todos ? { todos } : {}),
-      ...(omittedToolCount > 0 ? { toolSummaryCount: omittedToolCount } : {}),
+      ...(visibleToolCalls.length > 0 ? { toolCalls: visibleToolCalls } : {}),
       ...(askUserResults.length > 0 ? { askUserResults } : {}),
     };
     if (!projected.content && !projected.attachments && !projected.images
-        && !projected.todos && !projected.toolSummaryCount && !projected.askUserResults) continue;
+        && !projected.todos && !projected.toolCalls && !projected.askUserResults) continue;
     visible.push(projected);
   }
   return visible;
@@ -1718,7 +1706,6 @@ export class ConversationStore {
 
     const { messages, truncated } = this.#loadRecentSessionWindow(sessionId, turnsLimit, {
       roles: null,
-      stripAssistantToolCalls: false,
       includeReflections,
     });
     if (truncated) {
@@ -1886,7 +1873,6 @@ export class ConversationStore {
       beforeSeq: cutoff,
       afterSeq: stopAtSeq === null ? -Infinity : stopAtSeq - 1,
       roles: null,
-      stripAssistantToolCalls: false,
       visibleOnly: true,
     });
     const messages = projectVisibleSessionMessages(page.messages);
@@ -2186,7 +2172,6 @@ export class ConversationStore {
     const beforeRaw = this.#loadRecentSessionWindow(sessionId, beforeTurns + 1, {
       beforeSeq: anchorSeq + 1,
       roles: null,
-      stripAssistantToolCalls: false,
       visibleOnly: true,
     });
     const messages = beforeRaw.messages.slice();
@@ -2885,7 +2870,6 @@ export class ConversationStore {
     beforeSeq = Infinity,
     afterSeq = -Infinity,
     roles = null,
-    stripAssistantToolCalls = false,
     includeReflections = false,
     visibleOnly = false,
   } = {}) {
@@ -2902,11 +2886,6 @@ export class ConversationStore {
 
     const project = (m) => {
       if (roles && !roles.has(m.role)) return null;
-      if (stripAssistantToolCalls && m.role === 'assistant') {
-        const projected = projectAssistantToolsForVisibleHistory(m);
-        if (!projected.content && !projected.attachments && !projected.todos && !projected.toolSummaryCount) return null;
-        return projected;
-      }
       return m;
     };
     const keep = (m) => {

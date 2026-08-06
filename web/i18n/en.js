@@ -30,7 +30,6 @@ export default {
   'mermaid.exportJpg': 'Export JPG',
 
   // ============ Chat messages ============
-  'chat.toolActionsOmitted': '{count} older tool actions omitted',
 
   // ============ Login ============
   'login.subtitle': 'Yeaft Web Code Agent',

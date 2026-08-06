@@ -18,7 +18,6 @@ const VP_TURN_MESSAGE_TYPES = new Set([
   'assistant',
   'chat-image',
   'tool-result',
-  'tool-summary',
   'tool-use',
   'tool_result',
 ]);

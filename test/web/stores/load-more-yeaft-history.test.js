@@ -453,8 +453,9 @@ describe('Yeaft conversation loading state', () => {
           seq: 1, type: 'tool-use', toolName: 'TodoWrite', sessionId: 'session-a', isHistory: true,
         },
         {
-          id: 'm0001-summary', messageId: 'm0001', historyEntryId: 'entry-1', stableKey: 'entry-1:tool-summary',
-          seq: 1, type: 'tool-summary', content: 'read files', sessionId: 'session-a', isHistory: true,
+          id: 'm0001-tool', messageId: 'm0001', historyEntryId: 'entry-1', stableKey: 'entry-1:tool:read',
+          seq: 1, type: 'tool-use', toolName: 'FileRead', toolInput: { file_path: 'README.md' },
+          sessionId: 'session-a', isHistory: true, hasResult: true,
         },
         { id: 'live', type: 'assistant', content: 'streaming', sessionId: 'session-a', isStreaming: true },
       ]);
@@ -476,13 +477,14 @@ describe('Yeaft conversation loading state', () => {
           expect.objectContaining({ stableKey: 'entry-0:user' }),
           expect.objectContaining({ stableKey: 'entry-1:assistant' }),
           expect.objectContaining({ stableKey: 'entry-1:todos' }),
-          expect.objectContaining({ stableKey: 'entry-1:tool-summary' }),
+          expect.objectContaining({ stableKey: 'entry-1:tool:read', type: 'tool-use', toolName: 'FileRead' }),
         ],
       });
       expect(await readYeaftHistoryBrowserCache({
         fence: ownerA, agentId: 'agent-b', sessionId: 'session-a',
       })).toBeNull();
       const persisted = records.get('owner-a\u001fagent-a\u001fsession-a');
+      expect(persisted.schemaVersion).toBe(4);
       records.set(persisted.key, {
         ...persisted,
         lastAccessed: Date.now() - (365 * 24 * 60 * 60 * 1000),
@@ -752,7 +754,7 @@ describe('Yeaft conversation loading state', () => {
     }
   });
 
-  it('keeps a tool-only persisted anchor on its derived summary row', () => {
+  it('keeps a tool-only persisted anchor on its derived tool row', () => {
     const store = mkStore({ messagesMap: { 'yeaft-1': [] } });
     handleYeaftHistoryChunk(store, {
       conversationId: 'yeaft-1',
@@ -763,7 +765,7 @@ describe('Yeaft conversation loading state', () => {
         content: '',
         sessionId: 'g1',
         turnId: 'turn-tool-only',
-        toolSummaryCount: 1,
+        toolCalls: [{ id: 'tool-anchor', name: 'FileRead', input: { file_path: 'README.md' } }],
       }],
       oldestSeq: 42,
       hasMore: false,
@@ -771,10 +773,12 @@ describe('Yeaft conversation loading state', () => {
 
     expect(store.messagesMap['yeaft-1']).toEqual([
       expect.objectContaining({
-        id: 'm0042:tool-summary',
-        messageId: 'm0042:tool-summary',
+        id: 'm0042:tool:tool-anchor',
+        messageId: 'm0042:tool:tool-anchor',
         persistedMessageId: 'm0042',
-        type: 'tool-summary',
+        type: 'tool-use',
+        toolName: 'FileRead',
+        toolInput: { file_path: 'README.md' },
         turnId: 'turn-tool-only',
       }),
     ]);
@@ -1156,11 +1160,13 @@ describe('Yeaft conversation loading state', () => {
       expect.objectContaining({ id: 'm0200', type: 'user', quote }),
       expect.objectContaining({ id: 'm0201', type: 'assistant', content: 'Done' }),
       expect.objectContaining({ id: 'm0201:todos', type: 'tool-use', toolName: 'TodoWrite', toolInput: { todos: [{ content: 'Latest', status: 'completed' }] } }),
-      expect.objectContaining({ id: 'm0201:tool-summary', type: 'tool-summary', count: 1 }),
+      expect.objectContaining({
+        id: 'm0201:tool:index%3A1', type: 'tool-use', toolName: 'Bash', toolInput: { command: 'true' },
+      }),
     ]);
   });
 
-  it('synthesizes only a tool-summary row for tool-only assistant history', () => {
+  it('synthesizes full tool rows for tool-only assistant history', () => {
     const store = mkStore({
       yeaftActiveSessionFilter: 'g1',
       messagesMap: { 'yeaft-1': [] },
@@ -1176,7 +1182,11 @@ describe('Yeaft conversation loading state', () => {
         content: '',
         sessionId: 'g1',
         speakerVpId: 'vp-linus',
-        toolSummaryCount: 3,
+        toolCalls: [
+          { id: 'read-1', name: 'FileRead', input: { file_path: 'README.md' } },
+          { id: 'grep-1', name: 'Grep', input: { pattern: 'tool' } },
+          { id: 'bash-1', name: 'Bash', input: { command: 'true' } },
+        ],
         ts: '2026-05-01T10:00:00.000Z',
       }],
       oldestSeq: 200,
@@ -1185,7 +1195,9 @@ describe('Yeaft conversation loading state', () => {
     });
 
     expect(store.messagesMap['yeaft-1']).toEqual([
-      expect.objectContaining({ id: 'm0200:tool-summary', type: 'tool-summary', count: 3, omittedCount: 3, source: 'history', speakerVpId: 'vp-linus' }),
+      expect.objectContaining({ id: 'm0200:tool:read-1', type: 'tool-use', toolName: 'FileRead', speakerVpId: 'vp-linus' }),
+      expect.objectContaining({ id: 'm0200:tool:grep-1', type: 'tool-use', toolName: 'Grep', speakerVpId: 'vp-linus' }),
+      expect.objectContaining({ id: 'm0200:tool:bash-1', type: 'tool-use', toolName: 'Bash', speakerVpId: 'vp-linus' }),
     ]);
     expect(store.yeaftSessionHistoryState.g1).toEqual(expect.objectContaining({ count: 1 }));
   });

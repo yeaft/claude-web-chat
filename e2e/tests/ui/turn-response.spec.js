@@ -53,7 +53,7 @@ function harnessHtml() {
         { key: 'progress', content: '[Inspect files](#details)', kind: 'progress', explicitKind: true, isStreaming: false },
         { key: 'result', content: '## 改动', kind: 'result', explicitKind: true, isStreaming: false },
       ],
-      toolMsgs: [], toolSummaryCount: 0, imageMsgs: [],
+      toolMsgs: [], imageMsgs: [],
       todoMsg: { toolInput: { todos: [{ content: 'Verify spacing', status: 'pending' }] } },
       askMsg: null, messages: [], isStreaming: false, isActive: false,
     });
