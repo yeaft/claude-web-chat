@@ -195,6 +195,154 @@ describe('Yeaft session-scoped model config', () => {
     }
   }
 
+  async function assertMcpReloadRetiresInactiveRuntime({ active = 'project' } = {}) {
+    const root = makeDir();
+    const projectWorkDir = 'project-runtime';
+    const configPath = join(root, 'config.json');
+    const previousTransport = {
+      ws: ctx.ws,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+      CONFIG: ctx.CONFIG,
+    };
+    const sent = [];
+    const hotSwapSnapshots = [];
+    const managers = [];
+    const makeManager = (label) => {
+      const connected = new Set();
+      return {
+        label,
+        get hasServers() { return connected.size > 0; },
+        get toolCount() { return connected.size; },
+        names: () => [...connected],
+        status: () => [...connected].map(name => ({ name, ready: true, toolCount: 1 })),
+        async connectAll(servers) {
+          for (const server of servers) connected.add(server.name);
+          return { connected: [...connected], failed: [] };
+        },
+        async connect(server) { connected.add(server.name); },
+        async disconnect(name) { connected.delete(name); },
+        async disconnectAll() { connected.clear(); },
+      };
+    };
+    const liveSession = {
+      yeaftDir: root,
+      config: { dir: root, plugins: {} },
+      skillManager: { size: 0, list: () => [] },
+      mcpManager: {
+        hasServers: false,
+        status: () => [],
+        async connect() {},
+        async disconnect() {},
+        async disconnectAll() {},
+      },
+      toolRegistry: {
+        size: 0,
+        replaceMcpTools(manager) {
+          const snapshot = {
+            label: manager?.label || 'none',
+            names: (manager?.status?.() || []).map(status => status.name),
+          };
+          hotSwapSnapshots.push(snapshot);
+          return { removed: 0, added: snapshot.names.length };
+        },
+      },
+      engine: { setRuntimeManagers() {} },
+      status: { skills: 0, mcpServers: [], mcpFailed: [], mcpSkipped: [], tools: 0 },
+    };
+
+    writeFileSync(configPath, JSON.stringify({
+      mcpServers: [{ name: 'github', command: 'node', args: [], env: {} }],
+      plugins: {},
+    }));
+    ctx.CONFIG = { yeaftDir: root };
+    ctx.ws = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+    ctx.serverEncryptionRequired = false;
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = false;
+    __testSetSession(liveSession);
+    __testHooks.setRuntimeFactoriesForTest({
+      createSkillManager: () => ({ size: 0, list: () => [] }),
+      createMcpManager: () => {
+        const manager = makeManager(`runtime-${managers.length}`);
+        managers.push(manager);
+        return manager;
+      },
+      loadMcpConfig: () => ({
+        servers: JSON.parse(readFileSync(configPath, 'utf8')).mcpServers,
+        skipped: [],
+      }),
+    });
+
+    try {
+      await __testHooks.scheduleBaseRuntimeLoadForTest();
+      await __testHooks.scheduleProjectRuntimeLoadForTest(projectWorkDir);
+      expect(managers).toHaveLength(2);
+      expect(managers.map(manager => manager.names())).toEqual([['github'], ['github']]);
+
+      if (active === 'base') __testHooks.activateBaseRuntimeForTest();
+      const activeIndex = active === 'base' ? 0 : 1;
+      const inactiveIndex = active === 'base' ? 1 : 0;
+      expect(hotSwapSnapshots.at(-1)).toMatchObject({
+        label: `runtime-${activeIndex}`,
+        names: ['github'],
+      });
+
+      // Simulate an Agent config/CLI/external edit, then exercise the normal
+      // MCP Settings Reload all wire path rather than the CRUD writers.
+      writeFileSync(configPath, JSON.stringify({ mcpServers: [], plugins: {} }));
+      await handleMessage({
+        type: 'yeaft_mcp_reload',
+        requestId: `reload-retire-${active}`,
+      });
+      await vi.waitFor(() => expect(sent.some(frame => (
+        frame.type === 'yeaft_mcp_updated' && frame.reason === 'reload'
+      ))).toBe(true));
+
+      const reloadResult = sent.find(frame => frame.type === 'yeaft_mcp_reload_result');
+      const reloadBroadcast = sent.filter(frame => (
+        frame.type === 'yeaft_mcp_updated' && frame.reason === 'reload'
+      )).at(-1);
+      expect(reloadResult).toMatchObject({
+        requestId: `reload-retire-${active}`,
+        servers: [],
+        runtime: { connected: false, perServer: [] },
+        error: null,
+      });
+      expect(reloadBroadcast).toMatchObject({
+        servers: [],
+        runtime: { connected: false, perServer: [] },
+        error: null,
+      });
+      expect(managers[activeIndex].names()).toEqual([]);
+      expect(managers[inactiveIndex].names()).toEqual([]);
+
+      // A real next turn must rebuild the retired inactive runtime from the
+      // current disk config, not merely fall back to an empty manager.
+      if (active === 'base') {
+        await __testHooks.scheduleProjectRuntimeLoadForTest(projectWorkDir);
+        __testHooks.activateProjectRuntimeForTest(projectWorkDir);
+      } else {
+        await __testHooks.scheduleBaseRuntimeLoadForTest();
+        __testHooks.activateBaseRuntimeForTest();
+      }
+      expect(managers).toHaveLength(3);
+      expect(managers[2].names()).toEqual([]);
+      expect(hotSwapSnapshots.at(-1)).toMatchObject({
+        label: 'runtime-2',
+        names: [],
+      });
+    } finally {
+      __testHooks.resetRuntimeFactoriesForTest();
+      ctx.ws = previousTransport.ws;
+      ctx.serverEncryptionRequired = previousTransport.serverEncryptionRequired;
+      ctx.outboundSendQueue = previousTransport.outboundSendQueue;
+      ctx.outboundSendQueueActive = previousTransport.outboundSendQueueActive;
+      ctx.CONFIG = previousTransport.CONFIG;
+    }
+  }
+
   it('normalizes and persists bounded telemetry settings without touching other config', () => {
     expect(normaliseTelemetrySection({
       enabled: false,
@@ -407,6 +555,14 @@ describe('Yeaft session-scoped model config', () => {
 
   it('does not let a project runtime bootstrap restore an MCP removed during startup', async () => {
     await assertMcpBootstrapRemoveDoesNotRestoreServer({ workDir: 'project-runtime' });
+  });
+
+  it('does not let full MCP reload revive a stale base cache after a project runtime is active', async () => {
+    await assertMcpReloadRetiresInactiveRuntime({ active: 'project' });
+  });
+
+  it('does not let full MCP reload revive a stale project cache after the base runtime is active', async () => {
+    await assertMcpReloadRetiresInactiveRuntime({ active: 'base' });
   });
 
   it('rejects MCP reload before touching a live runtime when config is invalid', async () => {

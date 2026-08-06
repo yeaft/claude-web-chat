@@ -7876,6 +7876,12 @@ async function runYeaftMcpReloadMutation(msg = {}) {
     return;
   }
 
+  // Reload applies an externally changed Agent MCP config, so stale runtime
+  // caches are just as unsafe as after add/remove. Retire them before touching
+  // the active manager; a later base/project activation must rebuild instead
+  // of flattening an old MCP connection set.
+  await retireInactiveMcpRuntimes(owner, mcpManager);
+
   const configured = listed.servers;
   const enabled = configured.filter(server => isMcpServerEnabled(server.name));
   const failures = [];
