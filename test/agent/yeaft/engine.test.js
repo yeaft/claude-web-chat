@@ -31,6 +31,20 @@ import { runDream } from '../../../agent/yeaft/dream/runner.js';
 import { extractAndWriteMemorySegments } from '../../../agent/yeaft/dream/segment-extract.js';
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
 import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
+import { loadConfig } from '../../../agent/yeaft/config.js';
+import {
+  CONDITIONAL_BUILTIN_TOOL_NAMES,
+  resolveActiveToolNames,
+} from '../../../agent/yeaft/tools/activation.js';
+import discoverToolsTool, {
+  TOOL_DISCOVERY_MAX_OUTPUT_BYTES,
+  discoverToolCapabilities,
+} from '../../../agent/yeaft/tools/discover-tools.js';
+import {
+  inferProjectDocScopes,
+  projectDocWriteScopesNeedingReload,
+  selectProjectDocContext,
+} from '../../../agent/yeaft/sessions/project-doc.js';
 import todoWriteTool from '../../../agent/yeaft/tools/todo-write.js';
 import startPlanTool from '../../../agent/yeaft/tools/start-plan.js';
 import {
@@ -121,6 +135,685 @@ afterEach(() => {
 });
 
 // ─── Tests ────────────────────────────────────────────────────
+
+describe('active tool exposure and scoped prompts', () => {
+  it('keeps the user-required tools visible and activates other built-ins by condition', () => {
+    const registry = createFullRegistry();
+    const toolNames = registry.getToolNames();
+    const baseline = resolveActiveToolNames({ toolNames, prompt: 'Explain this code.' });
+
+    expect([...baseline]).toEqual(expect.arrayContaining([
+      'WebSearch',
+      'WebFetch',
+      'ViewImage',
+      'EnterWorktree',
+      'ExitWorktree',
+      'StartPlan',
+      'TodoWrite',
+      'FileRead',
+      'FileEdit',
+      'Bash',
+    ]));
+    expect([...baseline]).not.toEqual(expect.arrayContaining([
+      'HistorySearch',
+      'DiskUsage',
+      'SpawnAgent',
+      'ListAgents',
+      'CreateWorkItem',
+      'NotebookEdit',
+      'ImageGeneration',
+      'JsReplReset',
+    ]));
+
+    const contextual = resolveActiveToolNames({
+      toolNames,
+      prompt: 'Search the previous conversation, inspect disk usage, delegate an independent review, edit analysis.ipynb, and create a durable Work Item.',
+      collabToolPolicy: 'multi-vp',
+      activeTasks: [{ id: 'task_1', kind: 'shell' }],
+      imageGenerationConfigured: true,
+    });
+    expect([...contextual]).toEqual(expect.arrayContaining([
+      'HistorySearch',
+      'DiskUsage',
+      'SpawnAgent',
+      'ListAgents',
+      'ListTasks',
+      'ReadTaskLog',
+      'CancelTask',
+      'RouteForward',
+      'CreateWorkItem',
+      'NotebookEdit',
+    ]));
+    expect(contextual.has('ListAgents')).toBe(true);
+    expect(resolveActiveToolNames({
+      toolNames,
+      prompt: 'Run the task.',
+    }).has('SpawnAgent')).toBe(true);
+
+    const ordinaryLanguageCases = [
+      ['What did we decide about authentication?', 'HistorySearch', {}],
+      ['Please have another worker inspect this independently.', 'SpawnAgent', {}],
+      ['Make me a logo for this project.', 'ImageGeneration', { imageGenerationConfigured: true }],
+      ['Track this until it is finished across multiple sessions.', 'CreateWorkItem', {}],
+      ['The server says ENOSPC. Investigate the cause.', 'DiskUsage', {}],
+    ];
+    for (const [request, expectedTool, extra] of ordinaryLanguageCases) {
+      expect(resolveActiveToolNames({
+        toolNames,
+        prompt: request,
+        ...extra,
+      }).has(expectedTool), `${expectedTool} should activate for: ${request}`).toBe(true);
+    }
+
+    const withSubAgent = resolveActiveToolNames({
+      toolNames,
+      prompt: 'continue',
+      subAgentToolsActivated: true,
+    });
+    expect([...withSubAgent]).toEqual(expect.arrayContaining([
+      'SpawnAgent',
+      'PromptAgent',
+      'WaitAgent',
+      'CloseAgent',
+      'ListAgents',
+    ]));
+  });
+
+  it('discovers conditional and flattened MCP capabilities without lexical reachability gaps', async () => {
+    const registry = createFullRegistry();
+    const mcpManager = {
+      listTools: () => [{
+        name: 'tracker__enumerate_open_defects',
+        server: 'tracker',
+        description: 'Enumerate open defect records from the project tracker.',
+        inputSchema: {
+          type: 'object',
+          properties: { owner: { type: 'string' } },
+        },
+      }],
+      callTool: async () => ({ content: [{ type: 'text', text: '[]' }] }),
+    };
+    registry.registerAll(buildMcpFlattenedTools(mcpManager));
+    const toolNames = registry.getToolNames();
+    const candidates = registry.getAllTools()
+      .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name) || tool.name.startsWith('mcp__'))
+      .map(tool => ({
+        name: tool.name,
+        description: typeof tool.description === 'object' ? tool.description.en : tool.description,
+        parameters: tool.parameters,
+      }));
+    const paraphrases = [
+      ['Bring back the approach we used for login.', 'HistorySearch'],
+      ['Ask a separate specialist to examine this.', 'SpawnAgent'],
+      ['I need artwork for the launch header.', 'ImageGeneration'],
+      ['Make sure this objective keeps progressing after this chat.', 'CreateWorkItem'],
+      ['Tell me what is consuming the drive.', 'DiskUsage'],
+      ['显示分配给我的工单。', 'mcp__tracker__enumerate_open_defects'],
+    ];
+    for (const [prompt, expectedTool] of paraphrases) {
+      const active = resolveActiveToolNames({
+        toolNames,
+        prompt,
+        imageGenerationConfigured: true,
+      });
+      expect(active.has(expectedTool), `${expectedTool} starts hidden for: ${prompt}`).toBe(false);
+      expect(active.has('DiscoverTools')).toBe(true);
+      const directory = discoverToolCapabilities({ query: prompt, candidates });
+      expect(directory.tools.map(tool => tool.name), `discovery directory for: ${prompt}`).toContain(expectedTool);
+    }
+    for (const query of ['Show me tickets I own.', 'List my unresolved work.', '列出我尚未解决的工作。']) {
+      const directory = discoverToolCapabilities({ query, candidates });
+      expect(directory.tools.map(tool => tool.name), `semantic MCP directory for: ${query}`)
+        .toContain('mcp__tracker__enumerate_open_defects');
+    }
+
+    mockAdapter.pushResponse([
+      {
+        type: 'tool_call',
+        id: 'discover_tracker',
+        name: 'DiscoverTools',
+        input: { query: 'Show me tickets I own.' },
+      },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    mockAdapter.pushResponse([
+      {
+        type: 'tool_call',
+        id: 'call_tracker',
+        name: 'mcp__tracker__enumerate_open_defects',
+        input: { owner: '@me' },
+      },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    mockAdapter.pushResponse([
+      { type: 'text_delta', text: 'No matching defects.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const engine = new Engine({
+      adapter: mockAdapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+      mcpManager,
+    });
+    const events = [];
+    for await (const event of engine.query({
+      prompt: 'Show me tickets I own.',
+    })) events.push(event);
+
+    expect(mockAdapter.callLog[0].tools.map(tool => tool.name)).toContain('DiscoverTools');
+    expect(mockAdapter.callLog[0].tools.map(tool => tool.name)).not.toContain('mcp__tracker__enumerate_open_defects');
+    const discoveryEvent = events.find(event => event.type === 'tool_end' && event.name === 'DiscoverTools');
+    expect(discoveryEvent).toMatchObject({ isError: false });
+    const discoveryResult = JSON.parse(discoveryEvent.output);
+    expect(discoveryResult.tools.map(tool => tool.name)).toContain('mcp__tracker__enumerate_open_defects');
+    expect(discoveryResult.tools.length).toBeLessThanOrEqual(24);
+    expect(discoveryResult.tools.every(tool => !Object.hasOwn(tool, 'parameters'))).toBe(true);
+    expect(Buffer.byteLength(discoveryEvent.output, 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+    expect(mockAdapter.callLog[1].tools.map(tool => tool.name)).toContain('mcp__tracker__enumerate_open_defects');
+    expect(events.find(event => event.type === 'tool_end' && event.name === 'mcp__tracker__enumerate_open_defects')).toMatchObject({
+      output: '[]',
+      isError: false,
+    });
+  });
+
+  it('keeps real Engine discovery pagination stable and restarts after dynamic MCP changes', async () => {
+    const toolRecords = Array.from({ length: 53 }, (_, index) => ({
+      name: `catalog__capability_${String(index).padStart(2, '0')}`,
+      server: 'catalog',
+      description: `Capability ${index}`,
+      inputSchema: { type: 'object', properties: { value: { type: 'number' } } },
+    }));
+    const calls = [];
+    const mcpManager = {
+      listTools: () => toolRecords,
+      callTool: async (name, input) => {
+        calls.push({ name, input });
+        return { content: [{ type: 'text', text: `called ${name}` }] };
+      },
+    };
+    const registry = createFullRegistry();
+    registry.registerAll(buildMcpFlattenedTools(mcpManager));
+    const adapter = new MockAdapter();
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'page-1', name: 'DiscoverTools', input: { query: '没有词法匹配' } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'page-2', name: 'DiscoverTools', input: { query: '没有词法匹配', cursor: 24 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'call-middle', name: 'mcp__catalog__capability_30', input: { value: 30 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'page-3', name: 'DiscoverTools', input: { query: '没有词法匹配', cursor: 48 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'stale-sequence', name: 'DiscoverTools', input: { query: '没有词法匹配', cursor: 48 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'text_delta', text: 'All discovery pages were reachable.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const engine = new Engine({
+      adapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+      mcpManager,
+    });
+    const events = [];
+    for await (const event of engine.query({ prompt: 'Inspect the complete hidden catalogue.' })) events.push(event);
+
+    const staleSequence = JSON.parse(events.find(event => event.id === 'stale-sequence' && event.type === 'tool_end').output);
+    expect(staleSequence).toMatchObject({ tools: [], next_cursor: null, restart_required: true });
+    const pages = events
+      .filter(event => event.type === 'tool_end' && event.name === 'DiscoverTools' && event.id !== 'stale-sequence')
+      .map(event => JSON.parse(event.output));
+    const expectedDirectoryNames = registry.getAllTools()
+      .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name) || tool.name.startsWith('mcp__'))
+      .map(tool => tool.name);
+    expect(pages.map(page => ({ count: page.tools.length, next: page.next_cursor, total: page.total, restart: page.restart_required })))
+      .toEqual([
+        { count: 24, next: 24, total: expectedDirectoryNames.length, restart: undefined },
+        { count: 24, next: 48, total: expectedDirectoryNames.length, restart: undefined },
+        { count: expectedDirectoryNames.length - 48, next: null, total: expectedDirectoryNames.length, restart: undefined },
+      ]);
+    expect(pages.map(page => page.next_cursor)).toEqual([24, 48, null]);
+    expect(pages.map(page => page.total)).toEqual([
+      expectedDirectoryNames.length,
+      expectedDirectoryNames.length,
+      expectedDirectoryNames.length,
+    ]);
+    const pageNames = pages.flatMap(page => page.tools.map(tool => tool.name));
+    expect(pageNames).toHaveLength(expectedDirectoryNames.length);
+    expect(new Set(pageNames)).toEqual(new Set(expectedDirectoryNames));
+    expect(pageNames.filter(name => name === 'mcp__catalog__capability_30')).toHaveLength(1);
+    expect(adapter.callLog[2].tools.map(tool => tool.name)).toContain('mcp__catalog__capability_30');
+    expect(adapter.callLog[3].tools.map(tool => tool.name)).toContain('mcp__catalog__capability_30');
+    expect(events.find(event => event.id === 'call-middle' && event.type === 'tool_end')).toMatchObject({
+      isError: false,
+      output: 'called catalog__capability_30',
+    });
+    expect(calls).toEqual([{ name: 'catalog__capability_30', input: { value: 30 } }]);
+
+    const schemaChangedRecords = toolRecords.map((tool, index) => index === 0
+      ? { ...tool, description: 'Capability zero changed during traversal' }
+      : tool);
+    mcpManager.listTools = () => schemaChangedRecords;
+    registry.replaceMcpTools(mcpManager, buildMcpFlattenedTools);
+    const schemaChangedAdapter = new MockAdapter();
+    schemaChangedAdapter.pushResponse([
+      { type: 'tool_call', id: 'schema-start', name: 'DiscoverTools', input: { query: 'schema-changing catalogue' } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    schemaChangedAdapter.pushResponse([
+      { type: 'tool_call', id: 'schema-stale', name: 'DiscoverTools', input: { query: 'schema-changing catalogue', cursor: 24 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    schemaChangedAdapter.pushResponse([
+      { type: 'text_delta', text: 'The schema change required a restart.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const schemaChangedEngine = new Engine({
+      adapter: schemaChangedAdapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+      mcpManager,
+    });
+    const schemaEvents = [];
+    const schemaQuery = schemaChangedEngine.query({ prompt: 'Inspect a schema-changing catalogue.' });
+    const originalStream = schemaChangedAdapter.stream.bind(schemaChangedAdapter);
+    let streamCalls = 0;
+    schemaChangedAdapter.stream = async function* (params) {
+      streamCalls += 1;
+      if (streamCalls === 2) {
+        const mutated = schemaChangedRecords.map((tool, index) => index === 0
+          ? { ...tool, description: 'Capability zero changed again', inputSchema: { type: 'object', properties: { changed: { type: 'boolean' } } } }
+          : tool);
+        mcpManager.listTools = () => mutated;
+        registry.replaceMcpTools(mcpManager, buildMcpFlattenedTools);
+      }
+      yield* originalStream(params);
+    };
+    for await (const event of schemaQuery) schemaEvents.push(event);
+    const schemaStale = JSON.parse(schemaEvents.find(event => event.id === 'schema-stale' && event.type === 'tool_end').output);
+    expect(schemaStale).toMatchObject({ tools: [], next_cursor: null, restart_required: true });
+
+    const changedRecords = [
+      toolRecords[0],
+      { name: 'catalog__replacement', server: 'catalog', description: 'Replacement capability', inputSchema: { type: 'object', properties: {} } },
+    ];
+    const boundedRestart = await discoverToolsTool.execute(
+      { query: 'changed catalogue', cursor: 24 },
+      {
+        discoverTools: () => ({
+          tools: [],
+          next_cursor: null,
+          total: 2,
+          omitted_invalid: 0,
+          restart_required: true,
+          message: 'Restart discovery without a cursor.',
+        }),
+      },
+    );
+    expect(Buffer.byteLength(boundedRestart, 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+    expect(JSON.parse(boundedRestart)).toMatchObject({ restart_required: true, next_cursor: null });
+    mcpManager.listTools = () => changedRecords;
+    registry.replaceMcpTools(mcpManager, buildMcpFlattenedTools);
+    const changedAdapter = new MockAdapter();
+    changedAdapter.pushResponse([
+      { type: 'tool_call', id: 'stale-page', name: 'DiscoverTools', input: { query: '没有词法匹配', cursor: 24 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    changedAdapter.pushResponse([
+      { type: 'tool_call', id: 'restart-page', name: 'DiscoverTools', input: { query: '没有词法匹配' } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    changedAdapter.pushResponse([
+      { type: 'text_delta', text: 'Restarted against the changed directory.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const changedEngine = new Engine({
+      adapter: changedAdapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+      mcpManager,
+    });
+    const changedEvents = [];
+    for await (const event of changedEngine.query({ prompt: 'Inspect the changed hidden catalogue.' })) changedEvents.push(event);
+    const stale = JSON.parse(changedEvents.find(event => event.id === 'stale-page' && event.type === 'tool_end').output);
+    expect(stale).toMatchObject({ tools: [], next_cursor: null, restart_required: true });
+    const restarted = JSON.parse(changedEvents.find(event => event.id === 'restart-page' && event.type === 'tool_end').output);
+    const restartedNames = restarted.tools.map(tool => tool.name);
+    expect(restarted.next_cursor).toBeNull();
+    expect(restarted.restart_required).not.toBe(true);
+    expect(restartedNames).toContain('mcp__catalog__capability_00');
+    expect(restartedNames).toContain('mcp__catalog__replacement');
+    expect(restartedNames.some(name => name.startsWith('mcp__catalog__capability_01'))).toBe(false);
+  });
+
+  it('pages the complete hidden directory and bounds hostile metadata before serialization', () => {
+    const candidates = Array.from({ length: 53 }, (_, index) => ({
+      name: `mcp__catalog__capability_${String(index).padStart(2, '0')}`,
+      description: `Capability ${index}`,
+      parameters: { type: 'object', properties: {} },
+    }));
+    const seen = new Set();
+    let cursor = 0;
+    do {
+      const result = discoverToolCapabilities({ query: '没有词法匹配', candidates, cursor });
+      expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+      for (const tool of result.tools) seen.add(tool.name);
+      cursor = result.next_cursor;
+    } while (cursor != null);
+    expect(seen).toEqual(new Set(candidates.map(tool => tool.name)));
+
+    const hostile = Array.from({ length: 24 }, (_, index) => ({
+      name: `mcp__hostile__${index}_${'x'.repeat(10_000)}`,
+      description: 'y'.repeat(10_000),
+      parameters: { type: 'object', properties: {} },
+    }));
+    const bounded = discoverToolCapabilities({ query: 'anything', candidates: hostile });
+    expect(bounded.tools).toEqual([]);
+    expect(bounded.next_cursor).toBeNull();
+    expect(bounded.omitted_invalid).toBe(24);
+    expect(Buffer.byteLength(JSON.stringify(bounded), 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+
+    const metadataBounded = discoverToolCapabilities({
+      query: 'anything',
+      candidates: [{ name: `mcp__near_limit__${'n'.repeat(200)}`, description: 'z'.repeat(10_000) }],
+    });
+    expect(metadataBounded.tools).toHaveLength(1);
+    expect(Buffer.byteLength(JSON.stringify(metadataBounded), 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+
+    const invalidCursor = discoverToolCapabilities({ query: 'anything', candidates, cursor: 54 });
+    expect(invalidCursor).toMatchObject({
+      tools: [],
+      next_cursor: null,
+      total: 53,
+      restart_required: true,
+    });
+    expect(Buffer.byteLength(JSON.stringify(invalidCursor), 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+  });
+
+  it('filters provider schemas and fences execution with canonical alias activation', async () => {
+    const registry = createFullRegistry();
+    const baseline = resolveActiveToolNames({
+      toolNames: registry.getToolNames(),
+      prompt: 'Explain this code.',
+    });
+    const defs = registry.getToolDefs('en', { activeToolNames: baseline });
+    const names = defs.map(def => def.name);
+    const hiddenDirectory = discoverToolCapabilities({
+      query: 'reset the JavaScript scratchpad',
+      candidates: registry.getAllTools()
+        .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name))
+        .map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters })),
+    });
+
+    expect(names).toContain('WebSearch');
+    expect(names).toContain('EnterWorktree');
+    expect(names).not.toContain('SpawnAgent');
+    expect(hiddenDirectory.tools.map(tool => tool.name)).not.toContain('JsReplReset');
+    expect(registry.isAllowed('Agent', { activeToolNames: baseline })).toBe(false);
+    expect(registry.has('Agent')).toBe(true);
+    expect(registry.isAllowed('Agent', {
+      activeToolNames: new Set([...baseline, 'SpawnAgent']),
+    })).toBe(true);
+  });
+
+  it('keeps custom tools visible and blocks a hidden built-in hallucination in the Engine', async () => {
+    const registry = new ToolRegistry();
+    let hiddenExecutions = 0;
+    registry.register({
+      name: 'DiskUsage',
+      description: 'Conditionally active disk tool',
+      parameters: { type: 'object', properties: {} },
+      isReadOnly: () => true,
+      execute: async () => {
+        hiddenExecutions += 1;
+        return 'should not run';
+      },
+    });
+    registry.register({
+      name: 'CustomHostTool',
+      description: 'Embedding-defined tool',
+      parameters: { type: 'object', properties: {} },
+      isReadOnly: () => true,
+      execute: async () => 'custom',
+    });
+
+    mockAdapter.pushResponse([
+      { type: 'tool_call', id: 'hidden', name: 'DiskUsage', input: { path: '.' } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    mockAdapter.pushResponse([
+      { type: 'text_delta', text: 'The tool was inactive.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const engine = new Engine({
+      adapter: mockAdapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+    });
+    const events = [];
+    for await (const event of engine.query({ prompt: 'Explain this code.' })) events.push(event);
+
+    const firstNames = mockAdapter.callLog[0].tools.map(tool => tool.name);
+    expect(firstNames).toContain('CustomHostTool');
+    expect(firstNames).not.toContain('DiskUsage');
+    expect(hiddenExecutions).toBe(0);
+    expect(events.find(event => event.type === 'tool_end')).toMatchObject({ isError: true });
+    expect(events.find(event => event.type === 'tool_end').output).toContain('not active');
+  });
+
+  it('selects project core and task-scoped sections while preserving a directory', () => {
+    const padding = 'core rule '.repeat(900);
+    const projectDoc = [
+      '# Example Project',
+      '',
+      'Project overview.',
+      '',
+      '## Product Model and Terminology',
+      padding,
+      '',
+      '## Agent Runtime',
+      'AGENT_RUNTIME_RULE',
+      '',
+      '## Web and Server',
+      'WEB_SERVER_RULE',
+      '',
+      '## UI Rules',
+      'UI_RULE',
+      '',
+      '## Worktree Review and Release',
+      'RELEASE_RULE',
+      '',
+      '## Operations and Security',
+      'SECURITY_RULE',
+    ].join('\n');
+
+    const selected = selectProjectDocContext(projectDoc, {
+      prompt: 'Change agent/yeaft/engine.js prompt assembly.',
+      language: 'en',
+    });
+    expect(selected.scoped).toBe(true);
+    expect(selected.text).toContain('AGENT_RUNTIME_RULE');
+    expect(selected.text).toContain('SECURITY_RULE');
+    expect(selected.text).not.toContain('\nWEB_SERVER_RULE\n');
+    expect(selected.text).toContain('Project Rules Available On Demand');
+    expect(selected.text).toContain('- Web and Server');
+
+    const missingWebRules = projectDocWriteScopesNeedingReload(selected, ['web/stores/chat.js']);
+    expect([...missingWebRules]).toContain('web');
+    const reloaded = selectProjectDocContext(projectDoc, {
+      prompt: 'Change agent/yeaft/engine.js prompt assembly.',
+      pathHints: ['web/stores/chat.js'],
+      forcedScopes: missingWebRules,
+      language: 'en',
+    });
+    expect(reloaded.text).toContain('WEB_SERVER_RULE');
+    expect(projectDocWriteScopesNeedingReload(reloaded, ['web/stores/chat.js']).size).toBe(0);
+    expect([...inferProjectDocScopes({ pathHints: ['web/stores/chat.js'] })]).toContain('web');
+  });
+
+  it('uses stable core plus active guidance without repeating the tool catalogue', () => {
+    const concise = buildSystemPrompt({ language: 'en', toolNames: ['WebSearch', 'FileRead'] });
+    const planned = buildSystemPrompt({ language: 'en', toolNames: ['FileRead', 'StartPlan', 'TodoWrite'] });
+
+    expect(concise).toContain('Session Participant');
+    expect(concise).toContain('Active Tool Guidance');
+    expect(concise).toContain('Read existing files before editing');
+    expect(concise).toContain('do not revert changes you did not make');
+    expect(concise).toContain('Do not amend commits unless the user explicitly asks');
+    expect(concise).toContain('Do not use `git reset --hard` or `git clean -f` without user approval');
+    expect(concise).not.toContain('Available tools:');
+    expect(concise).not.toContain('For non-trivial multi-step work');
+    expect(planned).toContain('For non-trivial multi-step work');
+    expect(planned).not.toContain('Available tools: FileRead');
+  });
+
+  it('preserves image generation configuration through the authoritative loader', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-image-config-'));
+    try {
+      writeFileSync(join(dir, 'config.json'), JSON.stringify({
+        primaryModel: 'test-model',
+        imageApiUrl: 'https://images.example.test/generate',
+      }));
+      expect(loadConfig({ dir }).imageApiUrl).toBe('https://images.example.test/generate');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshes task-management schemas after a current-turn background task starts', async () => {
+    const registry = new ToolRegistry();
+    const activeTasks = [];
+    registry.register({
+      name: 'Bash',
+      description: 'Start a shell command.',
+      parameters: { type: 'object', properties: {} },
+      isReadOnly: () => false,
+      execute: async () => {
+        activeTasks.push({ id: 'task_live', kind: 'shell', status: 'running' });
+        return 'Started background task task_live.';
+      },
+    });
+    for (const name of ['ListTasks', 'ReadTaskLog', 'CancelTask']) {
+      registry.register({
+        name,
+        description: `${name} description`,
+        parameters: { type: 'object', properties: {} },
+        isReadOnly: () => true,
+        execute: async () => 'ok',
+      });
+    }
+    const taskManager = {
+      listActiveTasks: () => [...activeTasks],
+      renderActiveTasksForPrompt: () => activeTasks.length > 0 ? 'task_live is running' : '',
+    };
+    mockAdapter.pushResponse([
+      { type: 'tool_call', id: 'start_bg', name: 'Bash', input: { command: 'npm start', background: true } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    mockAdapter.pushResponse([
+      { type: 'text_delta', text: 'The server is running in the background.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const engine = new Engine({
+      adapter: mockAdapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+      taskManager,
+    });
+    for await (const _event of engine.query({ prompt: 'Start the dev server and leave it running.' })) { /* drain */ }
+
+    expect(mockAdapter.callLog[0].tools.map(tool => tool.name)).not.toContain('ListTasks');
+    expect(mockAdapter.callLog[1].tools.map(tool => tool.name)).toEqual(expect.arrayContaining([
+      'ListTasks',
+      'ReadTaskLog',
+      'CancelTask',
+    ]));
+    expect(mockAdapter.callLog[1].system).toContain('task_live is running');
+  });
+
+  it('reloads unclassified and Bash write rules before executing against a large project doc', async () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'yeaft-project-doc-reload-'));
+    const projectDoc = [
+      '# Example Project',
+      'Project preamble.',
+      '## Product Model and Terminology',
+      'CORE_RULE '.repeat(900),
+      '## Naming and Compatibility Rules',
+      'PARENT_CORE_RULE',
+      '### No Version-Suffix Filenames',
+      'CORE_CHILD_RULE',
+      '## Database Migrations',
+      'DATABASE_MIGRATION_RULE',
+      '## Web and Server',
+      'WEB_RULE',
+    ].join('\n');
+    writeFileSync(join(workDir, 'CLAUDE.md'), projectDoc);
+    try {
+      for (const toolCall of [
+        { name: 'FileWrite', input: { file_path: 'db/migrations/002.sql', content: 'ALTER TABLE example;' } },
+        { name: 'Bash', input: { command: 'node scripts/migrate.js' } },
+      ]) {
+        const adapter = new MockAdapter();
+        let executions = 0;
+        const registry = new ToolRegistry();
+        registry.register({
+          name: toolCall.name,
+          description: `${toolCall.name} test tool`,
+          parameters: { type: 'object', properties: {} },
+          isReadOnly: () => false,
+          execute: async () => {
+            executions += 1;
+            return 'executed';
+          },
+        });
+        adapter.pushResponse([
+          { type: 'tool_call', id: `write_${toolCall.name}`, ...toolCall },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        adapter.pushResponse([
+          { type: 'text_delta', text: 'Reviewed the newly loaded rules.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024, projectDocMaxBytes: 64 * 1024 },
+          toolRegistry: registry,
+        });
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'Update the deployment state.',
+          workDir,
+        })) events.push(event);
+
+        expect(executions).toBe(0);
+        expect(events.find(event => event.type === 'tool_end')).toMatchObject({
+          isError: true,
+          skipped: true,
+        });
+        expect(adapter.callLog[1].system).toContain('DATABASE_MIGRATION_RULE');
+        expect(adapter.callLog[1].system).toContain('CORE_CHILD_RULE');
+      }
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('Engine memory prompt hygiene', () => {
   it('normalizes current and related Session summaries into separate resident sources', () => {
@@ -1465,7 +2158,7 @@ describe('Engine', () => {
         const engine = new Engine({
           adapter,
           trace,
-          config: { model: 'test-model', maxOutputTokens: 1024, maxContextTokens: 1000 },
+          config: { model: 'test-model', maxOutputTokens: 1024, maxContextTokens: 400 },
           conversationStore,
           yeaftDir,
         });
@@ -1529,7 +2222,7 @@ describe('Engine', () => {
         const engine = new Engine({
           adapter,
           trace,
-          config: { model: 'test-model', maxOutputTokens: 1024, maxContextTokens: 1000 },
+          config: { model: 'test-model', maxOutputTokens: 1024, maxContextTokens: 400 },
           conversationStore,
           yeaftDir,
         });
@@ -5088,10 +5781,23 @@ describe('Engine', () => {
         expect(lstatSync(eventFile).size).toBeLessThan(8 * 1024 * 1024);
 
         const reopened = new DebugTrace(traceRoot);
+        const reopenedStats = await reopened.stats();
+        expect(reopenedStats.turnCount).toBeGreaterThanOrEqual(100);
         const detail = await reopened.fetchTurnDebug({ sessionId: 's-long', turnId: 'long-tool-turn' });
         expect(detail.turns).toHaveLength(1);
         expect(detail.loops).toHaveLength(100);
         expect(detail.loops.at(-1)?.loopNumber).toBe(100);
+
+        // Aggregate queries must not pin every full request payload in memory.
+        // After stats(), detail still comes from disk rather than a process-life
+        // cache populated by a global hydrate.
+        writeFileSync(eventFile, '', 'utf8');
+        const detailAfterDiskChange = await reopened.fetchTurnDebug({
+          sessionId: 's-long',
+          turnId: 'long-tool-turn',
+        });
+        expect(detailAfterDiskChange.loops).toEqual([]);
+        writeFileSync(eventFile, savedEvents, 'utf8');
         await reopened.close();
 
         appendFileSync(eventFile, '{"type":"loop"', 'utf8');
@@ -5161,11 +5867,54 @@ describe('Engine', () => {
           legacyWriter.endTurn(legacyNext, { responseText: 'legacy-2', stopReason: 'end_turn' });
           await legacyWriter.close();
           const legacyReader = new DebugTrace(legacyRoot);
+          const legacyStats = await legacyReader.stats();
+          expect(legacyStats).toMatchObject({ turnCount: 2, toolCount: 0, requestCount: 1 });
           const legacyDetail = await legacyReader.fetchTurnDebug({ sessionId: 'legacy-session', turnId: 'legacy-turn' });
           expect(legacyDetail.loops.map(loop => loop.response)).toEqual(['legacy-1', 'legacy-2']);
+          const rawPayloadSearch = await legacyReader.fetchRecentDebugHistory({
+            sessionId: 'legacy-session',
+            indexOnly: true,
+            search: 'legacy-1',
+          });
+          expect(rawPayloadSearch.turns).toEqual([]);
           await legacyReader.close();
         } finally {
           rmSync(legacyRoot, { recursive: true, force: true });
+        }
+
+        const safeDirRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-safe-dir-'));
+        try {
+          const sessionId = 'legacy/session';
+          const safeWriter = new DebugTrace(safeDirRoot);
+          const oldSafeTurn = safeWriter.startTurn({ traceId: 'old-safe-turn', turnNumber: 1, sessionId });
+          safeWriter.endTurn(oldSafeTurn, { responseText: 'old-response', stopReason: 'end_turn' });
+          safeWriter.finalizeQuery('old-safe-turn', { sessionId });
+          const safeTurn = safeWriter.startTurn({ traceId: 'safe-turn', turnNumber: 1, sessionId });
+          safeWriter.logTool(safeTurn, { toolName: 'legacy_tool', toolOutput: 'needle-tool-output' });
+          safeWriter.endTurn(safeTurn, { responseText: 'needle-response', stopReason: 'end_turn' });
+          safeWriter.finalizeQuery('safe-turn', { sessionId });
+          await safeWriter.close();
+
+          const sessionsDir = join(safeDirRoot, 'sessions');
+          const [currentSessionName] = readdirSync(sessionsDir);
+          const currentSessionDir = join(sessionsDir, currentSessionName);
+          const legacySessionDir = join(sessionsDir, 'legacy_session');
+          renameSync(currentSessionDir, legacySessionDir);
+
+          const safeReader = new DebugTrace(safeDirRoot);
+          expect(await safeReader.stats()).toMatchObject({ turnCount: 2, toolCount: 1, requestCount: 2 });
+          const safeDetail = await safeReader.fetchTurnDebug({ sessionId, turnId: 'safe-turn' });
+          expect(safeDetail.loops.map(loop => loop.response)).toEqual(['needle-response']);
+          expect(await safeReader.queryTools({ name: 'legacy_tool' })).toHaveLength(1);
+          expect(await safeReader.search('needle-response')).toHaveLength(1);
+          expect(await safeReader.cleanup(1)).toMatchObject({ deletedRequests: 1 });
+          const afterPrune = await safeReader.fetchTurnDebug({ sessionId, turnId: 'safe-turn' });
+          expect(afterPrune.loops.map(loop => loop.response)).toEqual(['needle-response']);
+          const prunedSafe = await safeReader.fetchTurnDebug({ sessionId, turnId: 'old-safe-turn' });
+          expect(prunedSafe.loops).toEqual([]);
+          await safeReader.close();
+        } finally {
+          rmSync(safeDirRoot, { recursive: true, force: true });
         }
 
         const retentionRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-retention-'));
@@ -5552,7 +6301,8 @@ describe('Engine', () => {
       }
 
       const toolGuidanceCall = mockAdapter.callLog[0];
-      expect(toolGuidanceCall.system).toContain('可用工具：search');
+      expect(toolGuidanceCall.tools.map(tool => tool.name)).toContain('search');
+      expect(toolGuidanceCall.system).not.toContain('可用工具：search');
 
       const enSystem = buildSystemPrompt({
         language: 'en',
@@ -5581,14 +6331,14 @@ describe('Engine', () => {
       })).toContain('当前 Session 隶属于当前 Project。当前 Project 的统一 instruction 是：');
       expect(buildSystemPrompt({ language: 'en', projectInstruction: '   ' }))
         .not.toContain('[Project Instruction]');
-      expect(enSystem).toContain('Avoid an intermediate `TodoWrite`-only model round');
-      expect(enSystem).toMatch(/mark work completed only after\s+evidence/);
-      expect(enSystem).toContain('A standalone `TodoWrite` remains valid');
+      expect(enSystem).toContain('use `StartPlan` before execution');
+      expect(enSystem).toContain('keep the visible `TodoWrite` checklist current');
+      expect(enSystem).toContain('do not stop after planning');
       expect(zhSystem).toContain('当前 Session 隶属于 Project Yeaft（project-123）。当前 Project 的统一 instruction 是：');
       expect(zhSystem).toContain('发布前执行统一验证。');
-      expect(zhSystem).toContain('不要让中间状态的 `TodoWrite` 单独占一个');
-      expect(zhSystem).toContain('只有已有证据时才能把工作标记为完成');
-      expect(zhSystem).toContain('`TodoWrite` 仍可单独调用');
+      expect(zhSystem).toContain('使用 `StartPlan`');
+      expect(zhSystem).toContain('持续更新可见的 `TodoWrite` checklist');
+      expect(zhSystem).toContain('只有用户信息确实阻塞第一步时才在规划后停下');
 
       expect(todoWriteTool.description.en).toContain('BATCH WITH WORK');
       expect(todoWriteTool.description.en).toContain('same assistant response');

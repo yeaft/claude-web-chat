@@ -125,7 +125,7 @@ export default {
   'chat.agent.upgradeConfirm': 'Upgrade Agent "{name}" to the latest version?\nThe agent will restart after upgrading.',
   'chat.agent.alreadyLatest': 'Agent is already at the latest version (v{version}), no upgrade needed.',
   'chat.agent.nodeIncompatible': 'Agent upgrade aborted: target version v{version} requires Node {required}, but this machine is running Node {current}. Please upgrade Node.js first, then retry.',
-  'chat.agent.manualUpgradeRequired': 'Agent v{version} predates the safe remote-upgrade handoff. Legacy clients do not report enough platform information to prove the update is safe, so this request was blocked instead of risking an offline Agent. Run "npm install -g @yeaft/webchat-agent@latest --registry=https://pkg.yeaft.com/" once on that machine, then start the Agent again. Automatic upgrades are supported from v{minimum}.',
+  'chat.agent.manualUpgradeRequired': 'Agent v{version} does not advertise the safe remote-upgrade contract. Older clients do not report enough platform information to rule out the Windows package-lock failure, so this request was blocked instead of repeating a known-bad upgrade. First stop the selected Agent/service on that machine: if it runs under PM2 or another service manager, stop that exact instance there; if it runs in a foreground terminal, terminate that process. Confirm that process has exited, then run "npm install -g @yeaft/webchat-agent@latest --registry=https://pkg.yeaft.com/". Finally, start the same Agent instance again with its original configuration. Browser upgrades will work after this one-time bridge.',
   'chat.agent.online': '{count} Agent(s) online',
   'chat.agent.selectFirst': 'Please select an Agent first',
   'chat.agent.yeaft': 'Yeaft Chat',

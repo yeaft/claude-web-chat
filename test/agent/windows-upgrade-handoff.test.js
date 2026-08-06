@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,7 @@ import {
   prepareWindowsUpgradeRunner,
   releaseWindowsUpgradeLock,
 } from '../../agent/upgrade-command.js';
+import { spawnWindowsUpgradeRunner } from '../../agent/windows-upgrade-bootstrap.js';
 import {
   runWindowsUpgrade,
   startPm2Service,
@@ -59,10 +60,28 @@ describe('Windows upgrade handoff', () => {
       expect(invocation).toMatchObject({
         command: nodePath,
         args: [bootstrapPath, runnerPath, payloadPath],
-        options: { stdio: 'ignore', windowsHide: true },
+        options: { cwd: dirname(bootstrapPath), stdio: 'ignore', windowsHide: true },
       });
       expect(invocation.options).not.toHaveProperty('shell');
       expect(invocation.options).not.toHaveProperty('detached');
+
+      const runnerChild = new EventEmitter();
+      runnerChild.pid = 4242;
+      runnerChild.unref = vi.fn();
+      const spawnRunner = vi.fn(() => {
+        queueMicrotask(() => runnerChild.emit('spawn'));
+        return runnerChild;
+      });
+      await expect(spawnWindowsUpgradeRunner({
+        nodePath, runnerPath, payloadPath, logPath,
+      }, spawnRunner)).resolves.toBe(4242);
+      expect(spawnRunner).toHaveBeenCalledWith(nodePath, [runnerPath, payloadPath], expect.objectContaining({
+        cwd: dirname(runnerPath),
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      }));
+      expect(runnerChild.unref).toHaveBeenCalledOnce();
 
       const handoffDir = makeTempDir('yeaft-upgrade-handoff-unit-');
       const handoffPath = join(handoffDir, 'started');
@@ -328,7 +347,10 @@ describe('Windows upgrade handoff', () => {
       verifyRuntimeOnNode225(),
       verifyRunnerWithFakeServiceCli(),
     ];
-    if (process.platform === 'win32') subprocessChecks.push(verifyWindowsTreeKill());
+    if (process.platform === 'win32') {
+      subprocessChecks.push(verifyWindowsTreeKill());
+      subprocessChecks.push(verifyPackageDirectoryCanBeReplaced());
+    }
     await Promise.all(subprocessChecks);
 
     {
@@ -404,8 +426,119 @@ describe('Windows upgrade handoff', () => {
       })).resolves.toMatchObject({ exitCode: 1, restarted: false });
     }
 
-  }, 10_000);
+  }, 15_000);
 });
+
+async function verifyPackageDirectoryCanBeReplaced() {
+  const dir = makeTempDir('yeaft upgrade cwd lock-');
+  const packageParent = join(dir, 'node_modules', '@yeaft');
+  const packageDir = join(packageParent, 'webchat-agent');
+  const retiredDir = join(packageParent, '.webchat-agent-retired');
+  const upgradeRoot = join(dir, 'upgrade-runtime');
+  const runDir = join(upgradeRoot, 'runs', 'cwd-replacement');
+  const parentPath = join(packageDir, 'parent.mjs');
+  const parentInfoPath = join(dir, 'parent-info.json');
+  const launchedPath = join(dir, 'launcher-finished');
+  const installedPath = join(packageDir, 'installed-version');
+  const logPath = join(dir, 'upgrade.log');
+  const eventsPath = join(dir, 'events.jsonl');
+  const npmCliPath = join(dir, 'npm-cli.cjs');
+  const pm2CliPath = join(dir, 'pm2-cli.cjs');
+  const ecosystemPath = join(dir, 'ecosystem.config.cjs');
+  const commandModuleUrl = new URL('../../agent/upgrade-command.js', import.meta.url).href;
+  const sourceBootstrapPath = fileURLToPath(new URL('../../agent/windows-upgrade-bootstrap.js', import.meta.url));
+  const sourceRunnerPath = fileURLToPath(new URL('../../agent/windows-upgrade-runner.js', import.meta.url));
+  const sourceCommandPath = fileURLToPath(new URL('../../agent/upgrade-command.js', import.meta.url));
+
+  mkdirSync(packageDir, { recursive: true });
+  writeFileSync(join(packageDir, 'old-version'), '1.0.369');
+  writeFileSync(ecosystemPath, 'module.exports = { apps: [] };');
+  writeFileSync(npmCliPath, [
+    "const fs = require('node:fs');",
+    "const path = require('node:path');",
+    "const event = { tool: 'npm', args: process.argv.slice(2), cwd: process.cwd() };",
+    "try {",
+    "  fs.renameSync(process.env.YEAFT_TEST_PACKAGE_DIR, process.env.YEAFT_TEST_RETIRED_DIR);",
+    "  fs.mkdirSync(process.env.YEAFT_TEST_PACKAGE_DIR, { recursive: true });",
+    "  fs.writeFileSync(process.env.YEAFT_TEST_INSTALLED_PATH, '1.0.999');",
+    "  event.renamed = true;",
+    "} catch (error) {",
+    "  event.renamed = false;",
+    "  event.code = error.code || null;",
+    "  console.error(error.code || error.message);",
+    "  process.exitCode = 1;",
+    "}",
+    "fs.appendFileSync(process.env.YEAFT_TEST_EVENTS, JSON.stringify(event) + '\\n');",
+  ].join('\n'));
+  writeFileSync(pm2CliPath, [
+    "const fs = require('node:fs');",
+    "fs.appendFileSync(process.env.YEAFT_TEST_EVENTS, JSON.stringify({ tool: 'pm2', args: process.argv.slice(2), cwd: process.cwd() }) + '\\n');",
+  ].join('\n'));
+  writeFileSync(parentPath, [
+    "import { spawn } from 'node:child_process';",
+    "import { writeFileSync } from 'node:fs';",
+    `const api = await import(${JSON.stringify(commandModuleUrl)});`,
+    `const run = api.createWindowsUpgradeRun(${JSON.stringify(upgradeRoot)}, { runId: 'cwd-replacement', parentPid: process.pid });`,
+    "const payload = {",
+    "  ...run,",
+    "  parentPid: process.pid,",
+    "  packageSpec: '@yeaft/webchat-agent@1.0.999',",
+    "  globalInstall: true,",
+    `  installDir: ${JSON.stringify(dir)},`,
+    `  logPath: ${JSON.stringify(logPath)},`,
+    "  nodePath: process.execPath,",
+    `  npmCliPath: ${JSON.stringify(npmCliPath)},`,
+    `  pm2CliPath: ${JSON.stringify(pm2CliPath)},`,
+    "  pm2AppName: 'yeaft-agent-cwd-test',",
+    `  ecosystemPath: ${JSON.stringify(ecosystemPath)},`,
+    "};",
+    "api.prepareWindowsUpgradeRunner({",
+    `  sourceBootstrapPath: ${JSON.stringify(sourceBootstrapPath)},`,
+    `  sourceRunnerPath: ${JSON.stringify(sourceRunnerPath)},`,
+    `  sourceCommandPath: ${JSON.stringify(sourceCommandPath)},`,
+    "  ...run,",
+    "  payload,",
+    "});",
+    `writeFileSync(${JSON.stringify(parentInfoPath)}, JSON.stringify({ parentPid: process.pid, runDir: run.runDir }));`,
+    "await api.launchWindowsUpgradeScript({",
+    "  ...run,",
+    "  nodePath: process.execPath,",
+    `  logPath: ${JSON.stringify(logPath)},`,
+    "  spawnProcess: spawn,",
+    "});",
+    `writeFileSync(${JSON.stringify(launchedPath)}, 'done');`,
+  ].join('\n'));
+
+  const parentExitCode = await runChild(process.execPath, [parentPath], {
+    cwd: packageDir,
+    env: {
+      ...process.env,
+      YEAFT_TEST_EVENTS: eventsPath,
+      YEAFT_TEST_PACKAGE_DIR: packageDir,
+      YEAFT_TEST_RETIRED_DIR: retiredDir,
+      YEAFT_TEST_INSTALLED_PATH: installedPath,
+    },
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  expect(parentExitCode).toBe(0);
+  expect(existsSync(launchedPath)).toBe(true);
+  expect(JSON.parse(readFileSync(parentInfoPath, 'utf8'))).toMatchObject({ runDir });
+  expect(await waitForCondition(() => existsSync(installedPath) && !existsSync(join(upgradeRoot, 'active.lock')), 10_000)).toBe(true);
+
+  const events = readJsonLines(eventsPath);
+  expect(events.map(event => [event.tool, event.args[0]])).toEqual([
+    ['pm2', 'delete'],
+    ['npm', 'install'],
+    ['pm2', 'start'],
+    ['pm2', 'save'],
+  ]);
+  expect(events.find(event => event.tool === 'npm')).toMatchObject({ renamed: true });
+  expect(events.filter(event => event.tool === 'pm2').every(event => event.cwd === runDir)).toBe(true);
+  expect(events.every(event => event.cwd !== packageDir)).toBe(true);
+  expect(readFileSync(installedPath, 'utf8')).toBe('1.0.999');
+  expect(readFileSync(join(retiredDir, 'old-version'), 'utf8')).toBe('1.0.369');
+}
 
 async function verifyWindowsTreeKill() {
   const dir = makeTempDir('yeaft-upgrade-tree-kill-');
