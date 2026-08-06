@@ -53,8 +53,9 @@ function scoreTool(tool, queryTokens) {
 }
 
 function normalizeCursor(value) {
+  if (value == null || value === '') return 0;
   const cursor = Number(value);
-  return Number.isInteger(cursor) && cursor >= 0 ? cursor : 0;
+  return Number.isInteger(cursor) && cursor >= 0 ? cursor : null;
 }
 
 function validCandidate(tool) {
@@ -93,7 +94,18 @@ export function discoverToolCapabilities({
   }
   scored.sort((a, b) => b.score - a.score || a.tool.name.localeCompare(b.tool.name));
 
-  const start = Math.min(normalizeCursor(cursor), scored.length);
+  const normalizedCursor = normalizeCursor(cursor);
+  if (normalizedCursor == null || normalizedCursor > scored.length) {
+    return {
+      tools: [],
+      next_cursor: null,
+      total: scored.length,
+      omitted_invalid: omittedInvalid,
+      restart_required: true,
+      message: 'The hidden tool directory changed or the cursor is invalid. Restart discovery without a cursor.',
+    };
+  }
+  const start = normalizedCursor;
   const tools = [];
   let index = start;
   while (index < scored.length && tools.length < boundedMax) {
@@ -132,10 +144,10 @@ export default defineTool({
   description: {
     en: `Discover registered tools whose full schemas are not currently active.
 
-Use this when the visible tools do not clearly cover the user's request. Search by the user's goal or capability, not by a guessed tool name. The result is a bounded page from the complete hidden tool directory, ordered by likely relevance; lexical similarity affects ordering only and never removes capabilities. If the target is absent, continue with next_cursor until found or the directory is exhausted. Returned tool schemas become available on the next model loop.`,
+Use this when the visible tools do not clearly cover the user's request. Search by the user's goal or capability, not by a guessed tool name. The result is a bounded page from the complete hidden tool directory, ordered by likely relevance; lexical similarity affects ordering only and never removes capabilities. If the target is absent, continue with next_cursor until found or the directory is exhausted. If restart_required is true, discard the cursor and restart without one because the registered directory changed. Returned tool schemas become available on the next model loop.`,
     zh: `发现已注册但当前未激活完整 schema 的工具。
 
-当可见工具不能明确覆盖用户请求时使用。应按用户目标或能力搜索，不要猜工具名。结果是完整隐藏工具目录中的有界分页，并按可能相关性排序；词法相似度只影响顺序，绝不会让能力不可达。如果当前页没有目标，应使用 next_cursor 继续翻页直到找到或目录耗尽。返回工具的 schema 会在下一轮模型调用中可用。`,
+当可见工具不能明确覆盖用户请求时使用。应按用户目标或能力搜索，不要猜工具名。结果是完整隐藏工具目录中的有界分页，并按可能相关性排序；词法相似度只影响顺序，绝不会让能力不可达。如果当前页没有目标，应使用 next_cursor 继续翻页直到找到或目录耗尽。如果 restart_required 为 true，说明注册目录已变化，应丢弃游标并在不带游标的情况下重新开始。返回工具的 schema 会在下一轮模型调用中可用。`,
   },
   parameters: {
     type: 'object',

@@ -36,7 +36,7 @@ import {
   CONDITIONAL_BUILTIN_TOOL_NAMES,
   resolveActiveToolNames,
 } from '../../../agent/yeaft/tools/activation.js';
-import {
+import discoverToolsTool, {
   TOOL_DISCOVERY_MAX_OUTPUT_BYTES,
   discoverToolCapabilities,
 } from '../../../agent/yeaft/tools/discover-tools.js';
@@ -317,6 +317,188 @@ describe('active tool exposure and scoped prompts', () => {
     });
   });
 
+  it('keeps real Engine discovery pagination stable and restarts after dynamic MCP changes', async () => {
+    const toolRecords = Array.from({ length: 53 }, (_, index) => ({
+      name: `catalog__capability_${String(index).padStart(2, '0')}`,
+      server: 'catalog',
+      description: `Capability ${index}`,
+      inputSchema: { type: 'object', properties: { value: { type: 'number' } } },
+    }));
+    const calls = [];
+    const mcpManager = {
+      listTools: () => toolRecords,
+      callTool: async (name, input) => {
+        calls.push({ name, input });
+        return { content: [{ type: 'text', text: `called ${name}` }] };
+      },
+    };
+    const registry = createFullRegistry();
+    registry.registerAll(buildMcpFlattenedTools(mcpManager));
+    const adapter = new MockAdapter();
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'page-1', name: 'DiscoverTools', input: { query: '没有词法匹配' } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'page-2', name: 'DiscoverTools', input: { query: '没有词法匹配', cursor: 24 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'call-middle', name: 'mcp__catalog__capability_30', input: { value: 30 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'page-3', name: 'DiscoverTools', input: { query: '没有词法匹配', cursor: 48 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'stale-sequence', name: 'DiscoverTools', input: { query: '没有词法匹配', cursor: 48 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'text_delta', text: 'All discovery pages were reachable.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const engine = new Engine({
+      adapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+      mcpManager,
+    });
+    const events = [];
+    for await (const event of engine.query({ prompt: 'Inspect the complete hidden catalogue.' })) events.push(event);
+
+    const staleSequence = JSON.parse(events.find(event => event.id === 'stale-sequence' && event.type === 'tool_end').output);
+    expect(staleSequence).toMatchObject({ tools: [], next_cursor: null, restart_required: true });
+    const pages = events
+      .filter(event => event.type === 'tool_end' && event.name === 'DiscoverTools' && event.id !== 'stale-sequence')
+      .map(event => JSON.parse(event.output));
+    const expectedDirectoryNames = registry.getAllTools()
+      .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name) || tool.name.startsWith('mcp__'))
+      .map(tool => tool.name);
+    expect(pages.map(page => ({ count: page.tools.length, next: page.next_cursor, total: page.total, restart: page.restart_required })))
+      .toEqual([
+        { count: 24, next: 24, total: expectedDirectoryNames.length, restart: undefined },
+        { count: 24, next: 48, total: expectedDirectoryNames.length, restart: undefined },
+        { count: expectedDirectoryNames.length - 48, next: null, total: expectedDirectoryNames.length, restart: undefined },
+      ]);
+    expect(pages.map(page => page.next_cursor)).toEqual([24, 48, null]);
+    expect(pages.map(page => page.total)).toEqual([
+      expectedDirectoryNames.length,
+      expectedDirectoryNames.length,
+      expectedDirectoryNames.length,
+    ]);
+    const pageNames = pages.flatMap(page => page.tools.map(tool => tool.name));
+    expect(pageNames).toHaveLength(expectedDirectoryNames.length);
+    expect(new Set(pageNames)).toEqual(new Set(expectedDirectoryNames));
+    expect(pageNames.filter(name => name === 'mcp__catalog__capability_30')).toHaveLength(1);
+    expect(adapter.callLog[2].tools.map(tool => tool.name)).toContain('mcp__catalog__capability_30');
+    expect(adapter.callLog[3].tools.map(tool => tool.name)).toContain('mcp__catalog__capability_30');
+    expect(events.find(event => event.id === 'call-middle' && event.type === 'tool_end')).toMatchObject({
+      isError: false,
+      output: 'called catalog__capability_30',
+    });
+    expect(calls).toEqual([{ name: 'catalog__capability_30', input: { value: 30 } }]);
+
+    const schemaChangedRecords = toolRecords.map((tool, index) => index === 0
+      ? { ...tool, description: 'Capability zero changed during traversal' }
+      : tool);
+    mcpManager.listTools = () => schemaChangedRecords;
+    registry.replaceMcpTools(mcpManager, buildMcpFlattenedTools);
+    const schemaChangedAdapter = new MockAdapter();
+    schemaChangedAdapter.pushResponse([
+      { type: 'tool_call', id: 'schema-start', name: 'DiscoverTools', input: { query: 'schema-changing catalogue' } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    schemaChangedAdapter.pushResponse([
+      { type: 'tool_call', id: 'schema-stale', name: 'DiscoverTools', input: { query: 'schema-changing catalogue', cursor: 24 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    schemaChangedAdapter.pushResponse([
+      { type: 'text_delta', text: 'The schema change required a restart.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const schemaChangedEngine = new Engine({
+      adapter: schemaChangedAdapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+      mcpManager,
+    });
+    const schemaEvents = [];
+    const schemaQuery = schemaChangedEngine.query({ prompt: 'Inspect a schema-changing catalogue.' });
+    const originalStream = schemaChangedAdapter.stream.bind(schemaChangedAdapter);
+    let streamCalls = 0;
+    schemaChangedAdapter.stream = async function* (params) {
+      streamCalls += 1;
+      if (streamCalls === 2) {
+        const mutated = schemaChangedRecords.map((tool, index) => index === 0
+          ? { ...tool, description: 'Capability zero changed again', inputSchema: { type: 'object', properties: { changed: { type: 'boolean' } } } }
+          : tool);
+        mcpManager.listTools = () => mutated;
+        registry.replaceMcpTools(mcpManager, buildMcpFlattenedTools);
+      }
+      yield* originalStream(params);
+    };
+    for await (const event of schemaQuery) schemaEvents.push(event);
+    const schemaStale = JSON.parse(schemaEvents.find(event => event.id === 'schema-stale' && event.type === 'tool_end').output);
+    expect(schemaStale).toMatchObject({ tools: [], next_cursor: null, restart_required: true });
+
+    const changedRecords = [
+      toolRecords[0],
+      { name: 'catalog__replacement', server: 'catalog', description: 'Replacement capability', inputSchema: { type: 'object', properties: {} } },
+    ];
+    const boundedRestart = await discoverToolsTool.execute(
+      { query: 'changed catalogue', cursor: 24 },
+      {
+        discoverTools: () => ({
+          tools: [],
+          next_cursor: null,
+          total: 2,
+          omitted_invalid: 0,
+          restart_required: true,
+          message: 'Restart discovery without a cursor.',
+        }),
+      },
+    );
+    expect(Buffer.byteLength(boundedRestart, 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+    expect(JSON.parse(boundedRestart)).toMatchObject({ restart_required: true, next_cursor: null });
+    mcpManager.listTools = () => changedRecords;
+    registry.replaceMcpTools(mcpManager, buildMcpFlattenedTools);
+    const changedAdapter = new MockAdapter();
+    changedAdapter.pushResponse([
+      { type: 'tool_call', id: 'stale-page', name: 'DiscoverTools', input: { query: '没有词法匹配', cursor: 24 } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    changedAdapter.pushResponse([
+      { type: 'tool_call', id: 'restart-page', name: 'DiscoverTools', input: { query: '没有词法匹配' } },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    changedAdapter.pushResponse([
+      { type: 'text_delta', text: 'Restarted against the changed directory.' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const changedEngine = new Engine({
+      adapter: changedAdapter,
+      trace,
+      config: { model: 'test-model', maxOutputTokens: 1024 },
+      toolRegistry: registry,
+      mcpManager,
+    });
+    const changedEvents = [];
+    for await (const event of changedEngine.query({ prompt: 'Inspect the changed hidden catalogue.' })) changedEvents.push(event);
+    const stale = JSON.parse(changedEvents.find(event => event.id === 'stale-page' && event.type === 'tool_end').output);
+    expect(stale).toMatchObject({ tools: [], next_cursor: null, restart_required: true });
+    const restarted = JSON.parse(changedEvents.find(event => event.id === 'restart-page' && event.type === 'tool_end').output);
+    const restartedNames = restarted.tools.map(tool => tool.name);
+    expect(restarted.next_cursor).toBeNull();
+    expect(restarted.restart_required).not.toBe(true);
+    expect(restartedNames).toContain('mcp__catalog__capability_00');
+    expect(restartedNames).toContain('mcp__catalog__replacement');
+    expect(restartedNames.some(name => name.startsWith('mcp__catalog__capability_01'))).toBe(false);
+  });
+
   it('pages the complete hidden directory and bounds hostile metadata before serialization', () => {
     const candidates = Array.from({ length: 53 }, (_, index) => ({
       name: `mcp__catalog__capability_${String(index).padStart(2, '0')}`,
@@ -350,6 +532,15 @@ describe('active tool exposure and scoped prompts', () => {
     });
     expect(metadataBounded.tools).toHaveLength(1);
     expect(Buffer.byteLength(JSON.stringify(metadataBounded), 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+
+    const invalidCursor = discoverToolCapabilities({ query: 'anything', candidates, cursor: 54 });
+    expect(invalidCursor).toMatchObject({
+      tools: [],
+      next_cursor: null,
+      total: 53,
+      restart_required: true,
+    });
+    expect(Buffer.byteLength(JSON.stringify(invalidCursor), 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
   });
 
   it('filters provider schemas and fences execution with canonical alias activation', async () => {

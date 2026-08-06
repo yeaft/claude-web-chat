@@ -2404,9 +2404,31 @@ export class Engine {
         })
       : null;
     const discoveredToolNames = new Set();
+    const discoveryTraversals = new Map();
+    const currentDiscoverableTools = () => this.#toolRegistry
+      ? this.#toolRegistry.getAllTools()
+          .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name) || tool.name.startsWith('mcp__'))
+      : [];
+    const discoveryDirectorySnapshot = (tools, language) => tools
+      .map(tool => ({
+        name: tool.name,
+        description: localizeVisibleText(tool.description, language, tool.name),
+        parameters: tool.parameters,
+      }));
+    const discoveryDirectoryMatches = (snapshot, liveTools, language) => {
+      const liveSnapshot = discoveryDirectorySnapshot(liveTools, language);
+      if (snapshot.length !== liveSnapshot.length) return false;
+      const byName = new Map(snapshot.map(tool => [tool.name, tool]));
+      return liveSnapshot.every(tool => {
+        const prior = byName.get(tool.name);
+        return prior
+          && prior.description === tool.description
+          && JSON.stringify(prior.parameters) === JSON.stringify(tool.parameters);
+      });
+    };
     const applyDiscoveredTools = (names) => {
       for (const name of names) {
-        if (registeredToolNames.includes(name)) discoveredToolNames.add(name);
+        if (this.#toolRegistry?.has(name)) discoveredToolNames.add(name);
       }
     };
     let activeToolNames = resolveCurrentActiveToolNames();
@@ -2844,7 +2866,10 @@ export class Engine {
           })
         : '';
       activeToolNames = resolveCurrentActiveToolNames();
-      for (const name of discoveredToolNames) activeToolNames?.add(name);
+      for (const name of [...discoveredToolNames]) {
+        if (this.#toolRegistry?.has(name)) activeToolNames?.add(name);
+        else discoveredToolNames.delete(name);
+      }
       toolDefs = this.#getToolDefs(effectiveCollabToolPolicy, activeToolNames);
       systemPrompt = buildCurrentSystemPrompt();
 
@@ -3902,25 +3927,67 @@ export class Engine {
         discoverTools: ({ query, cursor, maxResults } = {}) => {
           if (!this.#toolRegistry) return { query: String(query || ''), tools: [], activated: 0 };
           const language = this.#config.language || 'en';
-          const candidates = this.#toolRegistry.getAllTools()
-            .filter(tool => !activeToolNames?.has(tool.name))
-            .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name) || tool.name.startsWith('mcp__'))
-            .map(tool => ({
-              name: tool.name,
-              description: localizeVisibleText(tool.description, language, tool.name),
-              parameters: tool.parameters,
-            }));
-          const result = discoverToolCapabilities({ query, candidates, language, cursor, maxResults });
+          const queryText = String(query || '');
+          const traversalKey = queryText.trim();
+          const liveTools = currentDiscoverableTools();
+          const requestedCursor = Number(cursor);
+          const hasCursor = cursor != null && cursor !== '' && Number.isInteger(requestedCursor) && requestedCursor > 0;
+          let traversal = hasCursor ? discoveryTraversals.get(traversalKey) : null;
+          if (hasCursor && (!traversal || !discoveryDirectoryMatches(traversal.candidates, liveTools, language))) {
+            discoveryTraversals.delete(traversalKey);
+            return {
+              query: queryText,
+              tools: [],
+              next_cursor: null,
+              total: liveTools.length,
+              omitted_invalid: 0,
+              activated: 0,
+              restart_required: true,
+              message: 'The hidden tool directory changed or no matching traversal exists. Restart discovery without a cursor.',
+            };
+          }
+          if (!hasCursor) {
+            traversal = {
+              candidates: discoveryDirectorySnapshot(liveTools, language),
+            };
+            discoveryTraversals.set(traversalKey, traversal);
+          } else {
+            const pendingTraversal = discoveryTraversals.get(traversalKey);
+            if (!pendingTraversal || pendingTraversal.nextCursor !== requestedCursor) {
+              discoveryTraversals.delete(traversalKey);
+              return {
+                query: queryText,
+                tools: [],
+                next_cursor: null,
+                total: liveTools.length,
+                omitted_invalid: 0,
+                activated: 0,
+                restart_required: true,
+                message: 'The discovery cursor is stale or out of sequence. Restart discovery without a cursor.',
+              };
+            }
+          }
+          const result = discoverToolCapabilities({
+            query: queryText,
+            candidates: traversal.candidates,
+            language,
+            cursor,
+            maxResults,
+          });
+          if (result.restart_required || result.next_cursor == null) discoveryTraversals.delete(traversalKey);
+          else traversal.nextCursor = result.next_cursor;
           applyDiscoveredTools(result.tools.map(tool => tool.name));
           return {
-            query: String(query || ''),
+            query: queryText,
             ...result,
             activated: result.tools.length,
-            message: result.tools.length > 0
-              ? (result.next_cursor == null
-                  ? 'This discovery page is active on the next model loop; the hidden directory is exhausted.'
-                  : 'This discovery page is active on the next model loop; use next_cursor if the target is not listed.')
-              : 'No valid hidden registered tools remain on this directory page.',
+            message: result.restart_required
+              ? (result.message || 'The hidden tool directory changed. Restart discovery without a cursor.')
+              : (result.tools.length > 0
+                  ? (result.next_cursor == null
+                      ? 'This discovery page is active on the next model loop; the hidden directory is exhausted.'
+                      : 'This discovery page is active on the next model loop; use next_cursor if the target is not listed.')
+                  : 'No valid hidden registered tools remain on this directory page.'),
           };
         },
         currentToolCall: () => currentToolCallForAsyncTask ? { ...currentToolCallForAsyncTask } : null,

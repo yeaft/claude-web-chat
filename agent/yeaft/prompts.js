@@ -458,8 +458,8 @@ export function buildSystemPrompt({
 const TOOL_GUIDANCE_GROUPS = Object.freeze([
   {
     tools: ['DiscoverTools'],
-    en: 'If the visible tools do not clearly cover the request, use `DiscoverTools` with the user goal before concluding that a capability is unavailable. If the target is absent from a page, follow `next_cursor` until found or the hidden directory is exhausted.',
-    zh: '如果可见工具不能明确覆盖请求，应先按用户目标调用 `DiscoverTools`。若当前页没有目标，应按 `next_cursor` 继续翻页，直到找到或隐藏目录耗尽后，才能判断某项能力不可用。',
+    en: 'If the visible tools do not clearly cover the request, use `DiscoverTools` with the user goal before concluding that a capability is unavailable. If the target is absent from a page, follow `next_cursor` until found or the hidden directory is exhausted. If `restart_required` is true, restart without a cursor because the registered directory changed.',
+    zh: '如果可见工具不能明确覆盖请求，应先按用户目标调用 `DiscoverTools`。若当前页没有目标，应按 `next_cursor` 继续翻页，直到找到或隐藏目录耗尽后，才能判断某项能力不可用。如果 `restart_required` 为 true，说明注册目录已变化，应丢弃游标重新开始。',
   },
   {
     tools: ['FileRead', 'FileWrite', 'FileEdit', 'Glob', 'Grep', 'ListDir', 'ApplyPatch', 'NotebookEdit'],
