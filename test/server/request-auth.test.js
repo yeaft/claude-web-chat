@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { completeLogin } from '../../server/auth/login.js';
 import { activeSessions, revokedTokens } from '../../server/auth/session-store.js';
+import { userDb } from '../../server/database.js';
 import { registerAuthRoutes } from '../../server/routes/auth-routes.js';
 import {
   SESSION_COOKIE_NAME,
@@ -9,7 +10,14 @@ import {
   setSessionCookie,
 } from '../../server/auth/request-auth.js';
 
+const createdUserIds = [];
+
 function issue(username) {
+  let user = userDb.getByUsername(username);
+  if (!user) {
+    user = userDb.getOrCreate(username);
+    createdUserIds.push(user.id);
+  }
   return completeLogin(username, `session-key-${username}`).token;
 }
 
@@ -22,6 +30,7 @@ describe('request authentication', () => {
   afterEach(() => {
     activeSessions.clear();
     revokedTokens.clear();
+    while (createdUserIds.length > 0) userDb.deleteUser(createdUserIds.pop());
   });
 
   it('falls back to the browser cookie when an explicit bearer token is stale', () => {

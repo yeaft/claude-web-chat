@@ -3,6 +3,7 @@ import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { userDb } from './database.js';
+import { validateSandboxDeploymentConfig } from './sandbox-config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -114,6 +115,44 @@ export const CONFIG = {
   // Agent authentication (global fallback — per-user agent_secret is preferred)
   agentSecret: process.env.AGENT_SECRET || DEFAULT_AGENT_SECRET,
 
+  // Managed Sandbox is fail-closed. Enabling the product flag is not enough:
+  // entitlement and a qualified dedicated Host with capacity are also required.
+  sandbox: {
+    enabled: process.env.SANDBOX_ENABLED === 'true',
+    maxReservedSandboxes: parseInt(process.env.SANDBOX_MAX_RESERVED, 10) || 2,
+    hostMemoryReserveMiB: parseInt(process.env.SANDBOX_HOST_MEMORY_RESERVE_MIB, 10) || 2048,
+    hostFreshnessMs: parseInt(process.env.SANDBOX_HOST_FRESHNESS_MS, 10) || 30_000,
+    agentRecoveryGraceMs: parseInt(process.env.SANDBOX_AGENT_RECOVERY_GRACE_MS, 10) || 60_000,
+    operationTimeoutMs: parseInt(process.env.SANDBOX_OPERATION_TIMEOUT_MS, 10) || 10 * 60_000,
+    reconcileIntervalMs: parseInt(process.env.SANDBOX_RECONCILE_INTERVAL_MS, 10) || 5_000,
+    controllerRequestTimeoutMs: parseInt(process.env.SANDBOX_CONTROLLER_TIMEOUT_MS, 10) || 10_000,
+    bootstrapTtlMs: parseInt(process.env.SANDBOX_BOOTSTRAP_TTL_MS, 10) || 5 * 60_000,
+    bootstrapSigningKey: process.env.SANDBOX_BOOTSTRAP_SIGNING_KEY || '',
+    hostAttestationKey: process.env.SANDBOX_HOST_ATTESTATION_KEY || '',
+    controllerAttestationFingerprint: process.env.SANDBOX_CONTROLLER_ATTESTATION_FINGERPRINT || '',
+    hostAttestationListenerHost: process.env.SANDBOX_HOST_ATTESTATION_LISTENER_HOST || '',
+    hostAttestationListenerPort: parseInt(process.env.SANDBOX_HOST_ATTESTATION_LISTENER_PORT, 10) || 0,
+    hostAttestationServerCert: process.env.SANDBOX_HOST_ATTESTATION_SERVER_CERT || '',
+    hostAttestationServerKey: process.env.SANDBOX_HOST_ATTESTATION_SERVER_KEY || '',
+    hostAttestationClientCa: process.env.SANDBOX_HOST_ATTESTATION_CLIENT_CA || '',
+    hostAttestationBodyLimitBytes:
+      parseInt(process.env.SANDBOX_HOST_ATTESTATION_BODY_LIMIT_BYTES, 10) || 64 * 1024,
+    hostAttestationShutdownTimeoutMs:
+      parseInt(process.env.SANDBOX_HOST_ATTESTATION_SHUTDOWN_TIMEOUT_MS, 10) || 1_000,
+    helperAttestationPublicKey: process.env.SANDBOX_HELPER_ATTESTATION_PUBLIC_KEY || '',
+    hostAttestationMaxSkewMs: parseInt(process.env.SANDBOX_HOST_ATTESTATION_MAX_SKEW_MS, 10) || 30_000,
+    imageDigest: process.env.SANDBOX_IMAGE_DIGEST || '',
+    controllerUrl: process.env.SANDBOX_CONTROLLER_URL || '',
+    controllerToken: process.env.SANDBOX_CONTROLLER_TOKEN || '',
+    controllerClientCert: process.env.SANDBOX_CONTROLLER_CLIENT_CERT || '',
+    controllerClientKey: process.env.SANDBOX_CONTROLLER_CLIENT_KEY || '',
+    controllerCaCert: process.env.SANDBOX_CONTROLLER_CA_CERT || '',
+    operationSigningPrivateKey: process.env.SANDBOX_OPERATION_SIGNING_PRIVATE_KEY || '',
+    controllerResultPublicKey: process.env.SANDBOX_CONTROLLER_RESULT_PUBLIC_KEY || '',
+    controllerProtocolMaxSkewMs: parseInt(process.env.SANDBOX_CONTROLLER_PROTOCOL_MAX_SKEW_MS, 10) || 30_000,
+    controllerHostId: process.env.SANDBOX_CONTROLLER_HOST_ID || ''
+  },
+
   // File upload settings
   maxFileSize: parseInt(process.env.MAX_FILE_SIZE, 10) || 50 * 1024 * 1024, // 50MB
   fileCleanupInterval: parseInt(process.env.FILE_CLEANUP_INTERVAL, 10) || 600000, // 10 minutes
@@ -192,6 +231,7 @@ export function getUserByUsername(username) {
   // Query database first (includes migrated, registered, and SSO-only users).
   const dbUser = userDb.getByUsername(username);
   if (dbUser) {
+    if (dbUser.deletion_state && dbUser.deletion_state !== 'active') return null;
     return {
       username: dbUser.username,
       passwordHash: dbUser.password_hash || null,
@@ -202,7 +242,9 @@ export function getUserByUsername(username) {
       id: dbUser.id
     };
   }
-  // Fallback to CONFIG.users (only relevant before first migration)
+  // A finalized deletion remains authoritative after the users row is erased.
+  if (userDb.isDeletionTombstoned(username)) return null;
+  // Fallback to CONFIG.users only when no authoritative database state exists.
   return CONFIG.users.find(u => u.username === username) || null;
 }
 
@@ -255,6 +297,10 @@ export function validateProductionConfig() {
   // Check JWT_SECRET
   if (CONFIG.jwtSecret === DEFAULT_JWT_SECRET) {
     errors.push('JWT_SECRET must be set to a secure value in production mode');
+  }
+
+  if (CONFIG.sandbox.enabled && !validateSandboxDeploymentConfig(CONFIG.sandbox)) {
+    errors.push('Sandbox requires an HTTPS dedicated Controller, Host binding, fixed image digest, a dedicated mTLS Host attestation listener with a pinned Controller certificate, Controller token, asymmetric operation/result keys, bootstrap signing key, Host attestation key, and Helper attestation public key');
   }
 
   // Check that at least one user with a password exists (in DB or config)
