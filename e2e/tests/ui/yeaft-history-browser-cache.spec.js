@@ -274,8 +274,9 @@ test('persists projections and completes cache lifecycle transactions', async ({
         seq: 2, type: 'tool-use', toolName: 'TodoWrite', sessionId: 'session-a', isHistory: true,
       },
       {
-        id: 'm0002-tool-summary', messageId: 'm0002', historyEntryId: 'entry-2', stableKey: 'entry-2:tool-summary',
-        seq: 2, type: 'tool-summary', content: 'read files', sessionId: 'session-a', isHistory: true,
+        id: 'm0002-tool', messageId: 'm0002', historyEntryId: 'entry-2', stableKey: 'entry-2:tool:read',
+        seq: 2, type: 'tool-use', toolName: 'FileRead', toolInput: { file_path: 'README.md' },
+        sessionId: 'session-a', isHistory: true, hasResult: true,
       },
     ]);
     const proxy = Vue.isProxy(rows[0]);
@@ -292,6 +293,7 @@ test('persists projections and completes cache lifecycle transactions', async ({
     return {
       proxy,
       written,
+      schemaVersion: record?.schemaVersion,
       rowCount: record?.rowCount,
       stableKeys: record?.rows?.map(row => row.stableKey),
     };
@@ -300,12 +302,13 @@ test('persists projections and completes cache lifecycle transactions', async ({
   expect(firstWrite).toEqual({
     proxy: true,
     written: true,
+    schemaVersion: 4,
     rowCount: 4,
     stableKeys: [
       'entry-1:user',
       'entry-2:assistant',
       'entry-2:todos',
-      'entry-2:tool-summary',
+      'entry-2:tool:read',
     ],
   });
   expect(await readPhysicalRecords(page)).toHaveLength(1);

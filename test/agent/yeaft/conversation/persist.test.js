@@ -1708,7 +1708,7 @@ legacy session`, { encoding: 'utf8' });
         { limit: 1 },
       );
 
-      expect(page.messages.find(message => message.id === call.id)).toMatchObject({ toolSummaryCount: 1 });
+      expect(page.messages.find(message => message.id === call.id)?.toolCalls).toEqual(call.toolCalls);
       expect(page.latestSeq).toBe(store.getMessageSeqById(result.id));
     });
 
@@ -1733,7 +1733,7 @@ legacy session`, { encoding: 'utf8' });
         store.getMessageSeqById(cursor.id),
         { limit: 3 },
       );
-      expect(firstPage.messages.find(message => message.id === call.id)).toMatchObject({ toolSummaryCount: 2 });
+      expect(firstPage.messages.find(message => message.id === call.id)?.toolCalls).toEqual(call.toolCalls);
       expect(firstPage.latestSeq).toBe(store.getMessageSeqById(lastResult.id));
 
       const secondPage = store.loadAfterSeqByGroup('grp_delta_tools', firstPage.latestSeq, { limit: 3 });
@@ -1816,7 +1816,7 @@ legacy session`, { encoding: 'utf8' });
       expect(older.hasMore).toBe(false);
     });
 
-    it('loadVisibleBySession keeps the latest TodoWrite snapshot and counts only other tools', () => {
+    it('loadVisibleBySession keeps the latest TodoWrite snapshot and full tool actions', () => {
       store.append({ role: 'user', content: 'status?', sessionId: 'grp_a' });
       store.append({
         role: 'assistant',
@@ -1833,9 +1833,8 @@ legacy session`, { encoding: 'utf8' });
       expect(page.messages[1]).toMatchObject({
         content: 'working',
         todos: [{ content: 'Latest', status: 'completed' }],
-        toolSummaryCount: 1,
+        toolCalls: [{ id: 'bash', name: 'Bash', input: { command: 'true' } }],
       });
-      expect(page.messages[1]).not.toHaveProperty('toolCalls');
 
       const contradictory = projectVisibleSessionMessages([{
         role: 'assistant', content: 'Partial before failure', responseKind: 'result',
@@ -1956,7 +1955,10 @@ legacy session`, { encoding: 'utf8' });
 
       expect(page.messages.map(m => m.role)).toEqual(['user', 'assistant']);
       expect(page.messages[1]).toMatchObject({
-        toolSummaryCount: 1,
+        toolCalls: [
+          { id: 'ask_1', name: 'AskUser', input: { question: 'Continue?', options: ['Yes', 'No'] } },
+          { id: 'bash_1', name: 'Bash', input: { command: 'echo ok' } },
+        ],
         askUserResults: [{
           toolCallId: 'ask_1',
           status: 'answered',
@@ -1965,7 +1967,6 @@ legacy session`, { encoding: 'utf8' });
           answers: { 'Continue?': 'Yes' },
         }],
       });
-      expect(page.messages[1]).not.toHaveProperty('toolCalls');
       expect(page.messages.some(m => m.role === 'tool')).toBe(false);
     });
 
@@ -1986,7 +1987,9 @@ legacy session`, { encoding: 'utf8' });
 
       const page = store.loadVisibleBySession('grp_a', null, 1);
 
-      expect(page.messages[1]).toMatchObject({ toolSummaryCount: 1 });
+      expect(page.messages[1]).toMatchObject({
+        toolCalls: [{ id: 'ask_legacy', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
       expect(page.messages[1].askUserResults).toBeUndefined();
     });
 

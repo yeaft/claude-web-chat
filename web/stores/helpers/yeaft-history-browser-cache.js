@@ -10,7 +10,7 @@ const DATABASE_VERSION = 4;
 const SESSION_STORE = 'sessions';
 const METADATA_STORE = 'metadata';
 const ACTIVE_OWNER_KEY = 'active-owner';
-const CACHE_SCHEMA_VERSION = 3;
+const CACHE_SCHEMA_VERSION = 4;
 
 // A Session keeps at most 500 complete user turns. Row count, serialized size,
 // Session count, and age are deliberately not independent eviction criteria:
