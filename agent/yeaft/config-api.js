@@ -17,6 +17,30 @@ import { normalizePluginConfig } from './plugins.js';
 import { isGitHubCopilotProvider, serializeKnownProviderForPersistence } from './llm/known-providers.js';
 
 /**
+ * Read config.json before any public mutation. A missing file is a valid
+ * first-run state, but an existing malformed file, non-object root, or invalid
+ * Plugins schema must never be replaced by an unrelated Settings/MCP write.
+ * Otherwise the runtime's fail-closed policy could silently become inheritance
+ * (all capabilities enabled) on the next config reload.
+ *
+ * @param {string} configPath
+ * @returns {Record<string, unknown>}
+ * @throws {Error} when an existing config cannot be safely preserved
+ */
+function readConfigForWrite(configPath) {
+  if (!existsSync(configPath)) return {};
+  const json = JSON.parse(readFileSync(configPath, 'utf8'));
+  if (!json || typeof json !== 'object' || Array.isArray(json)
+    || Object.getPrototypeOf(json) !== Object.prototype) {
+    throw new Error('config.json must contain an object');
+  }
+  if (Object.prototype.hasOwnProperty.call(json, 'plugins')) {
+    normalizePluginConfig(json.plugins);
+  }
+  return json;
+}
+
+/**
  * Read the LLM-relevant portion of config.json.
  *
  * @param {string} [dir] — Yeaft data directory
@@ -120,15 +144,13 @@ export function updateLlmConfig(update, dir) {
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
   const configPath = join(root, 'config.json');
 
-  // Read existing config (preserve non-LLM fields)
-  let existing = {};
-  if (existsSync(configPath)) {
-    try {
-      existing = JSON.parse(readFileSync(configPath, 'utf8'));
-    } catch {
-      // Start fresh if corrupt
-      existing = {};
-    }
+  // Preserve all existing fields only when the on-disk document and its
+  // Plugins policy are valid. Never turn a failed read into a fresh config.
+  let existing;
+  try {
+    existing = readConfigForWrite(configPath);
+  } catch (err) {
+    return { error: `Failed to read config.json: ${err?.message || err}` };
   }
 
   // Validate providers structure
@@ -266,14 +288,14 @@ export function updateYeaftSettings(update, dir) {
     }
   }
 
-  // Read existing config (preserve LLM and other top-level fields).
-  let existing = {};
-  if (existsSync(configPath)) {
-    try {
-      existing = JSON.parse(readFileSync(configPath, 'utf8'));
-    } catch {
-      existing = {};
-    }
+  // Preserve all existing fields only when the on-disk document and its
+  // Plugins policy are valid. A Settings update must not repair bad JSON into
+  // a config whose missing Plugins fields inherit all capabilities.
+  let existing;
+  try {
+    existing = readConfigForWrite(configPath);
+  } catch (err) {
+    return { error: `Failed to read config.json: ${err?.message || err}` };
   }
 
   const prev = normaliseYeaftSection(existing.yeaft);
@@ -337,7 +359,12 @@ export function updateTelemetrySettings(update, dir) {
   }
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
   const configPath = join(root, 'config.json');
-  const existing = readConfigJson(configPath);
+  let existing;
+  try {
+    existing = readConfigForWrite(configPath);
+  } catch (err) {
+    return { error: `Failed to read config.json: ${err?.message || err}` };
+  }
   const merged = normaliseTelemetrySection({
     ...(existing.telemetry && typeof existing.telemetry === 'object' ? existing.telemetry : {}),
     ...update,
@@ -428,13 +455,11 @@ export function updateSearchSettings(update, dir) {
     return { error: 'tavilyApiKey must be a string' };
   }
 
-  let existing = {};
-  if (existsSync(configPath)) {
-    try {
-      existing = JSON.parse(readFileSync(configPath, 'utf8'));
-    } catch {
-      existing = {};
-    }
+  let existing;
+  try {
+    existing = readConfigForWrite(configPath);
+  } catch (err) {
+    return { error: `Failed to read config.json: ${err?.message || err}` };
   }
   const prev = (existing && typeof existing.search === 'object' && existing.search) || {};
   const merged = { ...prev };
@@ -504,21 +529,6 @@ export async function fetchTavilyUsage(dir) {
 // ─── Agent plugin selection ────────────────────────────────────
 
 /**
- * Read config.json for Plugin Center operations without turning a malformed
- * file into an empty config. Treating parse failure as `{}` would let a later
- * save erase a persisted allowlist, so Plugin Center must fail closed instead.
- */
-function readPluginConfigJson(configPath) {
-  if (!existsSync(configPath)) return {};
-  const raw = readFileSync(configPath, 'utf8');
-  const json = JSON.parse(raw);
-  if (!json || typeof json !== 'object' || Array.isArray(json)) {
-    throw new Error('config.json must contain an object');
-  }
-  return json;
-}
-
-/**
  * Read the Agent-local plugin allowlists. Missing category fields mean
  * inheritance (all discovered capabilities remain available).
  */
@@ -526,7 +536,7 @@ export function getPluginConfig(dir) {
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
   const configPath = join(root, 'config.json');
   try {
-    const json = readPluginConfigJson(configPath);
+    const json = readConfigForWrite(configPath);
     return { plugins: normalizePluginConfig(json.plugins) };
   } catch (err) {
     return { error: `Failed to read plugin config: ${err?.message || err}` };
@@ -543,13 +553,7 @@ export function updatePluginConfig(plugins, dir) {
   let normalized;
   let existing;
   try {
-    existing = readPluginConfigJson(configPath);
-    // A syntactically valid config.json can still contain an invalid plugin
-    // schema. Do not let a direct update silently overwrite that evidence and
-    // turn a fail-closed runtime policy back into a successful save.
-    if (Object.prototype.hasOwnProperty.call(existing, 'plugins')) {
-      normalizePluginConfig(existing.plugins);
-    }
+    existing = readConfigForWrite(configPath);
     normalized = normalizePluginConfig(plugins);
   } catch (err) {
     return { error: `Failed to read plugin config: ${err?.message || err}` };
@@ -645,24 +649,6 @@ function validateMcpServer(entry) {
 }
 
 /**
- * Read existing config.json (silently start fresh on missing / corrupt).
- * Internal helper used by the MCP CRUD trio to share one parse path.
- *
- * @param {string} configPath
- * @returns {object}
- */
-function readConfigJson(configPath) {
-  if (!existsSync(configPath)) return {};
-  try {
-    const raw = readFileSync(configPath, 'utf8');
-    const json = JSON.parse(raw);
-    return (json && typeof json === 'object') ? json : {};
-  } catch {
-    return {};
-  }
-}
-
-/**
  * List MCP servers currently saved in config.json. Returns an array — empty
  * when none configured. Each entry is the normalised on-disk shape, NOT
  * the runtime status (which lives on `mcpManager.status()`).
@@ -674,12 +660,12 @@ export function listMcpServers(dir) {
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
   const configPath = join(root, 'config.json');
   try {
-    const json = readConfigJson(configPath);
+    const json = readConfigForWrite(configPath);
     const raw = Array.isArray(json.mcpServers) ? json.mcpServers : [];
     const servers = raw.map(normaliseMcpServer).filter(Boolean);
     return { servers };
-  } catch (e) {
-    return { error: `Failed to read config.json: ${e.message}` };
+  } catch (err) {
+    return { error: `Failed to read config.json: ${err?.message || err}` };
   }
 }
 
@@ -699,7 +685,12 @@ export function upsertMcpServer(server, dir) {
 
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
   const configPath = join(root, 'config.json');
-  const existing = readConfigJson(configPath);
+  let existing;
+  try {
+    existing = readConfigForWrite(configPath);
+  } catch (err) {
+    return { error: `Failed to read config.json: ${err?.message || err}` };
+  }
   const list = Array.isArray(existing.mcpServers) ? existing.mcpServers.slice() : [];
 
   const normalised = normaliseMcpServer(server);
@@ -742,7 +733,12 @@ export function removeMcpServer(name, dir) {
   const target = name.trim();
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
   const configPath = join(root, 'config.json');
-  const existing = readConfigJson(configPath);
+  let existing;
+  try {
+    existing = readConfigForWrite(configPath);
+  } catch (err) {
+    return { error: `Failed to read config.json: ${err?.message || err}` };
+  }
   const list = Array.isArray(existing.mcpServers) ? existing.mcpServers.slice() : [];
   const next = list.filter(s => !(s && typeof s === 'object' && s.name === target));
   const removed = next.length !== list.length;

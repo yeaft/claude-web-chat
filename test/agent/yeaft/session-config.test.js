@@ -4,7 +4,19 @@ import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import ctx from '../../../agent/context.js';
 import { loadConfig, loadMCPConfig, normalizeLlmRetry, normaliseTelemetrySection } from '../../../agent/yeaft/config.js';
-import { getPluginConfig, getTelemetrySettings, updatePluginConfig, updateTelemetrySettings } from '../../../agent/yeaft/config-api.js';
+import { readLocalLlmConfig, writeLocalLlmConfig } from '../../../agent/llm-config-cli.js';
+import {
+  getPluginConfig,
+  getTelemetrySettings,
+  listMcpServers,
+  removeMcpServer,
+  updateLlmConfig,
+  updatePluginConfig,
+  updateSearchSettings,
+  updateTelemetrySettings,
+  updateYeaftSettings,
+  upsertMcpServer,
+} from '../../../agent/yeaft/config-api.js';
 import { handleMessage } from '../../../agent/connection/message-router.js';
 import { flushAllAgentPerfTraces } from '../../../agent/yeaft/perf-trace.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
@@ -19,6 +31,7 @@ import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import { defineTool } from '../../../agent/yeaft/tools/types.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
+import { isMultiVpEnabled, setMultiVpEnabled } from '../../../agent/yeaft/sessions/feature-flag.js';
 import { registerSessionWorkDir, renameSession, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
 import {
   createProject,
@@ -147,6 +160,202 @@ describe('Yeaft session-scoped model config', () => {
       });
       expect(readFileSync(configPath, 'utf8')).toBe(invalidSchema);
     }
+  });
+
+  it('rejects unrelated config writes over invalid Plugin policies', () => {
+    const root = makeDir();
+    const configPath = join(root, 'config.json');
+    const writers = [
+      { write: () => updateLlmConfig({ debug: true }, root), error: 'Failed to read config.json' },
+      { write: () => updateYeaftSettings({ maxConcurrentThreads: 2 }, root), error: 'Failed to read config.json' },
+      { write: () => updateTelemetrySettings({ enabled: false }, root), error: 'Failed to read config.json' },
+      { write: () => updateSearchSettings({ backend: 'tavily' }, root), error: 'Failed to read config.json' },
+      { write: () => updatePluginConfig({ tools: ['FileRead'] }, root), error: 'Failed to read plugin config' },
+      { write: () => upsertMcpServer({ name: 'github', command: 'node', args: [] }, root), error: 'Failed to read config.json' },
+      { write: () => removeMcpServer('github', root), error: 'Failed to read config.json' },
+    ];
+
+    for (const invalidConfig of [
+      '{"plugins":{"tools":["FileRead"]}',
+      'null',
+      JSON.stringify({ plugins: { tools: 'not-an-array' } }),
+    ]) {
+      writeFileSync(configPath, invalidConfig);
+      for (const { write, error } of writers) {
+        expect(write()).toMatchObject({ error: expect.stringContaining(error) });
+        expect(readFileSync(configPath, 'utf8')).toBe(invalidConfig);
+      }
+      expect(listMcpServers(root)).toMatchObject({ error: expect.stringContaining('Failed to read config.json') });
+      expect(loadConfig({ dir: root })).toMatchObject({
+        plugins: { tools: [], skills: [], mcpServers: [] },
+        pluginConfigError: expect.any(String),
+      });
+    }
+  });
+
+  it('keeps missing config.json writable through strict config API writers', () => {
+    const root = makeDir();
+    const writes = [
+      () => updateLlmConfig({ debug: true }, root),
+      () => updateYeaftSettings({ maxConcurrentThreads: 2 }, root),
+      () => updateTelemetrySettings({ enabled: false }, root),
+      () => updateSearchSettings({ backend: 'tavily' }, root),
+      () => removeMcpServer('github', root),
+      () => upsertMcpServer({ name: 'github', command: 'node', args: [] }, root),
+      () => updatePluginConfig({ tools: ['FileRead'] }, root),
+    ];
+    for (const write of writes) expect(write().error).toBeUndefined();
+
+    expect(JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'))).toMatchObject({
+      debug: true,
+      yeaft: expect.objectContaining({ maxConcurrentThreads: 2 }),
+      telemetry: expect.objectContaining({ enabled: false }),
+      search: expect.objectContaining({ backend: 'tavily' }),
+      mcpServers: [expect.objectContaining({ name: 'github' })],
+      plugins: { tools: ['FileRead'] },
+    });
+  });
+
+  it('rejects fail-open writes through the MCP and telemetry message routes', async () => {
+    const root = makeDir();
+    const configPath = join(root, 'config.json');
+    const previousTransport = {
+      ws: ctx.ws,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+      CONFIG: ctx.CONFIG,
+    };
+    const sent = [];
+    ctx.CONFIG = { yeaftDir: root, telemetry: { enabled: true } };
+    ctx.ws = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+    ctx.serverEncryptionRequired = false;
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = false;
+    try {
+      const cases = [
+        {
+          config: '{"plugins":{"tools":["FileRead"]}',
+          message: {
+            type: 'yeaft_mcp_add',
+            requestId: 'broken-json',
+            server: { name: 'github', command: 'node', args: [] },
+          },
+          resultType: 'yeaft_mcp_add_result',
+        },
+        {
+          config: 'null',
+          message: {
+            type: 'yeaft_mcp_add',
+            requestId: 'null-root',
+            server: { name: 'github', command: 'node', args: [] },
+          },
+          resultType: 'yeaft_mcp_add_result',
+        },
+        {
+          config: JSON.stringify({ plugins: { tools: 'not-an-array' } }),
+          message: {
+            type: 'yeaft_mcp_add',
+            requestId: 'invalid-plugin-schema',
+            server: { name: 'github', command: 'node', args: [] },
+          },
+          resultType: 'yeaft_mcp_add_result',
+        },
+        {
+          config: 'null',
+          message: {
+            type: 'update_telemetry_settings',
+            settings: { enabled: false },
+          },
+          resultType: 'telemetry_settings_updated',
+        },
+      ];
+      for (const testCase of cases) {
+        sent.length = 0;
+        writeFileSync(configPath, testCase.config);
+        await handleMessage(testCase.message);
+        await new Promise(resolve => setImmediate(resolve));
+        expect(sent).toContainEqual(expect.objectContaining({
+          type: testCase.resultType,
+          error: expect.stringContaining('Failed to read config.json'),
+        }));
+        expect(readFileSync(configPath, 'utf8')).toBe(testCase.config);
+        expect(loadConfig({ dir: root })).toMatchObject({
+          plugins: { tools: [], skills: [], mcpServers: [] },
+          pluginConfigError: expect.any(String),
+        });
+      }
+    } finally {
+      ctx.ws = previousTransport.ws;
+      ctx.serverEncryptionRequired = previousTransport.serverEncryptionRequired;
+      ctx.outboundSendQueue = previousTransport.outboundSendQueue;
+      ctx.outboundSendQueueActive = previousTransport.outboundSendQueueActive;
+      ctx.CONFIG = previousTransport.CONFIG;
+    }
+  });
+
+  it('rejects feature flag writes that would overwrite an invalid Agent config', () => {
+    const root = makeDir();
+    const configPath = join(root, 'config.json');
+    for (const invalidConfig of [
+      '{"plugins":{"tools":["FileRead"]}',
+      'null',
+      JSON.stringify({ plugins: { tools: 'not-an-array' } }, null, 2),
+    ]) {
+      writeFileSync(configPath, invalidConfig);
+      expect(isMultiVpEnabled(root)).toBe(false);
+      expect(setMultiVpEnabled(root, true)).toMatchObject({
+        error: expect.stringContaining('Failed to read config.json'),
+      });
+      expect(readFileSync(configPath, 'utf8')).toBe(invalidConfig);
+      expect(loadConfig({ dir: root })).toMatchObject({
+        plugins: { tools: [], skills: [], mcpServers: [] },
+        pluginConfigError: expect.any(String),
+      });
+    }
+  });
+
+  it('writes a feature flag only after a valid config precondition', () => {
+    const root = makeDir();
+    expect(setMultiVpEnabled(root, true)).toEqual({ enabled: true });
+    expect(isMultiVpEnabled(root)).toBe(true);
+    expect(JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'))).toMatchObject({
+      yeaft: { multiVp: { enabled: true } },
+    });
+  });
+
+  it('rejects CLI writes that would overwrite an invalid Agent config', () => {
+    const root = makeDir();
+    const configPath = join(root, 'config.json');
+    for (const invalidConfig of [
+      '{"plugins":{"tools":["FileRead"]}',
+      'null',
+      JSON.stringify({ plugins: { tools: 'not-an-array' } }, null, 2),
+    ]) {
+      writeFileSync(configPath, invalidConfig);
+      expect(() => readLocalLlmConfig(configPath)).toThrow();
+      expect(() => writeLocalLlmConfig({ primaryModel: 'proxy/gpt-5' }, configPath)).toThrow();
+      expect(readFileSync(configPath, 'utf8')).toBe(invalidConfig);
+      expect(loadConfig({ dir: root })).toMatchObject({
+        plugins: { tools: [], skills: [], mcpServers: [] },
+        pluginConfigError: expect.any(String),
+      });
+    }
+  });
+
+  it('preserves a valid CLI Plugin allowlist when an LLM write omits it', () => {
+    const root = makeDir();
+    const configPath = join(root, 'config.json');
+    writeFileSync(configPath, JSON.stringify({
+      plugins: { tools: ['FileRead'] },
+      providers: [{ name: 'old', baseUrl: 'https://example.invalid/v1', models: ['gpt-4'] }],
+    }, null, 2));
+
+    writeLocalLlmConfig({ primaryModel: 'new/gpt-5' }, configPath);
+    expect(JSON.parse(readFileSync(configPath, 'utf8'))).toMatchObject({
+      primaryModel: 'new/gpt-5',
+      plugins: { tools: ['FileRead'] },
+    });
   });
 
   it('rejects falsy plugin update payloads instead of resetting the allowlist', async () => {
