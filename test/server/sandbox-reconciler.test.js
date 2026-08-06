@@ -243,6 +243,8 @@ describe('sandbox reconciler', () => {
     const store = {
       reconcileRuntimeState: vi.fn(),
       listPendingOperations: vi.fn(() => [operation, removeOperation]),
+      isEpochActivated: vi.fn(() => true),
+      recordEpochActivation: vi.fn(),
       applyControllerResult: vi.fn()
     };
     const fetchImpl = vi.fn(async (url, request) => ({
@@ -269,7 +271,7 @@ describe('sandbox reconciler', () => {
     }
   });
 
-  it('dispatches persisted Removes with temporarily invalid deployment config without admitting creates', async () => {
+  it('dispatches persisted Removes with temporarily invalid deployment config only for an activated epoch', async () => {
     const removeOperation = {
       ...operation,
       id: 'op-remove-invalid-config',
@@ -279,6 +281,8 @@ describe('sandbox reconciler', () => {
     const store = {
       reconcileRuntimeState: vi.fn(),
       listPendingOperations: vi.fn(() => [operation, removeOperation]),
+      isEpochActivated: vi.fn(() => true),
+      recordEpochActivation: vi.fn(),
       applyControllerResult: vi.fn()
     };
     const fetchImpl = vi.fn(async (url, request) => ({
@@ -297,7 +301,37 @@ describe('sandbox reconciler', () => {
       operationId: 'op-remove-invalid-config',
       action: 'remove'
     });
+    expect(store.recordEpochActivation).not.toHaveBeenCalled();
     expect(store.applyControllerResult).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['disabled', { enabled: false }],
+    ['invalid', { imageDigest: '' }]
+  ])('does not activate or dispatch cleanup for an inactive epoch when deployment is %s', async (label, overrides) => {
+    const removeOperation = {
+      ...operation,
+      id: `op-remove-${label}-inactive`,
+      kind: 'remove',
+      desired_state: 'removed'
+    };
+    const store = {
+      reconcileRuntimeState: vi.fn(),
+      listPendingOperations: vi.fn(() => [removeOperation]),
+      isEpochActivated: vi.fn(() => false),
+      recordEpochActivation: vi.fn(),
+      applyControllerResult: vi.fn()
+    };
+    const fetchImpl = vi.fn();
+
+    await createSandboxReconciler({
+      config: config(overrides), store, fetchImpl
+    }).tick(4321);
+
+    expect(store.isEpochActivated).toHaveBeenCalledOnce();
+    expect(store.recordEpochActivation).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(store.applyControllerResult).not.toHaveBeenCalled();
   });
 
   it('does not dispatch an operation invalidated by runtime reconciliation', async () => {

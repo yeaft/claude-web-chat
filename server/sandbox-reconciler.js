@@ -195,12 +195,13 @@ export function createSandboxReconciler({
   let running = false;
   const epochActivations = new Map();
 
-  async function ensureEpochActivated(operation) {
-    if (!store.isEpochActivated || !store.recordEpochActivation) return;
+  async function ensureEpochActivated(operation, { allowActivation }) {
+    if (!store.isEpochActivated || !store.recordEpochActivation) return allowActivation;
     const epoch = Number(operation.host_epoch);
     if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error('Invalid Host epoch');
     const digest = activationDigest(operation.host_id, epoch);
-    if (store.isEpochActivated?.(operation.host_id, epoch, digest)) return;
+    if (store.isEpochActivated(operation.host_id, epoch, digest)) return true;
+    if (!allowActivation) return false;
     const key = `${operation.host_id}:${epoch}`;
     if (epochActivations.has(key)) return epochActivations.get(key);
     const activationPromise = (async () => {
@@ -247,7 +248,8 @@ export function createSandboxReconciler({
         memory_mib: null,
         disk_gib: null
       }, config);
-      store.recordEpochActivation?.(operation.host_id, epoch, digest, Date.now());
+      store.recordEpochActivation(operation.host_id, epoch, digest, Date.now());
+      return true;
     })();
     epochActivations.set(key, activationPromise);
     try {
@@ -257,9 +259,9 @@ export function createSandboxReconciler({
     }
   }
 
-  async function dispatch(pendingOperation) {
+  async function dispatch(pendingOperation, { allowActivation }) {
     if (pendingOperation.host_id !== config.controllerHostId) return;
-    await ensureEpochActivated(pendingOperation);
+    if (!await ensureEpochActivated(pendingOperation, { allowActivation })) return;
     const operation = store.admitPendingOperation?.(pendingOperation.id, config, Date.now())
       || (store.admitPendingOperation ? null : pendingOperation);
     if (!operation) return;
@@ -331,7 +333,9 @@ export function createSandboxReconciler({
       const dispatchable = operations.filter(operation => (
         deploymentReady || (cleanupReady && operation.kind === 'remove')
       ));
-      await Promise.all(dispatchable.map(operation => dispatch(operation).catch(error => {
+      await Promise.all(dispatchable.map(operation => dispatch(operation, {
+        allowActivation: deploymentReady
+      }).catch(error => {
         logger.warn(`[Sandbox] Controller dispatch failed for ${operation.id}: ${error.message}`);
       })));
     } finally {
