@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MockWebSocket, WS_OPEN } from '../helpers/mockWs.js';
+import { MockWebSocket, WS_CLOSED, WS_OPEN } from '../helpers/mockWs.js';
 import {
   DEFAULT_UPGRADE_REGISTRY,
   buildUpgradeInstallArgs,
@@ -651,6 +651,40 @@ describe('sendToServer: encrypt vs plaintext gate', () => {
     const msg = { type: 'auth' };
     await sendToServerUnderTest(ctxLike, msg);
     expect(ws.getLastMessage()).toEqual(msg);
+  });
+
+  it('releases sent queue ownership and bounds disconnected payloads by bytes', async () => {
+    const original = {
+      ws: ctx.ws, sessionKey: ctx.sessionKey, serverEncryptionRequired: ctx.serverEncryptionRequired,
+      outboundSendQueue: ctx.outboundSendQueue, outboundSendQueueBytes: ctx.outboundSendQueueBytes,
+      outboundSendQueueMaxBytes: ctx.outboundSendQueueMaxBytes, outboundSendQueueActive: ctx.outboundSendQueueActive,
+      messageBuffer: ctx.messageBuffer, messageBufferBytes: ctx.messageBufferBytes,
+      messageBufferMaxBytes: ctx.messageBufferMaxBytes, messageBufferMaxSize: ctx.messageBufferMaxSize,
+    };
+    try {
+      Object.assign(ctx, {
+        ws: new MockWebSocket(), sessionKey: null, serverEncryptionRequired: false,
+        outboundSendQueue: [], outboundSendQueueBytes: 0, outboundSendQueueMaxBytes: 1024,
+        outboundSendQueueActive: false, messageBuffer: [], messageBufferBytes: 0,
+        messageBufferMaxBytes: 256, messageBufferMaxSize: 5000,
+      });
+      await expect(sendToServer({ type: 'claude_output', payload: { text: 'sent' } })).resolves.toBe('sent');
+      expect(ctx.outboundSendQueue).toEqual([]);
+      expect(ctx.outboundSendQueueBytes).toBe(0);
+
+      ctx.ws = new MockWebSocket(WS_CLOSED);
+      for (let index = 0; index < 20; index += 1) {
+        await sendToServer({ type: 'yeaft_output', payload: { text: `${index}:${'x'.repeat(80)}` } });
+      }
+      expect(ctx.messageBuffer.length).toBeLessThan(20);
+      expect(ctx.messageBufferBytes).toBeLessThanOrEqual(256);
+      expect(ctx.messageBufferBytes).toBe(
+        ctx.messageBuffer.reduce((total, msg) => total + Buffer.byteLength(JSON.stringify(msg)), 0),
+      );
+      await expect(sendToServer({ type: 'yeaft_output', payload: { text: 'x'.repeat(1024) } })).resolves.toBe('dropped');
+    } finally {
+      Object.assign(ctx, original);
+    }
   });
 });
 

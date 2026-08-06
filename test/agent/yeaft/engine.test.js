@@ -1700,6 +1700,14 @@ describe('Engine', () => {
           responseKind: 'result',
           stopReason: 'end_turn',
         });
+        const requestRoot = join(`${join(yeaftDir, 'debug-trace.db')}.files`, 'sessions', 'session-turn-id', 'debug', 'requests');
+        const [requestDir] = readdirSync(requestRoot);
+        const meta = JSON.parse(readFileSync(join(requestRoot, requestDir, 'meta.json'), 'utf8'));
+        expect(meta).toMatchObject({
+          requestId: 'vp-turn-ui-1',
+          active: false,
+          finalStopReason: 'end_turn',
+        });
         const debug = await debugTrace.fetchTurnDebug({
           sessionId: 'session-turn-id',
           turnId: loaded[0].turnId,
@@ -5092,7 +5100,7 @@ describe('Engine', () => {
           appendFileSync(continuedEvents, '{"type":"loop"', 'utf8');
 
           const continued = new DebugTrace(continuationRoot);
-          await continued.fetchTurnDebug({ sessionId: 'continued-session', turnId: 'continued-turn' });
+          await continued.resumeTrace({ sessionId: 'continued-session', turnId: 'continued-turn' });
           const secondTurn = continued.startTurn({ traceId: 'continued-turn', turnNumber: 2, sessionId: 'continued-session' });
           continued.endTurn(secondTurn, { responseText: 'loop-2', stopReason: 'end_turn' });
           await continued.close();
@@ -5122,7 +5130,7 @@ describe('Engine', () => {
             tools: [],
           }), 'utf8');
           const legacyWriter = new DebugTrace(legacyRoot);
-          await legacyWriter.fetchTurnDebug({ sessionId: 'legacy-session', turnId: 'legacy-turn' });
+          await legacyWriter.resumeTrace({ sessionId: 'legacy-session', turnId: 'legacy-turn' });
           const legacyNext = legacyWriter.startTurn({ traceId: 'legacy-turn', turnNumber: 2, sessionId: 'legacy-session' });
           legacyWriter.endTurn(legacyNext, { responseText: 'legacy-2', stopReason: 'end_turn' });
           await legacyWriter.close();
@@ -5212,7 +5220,7 @@ describe('Engine', () => {
           }), 'utf8');
 
           const migrationWriter = new DebugTrace(duplicateRoot);
-          await migrationWriter.fetchTurnDebug({ sessionId, turnId: 'legacy-active-turn' });
+          await migrationWriter.resumeTrace({ sessionId, turnId: 'legacy-active-turn' });
           const migratedTurn = migrationWriter.startTurn({ traceId: 'legacy-active-turn', turnNumber: 2, sessionId });
           migrationWriter.endTurn(migratedTurn, { responseText: 'legacy-active-2', stopReason: 'tool_use' });
           await migrationWriter.flush();

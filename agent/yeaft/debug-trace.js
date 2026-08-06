@@ -1123,31 +1123,37 @@ export class DebugTrace {
   }
 
   async queryByMessage(messageId) {
-    await this.#ensureHydrated();
     await this.#drainWrites();
-    const traces = this.#traceSummaries()
-      .filter(({ trace }) => trace.messageId === messageId)
-      .map(({ trace }) => trace);
+    const traces = (await readTraceSummaries(this.#rootDir)).map(item => item.trace)
+      .filter(trace => trace.messageId === messageId);
     return this.#expandLegacy(traces);
   }
 
   async queryByTrace(traceId) {
-    await this.#ensureHydrated();
     await this.#drainWrites();
-    const traces = this.#traceSummaries()
-      .filter(({ trace }) => trace.traceId === traceId || trace.requestId === traceId)
-      .map(({ trace }) => trace);
+    const traces = (await readTraceSummaries(this.#rootDir)).map(item => item.trace)
+      .filter(trace => trace.traceId === traceId || trace.requestId === traceId);
     return this.#expandLegacy(traces);
   }
 
   async queryRecent(limit = 20) {
-    await this.#ensureHydrated();
     await this.#drainWrites();
     const lim = Math.max(1, Math.min(MAX_HISTORY_LIMIT, Number(limit) || MAX_HISTORY_LIMIT));
-    return this.#traceSummaries()
+    return (await readTraceSummaries(this.#rootDir))
       .slice(-lim)
       .reverse()
       .flatMap(({ trace }) => traceToLegacyRows(trace));
+  }
+
+  finalizeQuery(traceId, { sessionId = null, stopReason = 'end_turn' } = {}) {
+    for (const trace of this.#requestCache.values()) {
+      if (trace.traceId !== traceId || (sessionId != null && trace.sessionId !== sessionId)) continue;
+      trace.active = false;
+      trace.closedAt ||= Date.now();
+      trace.updatedAt = Date.now();
+      trace.finalStopReason = stopReason;
+      this.#appendTraceRecord(trace, 'finalize', { at: trace.updatedAt, stopReason }, { writeMeta: true });
+    }
   }
 
   async fetchTurnDebug({ sessionId, turnId, dreamLimit = 0 } = {}) {
@@ -1166,10 +1172,7 @@ export class DebugTrace {
       const locator = await readJson(turnLocatorPath(this.#rootDir, requestedSessionId, requestedTurnId));
       if (locator?.requestKey && locator.sessionId === requestedSessionId && locator.requestId === requestedTurnId) {
         const located = await readRequestDir(requestDirFor(this.#rootDir, requestedSessionId, locator.requestKey));
-        if (traceMatchesIdentity(located, requestedSessionId, requestedTurnId)) {
-          trace = located;
-          this.#requestCache.set(trace.requestKey, trace);
-        }
+        if (traceMatchesIdentity(located, requestedSessionId, requestedTurnId)) trace = located;
       }
     }
     if (!trace) {
@@ -1178,7 +1181,6 @@ export class DebugTrace {
       for (const item of await readTraceSummaries(this.#rootDir, requestedSessionId)) {
         if (traceMatchesIdentity(item.trace, requestedSessionId, requestedTurnId)) {
           trace = item.trace;
-          this.#requestCache.set(trace.requestKey, trace);
           break;
         }
       }
@@ -1195,14 +1197,13 @@ export class DebugTrace {
       const detail = await this.fetchTurnDebug({ sessionId, turnId: requestedDetailTurnId, dreamLimit });
       return { ...detail, hasMore: false, limit: detail.loops.length, indexOnly: false };
     }
-    await this.#ensureHydrated();
     await this.#drainWrites();
     const lim = Math.max(1, Math.min(MAX_HISTORY_LIMIT, Number(limit) || MAX_HISTORY_LIMIT));
     const searchRegex = requestedDetailTurnId ? null : compileTraceSearchRegex(search);
-    const traces = this.#traceSummaries(sessionId)
-      .filter(({ trace }) => !threadId || trace.threadId === threadId)
-      .filter(({ trace }) => requestedDetailTurnId || traceMatchesRegex(trace, searchRegex))
-      .map(({ trace }) => trace);
+    const traces = (await readTraceHeaders(this.#rootDir, sessionId))
+      .map(({ trace }) => trace)
+      .filter(trace => !threadId || trace.threadId === threadId)
+      .filter(trace => requestedDetailTurnId || traceMatchesRegex(trace, searchRegex));
     const dreamEvents = this.#readDreamEvents({ sessionId, dreamLimit });
     if (requestedDetailTurnId) {
       const trace = traces.find(t => t.requestId === requestedDetailTurnId || t.traceId === requestedDetailTurnId);
@@ -1214,14 +1215,22 @@ export class DebugTrace {
     if (indexOnly) {
       return {
         loops: [],
-        turns: selected.map(trace => summarizeTrace(trace, false)),
+        turns: selected.map(trace => ({
+          ...summarizeTrace(trace, false),
+          loopCount: Number(trace.loopCount || 0),
+          tools: [],
+        })),
         dreamEvents,
         hasMore: traces.length > selected.length,
         limit: lim,
         indexOnly: true,
       };
     }
-    const expanded = selected.reduce((acc, trace) => {
+    const selectedKeys = new Set(selected.map(trace => trace.requestKey));
+    const detailed = (await readTraceSummaries(this.#rootDir, sessionId))
+      .map(({ trace }) => trace)
+      .filter(trace => selectedKeys.has(trace.requestKey));
+    const expanded = detailed.reduce((acc, trace) => {
       const item = expandTrace(trace);
       acc.loops.push(...item.loops);
       acc.turns.push(...item.turns);
@@ -1324,6 +1333,7 @@ export class DebugTrace {
     const isUsableExisting = (t) => (
       t?.sessionId === normalizedSessionId
       && t?.traceId === traceId
+      && t.active !== false
       && !(turnNumber === 1 && (t.loops || []).some(l => l.loopNumber === 1))
     );
     // Cache-only: the write path must NEVER touch disk (that was the O(N^2)
@@ -1372,6 +1382,23 @@ export class DebugTrace {
     // startTurn minted the trace, so it is already resident. Never read disk
     // on the write path — that is the stall we are eliminating.
     return this.#requestCache.get(requestKey) || null;
+  }
+
+  async resumeTrace({ sessionId, turnId } = {}) {
+    if (!sessionId || !turnId) return false;
+    const locator = await readJson(turnLocatorPath(this.#rootDir, sessionId, turnId));
+    let trace = null;
+    if (locator?.requestKey && locator.sessionId === sessionId) {
+      trace = await readRequestDir(requestDirFor(this.#rootDir, sessionId, locator.requestKey));
+    }
+    if (!traceMatchesIdentity(trace, sessionId, turnId)) {
+      trace = (await readTraceSummaries(this.#rootDir, sessionId))
+        .map(item => item.trace)
+        .find(item => traceMatchesIdentity(item, sessionId, turnId)) || null;
+    }
+    if (!trace) return false;
+    this.#requestCache.set(trace.requestKey, trace);
+    return true;
   }
 
   #traceSummaries(sessionId = null) {
@@ -1721,6 +1748,8 @@ export class DebugTrace {
 export class NullTrace {
   startTurn() { return 'null'; }
   endTurn() {}
+  finalizeQuery() {}
+  async resumeTrace() { return false; }
   logTool() { return 'null'; }
   logEvent() { return 'null'; }
   event() { return 'null'; }
