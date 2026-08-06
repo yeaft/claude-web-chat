@@ -119,13 +119,14 @@ describe('YeaftPage setup', () => {
     expect(css).toMatch(/\.settings-scroll-yeaft\s+\.sp-subpane\s*\{[^}]*overflow-y:\s*auto;/s);
   });
 
-  it('keeps Session inventory hydration separate from the message refresh spinner', () => {
+  it('keeps automatic history hydration and Session inventory out of the manual refresh spinner', () => {
     const source = YeaftPage.template;
     const actionsStart = source.indexOf('<YeaftSessionActions');
     const actionsEnd = source.indexOf('/>', actionsStart);
     const actions = source.slice(actionsStart, actionsEnd);
 
-    expect(actions).toContain(':loading-more-history="store.yeaftLoadingMoreHistory"');
+    expect(actions).toContain(':loading-more-history="store.yeaftManualHistoryRefreshLoading"');
+    expect(actions).not.toContain('store.yeaftLoadingMoreHistory');
     expect(actions).not.toContain('yeaftSessionHydrateRequestId');
     expect(actions).toContain('@reload-messages="reloadMessages"');
   });

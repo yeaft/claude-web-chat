@@ -118,6 +118,36 @@ async function runConsolidatedHistoryScenarios() {
 describe('Yeaft history outline state', () => {
   beforeEach(() => vi.useFakeTimers());
 
+  it('keeps automatic page-restore history out of the manual message refresh spinner', async () => {
+    const store = primeStore();
+    store.yeaftSessionHistoryState = {};
+    store._yeaftManualHistoryRefresh = null;
+
+    const automatic = store.beginYeaftHistoryLoad({
+      agentId: 'agent-a', sessionId: 'same', mode: 'recent', preserveLoaded: false,
+    });
+    expect(store.yeaftLoadingMoreHistory).toBe(true);
+    expect(store.yeaftManualHistoryRefreshLoading).toBe(false);
+
+    expect(store.reloadYeaftMessages()).toBe(automatic.requestId);
+    expect(store.yeaftManualHistoryRefreshLoading).toBe(true);
+    expect(store._sent).toEqual([]);
+
+    store.finishYeaftHistoryLoad({
+      agentId: 'agent-a', sessionId: 'same', requestId: automatic.requestId,
+    }, { loaded: true, hasMore: false, oldestSeq: 1 }, 'chunk');
+    expect(store.yeaftLoadingMoreHistory).toBe(false);
+    expect(store.yeaftManualHistoryRefreshLoading).toBe(false);
+
+    expect(store.reloadYeaftMessages()).toBe(true);
+    expect(store.yeaftManualHistoryRefreshLoading).toBe(true);
+    expect(store._sent.at(-1)).toMatchObject({
+      type: 'yeaft_load_history', agentId: 'agent-a', sessionId: 'same',
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(store.yeaftManualHistoryRefreshLoading).toBe(false);
+  });
+
   it('sends sender-only searches, rejects stale responses, and tracks unread Sessions', () => {
     const store = primeStore();
     store.activeVpTurns = {
