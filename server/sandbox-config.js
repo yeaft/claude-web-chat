@@ -9,6 +9,14 @@ export function validateSandboxDeploymentConfig(config) {
     || !config.operationSigningPrivateKey || !config.controllerResultPublicKey
     || !config.controllerHostId || !config.bootstrapSigningKey
     || !config.hostAttestationKey || !config.controllerAttestationFingerprint
+    || !config.hostAttestationListenerHost
+    || !Number.isSafeInteger(config.hostAttestationListenerPort)
+    || config.hostAttestationListenerPort <= 0
+    || config.hostAttestationListenerPort > 65_535
+    || !config.hostAttestationServerCert || !config.hostAttestationServerKey
+    || !config.hostAttestationClientCa
+    || !Number.isSafeInteger(config.hostAttestationBodyLimitBytes)
+    || config.hostAttestationBodyLimitBytes <= 0
     || !config.helperAttestationPublicKey || !config.imageDigest
     || !config.controllerClientCert || !config.controllerClientKey
     || !config.controllerCaCert

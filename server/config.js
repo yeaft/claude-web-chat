@@ -130,6 +130,13 @@ export const CONFIG = {
     bootstrapSigningKey: process.env.SANDBOX_BOOTSTRAP_SIGNING_KEY || '',
     hostAttestationKey: process.env.SANDBOX_HOST_ATTESTATION_KEY || '',
     controllerAttestationFingerprint: process.env.SANDBOX_CONTROLLER_ATTESTATION_FINGERPRINT || '',
+    hostAttestationListenerHost: process.env.SANDBOX_HOST_ATTESTATION_LISTENER_HOST || '',
+    hostAttestationListenerPort: parseInt(process.env.SANDBOX_HOST_ATTESTATION_LISTENER_PORT, 10) || 0,
+    hostAttestationServerCert: process.env.SANDBOX_HOST_ATTESTATION_SERVER_CERT || '',
+    hostAttestationServerKey: process.env.SANDBOX_HOST_ATTESTATION_SERVER_KEY || '',
+    hostAttestationClientCa: process.env.SANDBOX_HOST_ATTESTATION_CLIENT_CA || '',
+    hostAttestationBodyLimitBytes:
+      parseInt(process.env.SANDBOX_HOST_ATTESTATION_BODY_LIMIT_BYTES, 10) || 64 * 1024,
     helperAttestationPublicKey: process.env.SANDBOX_HELPER_ATTESTATION_PUBLIC_KEY || '',
     hostAttestationMaxSkewMs: parseInt(process.env.SANDBOX_HOST_ATTESTATION_MAX_SKEW_MS, 10) || 30_000,
     imageDigest: process.env.SANDBOX_IMAGE_DIGEST || '',
@@ -221,7 +228,7 @@ export function isEmailConfigured() {
 export function getUserByUsername(username) {
   // Query database first (includes migrated, registered, and SSO-only users).
   const dbUser = userDb.getByUsername(username);
-  if (dbUser) {
+  if (dbUser?.deletion_state === 'active' || (dbUser && !dbUser.deletion_state)) {
     return {
       username: dbUser.username,
       passwordHash: dbUser.password_hash || null,
@@ -288,7 +295,7 @@ export function validateProductionConfig() {
   }
 
   if (CONFIG.sandbox.enabled && !validateSandboxDeploymentConfig(CONFIG.sandbox)) {
-    errors.push('Sandbox requires an HTTPS dedicated Controller, Host binding, fixed image digest, pinned attestation certificate fingerprint, mTLS client identity and CA, Controller token, asymmetric operation/result keys, bootstrap signing key, Host attestation key, and Helper attestation public key');
+    errors.push('Sandbox requires an HTTPS dedicated Controller, Host binding, fixed image digest, a dedicated mTLS Host attestation listener with a pinned Controller certificate, Controller token, asymmetric operation/result keys, bootstrap signing key, Host attestation key, and Helper attestation public key');
   }
 
   // Check that at least one user with a password exists (in DB or config)

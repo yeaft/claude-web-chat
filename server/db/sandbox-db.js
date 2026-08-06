@@ -167,24 +167,31 @@ function appendAuditEvent({ sandbox, operationId = null, eventType, actorKind, o
 }
 
 export const sandboxDb = {
-  isEpochActivated(hostId, epoch) {
+  isEpochActivated(hostId, epoch, activationDigest) {
+    if (!Number.isSafeInteger(epoch) || epoch < 1 || !activationDigest) return false;
     return Boolean(db.prepare(`
-      SELECT 1 FROM sandbox_host_audit_events
-      WHERE host_id = ? AND epoch = ? AND event_type = 'epoch_activation'
-        AND outcome = 'succeeded'
-      ORDER BY id DESC LIMIT 1
-    `).get(hostId, epoch));
+      SELECT 1 FROM sandbox_host_epochs
+      WHERE host_id = ? AND epoch = ? AND activation_digest = ?
+    `).get(hostId, epoch, activationDigest));
   },
 
   recordEpochActivation(hostId, epoch, activationDigest, now = Date.now()) {
     return transaction(() => {
-      const host = db.prepare('SELECT epoch FROM sandbox_hosts WHERE id = ?').get(hostId);
-      if (!host || host.epoch !== epoch) throw new SandboxConflictError('SANDBOX_STALE_RESULT');
+      if (!Number.isSafeInteger(epoch) || epoch < 1 || !activationDigest) {
+        throw new SandboxConflictError('SANDBOX_STALE_RESULT');
+      }
+      const updated = db.prepare(`
+        UPDATE sandbox_host_epochs
+        SET activation_digest = ?, activated_at = ?, updated_at = ?
+        WHERE host_id = ? AND epoch = ?
+          AND (activation_digest IS NULL OR activation_digest = ?)
+      `).run(activationDigest, now, now, hostId, epoch, activationDigest);
+      if (updated.changes !== 1) throw new SandboxConflictError('SANDBOX_STALE_RESULT');
       db.prepare(`
         INSERT INTO sandbox_host_audit_events
           (host_id, epoch, event_type, outcome, error_code, created_at)
-        VALUES (?, ?, 'epoch_activation', 'succeeded', ?, ?)
-      `).run(hostId, epoch, activationDigest, now);
+        VALUES (?, ?, 'epoch_activation', 'succeeded', NULL, ?)
+      `).run(hostId, epoch, now);
       return true;
     })();
   },

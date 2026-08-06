@@ -33,7 +33,7 @@ function addQualifiedHost(overrides = {}) {
       memory_mib_total, memory_mib_available, disk_gib_total, updated_at
     ) VALUES (?, ?, ?, 1, 1, 1, 1, 1, ?, ?, ?, ?, ?, ?)
   `).run(
-    overrides.id || 'host-1', overrides.epoch || 'epoch-1', overrides.qualified ?? 1,
+    overrides.id || 'host-1', overrides.epoch || 1, overrides.qualified ?? 1,
     overrides.imageDigest || 'sha256:fixed', overrides.cpu ?? 2000, overrides.memory ?? 4096,
     overrides.memoryAvailable ?? overrides.memory ?? 4096, overrides.disk ?? 40,
     overrides.updatedAt ?? Date.now()
@@ -261,31 +261,43 @@ describe('sandbox control-plane reservation', () => {
     })).available).toBe(true);
   });
 
-  it('blocks account deletion while a reservation is held and permits deletion after settlement', () => {
-    addQualifiedHost({ id: 'host-account-delete', cpu: 10000, memory: 20000, disk: 200 });
+  it('durably disables account access, enqueues idempotent Remove, and finalizes after settlement', () => {
+    addQualifiedHost({ id: 'host-account-delete', epoch: 1, cpu: 10000, memory: 20000, disk: 200 });
     const user = userDb.getOrCreate('sandbox-account-delete');
+    db.prepare("UPDATE users SET agent_secret = 'deletion-secret' WHERE id = ?").run(user.id);
     entitle(user.id);
     const created = sandboxDb.create(user.id, {
       agentName: 'Account Delete', sizeId: 'small', idempotencyKey: 'account-delete-create'
     }, sandboxConfig({ maxReservedSandboxes: 20 }));
 
-    expect(() => userDb.deleteUser(user.id)).toThrowError(expect.objectContaining({
-      code: 'SANDBOX_REMOVE_REQUIRED'
-    }));
+    const first = userDb.beginDeletion(user.id, 5000);
+    const replay = userDb.beginDeletion(user.id, 6000);
+    expect(replay).toEqual(first);
+    expect(userDb.get(user.id)).toMatchObject({
+      deletion_state: 'pending', deletion_id: first.deletionId,
+      password_hash: null, agent_secret: null, totp_secret: null
+    });
+    expect(userDb.getUserByAgentSecret('deletion-secret')).toBeNull();
+    const removal = db.prepare(`
+      SELECT * FROM sandbox_operations WHERE user_id = ? AND idempotency_key = ?
+    `).get(user.id, `account-delete:${first.deletionId}`);
+    expect(removal).toMatchObject({ kind: 'remove', status: 'pending', stage: 'removing' });
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM sandbox_operations
+      WHERE user_id = ? AND idempotency_key LIKE 'account-delete:%'
+    `).get(user.id).count).toBe(1);
+    expect(userDb.reconcilePendingDeletions(7000)).toBe(0);
     expect(userDb.get(user.id)).toBeTruthy();
-    expect(sandboxDb.snapshot(user.id)?.id).toBe(created.snapshot.id);
 
-    db.prepare(`
-      UPDATE sandbox_operations SET status = 'succeeded', stage = 'removed'
-      WHERE sandbox_id = ?
-    `).run(created.snapshot.id);
+    db.prepare("UPDATE sandbox_operations SET status = 'succeeded', stage = 'complete' WHERE id = ?")
+      .run(removal.id);
     db.prepare(`
       UPDATE sandboxes
       SET reservation_held = 0, observed_state = 'removed', desired_state = 'removed', removed_at = ?
       WHERE id = ?
-    `).run(Date.now(), created.snapshot.id);
+    `).run(8000, created.snapshot.id);
 
-    expect(userDb.deleteUser(user.id)).toBe(true);
+    expect(userDb.reconcilePendingDeletions(9000)).toBe(1);
     expect(userDb.get(user.id)).toBeUndefined();
     expect(db.prepare('SELECT id FROM sandboxes WHERE id = ?').get(created.snapshot.id)).toBeUndefined();
   });
@@ -339,7 +351,7 @@ describe('sandbox control-plane reservation', () => {
     applyControllerResult({
       operationId: createOperation.id,
       generation: 1,
-      hostEpoch: 'epoch-1',
+      hostEpoch: 1,
       imageDigest: 'sha256:fixed',
       success: true,
       readinessProof: {
@@ -366,7 +378,7 @@ describe('sandbox control-plane reservation', () => {
     });
     const stopOperation = db.prepare("SELECT * FROM sandbox_operations WHERE sandbox_id = ? AND kind = 'stop'").get(created.snapshot.id);
     expect(stopOperation.generation).toBe(1);
-    applyControllerResult({ operationId: stopOperation.id, generation: 1, hostEpoch: 'epoch-1', success: true });
+    applyControllerResult({ operationId: stopOperation.id, generation: 1, hostEpoch: 1, success: true });
     expect(sandboxDb.snapshot(user.id).observedState).toBe('stopped');
     expect(sandboxDb.authenticateCredential(agentCredential.credentialId, agentCredential.secret, claims))
       .toEqual({ sandboxId: created.snapshot.id, userId: user.id });
@@ -374,13 +386,13 @@ describe('sandbox control-plane reservation', () => {
     sandboxDb.requestAction(user.id, 'remove', 'lifecycle-remove', config);
     const removeOperation = db.prepare("SELECT * FROM sandbox_operations WHERE sandbox_id = ? AND kind = 'remove'").get(created.snapshot.id);
     expect(() => applyControllerResult({
-      operationId: removeOperation.id, generation: 2, hostEpoch: 'epoch-1', success: true,
+      operationId: removeOperation.id, generation: 2, hostEpoch: 1, success: true,
       absenceProof: { container: true }
     })).toThrowError(expect.objectContaining({ code: 'SANDBOX_REMOVE_PROOF_REQUIRED' }));
     expect(sandboxDb.snapshot(user.id).reservationHeld).toBe(true);
 
     applyControllerResult({
-      operationId: removeOperation.id, generation: 2, hostEpoch: 'epoch-1', success: true,
+      operationId: removeOperation.id, generation: 2, hostEpoch: 1, success: true,
       absenceProof: { container: true, storage: true, quota: true, network: true, credential: true }
     });
     expect(sandboxDb.snapshot(user.id)).toBeNull();
@@ -534,7 +546,7 @@ describe('sandbox control-plane reservation', () => {
       lastErrorCode: 'SANDBOX_AGENT_NOT_READY'
     });
 
-    db.prepare("UPDATE sandbox_hosts SET epoch = 'epoch-restarted' WHERE id = 'host-runtime-reconcile'").run();
+    db.prepare("UPDATE sandbox_hosts SET epoch = 2 WHERE id = 'host-runtime-reconcile'").run();
     expect(sandboxDb.reconcileRuntimeState(Date.now(), config, { isAgentReady: () => true }))
       .toBe(0);
     expect(sandboxDb.snapshot(user.id).lastErrorCode).toBe('SANDBOX_AGENT_NOT_READY');
@@ -551,7 +563,7 @@ describe('sandbox control-plane reservation', () => {
     }, config);
     const assignedHost = db.prepare('SELECT host_id FROM sandboxes WHERE id = ?')
       .get(created.snapshot.id).host_id;
-    db.prepare("UPDATE sandbox_hosts SET epoch = 'epoch-2' WHERE id = ?").run(assignedHost);
+    db.prepare("UPDATE sandbox_hosts SET epoch = 2 WHERE id = ?").run(assignedHost);
 
     expect(sandboxDb.reconcileRuntimeState(Date.now(), config, { isAgentReady: () => true }))
       .toBeGreaterThanOrEqual(1);
@@ -573,7 +585,7 @@ describe('sandbox control-plane reservation', () => {
     }, sandboxConfig({ maxReservedSandboxes: 5 }));
     const operation = db.prepare('SELECT * FROM sandbox_operations WHERE sandbox_id = ?').get(created.snapshot.id);
     expect(() => applyControllerResult({
-      operationId: operation.id, generation: 0, hostEpoch: 'epoch-1', success: true
+      operationId: operation.id, generation: 0, hostEpoch: 1, success: true
     })).toThrowError(expect.objectContaining({ code: 'SANDBOX_STALE_RESULT' }));
     expect(sandboxDb.snapshot(user.id).observedState).toBe('reserving');
   });
@@ -591,7 +603,7 @@ describe('sandbox control-plane reservation', () => {
     const completeResult = {
       operationId: operation.id,
       generation: 1,
-      hostEpoch: 'epoch-1',
+      hostEpoch: 1,
       imageDigest: 'sha256:fixed',
       success: true,
       readinessProof: {
@@ -620,7 +632,7 @@ describe('sandbox control-plane reservation', () => {
       `).run(Date.now(), assignedHost);
     }
 
-    db.prepare("UPDATE sandbox_hosts SET epoch = 'epoch-2' WHERE id = ?").run(assignedHost);
+    db.prepare("UPDATE sandbox_hosts SET epoch = 2 WHERE id = ?").run(assignedHost);
     const recovery = applyControllerResult(completeResult, config);
     expect(recovery.snapshot.observedState).toBe('recovery_required');
     expect(recovery.snapshot.lastErrorCode).toBe('SANDBOX_HOST_EPOCH_CHANGED');
@@ -631,9 +643,9 @@ describe('sandbox control-plane reservation', () => {
     const removeOperation = db.prepare(`
       SELECT * FROM sandbox_operations WHERE sandbox_id = ? AND kind = 'remove'
     `).get(created.snapshot.id);
-    expect(removeOperation.host_epoch).toBe('epoch-2');
+    expect(removeOperation.host_epoch).toBe(2);
     expect(db.prepare('SELECT host_epoch FROM sandboxes WHERE id = ?').get(created.snapshot.id).host_epoch)
-      .toBe('epoch-2');
+      .toBe(2);
   });
 
   it('keeps Remove reachable after an epoch change when Host qualification is unavailable', () => {

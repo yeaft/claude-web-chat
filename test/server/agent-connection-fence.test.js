@@ -39,7 +39,9 @@ vi.mock('../../server/handlers/agent-sync.js', () => ({
   handleAgentSync: vi.fn(async () => false),
 }));
 vi.mock('../../server/perf-trace.js', () => ({ recordPerfTraceEvent: vi.fn() }));
-vi.mock('../../server/database.js', () => ({ userDb: { getOrCreate: getOrCreateUser } }));
+vi.mock('../../server/database.js', () => ({
+  userDb: { getOrCreate: getOrCreateUser, isActive: vi.fn(() => true) }
+}));
 
 const handleAgentOutput = vi.fn(async () => true);
 vi.mock('../../server/handlers/agent-output.js', () => ({ handleAgentOutput }));

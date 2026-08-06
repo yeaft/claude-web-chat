@@ -24,7 +24,7 @@ function signedOperation(overrides = {}) {
     action: 'create',
     requestDigest: 'request-digest-1',
     generation: 1,
-    hostEpoch: 'epoch-1',
+    hostEpoch: 1,
     instanceId: 'instance-1',
     imageDigest: 'sha256:fixed',
     desiredState: 'running',
@@ -49,7 +49,7 @@ function signedActivation(overrides = {}) {
     action: 'ACTIVATE_EPOCH',
     requestDigest: 'activation-digest-1',
     generation: null,
-    hostEpoch: 'epoch-1',
+    hostEpoch: 1,
     instanceId: null,
     imageDigest: null,
     desiredState: null,
@@ -95,7 +95,7 @@ function helper(executor = { execute: vi.fn(async () => successfulRuntimeResult(
   const instance = createSandboxHelper({
     config: {
       hostId: 'dedicated-1',
-      hostEpoch: 'epoch-1',
+      hostEpoch: 1,
       imageDigest: 'sha256:fixed',
       operationSigningPublicKey: publicKey,
       attestationSigningPrivateKey: attestationPrivateKey,
@@ -104,8 +104,8 @@ function helper(executor = { execute: vi.fn(async () => successfulRuntimeResult(
     executor
   });
   const activation = signedActivation();
-  void instance.execute(activation);
-  return { activation, executor, instance, root };
+  const activated = instance.execute(activation);
+  return { activation, activated, executor, instance, root };
 }
 
 afterEach(() => {
@@ -151,6 +151,10 @@ describe('managed Sandbox Helper authorization boundary', () => {
       .rejects.toThrow('invalid operation envelope');
     await expect(instance.execute(signedOperation({ operationId: 'op-3', expiresAt: Date.now() - 1 })))
       .rejects.toThrow('invalid operation envelope');
+    for (const hostEpoch of ['1', 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      await expect(instance.execute(signedOperation({ operationId: `invalid-epoch-${hostEpoch}`, hostEpoch })))
+        .rejects.toThrow('invalid operation envelope');
+    }
     await expect(instance.execute(signedOperation({ desiredState: 'stopped' })))
       .rejects.toThrow('operation ID reuse');
 
@@ -165,7 +169,7 @@ describe('managed Sandbox Helper authorization boundary', () => {
       .resolves.toMatchObject({ success: true, helperAttestation: { action: 'retry' } });
     await expect(instance.execute(signedOperation({
       operationId: 'op-2',
-      hostEpoch: 'epoch-2',
+      hostEpoch: 2,
       nonce: 'nonce-2'
     }))).rejects.toThrow('inactive Host epoch');
   });
@@ -253,7 +257,7 @@ describe('managed Sandbox Helper authorization boundary', () => {
     const restartedExecutor = { execute: vi.fn(async () => ({ success: true })) };
     const restarted = createSandboxHelper({
       config: {
-        hostId: 'dedicated-1', hostEpoch: 'epoch-1', imageDigest: 'sha256:fixed',
+        hostId: 'dedicated-1', hostEpoch: 1, imageDigest: 'sha256:fixed',
         operationSigningPublicKey: publicKey, attestationSigningPrivateKey: attestationPrivateKey,
         journalPath: join(root, 'helper.db')
       },
@@ -262,23 +266,24 @@ describe('managed Sandbox Helper authorization boundary', () => {
 
     await expect(restarted.execute(signedOperation({
       operationId: 'op-2',
-      hostEpoch: 'epoch-2',
+      hostEpoch: 2,
       nonce: 'nonce-2'
     }))).rejects.toThrow('inactive Host epoch');
   });
 
   it('durably activates epochs, rejects conflicts and rollback, and fences late envelopes', async () => {
-    const { activation, instance, root } = helper();
+    const { activated, activation, instance, root } = helper();
 
-    expect(instance.activeEpoch()).toMatchObject({ epoch: 'epoch-1' });
+    await activated;
+    expect(instance.activeEpoch()).toMatchObject({ epoch: 1 });
     await expect(instance.activateEpoch(activation)).resolves.toMatchObject({
       success: true, activated: false
     });
     await expect(instance.activateEpoch(signedActivation({ requestDigest: 'other-digest' })))
       .rejects.toThrow('conflicting epoch activation');
     await instance.activateEpoch(signedActivation({
-      operationId: 'activate-epoch-2', hostEpoch: 'epoch-2',
-      requestDigest: 'activation-digest-2', nonce: 'activation-nonce-2'
+      operationId: 'activate-epoch-3', hostEpoch: 3,
+      requestDigest: 'activation-digest-3', nonce: 'activation-nonce-3'
     }));
     await expect(instance.execute(signedOperation({ operationId: 'late', nonce: 'late' })))
       .rejects.toThrow('inactive Host epoch');
@@ -289,15 +294,19 @@ describe('managed Sandbox Helper authorization boundary', () => {
 
     const restarted = createSandboxHelper({
       config: {
-        hostId: 'dedicated-1', hostEpoch: 'epoch-1', imageDigest: 'sha256:fixed',
+        hostId: 'dedicated-1', hostEpoch: 1, imageDigest: 'sha256:fixed',
         operationSigningPublicKey: publicKey, attestationSigningPrivateKey: attestationPrivateKey,
         journalPath: join(root, 'helper.db')
       },
       executor: { execute: vi.fn(async () => successfulRuntimeResult()) }
     });
-    expect(restarted.activeEpoch()).toMatchObject({ epoch: 'epoch-2', digest: expect.any(String) });
+    expect(restarted.activeEpoch()).toMatchObject({ epoch: 3, digest: expect.any(String) });
+    await expect(restarted.activateEpoch(signedActivation({
+      operationId: 'unseen-lower', hostEpoch: 2,
+      requestDigest: 'unseen-lower-digest', nonce: 'unseen-lower-nonce'
+    }))).rejects.toThrow('epoch rollback');
     await expect(restarted.execute(signedOperation({
-      operationId: 'current', hostEpoch: 'epoch-2', nonce: 'current'
+      operationId: 'current', hostEpoch: 3, nonce: 'current'
     }))).resolves.toMatchObject({ success: true });
     restarted.close();
   });
@@ -311,7 +320,7 @@ describe('managed Sandbox Helper authorization boundary', () => {
 
     let activated = false;
     const activation = instance.activateEpoch(signedActivation({
-      operationId: 'activate-wait', hostEpoch: 'epoch-2',
+      operationId: 'activate-wait', hostEpoch: 2,
       requestDigest: 'activation-wait-digest', nonce: 'activation-wait-nonce'
     })).then(() => { activated = true; });
     await Promise.resolve();
@@ -319,23 +328,68 @@ describe('managed Sandbox Helper authorization boundary', () => {
     finish(successfulRuntimeResult());
     await execution;
     await activation;
-    expect(instance.activeEpoch().epoch).toBe('epoch-2');
+    expect(instance.activeEpoch().epoch).toBe(2);
+    instance.close();
+  });
+
+  it('blocks new executions once activation is pending', async () => {
+    let finishFirst;
+    const executor = { execute: vi.fn(operation => operation.operationId === 'running'
+      ? new Promise(resolve => { finishFirst = resolve; })
+      : Promise.resolve(successfulRuntimeResult())) };
+    const { instance } = helper(executor);
+    const running = instance.execute(signedOperation({ operationId: 'running', nonce: 'running' }));
+    await vi.waitFor(() => expect(executor.execute).toHaveBeenCalledOnce());
+
+    const activation = instance.activateEpoch(signedActivation({
+      operationId: 'activate-block', hostEpoch: 2,
+      requestDigest: 'activation-block-digest', nonce: 'activation-block-nonce'
+    }));
+    const lateExecution = instance.execute(signedOperation({
+      operationId: 'late-new', nonce: 'late-new'
+    }));
+    await Promise.resolve();
+    expect(executor.execute).toHaveBeenCalledOnce();
+
+    finishFirst(successfulRuntimeResult());
+    await running;
+    await activation;
+    await expect(lateExecution).rejects.toThrow('inactive Host epoch');
+    expect(executor.execute).toHaveBeenCalledOnce();
+    instance.close();
+  });
+
+  it('serializes concurrent activations in monotonic order', async () => {
+    const { instance } = helper();
+    const epoch2 = instance.activateEpoch(signedActivation({
+      operationId: 'activate-2', hostEpoch: 2,
+      requestDigest: 'activation-digest-2', nonce: 'activation-nonce-2'
+    }));
+    const epoch3 = instance.activateEpoch(signedActivation({
+      operationId: 'activate-3', hostEpoch: 3,
+      requestDigest: 'activation-digest-3', nonce: 'activation-nonce-3'
+    }));
+
+    await expect(epoch2).resolves.toMatchObject({ success: true, activated: true });
+    await expect(epoch3).resolves.toMatchObject({ success: true, activated: true });
+    expect(instance.activeEpoch().epoch).toBe(3);
     instance.close();
   });
 
   it('fails closed after restart finds an interrupted privileged operation', async () => {
-    const { instance, root } = helper();
+    const { activated, instance, root } = helper();
+    await activated;
     instance.close();
     const journalPath = join(root, 'helper.db');
     const db = new DatabaseSync(journalPath);
     db.prepare(`INSERT INTO helper_operations
       (operation_id, request_digest, host_epoch, status, updated_at)
-      VALUES ('interrupted', 'digest', 'epoch-1', 'in_progress', 1)`).run();
+      VALUES ('interrupted', 'digest', '1', 'in_progress', 1)`).run();
     db.close();
 
     const restarted = createSandboxHelper({
       config: {
-        hostId: 'dedicated-1', hostEpoch: 'epoch-1', imageDigest: 'sha256:fixed',
+        hostId: 'dedicated-1', hostEpoch: 1, imageDigest: 'sha256:fixed',
         operationSigningPublicKey: publicKey, attestationSigningPrivateKey: attestationPrivateKey,
         journalPath
       },
@@ -348,13 +402,14 @@ describe('managed Sandbox Helper authorization boundary', () => {
   });
 
   it('allows a signed Remove to recover only the Sandbox with an interrupted operation', async () => {
-    const { instance, root } = helper();
+    const { activated, instance, root } = helper();
+    await activated;
     instance.close();
     const journalPath = join(root, 'helper.db');
     const db = new DatabaseSync(journalPath);
     db.prepare(`INSERT INTO helper_operations
       (operation_id, sandbox_id, request_digest, host_epoch, status, updated_at)
-      VALUES ('interrupted', 'sandbox-1', 'digest', 'epoch-1', 'in_progress', 1)`).run();
+      VALUES ('interrupted', 'sandbox-1', 'digest', '1', 'in_progress', 1)`).run();
     db.close();
 
     const executor = { execute: vi.fn(async () => ({
@@ -363,7 +418,7 @@ describe('managed Sandbox Helper authorization boundary', () => {
     })) };
     const restarted = createSandboxHelper({
       config: {
-        hostId: 'dedicated-1', hostEpoch: 'epoch-1', imageDigest: 'sha256:fixed',
+        hostId: 'dedicated-1', hostEpoch: 1, imageDigest: 'sha256:fixed',
         operationSigningPublicKey: publicKey, attestationSigningPrivateKey: attestationPrivateKey,
         journalPath
       },

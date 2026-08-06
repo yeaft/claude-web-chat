@@ -1,4 +1,4 @@
-import { randomUUID, sign, verify } from 'crypto';
+import { createHash, randomUUID, sign, verify } from 'crypto';
 import { request as httpsRequest } from 'https';
 import { sandboxDb } from './database.js';
 import { isSandboxAgentReady } from './sandbox-agent-auth.js';
@@ -29,8 +29,10 @@ function signEnvelope(envelope, privateKey) {
   return sign(null, Buffer.from(canonicalEnvelope(envelope)), privateKey).toString('base64url');
 }
 
-function activationDigest(envelope) {
-  return Buffer.from(canonicalEnvelope(envelope)).toString('base64url');
+function activationDigest(hostId, epoch) {
+  return createHash('sha256')
+    .update(JSON.stringify({ protocolVersion: 1, action: 'ACTIVATE_EPOCH', hostId, epoch }))
+    .digest('hex');
 }
 
 function canonicalHelperAttestation(attestation) {
@@ -188,55 +190,68 @@ export function createSandboxReconciler({
   logger = console
 }) {
   let running = false;
+  const epochActivations = new Map();
 
   async function ensureEpochActivated(operation) {
     if (!store.isEpochActivated || !store.recordEpochActivation) return;
-    const issuedAt = Date.now();
-    const activation = {
-      protocolVersion: 1,
-      operationId: `activate:${operation.host_id}:${operation.host_epoch}`,
-      hostId: operation.host_id,
-      sandboxId: null,
-      action: 'ACTIVATE_EPOCH',
-      requestDigest: `epoch:${operation.host_epoch}`,
-      generation: null,
-      hostEpoch: operation.host_epoch,
-      instanceId: null,
-      imageDigest: null,
-      desiredState: null,
-      issuedAt,
-      expiresAt: issuedAt + (config.controllerRequestTimeoutMs || 10_000),
-      nonce: `activate:${operation.host_epoch}`,
-      bootstrap: null,
-      resources: null
-    };
-    const digest = activationDigest(activation);
-    if (store.isEpochActivated?.(operation.host_id, operation.host_epoch, digest)) return;
-    const response = await fetchImpl(new URL('/v1/operations', config.controllerUrl), {
-      method: 'POST',
-      headers: { authorization: `Bearer ${config.controllerToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ ...activation, signature: signEnvelope(activation, config.operationSigningPrivateKey) }),
-      cert: config.controllerClientCert,
-      key: config.controllerClientKey,
-      ca: config.controllerCaCert,
-      timeout: config.controllerRequestTimeoutMs || 10_000
-    });
-    if (!response.ok) throw new Error(`Controller returned HTTP ${response.status}`);
-    const result = await response.json();
-    verifyControllerResult(result, {
-      id: activation.operationId,
-      kind: activation.action,
-      host_id: activation.hostId,
-      sandbox_id: activation.sandboxId,
-      request_digest: activation.requestDigest,
-      generation: activation.generation,
-      host_epoch: activation.hostEpoch,
-      requestNonce: activation.nonce,
-      cpu_millis: null,
-      memory_mib: null,
-      disk_gib: null
-    }, config);
-    store.recordEpochActivation?.(operation.host_id, operation.host_epoch, digest, Date.now());
+    const epoch = Number(operation.host_epoch);
+    if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error('Invalid Host epoch');
+    const digest = activationDigest(operation.host_id, epoch);
+    if (store.isEpochActivated?.(operation.host_id, epoch, digest)) return;
+    const key = `${operation.host_id}:${epoch}`;
+    if (epochActivations.has(key)) return epochActivations.get(key);
+    const activationPromise = (async () => {
+      const issuedAt = Date.now();
+      const activation = {
+        protocolVersion: 1,
+        operationId: `activate:${operation.host_id}:${epoch}`,
+        hostId: operation.host_id,
+        sandboxId: null,
+        action: 'ACTIVATE_EPOCH',
+        requestDigest: digest,
+        generation: null,
+        hostEpoch: epoch,
+        instanceId: null,
+        imageDigest: null,
+        desiredState: null,
+        issuedAt,
+        expiresAt: issuedAt + (config.controllerRequestTimeoutMs || 10_000),
+        nonce: randomUUID(),
+        bootstrap: null,
+        resources: null
+      };
+      const response = await fetchImpl(new URL('/v1/operations', config.controllerUrl), {
+        method: 'POST',
+        headers: { authorization: `Bearer ${config.controllerToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ ...activation, signature: signEnvelope(activation, config.operationSigningPrivateKey) }),
+        cert: config.controllerClientCert,
+        key: config.controllerClientKey,
+        ca: config.controllerCaCert,
+        timeout: config.controllerRequestTimeoutMs || 10_000
+      });
+      if (!response.ok) throw new Error(`Controller returned HTTP ${response.status}`);
+      const result = await response.json();
+      verifyControllerResult(result, {
+        id: activation.operationId,
+        kind: activation.action,
+        host_id: activation.hostId,
+        sandbox_id: activation.sandboxId,
+        request_digest: activation.requestDigest,
+        generation: activation.generation,
+        host_epoch: activation.hostEpoch,
+        requestNonce: activation.nonce,
+        cpu_millis: null,
+        memory_mib: null,
+        disk_gib: null
+      }, config);
+      store.recordEpochActivation?.(operation.host_id, epoch, digest, Date.now());
+    })();
+    epochActivations.set(key, activationPromise);
+    try {
+      return await activationPromise;
+    } finally {
+      epochActivations.delete(key);
+    }
   }
 
   async function dispatch(pendingOperation) {

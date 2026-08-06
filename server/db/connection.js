@@ -32,7 +32,10 @@ db.exec(`
     username TEXT UNIQUE NOT NULL,
     display_name TEXT,
     created_at INTEGER NOT NULL,
-    last_login_at INTEGER
+    last_login_at INTEGER,
+    deletion_state TEXT NOT NULL DEFAULT 'active',
+    deletion_requested_at INTEGER,
+    deletion_id TEXT UNIQUE
   );
 
   -- 会话表
@@ -147,7 +150,7 @@ db.exec(`
   -- Host capacity separately.
   CREATE TABLE IF NOT EXISTS sandbox_hosts (
     id TEXT PRIMARY KEY,
-    epoch TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
     qualified INTEGER NOT NULL DEFAULT 0,
     controller_healthy INTEGER NOT NULL DEFAULT 0,
     helper_healthy INTEGER NOT NULL DEFAULT 0,
@@ -165,9 +168,20 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS sandbox_host_attestations (
     nonce TEXT PRIMARY KEY,
     host_id TEXT NOT NULL REFERENCES sandbox_hosts(id) ON DELETE CASCADE,
-    epoch TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
     observed_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL
+  );
+
+  -- Controller boot identity is only a change detector. The Server owns this
+  -- durable monotonic fence and its exact activation identity.
+  CREATE TABLE IF NOT EXISTS sandbox_host_epochs (
+    host_id TEXT PRIMARY KEY REFERENCES sandbox_hosts(id) ON DELETE CASCADE,
+    source_epoch TEXT NOT NULL,
+    epoch INTEGER NOT NULL CHECK(epoch >= 1),
+    activation_digest TEXT,
+    activated_at INTEGER,
+    updated_at INTEGER NOT NULL
   );
 
   CREATE INDEX IF NOT EXISTS idx_sandbox_host_attestations_host
@@ -176,7 +190,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS sandbox_host_audit_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     host_id TEXT NOT NULL,
-    epoch TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
     event_type TEXT NOT NULL,
     outcome TEXT NOT NULL,
     error_code TEXT,
@@ -207,7 +221,7 @@ db.exec(`
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     host_id TEXT NOT NULL REFERENCES sandbox_hosts(id) ON DELETE RESTRICT,
-    host_epoch TEXT NOT NULL,
+    host_epoch INTEGER NOT NULL,
     agent_name TEXT NOT NULL,
     size_id TEXT NOT NULL,
     cpu_millis INTEGER NOT NULL,
@@ -240,7 +254,7 @@ db.exec(`
     status TEXT NOT NULL,
     stage TEXT NOT NULL,
     generation INTEGER NOT NULL,
-    host_epoch TEXT NOT NULL,
+    host_epoch INTEGER NOT NULL,
     deadline_at INTEGER NOT NULL,
     error_code TEXT,
     created_at INTEGER NOT NULL,
@@ -274,7 +288,7 @@ db.exec(`
     event_type TEXT NOT NULL,
     actor_kind TEXT NOT NULL,
     generation INTEGER NOT NULL,
-    host_epoch TEXT NOT NULL,
+    host_epoch INTEGER NOT NULL,
     outcome TEXT NOT NULL,
     error_code TEXT,
     created_at INTEGER NOT NULL
@@ -336,7 +350,10 @@ const migrations = [
   `ALTER TABLE daily_stats ADD COLUMN cache_read_tokens INTEGER DEFAULT 0`,
   `ALTER TABLE daily_stats ADD COLUMN cache_write_tokens INTEGER DEFAULT 0`,
   `ALTER TABLE daily_stats ADD COLUMN total_tokens INTEGER DEFAULT 0`,
-  `ALTER TABLE sandbox_hosts ADD COLUMN memory_mib_available INTEGER NOT NULL DEFAULT 0`
+  `ALTER TABLE sandbox_hosts ADD COLUMN memory_mib_available INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE users ADD COLUMN deletion_state TEXT NOT NULL DEFAULT 'active'`,
+  `ALTER TABLE users ADD COLUMN deletion_requested_at INTEGER`,
+  `ALTER TABLE users ADD COLUMN deletion_id TEXT`
 ];
 
 // Yeaft sessions table — server-side persistence so the unified sidebar
@@ -498,6 +515,56 @@ for (const migration of migrations) {
   }
 }
 
+// One-time fail-closed migration from the PR's opaque TEXT Host epochs. SQLite
+// does not change existing column affinity for CREATE TABLE IF NOT EXISTS, so
+// normalize every live fence explicitly and seed the Server-owned allocator.
+const unmigratedSandboxHosts = db.prepare(`
+  SELECT h.id, h.epoch FROM sandbox_hosts h
+  LEFT JOIN sandbox_host_epochs e ON e.host_id = h.id
+  WHERE e.host_id IS NULL
+`).all();
+for (const host of unmigratedSandboxHosts) {
+  const values = [host.epoch];
+  for (const row of db.prepare('SELECT host_epoch AS epoch FROM sandboxes WHERE host_id = ?').all(host.id)) {
+    values.push(row.epoch);
+  }
+  for (const row of db.prepare(`
+    SELECT o.host_epoch AS epoch FROM sandbox_operations o
+    JOIN sandboxes s ON s.id = o.sandbox_id WHERE s.host_id = ?
+  `).all(host.id)) values.push(row.epoch);
+  const observed = values.map(value => {
+    if (Number.isSafeInteger(value) && value >= 1) return value;
+    const match = String(value || '').match(/(\d+)$/);
+    return match ? Number(match[1]) : 0;
+  }).filter(value => Number.isSafeInteger(value) && value >= 1);
+  const epoch = Math.max(0, ...observed) + 1;
+  const now = Date.now();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare('UPDATE sandbox_hosts SET epoch = ? WHERE id = ?').run(epoch, host.id);
+    db.prepare('UPDATE sandboxes SET host_epoch = ? WHERE host_id = ?').run(epoch, host.id);
+    db.prepare(`
+      UPDATE sandbox_operations SET host_epoch = ?
+      WHERE sandbox_id IN (SELECT id FROM sandboxes WHERE host_id = ?)
+    `).run(epoch, host.id);
+    db.prepare(`
+      UPDATE sandbox_audit_events SET host_epoch = ?
+      WHERE sandbox_id IN (SELECT id FROM sandboxes WHERE host_id = ?)
+    `).run(epoch, host.id);
+    db.prepare('UPDATE sandbox_host_attestations SET epoch = ? WHERE host_id = ?').run(epoch, host.id);
+    db.prepare('UPDATE sandbox_host_audit_events SET epoch = ? WHERE host_id = ?').run(epoch, host.id);
+    db.prepare(`
+      INSERT INTO sandbox_host_epochs
+        (host_id, source_epoch, epoch, activation_digest, activated_at, updated_at)
+      VALUES (?, ?, ?, NULL, NULL, ?)
+    `).run(host.id, `migrated:${String(host.epoch)}`, epoch, now);
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch {}
+    throw error;
+  }
+}
+
 // User identities table (multi-provider SSO + account binding)
 // One user can have multiple identities (microsoft / github / google / wechat / alipay).
 // UNIQUE(provider, subject) enforces "this provider account is bound to one user only".
@@ -584,7 +651,8 @@ try { db.exec(customExpertTables); } catch (e) { /* tables already exist */ }
 const postMigrationIndexes = [
   `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_users_agent_secret ON users(agent_secret)`,
-  `CREATE INDEX IF NOT EXISTS idx_users_aad_oid ON users(aad_oid)`
+  `CREATE INDEX IF NOT EXISTS idx_users_aad_oid ON users(aad_oid)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_deletion_id ON users(deletion_id)`
 ];
 // Time the post-migration index pass so the operational signal lands in the
 // deploy log on first startup after composite-index addition — a multi-second
@@ -657,7 +725,7 @@ export const stmts = {
   `),
 
   getUserByAgentSecret: db.prepare(`
-    SELECT * FROM users WHERE agent_secret = ?
+    SELECT * FROM users WHERE agent_secret = ? AND deletion_state = 'active'
   `),
 
   getAllUsers: db.prepare(`

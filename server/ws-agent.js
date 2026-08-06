@@ -179,6 +179,10 @@ export function handleAgentConnection(ws, url) {
         if (!agent) console.error(`[Agent] No agent found for id: ${resolvedAgentId}`);
         return;
       }
+      if (!skipAgentAuth && agent.ownerId && !userDb.isActive(agent.ownerId)) {
+        ws.close(1008, 'Account disabled');
+        return;
+      }
       markAgentHeartbeatSeen(agent);
       const msg = await parseMessage(data, agent.sessionKey);
       if (msg) {

@@ -64,13 +64,13 @@ describe('sandbox Host qualification attestation', () => {
   it('registers only a correctly scoped, signed, fully healthy dedicated Host', () => {
     const result = registerSandboxHostAttestation(signedAttestation(), config(), 100_500);
 
-    expect(result).toEqual({ accepted: true, qualified: true });
+    expect(result).toEqual({ accepted: true, qualified: true, epoch: 1 });
     expect(db.prepare(`
       SELECT id, epoch, qualified, helper_healthy, image_digest, cpu_millis_total,
         memory_mib_available
       FROM sandbox_hosts WHERE id = 'dedicated-1'
     `).get()).toEqual({
-      id: 'dedicated-1', epoch: 'epoch-1', qualified: 1, helper_healthy: 1,
+      id: 'dedicated-1', epoch: 1, qualified: 1, helper_healthy: 1,
       image_digest: 'sha256:fixed', cpu_millis_total: 2000, memory_mib_available: 3072
     });
     expect(db.prepare(`
@@ -94,12 +94,12 @@ describe('sandbox Host qualification attestation', () => {
       }
     }), config(), 106_500);
 
-    expect(result).toEqual({ accepted: true, qualified: false });
+    expect(result).toEqual({ accepted: true, qualified: false, epoch: 3 });
     expect(db.prepare(`
       SELECT epoch, qualified, helper_healthy, updated_at
       FROM sandbox_hosts WHERE id = 'dedicated-1'
     `).get()).toEqual({
-      epoch: 'epoch-unhealthy', qualified: 0, helper_healthy: 0, updated_at: 106_500
+      epoch: 3, qualified: 0, helper_healthy: 0, updated_at: 106_500
     });
     expect(db.prepare(`
       SELECT outcome, error_code FROM sandbox_host_audit_events
@@ -122,7 +122,7 @@ describe('sandbox Host qualification attestation', () => {
     );
     expect(db.prepare(`
       SELECT epoch, cpu_millis_total, updated_at FROM sandbox_hosts WHERE id = 'dedicated-1'
-    `).get()).toEqual({ epoch: 'epoch-2', cpu_millis_total: 2000, updated_at: 110_500 });
+    `).get()).toEqual({ epoch: 4, cpu_millis_total: 2000, updated_at: 110_500 });
   });
 
   it('rejects missing or impossible available-memory samples', () => {

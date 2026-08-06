@@ -109,7 +109,9 @@ function validateOperation(operation, config, now) {
     || operation.hostId !== config.hostId
     || !ALLOWED_ACTIONS.has(operation.action)
     || (!activation && (!Number.isInteger(operation.generation) || operation.generation < 1))
-    || !operation.requestDigest || !operation.hostEpoch || !operation.nonce
+    || !operation.requestDigest
+    || !Number.isSafeInteger(operation.hostEpoch) || operation.hostEpoch <= 0
+    || !operation.nonce
     || !Number.isFinite(operation.issuedAt) || !Number.isFinite(operation.expiresAt)
     || operation.issuedAt > now + config.maxClockSkewMs
     || operation.expiresAt < now
@@ -182,12 +184,19 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
   }
 
   let executing = 0;
-  let activationWaiter = null;
+  let executionWaiter = null;
+  let queuedActivations = 0;
+  let activationTail = Promise.resolve();
 
   function activeEpoch() {
-    const epoch = db.prepare("SELECT value FROM helper_state WHERE key = 'active_epoch'").get()?.value;
+    const storedEpoch = db.prepare("SELECT value FROM helper_state WHERE key = 'active_epoch'").get()?.value;
     const digest = db.prepare("SELECT value FROM helper_state WHERE key = 'active_epoch_digest'").get()?.value;
-    return epoch && digest ? { epoch, digest } : null;
+    if (!storedEpoch && !digest) return null;
+    const epoch = Number(storedEpoch);
+    if (!Number.isSafeInteger(epoch) || epoch <= 0 || !digest) {
+      throw new Error('Sandbox Helper found invalid durable Host epoch state');
+    }
+    return { epoch, digest };
   }
 
   function writeActiveEpoch(epoch, digest) {
@@ -198,7 +207,7 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
     write.run(`epoch:${epoch}`, digest);
   }
 
-  async function activateEpoch(operation) {
+  function activateEpoch(operation) {
     validateOperation(operation, effectiveConfig, now());
     if (operation.action !== 'ACTIVATE_EPOCH') {
       throw new Error('Sandbox Helper rejected an invalid epoch activation');
@@ -208,24 +217,33 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
     // digest. Per-request nonce/timestamps remain covered by the signature but
     // must not make an idempotent activation look like a conflicting epoch.
     const digest = operation.requestDigest;
-    if (executing > 0) await new Promise(resolve => { activationWaiter = resolve; });
-    const current = activeEpoch();
-    if (current?.epoch === epoch) {
-      if (current.digest !== digest) throw new Error('Sandbox Helper rejected conflicting epoch activation');
-      return buildAttestation(operation, { success: true, activated: false }, effectiveConfig, now());
-    }
-    if (db.prepare('SELECT value FROM helper_state WHERE key = ?').get(`epoch:${epoch}`)) {
-      throw new Error('Sandbox Helper rejected epoch rollback');
-    }
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      writeActiveEpoch(epoch, digest);
-      db.exec('COMMIT');
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw error;
-    }
-    return buildAttestation(operation, { success: true, activated: true }, effectiveConfig, now());
+    queuedActivations++;
+    const activation = activationTail.then(async () => {
+      try {
+        if (executing > 0) await new Promise(resolve => { executionWaiter = resolve; });
+        const current = activeEpoch();
+        if (current?.epoch === epoch) {
+          if (current.digest !== digest) throw new Error('Sandbox Helper rejected conflicting epoch activation');
+          return buildAttestation(operation, { success: true, activated: false }, effectiveConfig, now());
+        }
+        if (current && epoch < current.epoch) {
+          throw new Error('Sandbox Helper rejected epoch rollback');
+        }
+        db.exec('BEGIN IMMEDIATE');
+        try {
+          writeActiveEpoch(epoch, digest);
+          db.exec('COMMIT');
+        } catch (error) {
+          db.exec('ROLLBACK');
+          throw error;
+        }
+        return buildAttestation(operation, { success: true, activated: true }, effectiveConfig, now());
+      } finally {
+        queuedActivations--;
+      }
+    });
+    activationTail = activation.catch(() => {});
+    return activation;
   }
 
   const interrupted = db.prepare("SELECT operation_id, sandbox_id FROM helper_operations WHERE status = 'in_progress'").all();
@@ -257,6 +275,7 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
   async function execute(operation) {
     if (operation?.action === 'ACTIVATE_EPOCH') return activateEpoch(operation);
     validateOperation(operation, effectiveConfig, now());
+    while (queuedActivations > 0) await activationTail;
     const epoch = activeEpoch();
     if (!epoch || operation.hostEpoch !== epoch.epoch) {
       throw new Error('Sandbox Helper rejected an inactive Host epoch');
@@ -291,27 +310,29 @@ export function createSandboxHelper({ config, executor, now = Date.now }) {
     let result;
     let status;
     try {
-      const executorResult = await executor.execute(operation);
-      assertProofShape(operation, executorResult);
-      result = buildAttestation(operation, executorResult, effectiveConfig, now());
-      status = executorResult.success ? 'succeeded' : 'failed';
-    } catch (error) {
-      result = buildAttestation(operation, {
-        success: false,
-        errorCode: 'SANDBOX_HELPER_EXECUTION_FAILED'
-      }, effectiveConfig, now());
-      status = 'failed';
+      try {
+        const executorResult = await executor.execute(operation);
+        assertProofShape(operation, executorResult);
+        result = buildAttestation(operation, executorResult, effectiveConfig, now());
+        status = executorResult.success ? 'succeeded' : 'failed';
+      } catch (error) {
+        result = buildAttestation(operation, {
+          success: false,
+          errorCode: 'SANDBOX_HELPER_EXECUTION_FAILED'
+        }, effectiveConfig, now());
+        status = 'failed';
+      }
+      db.prepare('UPDATE helper_operations SET status = ?, result_json = ?, updated_at = ? WHERE operation_id = ?')
+        .run(status, JSON.stringify(result), now(), operation.operationId);
+      return result;
     } finally {
       executing--;
-      if (executing === 0 && activationWaiter) {
-        const resolve = activationWaiter;
-        activationWaiter = null;
+      if (executing === 0 && executionWaiter) {
+        const resolve = executionWaiter;
+        executionWaiter = null;
         resolve();
       }
     }
-    db.prepare('UPDATE helper_operations SET status = ?, result_json = ?, updated_at = ? WHERE operation_id = ?')
-      .run(status, JSON.stringify(result), now(), operation.operationId);
-    return result;
   }
 
   return { execute, activateEpoch, activeEpoch, close: () => db.close() };

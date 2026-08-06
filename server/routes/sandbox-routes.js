@@ -34,6 +34,21 @@ export function authenticateSandboxController(request, expectedFingerprint) {
     && timingSafeEqual(expected, actual);
 }
 
+export function handleSandboxHostAttestation(req, res, config = CONFIG.sandbox) {
+  if (!authenticateSandboxController(req, config.controllerAttestationFingerprint)) {
+    return res.status(401).json({ code: 'SANDBOX_CONTROLLER_IDENTITY_REJECTED' });
+  }
+  try {
+    registerSandboxHostAttestation(req.body, config);
+    return res.status(202).json({ accepted: true });
+  } catch (err) {
+    if (err instanceof SandboxHostAttestationError) {
+      return res.status(401).json({ code: 'SANDBOX_HOST_ATTESTATION_REJECTED' });
+    }
+    return sendError(res, err);
+  }
+}
+
 export function registerSandboxRoutes(app, { requireAuth, requireAdmin }) {
   // The managed runtime has no user Agent secret. Its one-time bootstrap token
   // is itself the scoped authorization for obtaining a revocable credential.
@@ -44,23 +59,6 @@ export function registerSandboxRoutes(app, { requireAuth, requireAdmin }) {
     } catch (err) {
       if (err instanceof SandboxConflictError) {
         return res.status(401).json({ code: 'SANDBOX_BOOTSTRAP_INVALID' });
-      }
-      return sendError(res, err);
-    }
-  });
-
-  // Host qualification requires both a pinned mTLS Controller identity and a
-  // payload signature. The HMAC alone is not a Controller authentication token.
-  app.post('/api/sandbox/hosts/attest', (req, res) => {
-    if (!authenticateSandboxController(req, CONFIG.sandbox.controllerAttestationFingerprint)) {
-      return res.status(401).json({ code: 'SANDBOX_CONTROLLER_IDENTITY_REJECTED' });
-    }
-    try {
-      registerSandboxHostAttestation(req.body, CONFIG.sandbox);
-      return res.status(202).json({ accepted: true });
-    } catch (err) {
-      if (err instanceof SandboxHostAttestationError) {
-        return res.status(401).json({ code: 'SANDBOX_HOST_ATTESTATION_REJECTED' });
       }
       return sendError(res, err);
     }

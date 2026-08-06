@@ -65,6 +65,7 @@ export const SANDBOX_TEST_FILES = Object.freeze([
   'test/agent/managed-sandbox-helper.test.js',
   'test/agent/managed-sandbox-runtime-executor.test.js',
   'test/server/sandbox-agent-auth.test.js',
+  'test/server/sandbox-attestation-listener.test.js',
   'test/server/sandbox-db.test.js',
   'test/server/sandbox-host-attestation.test.js',
   'test/server/sandbox-reconciler.test.js',

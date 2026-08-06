@@ -102,6 +102,12 @@ export function registerSandboxHostAttestation(attestation, config, now = Date.n
         throw new SandboxHostAttestationError('SANDBOX_HOST_ATTESTATION_OUT_OF_ORDER');
       }
 
+      const priorEpoch = db.prepare(`
+        SELECT source_epoch, epoch FROM sandbox_host_epochs WHERE host_id = ?
+      `).get(attestation.hostId);
+      const allocatedEpoch = priorEpoch
+        ? priorEpoch.epoch + Number(priorEpoch.source_epoch !== attestation.epoch)
+        : 1;
       const { resources, checks } = attestation;
       db.prepare(`
         INSERT INTO sandbox_hosts (
@@ -124,23 +130,38 @@ export function registerSandboxHostAttestation(attestation, config, now = Date.n
           disk_gib_total = excluded.disk_gib_total,
           updated_at = excluded.updated_at
       `).run(
-        attestation.hostId, attestation.epoch, Number(qualified),
+        attestation.hostId, allocatedEpoch, Number(qualified),
         Number(checks.controllerHealthy), Number(checks.helperHealthy),
         Number(checks.runtimeHealthy), Number(checks.quotaHealthy), Number(checks.networkHealthy),
         attestation.imageDigest, resources.cpuMillis, resources.memoryMiB,
         resources.memoryAvailableMiB, resources.diskGiB, now
       );
       db.prepare(`
+        INSERT INTO sandbox_host_epochs
+          (host_id, source_epoch, epoch, activation_digest, activated_at, updated_at)
+        VALUES (?, ?, ?, NULL, NULL, ?)
+        ON CONFLICT(host_id) DO UPDATE SET
+          source_epoch = excluded.source_epoch,
+          epoch = excluded.epoch,
+          activation_digest = CASE
+            WHEN sandbox_host_epochs.epoch = excluded.epoch
+              THEN sandbox_host_epochs.activation_digest ELSE NULL END,
+          activated_at = CASE
+            WHEN sandbox_host_epochs.epoch = excluded.epoch
+              THEN sandbox_host_epochs.activated_at ELSE NULL END,
+          updated_at = excluded.updated_at
+      `).run(attestation.hostId, attestation.epoch, allocatedEpoch, now);
+      db.prepare(`
         INSERT INTO sandbox_host_attestations (nonce, host_id, epoch, observed_at, created_at)
         VALUES (?, ?, ?, ?, ?)
-      `).run(attestation.nonce, attestation.hostId, attestation.epoch, attestation.observedAt, now);
+      `).run(attestation.nonce, attestation.hostId, allocatedEpoch, attestation.observedAt, now);
       appendAudit(
-        attestation,
+        { ...attestation, epoch: allocatedEpoch },
         qualified ? 'accepted' : 'rejected',
         qualified ? null : 'SANDBOX_HOST_NOT_QUALIFIED',
         now
       );
-      return { accepted: true, qualified };
+      return { accepted: true, qualified, epoch: allocatedEpoch };
     })();
   } catch (error) {
     const code = error instanceof SandboxHostAttestationError

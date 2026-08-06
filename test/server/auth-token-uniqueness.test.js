@@ -46,6 +46,7 @@ describe('session token issuance', () => {
   });
 
   it('issues unique JWTs for repeated logins in the same second', () => {
+    createSsoOnlyUser('same-user', 'pro');
     const first = completeLogin('same-user', generateSessionKey(), 'pro');
     const second = completeLogin('same-user', generateSessionKey(), 'pro');
 
@@ -55,6 +56,7 @@ describe('session token issuance', () => {
   });
 
   it('does not let logging out an old same-second session revoke a new login', () => {
+    createSsoOnlyUser('same-user', 'pro');
     const first = completeLogin('same-user', generateSessionKey(), 'pro');
     const second = completeLogin('same-user', generateSessionKey(), 'pro');
 
