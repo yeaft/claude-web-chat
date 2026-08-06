@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import ctx from '../../../agent/context.js';
 import { loadConfig, loadMCPConfig, normalizeLlmRetry, normaliseTelemetrySection } from '../../../agent/yeaft/config.js';
-import { getTelemetrySettings, updateTelemetrySettings } from '../../../agent/yeaft/config-api.js';
+import { getPluginConfig, getTelemetrySettings, updatePluginConfig, updateTelemetrySettings } from '../../../agent/yeaft/config-api.js';
 import { handleMessage } from '../../../agent/connection/message-router.js';
 import { flushAllAgentPerfTraces } from '../../../agent/yeaft/perf-trace.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
@@ -101,6 +101,19 @@ describe('Yeaft session-scoped model config', () => {
     expect(persisted.primaryModel).toBe('proxy/model');
     expect(persisted.debug).toBe(true);
     expect(persisted.telemetry).toMatchObject({ flushIntervalMs: 250 });
+  });
+
+  it('rejects malformed plugin config reads and preserves the file on save attempts', () => {
+    const root = makeDir();
+    const configPath = join(root, 'config.json');
+    const malformed = '{"plugins":{"tools":["FileRead"]}';
+    writeFileSync(configPath, malformed);
+
+    expect(getPluginConfig(root)).toMatchObject({ error: expect.stringContaining('Failed to read plugin config') });
+    expect(updatePluginConfig({ tools: ['Bash'] }, root)).toMatchObject({
+      error: expect.stringContaining('Failed to read plugin config'),
+    });
+    expect(readFileSync(configPath, 'utf8')).toBe(malformed);
   });
 
   it('disables bridge traces through the telemetry update message immediately', async () => {

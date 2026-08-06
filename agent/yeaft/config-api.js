@@ -504,6 +504,21 @@ export async function fetchTavilyUsage(dir) {
 // ─── Agent plugin selection ────────────────────────────────────
 
 /**
+ * Read config.json for Plugin Center operations without turning a malformed
+ * file into an empty config. Treating parse failure as `{}` would let a later
+ * save erase a persisted allowlist, so Plugin Center must fail closed instead.
+ */
+function readPluginConfigJson(configPath) {
+  if (!existsSync(configPath)) return {};
+  const raw = readFileSync(configPath, 'utf8');
+  const json = JSON.parse(raw);
+  if (!json || typeof json !== 'object' || Array.isArray(json)) {
+    throw new Error('config.json must contain an object');
+  }
+  return json;
+}
+
+/**
  * Read the Agent-local plugin allowlists. Missing category fields mean
  * inheritance (all discovered capabilities remain available).
  */
@@ -511,7 +526,7 @@ export function getPluginConfig(dir) {
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
   const configPath = join(root, 'config.json');
   try {
-    const json = readConfigJson(configPath);
+    const json = readPluginConfigJson(configPath);
     return { plugins: normalizePluginConfig(json.plugins) };
   } catch (err) {
     return { error: `Failed to read plugin config: ${err?.message || err}` };
@@ -526,13 +541,14 @@ export function updatePluginConfig(plugins, dir) {
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
   const configPath = join(root, 'config.json');
   let normalized;
+  let existing;
   try {
     normalized = normalizePluginConfig(plugins);
+    existing = readPluginConfigJson(configPath);
   } catch (err) {
-    return { error: err?.message || String(err) };
+    return { error: `Failed to read plugin config: ${err?.message || err}` };
   }
 
-  const existing = readConfigJson(configPath);
   if (Object.keys(normalized).length === 0) delete existing.plugins;
   else existing.plugins = normalized;
   try {
