@@ -147,6 +147,40 @@ function makeStore() {
 }
 
 describe('message flow regressions', () => {
+  it('keeps the manual upgrade bridge in stop-install-start order in both languages', () => {
+    const installCommand = 'npm install -g @yeaft/webchat-agent@latest --registry=https://pkg.yeaft.com/';
+    const guides = [
+      {
+        message: enMessages['chat.agent.manualUpgradeRequired'],
+        stopAnchor: 'First stop the selected Agent/service',
+        managerAnchor: 'PM2 or another service manager',
+        foregroundAnchor: 'foreground terminal',
+        exitAnchor: 'Confirm that process has exited',
+        startAnchor: 'start the same Agent instance again with its original configuration',
+      },
+      {
+        message: zhCNMessages['chat.agent.manualUpgradeRequired'],
+        stopAnchor: '先停止该机器上所选的 Agent/服务',
+        managerAnchor: 'PM2 或其他服务管理器',
+        foregroundAnchor: '前台终端',
+        exitAnchor: '确认该进程已经退出',
+        startAnchor: '使用原配置启动同一 Agent 实例',
+      },
+    ];
+
+    for (const guide of guides) {
+      expect(guide.message).toContain(guide.managerAnchor);
+      expect(guide.message).toContain(guide.foregroundAnchor);
+      const stopIndex = guide.message.indexOf(guide.stopAnchor);
+      const exitIndex = guide.message.indexOf(guide.exitAnchor);
+      const installIndex = guide.message.indexOf(installCommand);
+      const startIndex = guide.message.indexOf(guide.startAnchor);
+      expect(stopIndex).toBeGreaterThanOrEqual(0);
+      expect(exitIndex).toBeGreaterThan(stopIndex);
+      expect(installIndex).toBeGreaterThan(exitIndex);
+      expect(startIndex).toBeGreaterThan(installIndex);
+    }
+  });
   it('does not refresh Work Center for routine agent inventory broadcasts', () => {
     const store = useChatStore();
     store.workCenterOpen = true;

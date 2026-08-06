@@ -125,7 +125,7 @@ export default {
   'chat.agent.upgradeConfirm': '升级 Agent "{name}" 到最新版本？\n升级完成后 Agent 会自动重启。',
   'chat.agent.alreadyLatest': 'Agent 已是最新版本 (v{version})，无需升级。',
   'chat.agent.nodeIncompatible': 'Agent 升级中止：目标版本 v{version} 需要 Node {required}，但当前机器运行的是 Node {current}。请先升级 Node.js 再重试。',
-  'chat.agent.manualUpgradeRequired': 'Agent v{version} 没有声明安全远程升级能力；旧客户端又未上报足够的平台信息，Server 无法排除 Windows 包目录锁定故障。为避免重复执行已知会失败的升级，本次操作已被阻止。请在该机器上手动执行一次 "npm install -g @yeaft/webchat-agent@latest --registry=https://pkg.yeaft.com/"，然后重新启动 Agent。完成这次引导后，后续可继续在浏览器中升级。',
+  'chat.agent.manualUpgradeRequired': 'Agent v{version} 没有声明安全远程升级能力；旧客户端又未上报足够的平台信息，Server 无法排除 Windows 包目录锁定故障。为避免重复执行已知会失败的升级，本次操作已被阻止。请先停止该机器上所选的 Agent/服务：若由 PM2 或其他服务管理器运行，请在那里停止这个精确实例；若在前台终端运行，请终止该进程。确认该进程已经退出后，再执行 "npm install -g @yeaft/webchat-agent@latest --registry=https://pkg.yeaft.com/"；最后使用原配置启动同一 Agent 实例。完成这次引导后，后续可继续在浏览器中升级。',
   'chat.agent.online': '{count} 个 Agent 在线',
   'chat.agent.selectFirst': '请先选择一个 Agent',
   'chat.agent.yeaft': 'Yeaft 对话',
