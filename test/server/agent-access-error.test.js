@@ -433,6 +433,7 @@ describe('resolveAgentAccessError', () => {
     expect(requiresManualUpgradeBridge([])).toBe(true);
     expect(requiresManualUpgradeBridge(['plaintext-ok'])).toBe(true);
     expect(requiresManualUpgradeBridge(['plaintext-ok'], 'win32')).toBe(true);
+    expect(requiresManualUpgradeBridge(['plaintext-ok', 'work_item_attachments'], 'win32')).toBe(true);
     expect(requiresManualUpgradeBridge(['plaintext-ok'], 'linux')).toBe(false);
     expect(requiresManualUpgradeBridge(['plaintext-ok'], 'darwin')).toBe(false);
     expect(requiresManualUpgradeBridge(['plaintext-ok', 'work_item_attachments'])).toBe(false);
@@ -521,6 +522,7 @@ describe('resolveAgentAccessError', () => {
     for (const [agentId, version, capabilities, platform, shouldUpgrade] of [
       ['skip-legacy', '1.0.369', ['plaintext-ok'], null, false],
       ['skip-windows', '1.0.373', ['plaintext-ok'], 'win32', false],
+      ['skip-windows-legacy-signal', '1.0.373', ['plaintext-ok', 'work_item_attachments'], 'win32', false],
       ['skip-linux', '1.0.373', ['plaintext-ok'], 'linux', true],
       ['skip-safe', '1.0.369', ['plaintext-ok', SAFE_REMOTE_UPGRADE_CAPABILITY], null, true],
     ]) {
