@@ -1972,12 +1972,18 @@ export class Engine {
    * @yields {EngineEvent}
    */
   async *query(params = {}) {
+    const queryTraceId = typeof params.vpTurnId === 'string' && params.vpTurnId
+      ? params.vpTurnId : null;
     let terminalEmitted = false;
+    let terminalStopReason = 'error';
     let lastTurnNumber = 0;
     try {
       for await (const event of this.#queryLifecycle(params)) {
         if (Number.isFinite(event?.turnNumber)) lastTurnNumber = event.turnNumber;
-        if (event?.type === 'turn_end' && event.terminal === true) terminalEmitted = true;
+        if (event?.type === 'turn_end' && event.terminal === true) {
+          terminalEmitted = true;
+          terminalStopReason = event.stopReason || terminalStopReason;
+        }
         yield event;
       }
     } catch (err) {
@@ -2000,6 +2006,13 @@ export class Engine {
         // Normal end_turn is already durable and visible. A failed maintenance
         // hook must not retroactively turn the completed answer into an error.
         console.warn('[Engine] post-turn maintenance failed:', err?.message || err);
+      }
+    } finally {
+      if (queryTraceId && typeof this.#trace?.finalizeQuery === 'function') {
+        this.#trace.finalizeQuery(queryTraceId, {
+          sessionId: params.sessionId || null,
+          stopReason: terminalEmitted ? terminalStopReason : 'interrupted',
+        });
       }
     }
   }

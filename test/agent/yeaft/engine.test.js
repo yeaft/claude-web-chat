@@ -1700,6 +1700,14 @@ describe('Engine', () => {
           responseKind: 'result',
           stopReason: 'end_turn',
         });
+        const requestRoot = join(`${join(yeaftDir, 'debug-trace.db')}.files`, 'sessions', 'session-turn-id', 'debug', 'requests');
+        const [requestDir] = readdirSync(requestRoot);
+        const meta = JSON.parse(readFileSync(join(requestRoot, requestDir, 'meta.json'), 'utf8'));
+        expect(meta).toMatchObject({
+          requestId: 'vp-turn-ui-1',
+          active: false,
+          finalStopReason: 'end_turn',
+        });
         const debug = await debugTrace.fetchTurnDebug({
           sessionId: 'session-turn-id',
           turnId: loaded[0].turnId,
@@ -5033,14 +5041,40 @@ describe('Engine', () => {
             responseText: '',
             rawResponse,
             stopReason: 'tool_use',
+            model: 'gateway-search-model',
+            usage: { inputTokens: 2, outputTokens: 1, totalTokens: 3 },
+            latencyMs: 5,
             messages: [{ role: 'user', content: 'do long work' }],
           });
+          if (i === 1) boundedTrace.logTool(turnId, { toolName: 'search', toolOutput: 'ok' });
         }
-        await boundedTrace.close();
+        boundedTrace.finalizeQuery('long-tool-turn', { sessionId: 's-long', stopReason: 'end_turn' });
+        await boundedTrace.flush();
+
+        const beforeEviction = await boundedTrace.fetchRecentDebugHistory({
+          sessionId: 's-long',
+          indexOnly: true,
+          search: '/gateway-search-model|search|tool_use|end_turn/',
+        });
+        expect(beforeEviction.turns).toEqual([
+          expect.objectContaining({
+            turnId: 'long-tool-turn',
+            loopCount: 100,
+            totalTokens: 300,
+            totalMs: 500,
+          }),
+        ]);
 
         const requestRoot = join(traceRoot, 'sessions', 's-long', 'debug', 'requests');
         const [requestDir] = readdirSync(requestRoot);
         const eventFile = join(requestRoot, requestDir, 'events.jsonl');
+        const savedEvents = readFileSync(eventFile, 'utf8');
+        writeFileSync(eventFile, '', 'utf8');
+        const evictedDetail = await boundedTrace.fetchTurnDebug({ sessionId: 's-long', turnId: 'long-tool-turn' });
+        expect(evictedDetail.loops).toEqual([]);
+        writeFileSync(eventFile, savedEvents, 'utf8');
+        await boundedTrace.close();
+
         const storedLoops = readFileSync(eventFile, 'utf8')
           .trim()
           .split('\n')
@@ -5092,7 +5126,7 @@ describe('Engine', () => {
           appendFileSync(continuedEvents, '{"type":"loop"', 'utf8');
 
           const continued = new DebugTrace(continuationRoot);
-          await continued.fetchTurnDebug({ sessionId: 'continued-session', turnId: 'continued-turn' });
+          await continued.resumeTrace({ sessionId: 'continued-session', turnId: 'continued-turn' });
           const secondTurn = continued.startTurn({ traceId: 'continued-turn', turnNumber: 2, sessionId: 'continued-session' });
           continued.endTurn(secondTurn, { responseText: 'loop-2', stopReason: 'end_turn' });
           await continued.close();
@@ -5122,7 +5156,7 @@ describe('Engine', () => {
             tools: [],
           }), 'utf8');
           const legacyWriter = new DebugTrace(legacyRoot);
-          await legacyWriter.fetchTurnDebug({ sessionId: 'legacy-session', turnId: 'legacy-turn' });
+          await legacyWriter.resumeTrace({ sessionId: 'legacy-session', turnId: 'legacy-turn' });
           const legacyNext = legacyWriter.startTurn({ traceId: 'legacy-turn', turnNumber: 2, sessionId: 'legacy-session' });
           legacyWriter.endTurn(legacyNext, { responseText: 'legacy-2', stopReason: 'end_turn' });
           await legacyWriter.close();
@@ -5212,7 +5246,7 @@ describe('Engine', () => {
           }), 'utf8');
 
           const migrationWriter = new DebugTrace(duplicateRoot);
-          await migrationWriter.fetchTurnDebug({ sessionId, turnId: 'legacy-active-turn' });
+          await migrationWriter.resumeTrace({ sessionId, turnId: 'legacy-active-turn' });
           const migratedTurn = migrationWriter.startTurn({ traceId: 'legacy-active-turn', turnNumber: 2, sessionId });
           migrationWriter.endTurn(migratedTurn, { responseText: 'legacy-active-2', stopReason: 'tool_use' });
           await migrationWriter.flush();

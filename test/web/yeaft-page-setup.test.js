@@ -112,6 +112,11 @@ describe('YeaftPage setup', () => {
     expect(css).toMatch(/\.sp-subtab\.active::after[^}]*\{[^}]*background:\s*var\(--text-primary\);/s);
     expect(css).not.toMatch(/\.sp-subtab-bar\s*\{[^}]*border-radius:/s);
     expect(css).not.toMatch(/\.sp-subtab\.active\s*\{[^}]*box-shadow:/s);
+
+    expect(panel).toContain(":class=\"{ 'settings-scroll-yeaft': activeTab === 'yeaft' }\"");
+    expect(css).toMatch(/\.settings-scroll-yeaft\s*\{[^}]*overflow-y:\s*hidden;/s);
+    expect(css).toMatch(/\.settings-scroll-yeaft\s+\.settings-pane-yeaft\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;/s);
+    expect(css).toMatch(/\.settings-scroll-yeaft\s+\.sp-subpane\s*\{[^}]*overflow-y:\s*auto;/s);
   });
 
   it('keeps Session inventory hydration separate from the message refresh spinner', () => {
