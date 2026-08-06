@@ -140,6 +140,32 @@ describe('session token issuance', () => {
     userDb.deleteUser(user.id, { requirePending: true });
   });
 
+  it('deletes retired managed-Sandbox rows before finalizing account deletion', () => {
+    const user = createSsoOnlyUser('legacy-sandbox-user');
+    const hostId = `host-${user.id}`;
+    const sandboxId = `sandbox-${user.id}`;
+    db.prepare(`
+      INSERT INTO sandbox_hosts (
+        id, epoch, qualified, controller_healthy, helper_healthy, runtime_healthy,
+        quota_healthy, network_healthy, image_digest, cpu_millis_total,
+        memory_mib_total, memory_mib_available, disk_gib_total, updated_at
+      ) VALUES (?, 1, 0, 0, 0, 0, 0, 0, 'sha256:legacy', 1000, 1024, 1024, 10, ?)
+    `).run(hostId, Date.now());
+    db.prepare(`
+      INSERT INTO sandboxes (
+        id, user_id, host_id, host_epoch, agent_name, size_id, cpu_millis,
+        memory_mib, disk_gib, desired_state, observed_state, generation,
+        instance_id, image_digest, reservation_held, created_at, updated_at
+      ) VALUES (?, ?, ?, 1, 'legacy', 'small', 1000, 1024, 10,
+        'removed', 'removed', 1, 'legacy-instance', 'sha256:legacy', 0, ?, ?)
+    `).run(sandboxId, user.id, hostId, Date.now(), Date.now());
+
+    userDb.beginDeletion(user.id);
+    expect(userDb.deleteUser(user.id, { requirePending: true })).toBe(true);
+    createdUserIds.splice(createdUserIds.indexOf(user.id), 1);
+    expect(db.prepare('SELECT id FROM sandboxes WHERE id = ?').get(sandboxId)).toBeUndefined();
+  });
+
   it('keeps a finalized configured-user deletion authoritative for fallback and startup migration', () => {
     const username = 'finalized-config-user';
     configureUser(username);

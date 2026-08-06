@@ -18,8 +18,9 @@ COPY package.json package-lock.json ./
 COPY agent/package.json ./agent/
 RUN npm ci --workspace=agent --omit=dev
 COPY --chown=yeaft:yeaft agent ./agent
+RUN node -e "const fs=require('fs'); const p='agent/package.json'; const j=JSON.parse(fs.readFileSync(p)); j.version=process.argv[1].replace(/^v/, ''); fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\\n')" "$BUILD_VERSION" \
+  && chmod 0755 agent/container-entrypoint.sh
 
-USER yeaft
 VOLUME ["/home/yeaft/.yeaft", "/workspace"]
-ENTRYPOINT ["/usr/bin/tini", "--", "node", "agent/cli.js"]
+ENTRYPOINT ["/app/agent/container-entrypoint.sh"]
 CMD []

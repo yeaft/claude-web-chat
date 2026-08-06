@@ -33,7 +33,8 @@ describe('container Agent manager', () => {
       image: 'example/agent:1',
     });
     expect(args).toContain('SERVER_URL=wss://example.test');
-    expect(args).toContain('AGENT_SECRET_FILE=/run/secrets/yeaft-agent-secret');
+    expect(args).toContain('AGENT_SECRET_FILE=/run/yeaft-host-secret');
+    expect(args.some(arg => arg.includes('dst=/run/yeaft-host-secret,readonly'))).toBe(true);
     expect(args.join(' ')).not.toContain('top-secret');
     expect(args).toContain('example/agent:1');
     expect(containerNameForAgent('remote-worker')).toBe('yeaft-agent-remote-worker');

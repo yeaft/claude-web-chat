@@ -194,6 +194,7 @@ export const userDb = {
       stmts.deleteUserStats.run(id);
       stmts.deleteDailyStatsForUser.run(id);
       stmts.deleteCustomExpertRolesForUser.run(id);
+      stmts.deleteLegacySandboxesForUser.run(id);
       stmts.deleteInvitationsCreatedBy.run(id);
       stmts.clearInvitationUsedBy.run(id);
       if (requirePending) {
