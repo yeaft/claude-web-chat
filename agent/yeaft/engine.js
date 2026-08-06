@@ -694,6 +694,9 @@ export class Engine {
   /** Wire turn id of the active query, used by late async completion rows. */
   #currentQueryTurnId = null;
 
+  /** Durable formal-CLI root identity inherited by every row in this query. */
+  #currentCausalRootId = null;
+
   /**
    * Identity-bound hook into the active query's local read-only result cache.
    * Async task terminal events can arrive while an adapter stream is already
@@ -1538,8 +1541,17 @@ export class Engine {
     return Boolean(this.#conversationStore) && !this.#config._readOnly;
   }
 
-  #conversationRecord(message, { sessionId, turnId, model, incomplete = false, stopReason = null, executionOrigin = null } = {}) {
+  #conversationRecord(message, { sessionId, turnId, causalRootId = undefined, model, incomplete = false, stopReason = null, executionOrigin = null } = {}) {
     const effectiveTurnId = turnId || message.turnId || null;
+    const normalizeId = value => (typeof value === 'string' && value.trim() ? value.trim() : null);
+    // `null` is an explicit override used by a carried T2 reflection whose
+    // originating query predates causal-root metadata. `undefined` inherits the
+    // active query, which keeps every ordinary write path centralized here.
+    const effectiveCausalRootId = causalRootId === null
+      ? null
+      : (normalizeId(causalRootId)
+        || normalizeId(message.causalRootId)
+        || this.#currentCausalRootId);
     const effectiveVpId = message.speakerVpId || this.#vpId || null;
     const record = {
       role: message.role,
@@ -1569,6 +1581,7 @@ export class Engine {
     if (effectiveTurnId && (message.role === 'assistant' || message.role === 'tool' || message.internal === true)) {
       record.turnId = effectiveTurnId;
     }
+    if (effectiveCausalRootId) record.causalRootId = effectiveCausalRootId;
     if (executionOrigin === 'route_forward' && (message.role === 'assistant' || message.role === 'tool')) {
       record.executionOrigin = executionOrigin;
     }
@@ -1997,6 +2010,8 @@ export class Engine {
    *   user-message content; the string `prompt` is then only used for
    *   logging / history. When omitted the engine falls back to the
    *   string-prompt shape (no regression for existing callers).
+   * @param {string|null} [params.causalRootId] - Stable durable identity for
+   *   every row generated as part of one externally accepted causal root.
    * @yields {EngineEvent}
    */
   async *query(params = {}) {
@@ -2045,7 +2060,7 @@ export class Engine {
     }
   }
 
-  async *#queryLifecycle({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', projectLabel = '', vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null } = {}) {
+  async *#queryLifecycle({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', projectLabel = '', vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, causalRootId = null, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null } = {}) {
     if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
       const error = new Error('prompt is required and must be a non-empty string');
       yield {
@@ -2091,6 +2106,8 @@ export class Engine {
     const effectiveCollabToolPolicy = collabToolPolicy === COLLAB_TOOL_POLICY.SINGLE_VP || collabToolPolicy === COLLAB_TOOL_POLICY.MULTI_VP
       ? collabToolPolicy
       : null;
+    const effectiveCausalRootId = typeof causalRootId === 'string' && causalRootId.trim()
+      ? causalRootId.trim() : null;
 
     // ─── task-325a: engine-owned AbortController ─────────────
     // We create our own controller for this query run so `engine.abort()`
@@ -2134,7 +2151,8 @@ export class Engine {
     };
     try {
       this.#currentThreadId = threadId || MAIN_THREAD_ID;
-      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: explicitUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds, projectInstruction, projectLabel, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, prepareProviderRequest, startProviderRequest, finishProviderRequest, failProviderRequest, closePendingUserInput, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName, retryLifecycle });
+      this.#currentCausalRootId = effectiveCausalRootId;
+      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: explicitUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds, projectInstruction, projectLabel, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, causalRootId: effectiveCausalRootId, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, prepareProviderRequest, startProviderRequest, finishProviderRequest, failProviderRequest, closePendingUserInput, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName, retryLifecycle });
     } finally {
       // Closing the async generator at a visible retry boundary means the
       // continuation never reached a provider. Keep it out of history and
@@ -2163,6 +2181,7 @@ export class Engine {
       this.#currentAbortCtrl = null;
       this.#abortReason = null;
       this.#currentQueryTurnId = null;
+      this.#currentCausalRootId = null;
       this.#currentThreadId = MAIN_THREAD_ID;
       this.#pendingUserMessages.length = 0;
       this.#externalUserWakePending = false;
@@ -2188,7 +2207,7 @@ export class Engine {
    * in a try/finally without indenting the whole loop.
    * @private
    */
-  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', projectLabel = '', vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null, explicitSkillName = null, retryLifecycle }) {
+  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', projectLabel = '', vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, causalRootId = null, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null, explicitSkillName = null, retryLifecycle }) {
 
     const effectiveCollabToolPolicy = collabToolPolicy === COLLAB_TOOL_POLICY.SINGLE_VP || collabToolPolicy === COLLAB_TOOL_POLICY.MULTI_VP
       ? collabToolPolicy
@@ -3961,6 +3980,7 @@ export class Engine {
               count: pairs.length,
               originalUserMsg: prompt,
               originatingTurnId: queryTurnId,
+              causalRootId,
               executionOrigin,
               ready: false,
               result: null,
@@ -4782,6 +4802,7 @@ export class Engine {
         reflectionMessage,
         {
           ...context,
+          causalRootId: info.causalRootId || null,
           executionOrigin: info.executionOrigin === 'route_forward' ? 'route_forward' : null,
         },
       );

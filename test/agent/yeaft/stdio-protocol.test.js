@@ -10,7 +10,7 @@ import {
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createCliSessionRunner } from '../../../agent/yeaft/cli-session-runner.js';
+import { createCliSessionRunner, createCliVpEngine } from '../../../agent/yeaft/cli-session-runner.js';
 import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { runStreamSessionTurn } from '../../../agent/yeaft/stdio-protocol.js';
@@ -65,6 +65,48 @@ class RecordingAdapter {
       messages: structuredClone(params.messages || []),
     });
     yield { type: 'text_delta', text: 'recorded response' };
+    yield { type: 'stop', stopReason: 'end_turn' };
+  }
+
+  async call() {
+    return { text: 'recorded summary', usage: {} };
+  }
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+class CausalRecordingAdapter {
+  constructor(vpId, { blockPrompt = null, release = null } = {}) {
+    this.vpId = vpId;
+    this.blockPrompt = blockPrompt;
+    this.release = release;
+    this.streamCalls = [];
+    this.promptCalls = new Map();
+  }
+
+  async *stream(params) {
+    const snapshot = {
+      ...params,
+      vpId: this.vpId,
+      messages: structuredClone(params.messages || []),
+    };
+    this.streamCalls.push(snapshot);
+    const prompt = [...snapshot.messages].reverse().find(message => (
+      message.role === 'user' && message.userAuthored !== false
+    ))?.content || null;
+    const callNumber = (this.promptCalls.get(prompt) || 0) + 1;
+    this.promptCalls.set(prompt, callNumber);
+    if (prompt === this.blockPrompt && callNumber === 1) await this.release.promise;
+    if (prompt === 'FUTURE_ROOT' && callNumber === 1) {
+      yield { type: 'text_delta', text: 'future truncated' };
+      yield { type: 'stop', stopReason: 'max_tokens' };
+      return;
+    }
+    yield { type: 'text_delta', text: `${this.vpId}:${prompt || 'response'}` };
     yield { type: 'stop', stopReason: 'end_turn' };
   }
 
@@ -482,6 +524,94 @@ describe('stream-json Session runtime protocol', () => {
     await runner.close();
   });
 
+  it('excludes a later VP root and its synthetic continuation from an earlier queued provider request', async () => {
+    const root = tempRoot('stdio-cross-vp-causal-control');
+    const sessionId = 'session_stdio_cross_vp_causal_control';
+    createFormalSession(root, sessionId, ['linus', 'martin']);
+    const conversationStore = new ConversationStore(root);
+    const releaseBlockingRoot = deferred();
+    const adapters = new Map([
+      ['linus', new CausalRecordingAdapter('linus', {
+        blockPrompt: 'BLOCKING_ROOT',
+        release: releaseBlockingRoot,
+      })],
+      ['martin', new CausalRecordingAdapter('martin')],
+    ]);
+    const loaded = {
+      yeaftDir: root,
+      config: {
+        model: 'test-model',
+        primaryModel: 'test-model',
+        maxOutputTokens: 1024,
+        language: 'en',
+      },
+      trace: new NullTrace(),
+      conversationStore,
+      memoryIndex: null,
+      amsRegistry: null,
+      toolRegistry: null,
+      skillManager: null,
+      mcpManager: null,
+      taskManager: null,
+      toolStats: null,
+      managedCliReady: null,
+    };
+    const runner = createCliSessionRunner({
+      loaded,
+      sessionId,
+      engineFactory: (_loaded, _sessionId, vpId) => createCliVpEngine({
+        ..._loaded,
+        adapter: adapters.get(vpId),
+      }, _sessionId, vpId),
+    });
+
+    const blocking = runner.run('BLOCKING_ROOT', {
+      routingIntent: { targetVpIds: ['linus'], explicit: true },
+    });
+    await vi.waitFor(() => expect(adapters.get('linus').streamCalls).toHaveLength(1));
+    const earlier = runner.run('EARLIER_ROOT', {
+      routingIntent: { targetVpIds: ['linus'], explicit: true },
+    });
+    const future = runner.run('FUTURE_ROOT', {
+      routingIntent: { targetVpIds: ['martin'], explicit: true },
+    });
+
+    const futureOutcome = await future;
+    const futureRootId = futureOutcome.report.message.id;
+    const beforeRelease = conversationStore.loadAllBySession(sessionId);
+    expect(beforeRelease.find(message => message.content === 'FUTURE_ROOT')).toMatchObject({
+      causalRootId: futureRootId,
+      userAuthored: true,
+    });
+    expect(beforeRelease.find(message => message.content === 'Continue')).toMatchObject({
+      causalRootId: futureRootId,
+      userAuthored: false,
+    });
+    expect(beforeRelease.find(message => message.content === 'future truncated')).toMatchObject({
+      causalRootId: futureRootId,
+      speakerVpId: 'martin',
+    });
+
+    releaseBlockingRoot.resolve();
+    await Promise.all([blocking, earlier]);
+
+    const earlierRequest = adapters.get('linus').streamCalls.find(call => (
+      [...call.messages].reverse().find(message => (
+        message.role === 'user' && message.userAuthored !== false
+      ))?.content === 'EARLIER_ROOT'
+    ));
+    expect(earlierRequest).toBeTruthy();
+    expect(earlierRequest.messages.filter(message => message.role === 'user').map(message => message.content)).toEqual([
+      'BLOCKING_ROOT',
+      'EARLIER_ROOT',
+    ]);
+    expect(earlierRequest.messages.filter(message => message.role === 'assistant').map(message => message.content)).toEqual([
+      'linus:BLOCKING_ROOT',
+    ]);
+    expect(earlierRequest.messages.some(message => message.causalRootId === futureRootId)).toBe(false);
+    await runner.close();
+  });
+
   it('routes internal task-result reentry to its owner without appending a user transcript row', async () => {
     const root = tempRoot('stdio-task-result-routing');
     const sessionId = 'session_stdio_task_result_routing';
@@ -535,6 +665,7 @@ describe('stream-json Session runtime protocol', () => {
     createFormalSession(root, sessionId);
     const conversationStore = makeConversationStore();
     const calls = [];
+    const causalRoots = [];
     let forwarded = false;
     const runner = createCliSessionRunner({
       loaded: { yeaftDir: root, config: {}, conversationStore },
@@ -542,6 +673,11 @@ describe('stream-json Session runtime protocol', () => {
       engineFactory: (_loaded, _sessionId, vpId) => ({
         async *query(options) {
           calls.push(vpId);
+          causalRoots.push({
+            vpId,
+            causalRootId: options.causalRootId,
+            envelopeRootId: options.inboundEnvelope?._cliCausalRootId,
+          });
           yield { type: 'turn_open', turnId: `turn-${vpId}-${calls.length}`, threadId: 'main', vpId };
           if (vpId === 'linus' && !forwarded) {
             forwarded = true;
@@ -569,6 +705,8 @@ describe('stream-json Session runtime protocol', () => {
     expect(calls.filter(vpId => vpId === 'linus')).toHaveLength(1);
     expect(calls.filter(vpId => vpId === 'martin')).toHaveLength(1);
     expect(calls).toHaveLength(2);
+    expect(new Set(causalRoots.map(entry => entry.causalRootId)).size).toBe(1);
+    expect(causalRoots.every(entry => entry.causalRootId === entry.envelopeRootId)).toBe(true);
     await runner.close();
   });
 
@@ -693,6 +831,7 @@ describe('stream-json Session runtime protocol', () => {
     createFormalSession(root, sessionId, ['linus', 'martin', 'steve']);
     const conversationStore = makeConversationStore();
     const calls = [];
+    const causalRoots = [];
     let forwarded = false;
     let forwardResult = null;
     const runner = createCliSessionRunner({
@@ -701,6 +840,11 @@ describe('stream-json Session runtime protocol', () => {
       engineFactory: (_loaded, _sessionId, vpId) => ({
         async *query(options) {
           calls.push(vpId);
+          causalRoots.push({
+            vpId,
+            causalRootId: options.causalRootId,
+            envelopeRootId: options.inboundEnvelope?._cliCausalRootId,
+          });
           if (vpId === 'linus' && !forwarded) {
             forwarded = true;
             forwardResult = options.router.forward({
@@ -727,6 +871,8 @@ describe('stream-json Session runtime protocol', () => {
     expect(calls.filter(vpId => vpId === 'linus')).toHaveLength(1);
     expect(calls.filter(vpId => vpId === 'martin')).toHaveLength(1);
     expect(calls.filter(vpId => vpId === 'steve')).toHaveLength(1);
+    expect(new Set(causalRoots.map(entry => entry.causalRootId)).size).toBe(1);
+    expect(causalRoots.every(entry => entry.causalRootId === entry.envelopeRootId)).toBe(true);
     await runner.close();
   });
 

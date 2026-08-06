@@ -2469,6 +2469,7 @@ describe('Engine', () => {
         for await (const _event of engine.query({
           prompt: 'run thirty tools',
           sessionId: 'session-t1-fold',
+          causalRootId: 'root-t1-fold',
         })) {
           // consume
         }
@@ -2480,7 +2481,10 @@ describe('Engine', () => {
           { includeReflections: true },
         );
         expect(durable.filter(message => message._reflection)).toEqual([
-          expect.objectContaining({ content: expect.stringContaining('durable reflection summary') }),
+          expect.objectContaining({
+            content: expect.stringContaining('durable reflection summary'),
+            causalRootId: 'root-t1-fold',
+          }),
         ]);
         expect(durable.some(message => message.role === 'tool')).toBe(false);
         expect(durable.some(message => Array.isArray(message.toolCalls) && message.toolCalls.length > 0)).toBe(false);
@@ -2533,6 +2537,7 @@ describe('Engine', () => {
         for await (const _event of engine.query({
           prompt: 'run nine tools',
           sessionId: 'session-t2-fold',
+          causalRootId: 'root-t2-origin',
         })) {
           // consume
         }
@@ -2542,6 +2547,7 @@ describe('Engine', () => {
           prompt: 'continue after t2',
           messages: firstTurn,
           sessionId: 'session-t2-fold',
+          causalRootId: 'root-t2-current',
         })) {
           // consume
         }
@@ -2553,7 +2559,10 @@ describe('Engine', () => {
           { includeReflections: true },
         );
         expect(durable.filter(message => message._reflection)).toEqual([
-          expect.objectContaining({ content: expect.stringContaining('durable t2 reflection summary') }),
+          expect.objectContaining({
+            content: expect.stringContaining('durable t2 reflection summary'),
+            causalRootId: 'root-t2-origin',
+          }),
         ]);
         expect(durable.some(message => message.role === 'tool')).toBe(false);
         expect(durable.some(message => Array.isArray(message.toolCalls) && message.toolCalls.length > 0)).toBe(false);
@@ -2620,6 +2629,7 @@ describe('Engine', () => {
         for await (const _event of engine.query({
           prompt: 'write a long answer',
           sessionId: 'session-continue-persist',
+          causalRootId: 'root-max-token',
         })) {
           // consume
         }
@@ -2628,10 +2638,11 @@ describe('Engine', () => {
           role: message.role,
           content: message.content,
           userAuthored: message.userAuthored,
+          causalRootId: message.causalRootId,
         }))).toEqual([
-          { role: 'user', content: 'write a long answer', userAuthored: true },
-          { role: 'assistant', content: 'first part', userAuthored: undefined },
-          { role: 'user', content: 'Continue', userAuthored: false },
+          { role: 'user', content: 'write a long answer', userAuthored: true, causalRootId: 'root-max-token' },
+          { role: 'assistant', content: 'first part', userAuthored: undefined, causalRootId: 'root-max-token' },
+          { role: 'user', content: 'Continue', userAuthored: false, causalRootId: 'root-max-token' },
         ]);
         expect(conversationStore.loadVisibleBySession('session-continue-persist', null, 10).messages).toEqual([
           expect.objectContaining({ role: 'user', content: 'write a long answer', userAuthored: true }),

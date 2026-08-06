@@ -75,10 +75,10 @@ export function createCliSessionRunner({
   // Root turns are accepted synchronously but execute on per-VP promise tails.
   // Durable rows therefore cannot use append order as their causal boundary: a
   // later root user row may be written before an earlier VP starts, while the
-  // earlier VP's assistant rows may be written after that later user row. Keep
-  // an in-process identity map so each envelope can exclude only later roots
-  // while retaining completed rows that causally precede it.
-  const rootOrderByTurnId = new Map();
+  // earlier VP's assistant rows may be written after that later user row. Every
+  // new row carries one durable causalRootId; the legacy ids remain fallbacks
+  // for rows produced before that field existed.
+  const rootOrderByIdentity = new Map();
   let nextRootOrder = 0;
   let closed = false;
 
@@ -101,6 +101,9 @@ export function createCliSessionRunner({
     const persistedUserClientMessageId = typeof envelope?._persistedUserClientMessageId === 'string'
       ? envelope._persistedUserClientMessageId
       : null;
+    const causalRootId = typeof envelope?._cliCausalRootId === 'string' && envelope._cliCausalRootId
+      ? envelope._cliCausalRootId
+      : null;
     const rootOrder = Number.isInteger(envelope?._cliRootOrder)
       ? envelope._cliRootOrder
       : null;
@@ -116,15 +119,17 @@ export function createCliSessionRunner({
             && message?.role === 'user'
             && message.clientMessageId === persistedUserClientMessageId) return false;
         if (rootOrder === null) return true;
-        if (message?.role === 'user' && typeof message.clientMessageId === 'string') {
-          const messageRootOrder = rootOrderByTurnId.get(message.clientMessageId);
-          if (Number.isInteger(messageRootOrder) && messageRootOrder >= rootOrder) return false;
+        let messageRootOrder = null;
+        if (typeof message?.causalRootId === 'string' && message.causalRootId) {
+          // A durable causal root is authoritative. Do not reinterpret a row by
+          // its role-specific legacy ids when this field is present.
+          messageRootOrder = rootOrderByIdentity.get(message.causalRootId);
+        } else if (message?.role === 'user' && typeof message.clientMessageId === 'string') {
+          messageRootOrder = rootOrderByIdentity.get(message.clientMessageId);
+        } else if (typeof message?.turnId === 'string') {
+          messageRootOrder = rootOrderByIdentity.get(message.turnId);
         }
-        if (typeof message?.turnId === 'string') {
-          const messageRootOrder = rootOrderByTurnId.get(message.turnId);
-          if (Number.isInteger(messageRootOrder) && messageRootOrder >= rootOrder) return false;
-        }
-        return true;
+        return !Number.isInteger(messageRootOrder) || messageRootOrder < rootOrder;
       });
     const todos = [];
     let resultText = '';
@@ -135,10 +140,11 @@ export function createCliSessionRunner({
         const report = coordinator.ingest({
           ...input,
           _cliRootOrder: envelope._cliRootOrder,
+          _cliCausalRootId: envelope._cliCausalRootId,
           _cliTurnContext: envelope._cliTurnContext,
         }, opts);
         if (rootOrder !== null && typeof report?.message?.id === 'string') {
-          rootOrderByTurnId.set(report.message.id, rootOrder);
+          rootOrderByIdentity.set(report.message.id, rootOrder);
         }
         return report;
       },
@@ -155,6 +161,7 @@ export function createCliSessionRunner({
       router: createRouter({ coordinator: scopedCoordinator }),
       inboundEnvelope: envelope,
       userAlreadyPersisted: true,
+      causalRootId,
       threadId: 'main',
       vpTurnId: envelope?.msg?.id || randomUUID(),
       collabToolPolicy: meta.roster.length > 1
@@ -263,7 +270,7 @@ export function createCliSessionRunner({
       });
       const messageId = randomUUID();
       const rootOrder = nextRootOrder++;
-      rootOrderByTurnId.set(messageId, rootOrder);
+      rootOrderByIdentity.set(messageId, rootOrder);
       // The shared user row is the durability boundary. Validate structured
       // routing above before this append so malformed machine selectors never
       // enter the transcript or reach a provider.
@@ -275,6 +282,7 @@ export function createCliSessionRunner({
           sessionId,
           threadId: 'main',
           clientMessageId: messageId,
+          causalRootId: messageId,
           userAuthored: true,
         });
         persistedUserClientMessageId = persistedUser?.clientMessageId || messageId;
@@ -298,6 +306,7 @@ export function createCliSessionRunner({
         ...(routingIntent ? { _routingIntent: routingIntent } : {}),
         ...(persistedUserClientMessageId ? { _persistedUserClientMessageId: persistedUserClientMessageId } : {}),
         _cliRootOrder: rootOrder,
+        _cliCausalRootId: messageId,
         _cliTurnContext: turnContext,
       });
       const results = [];
