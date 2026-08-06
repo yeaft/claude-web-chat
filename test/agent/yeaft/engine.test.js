@@ -5436,10 +5436,23 @@ describe('Engine', () => {
         expect(lstatSync(eventFile).size).toBeLessThan(8 * 1024 * 1024);
 
         const reopened = new DebugTrace(traceRoot);
+        const reopenedStats = await reopened.stats();
+        expect(reopenedStats.turnCount).toBeGreaterThanOrEqual(100);
         const detail = await reopened.fetchTurnDebug({ sessionId: 's-long', turnId: 'long-tool-turn' });
         expect(detail.turns).toHaveLength(1);
         expect(detail.loops).toHaveLength(100);
         expect(detail.loops.at(-1)?.loopNumber).toBe(100);
+
+        // Aggregate queries must not pin every full request payload in memory.
+        // After stats(), detail still comes from disk rather than a process-life
+        // cache populated by a global hydrate.
+        writeFileSync(eventFile, '', 'utf8');
+        const detailAfterDiskChange = await reopened.fetchTurnDebug({
+          sessionId: 's-long',
+          turnId: 'long-tool-turn',
+        });
+        expect(detailAfterDiskChange.loops).toEqual([]);
+        writeFileSync(eventFile, savedEvents, 'utf8');
         await reopened.close();
 
         appendFileSync(eventFile, '{"type":"loop"', 'utf8');
@@ -5509,11 +5522,54 @@ describe('Engine', () => {
           legacyWriter.endTurn(legacyNext, { responseText: 'legacy-2', stopReason: 'end_turn' });
           await legacyWriter.close();
           const legacyReader = new DebugTrace(legacyRoot);
+          const legacyStats = await legacyReader.stats();
+          expect(legacyStats).toMatchObject({ turnCount: 2, toolCount: 0, requestCount: 1 });
           const legacyDetail = await legacyReader.fetchTurnDebug({ sessionId: 'legacy-session', turnId: 'legacy-turn' });
           expect(legacyDetail.loops.map(loop => loop.response)).toEqual(['legacy-1', 'legacy-2']);
+          const rawPayloadSearch = await legacyReader.fetchRecentDebugHistory({
+            sessionId: 'legacy-session',
+            indexOnly: true,
+            search: 'legacy-1',
+          });
+          expect(rawPayloadSearch.turns).toEqual([]);
           await legacyReader.close();
         } finally {
           rmSync(legacyRoot, { recursive: true, force: true });
+        }
+
+        const safeDirRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-safe-dir-'));
+        try {
+          const sessionId = 'legacy/session';
+          const safeWriter = new DebugTrace(safeDirRoot);
+          const oldSafeTurn = safeWriter.startTurn({ traceId: 'old-safe-turn', turnNumber: 1, sessionId });
+          safeWriter.endTurn(oldSafeTurn, { responseText: 'old-response', stopReason: 'end_turn' });
+          safeWriter.finalizeQuery('old-safe-turn', { sessionId });
+          const safeTurn = safeWriter.startTurn({ traceId: 'safe-turn', turnNumber: 1, sessionId });
+          safeWriter.logTool(safeTurn, { toolName: 'legacy_tool', toolOutput: 'needle-tool-output' });
+          safeWriter.endTurn(safeTurn, { responseText: 'needle-response', stopReason: 'end_turn' });
+          safeWriter.finalizeQuery('safe-turn', { sessionId });
+          await safeWriter.close();
+
+          const sessionsDir = join(safeDirRoot, 'sessions');
+          const [currentSessionName] = readdirSync(sessionsDir);
+          const currentSessionDir = join(sessionsDir, currentSessionName);
+          const legacySessionDir = join(sessionsDir, 'legacy_session');
+          renameSync(currentSessionDir, legacySessionDir);
+
+          const safeReader = new DebugTrace(safeDirRoot);
+          expect(await safeReader.stats()).toMatchObject({ turnCount: 2, toolCount: 1, requestCount: 2 });
+          const safeDetail = await safeReader.fetchTurnDebug({ sessionId, turnId: 'safe-turn' });
+          expect(safeDetail.loops.map(loop => loop.response)).toEqual(['needle-response']);
+          expect(await safeReader.queryTools({ name: 'legacy_tool' })).toHaveLength(1);
+          expect(await safeReader.search('needle-response')).toHaveLength(1);
+          expect(await safeReader.cleanup(1)).toMatchObject({ deletedRequests: 1 });
+          const afterPrune = await safeReader.fetchTurnDebug({ sessionId, turnId: 'safe-turn' });
+          expect(afterPrune.loops.map(loop => loop.response)).toEqual(['needle-response']);
+          const prunedSafe = await safeReader.fetchTurnDebug({ sessionId, turnId: 'old-safe-turn' });
+          expect(prunedSafe.loops).toEqual([]);
+          await safeReader.close();
+        } finally {
+          rmSync(safeDirRoot, { recursive: true, force: true });
         }
 
         const retentionRoot = mkdtempSync(join(tmpdir(), 'yeaft-trace-retention-'));

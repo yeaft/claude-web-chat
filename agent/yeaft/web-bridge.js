@@ -969,7 +969,12 @@ function registerRoutePromise(msgId, promise) {
     routePromisesByMsgId.set(msgId, set);
   }
   set.add(promise);
-  promise.finally(() => set.delete(promise)).catch(() => {});
+  promise.finally(() => {
+    set.delete(promise);
+    if (set.size === 0 && routePromisesByMsgId.get(msgId) === set) {
+      routePromisesByMsgId.delete(msgId);
+    }
+  }).catch(() => {});
 }
 
 
@@ -1882,7 +1887,12 @@ function getOrCreateVpEngine(sessionId, vpId, threadId = 'main') {
  */
 function getOrCreateSessionContext(sessionId, sessionHandle) {
   let entry = sessionContexts.get(sessionId);
-  if (entry && entry.coord && entry.router) return entry;
+  if (entry && entry.coord && entry.router) {
+    if (sessionHandle && sessionHandle !== entry.sessionHandle) {
+      try { sessionHandle.close?.(); } catch { /* best-effort unused handle cleanup */ }
+    }
+    return entry;
+  }
   // Either no entry, or a partial entry seeded by `getOrCreateSessionHistory`
   // (no coord/router yet). Build the coord/router and merge into the
   // existing record so the per-group history reference and hydration
@@ -7852,6 +7862,20 @@ export const __testHooks = {
   resolveDreamTriggerSessionId,
   async loadProjectRuntime(workDir) {
     return loadProjectRuntime(workDir);
+  },
+  registerRoutePromiseForTest(msgId, promise) {
+    registerRoutePromise(msgId, promise);
+  },
+  routePromiseEntryCountForTest() {
+    return routePromisesByMsgId.size;
+  },
+  getOrCreateSessionContextForTest(sessionId, sessionHandle) {
+    return getOrCreateSessionContext(sessionId, sessionHandle);
+  },
+  clearSessionContextForTest(sessionId) {
+    const entry = sessionContexts.get(sessionId);
+    try { entry?.sessionHandle?.close?.(); } catch { /* best-effort test cleanup */ }
+    sessionContexts.delete(sessionId);
   },
   seedSessionContext(sessionId, meta) {
     const group = {
