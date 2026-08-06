@@ -36,7 +36,10 @@ import {
   CONDITIONAL_BUILTIN_TOOL_NAMES,
   resolveActiveToolNames,
 } from '../../../agent/yeaft/tools/activation.js';
-import { discoverToolCapabilities } from '../../../agent/yeaft/tools/discover-tools.js';
+import {
+  TOOL_DISCOVERY_MAX_OUTPUT_BYTES,
+  discoverToolCapabilities,
+} from '../../../agent/yeaft/tools/discover-tools.js';
 import {
   inferProjectDocScopes,
   projectDocWriteScopesNeedingReload,
@@ -216,28 +219,36 @@ describe('active tool exposure and scoped prompts', () => {
     ]));
   });
 
-  it('discovers conditional and flattened MCP capabilities without phrase enumeration', async () => {
+  it('discovers conditional and flattened MCP capabilities without lexical reachability gaps', async () => {
     const registry = createFullRegistry();
     const mcpManager = {
       listTools: () => [{
-        name: 'github__list_issues',
-        server: 'github',
-        description: 'Find and list GitHub issues, including issues assigned to the current user.',
+        name: 'tracker__enumerate_open_defects',
+        server: 'tracker',
+        description: 'Enumerate open defect records from the project tracker.',
         inputSchema: {
           type: 'object',
-          properties: { assignee: { type: 'string' } },
+          properties: { owner: { type: 'string' } },
         },
       }],
       callTool: async () => ({ content: [{ type: 'text', text: '[]' }] }),
     };
     registry.registerAll(buildMcpFlattenedTools(mcpManager));
     const toolNames = registry.getToolNames();
+    const candidates = registry.getAllTools()
+      .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name) || tool.name.startsWith('mcp__'))
+      .map(tool => ({
+        name: tool.name,
+        description: typeof tool.description === 'object' ? tool.description.en : tool.description,
+        parameters: tool.parameters,
+      }));
     const paraphrases = [
-      ['Look back and remind me how we handled authentication.', 'HistorySearch'],
-      ['Get a second opinion on this change.', 'SpawnAgent'],
-      ['Produce a banner for the landing page.', 'ImageGeneration'],
-      ['Keep monitoring this over the next few days.', 'CreateWorkItem'],
-      ['Why can’t this machine create any more files?', 'DiskUsage'],
+      ['Bring back the approach we used for login.', 'HistorySearch'],
+      ['Ask a separate specialist to examine this.', 'SpawnAgent'],
+      ['I need artwork for the launch header.', 'ImageGeneration'],
+      ['Make sure this objective keeps progressing after this chat.', 'CreateWorkItem'],
+      ['Tell me what is consuming the drive.', 'DiskUsage'],
+      ['显示分配给我的工单。', 'mcp__tracker__enumerate_open_defects'],
     ];
     for (const [prompt, expectedTool] of paraphrases) {
       const active = resolveActiveToolNames({
@@ -247,38 +258,35 @@ describe('active tool exposure and scoped prompts', () => {
       });
       expect(active.has(expectedTool), `${expectedTool} starts hidden for: ${prompt}`).toBe(false);
       expect(active.has('DiscoverTools')).toBe(true);
-      expect([...CONDITIONAL_BUILTIN_TOOL_NAMES].includes(expectedTool)).toBe(true);
-      const candidates = registry.getAllTools()
-        .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name))
-        .map(tool => ({
-          name: tool.name,
-          description: typeof tool.description === 'object' ? tool.description.en : tool.description,
-          parameters: tool.parameters,
-        }));
-      const matches = discoverToolCapabilities({ query: prompt, candidates });
-      expect(matches.map(tool => tool.name), `discovery matches for: ${prompt}`).toContain(expectedTool);
+      const directory = discoverToolCapabilities({ query: prompt, candidates });
+      expect(directory.tools.map(tool => tool.name), `discovery directory for: ${prompt}`).toContain(expectedTool);
+    }
+    for (const query of ['Show me tickets I own.', 'List my unresolved work.', '列出我尚未解决的工作。']) {
+      const directory = discoverToolCapabilities({ query, candidates });
+      expect(directory.tools.map(tool => tool.name), `semantic MCP directory for: ${query}`)
+        .toContain('mcp__tracker__enumerate_open_defects');
     }
 
     mockAdapter.pushResponse([
       {
         type: 'tool_call',
-        id: 'discover_github',
+        id: 'discover_tracker',
         name: 'DiscoverTools',
-        input: { query: 'Find issues assigned to me in GitHub.' },
+        input: { query: 'Show me tickets I own.' },
       },
       { type: 'stop', stopReason: 'tool_use' },
     ]);
     mockAdapter.pushResponse([
       {
         type: 'tool_call',
-        id: 'call_github',
-        name: 'mcp__github__list_issues',
-        input: { assignee: '@me' },
+        id: 'call_tracker',
+        name: 'mcp__tracker__enumerate_open_defects',
+        input: { owner: '@me' },
       },
       { type: 'stop', stopReason: 'tool_use' },
     ]);
     mockAdapter.pushResponse([
-      { type: 'text_delta', text: 'No matching issues.' },
+      { type: 'text_delta', text: 'No matching defects.' },
       { type: 'stop', stopReason: 'end_turn' },
     ]);
     const engine = new Engine({
@@ -290,22 +298,58 @@ describe('active tool exposure and scoped prompts', () => {
     });
     const events = [];
     for await (const event of engine.query({
-      prompt: 'Find issues assigned to me in GitHub.',
+      prompt: 'Show me tickets I own.',
     })) events.push(event);
 
     expect(mockAdapter.callLog[0].tools.map(tool => tool.name)).toContain('DiscoverTools');
-    expect(mockAdapter.callLog[0].tools.map(tool => tool.name)).not.toContain('mcp__github__list_issues');
+    expect(mockAdapter.callLog[0].tools.map(tool => tool.name)).not.toContain('mcp__tracker__enumerate_open_defects');
     const discoveryEvent = events.find(event => event.type === 'tool_end' && event.name === 'DiscoverTools');
     expect(discoveryEvent).toMatchObject({ isError: false });
     const discoveryResult = JSON.parse(discoveryEvent.output);
-    expect(discoveryResult.tools[0].name).toBe('mcp__github__list_issues');
+    expect(discoveryResult.tools.map(tool => tool.name)).toContain('mcp__tracker__enumerate_open_defects');
     expect(discoveryResult.tools.length).toBeLessThanOrEqual(24);
     expect(discoveryResult.tools.every(tool => !Object.hasOwn(tool, 'parameters'))).toBe(true);
-    expect(mockAdapter.callLog[1].tools.map(tool => tool.name)).toContain('mcp__github__list_issues');
-    expect(events.find(event => event.type === 'tool_end' && event.name === 'mcp__github__list_issues')).toMatchObject({
+    expect(Buffer.byteLength(discoveryEvent.output, 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+    expect(mockAdapter.callLog[1].tools.map(tool => tool.name)).toContain('mcp__tracker__enumerate_open_defects');
+    expect(events.find(event => event.type === 'tool_end' && event.name === 'mcp__tracker__enumerate_open_defects')).toMatchObject({
       output: '[]',
       isError: false,
     });
+  });
+
+  it('pages the complete hidden directory and bounds hostile metadata before serialization', () => {
+    const candidates = Array.from({ length: 53 }, (_, index) => ({
+      name: `mcp__catalog__capability_${String(index).padStart(2, '0')}`,
+      description: `Capability ${index}`,
+      parameters: { type: 'object', properties: {} },
+    }));
+    const seen = new Set();
+    let cursor = 0;
+    do {
+      const result = discoverToolCapabilities({ query: '没有词法匹配', candidates, cursor });
+      expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+      for (const tool of result.tools) seen.add(tool.name);
+      cursor = result.next_cursor;
+    } while (cursor != null);
+    expect(seen).toEqual(new Set(candidates.map(tool => tool.name)));
+
+    const hostile = Array.from({ length: 24 }, (_, index) => ({
+      name: `mcp__hostile__${index}_${'x'.repeat(10_000)}`,
+      description: 'y'.repeat(10_000),
+      parameters: { type: 'object', properties: {} },
+    }));
+    const bounded = discoverToolCapabilities({ query: 'anything', candidates: hostile });
+    expect(bounded.tools).toEqual([]);
+    expect(bounded.next_cursor).toBeNull();
+    expect(bounded.omitted_invalid).toBe(24);
+    expect(Buffer.byteLength(JSON.stringify(bounded), 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
+
+    const metadataBounded = discoverToolCapabilities({
+      query: 'anything',
+      candidates: [{ name: `mcp__near_limit__${'n'.repeat(200)}`, description: 'z'.repeat(10_000) }],
+    });
+    expect(metadataBounded.tools).toHaveLength(1);
+    expect(Buffer.byteLength(JSON.stringify(metadataBounded), 'utf8')).toBeLessThanOrEqual(TOOL_DISCOVERY_MAX_OUTPUT_BYTES);
   });
 
   it('filters provider schemas and fences execution with canonical alias activation', async () => {
@@ -316,10 +360,17 @@ describe('active tool exposure and scoped prompts', () => {
     });
     const defs = registry.getToolDefs('en', { activeToolNames: baseline });
     const names = defs.map(def => def.name);
+    const hiddenDirectory = discoverToolCapabilities({
+      query: 'reset the JavaScript scratchpad',
+      candidates: registry.getAllTools()
+        .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name))
+        .map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters })),
+    });
 
     expect(names).toContain('WebSearch');
     expect(names).toContain('EnterWorktree');
     expect(names).not.toContain('SpawnAgent');
+    expect(hiddenDirectory.tools.map(tool => tool.name)).not.toContain('JsReplReset');
     expect(registry.isAllowed('Agent', { activeToolNames: baseline })).toBe(false);
     expect(registry.has('Agent')).toBe(true);
     expect(registry.isAllowed('Agent', {

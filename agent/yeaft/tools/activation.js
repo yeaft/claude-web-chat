@@ -53,7 +53,6 @@ export const CONDITIONAL_BUILTIN_TOOL_NAMES = new Set([
   'RouteForward',
   'CreateWorkItem',
   'JsRepl',
-  'JsReplReset',
   'NotebookEdit',
   'ImageGeneration',
 ]);

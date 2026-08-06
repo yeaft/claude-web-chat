@@ -1,6 +1,7 @@
 import { defineTool } from './types.js';
 
 export const TOOL_DISCOVERY_MAX_RESULTS = 24;
+export const TOOL_DISCOVERY_MAX_NAME_CHARS = 256;
 export const TOOL_DISCOVERY_MAX_DESCRIPTION_CHARS = 320;
 export const TOOL_DISCOVERY_MAX_OUTPUT_BYTES = 12 * 1024;
 
@@ -17,27 +18,11 @@ function lowerTokens(value) {
   const expanded = text
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/[_-]+/g, ' ');
-  return expanded.match(TOKEN_RE) || [];
+  return (expanded.match(TOKEN_RE) || []).map(token => token.toLocaleLowerCase());
 }
 
-const TOOL_DISCOVERY_SYNONYMS = Object.freeze({
-  storage: ['disk', 'space', 'directory', 'usage', 'size'],
-  full: ['disk', 'space', 'usage'],
-  files: ['disk', 'space', 'directory', 'usage'],
-  monitor: ['durable', 'persistent', 'tracking', 'continue', 'waiting'],
-  days: ['durable', 'persistent', 'tracking', 'cross', 'turn'],
-  banner: ['image', 'illustration', 'graphic'],
-  opinion: ['reviewer', 'review', 'agent'],
-  remind: ['history', 'conversation', 'previous', 'past'],
-  handled: ['history', 'conversation', 'previous', 'past'],
-});
-
-function tokens(value, { expandSynonyms = false } = {}) {
-  const base = lowerTokens(value)
-    .map(token => token.toLocaleLowerCase())
-    .filter(token => token.length > 1 && !STOP_WORDS.has(token));
-  if (!expandSynonyms) return base;
-  return base.flatMap(token => [token, ...(TOOL_DISCOVERY_SYNONYMS[token] || [])]);
+function tokens(value) {
+  return lowerTokens(value).filter(token => token.length > 1 && !STOP_WORDS.has(token));
 }
 
 function truncate(value, maxChars) {
@@ -45,7 +30,7 @@ function truncate(value, maxChars) {
   return text.length <= maxChars ? text : `${text.slice(0, maxChars - 1)}…`;
 }
 
-function toolSearchText(tool, language) {
+function toolSearchText(tool) {
   return [
     tool.name,
     tool.description,
@@ -53,11 +38,10 @@ function toolSearchText(tool, language) {
   ].map(value => String(value || '')).join(' ');
 }
 
-function scoreTool(tool, query, language) {
-  const queryTokens = [...new Set(tokens(query, { expandSynonyms: true }))];
+function scoreTool(tool, queryTokens) {
   if (queryTokens.length === 0) return 0;
   const name = String(tool.name || '').toLocaleLowerCase();
-  const text = toolSearchText(tool, language).toLocaleLowerCase();
+  const text = toolSearchText(tool).toLocaleLowerCase();
   const haystackTokens = new Set(tokens(text));
   let score = 0;
   for (const token of queryTokens) {
@@ -68,21 +52,79 @@ function scoreTool(tool, query, language) {
   return score;
 }
 
+function normalizeCursor(value) {
+  const cursor = Number(value);
+  return Number.isInteger(cursor) && cursor >= 0 ? cursor : 0;
+}
+
+function validCandidate(tool) {
+  return typeof tool?.name === 'string'
+    && tool.name.length > 0
+    && tool.name.length <= TOOL_DISCOVERY_MAX_NAME_CHARS;
+}
+
+function byteLength(value) {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
+/**
+ * Return one deterministic page from the complete hidden tool directory.
+ * Lexical scoring only improves ordering; it never decides reachability.
+ */
 export function discoverToolCapabilities({
   query,
   candidates = [],
-  language = 'en',
+  cursor = 0,
   maxResults = TOOL_DISCOVERY_MAX_RESULTS,
 } = {}) {
   const boundedMax = Math.max(1, Math.min(Number(maxResults) || TOOL_DISCOVERY_MAX_RESULTS, TOOL_DISCOVERY_MAX_RESULTS));
-  const scored = candidates
-    .map(tool => ({ tool, score: scoreTool(tool, query, language) }))
-    .sort((a, b) => b.score - a.score || a.tool.name.localeCompare(b.tool.name));
-  const selected = scored.filter(entry => entry.score > 0).slice(0, boundedMax);
-  return selected.map(({ tool }) => ({
-    name: tool.name,
-    description: truncate(tool.description, TOOL_DISCOVERY_MAX_DESCRIPTION_CHARS),
-  }));
+  const queryTokens = [...new Set(tokens(query))];
+  let omittedInvalid = 0;
+  const scored = [];
+  for (const tool of Array.isArray(candidates) ? candidates : []) {
+    if (!validCandidate(tool)) {
+      omittedInvalid += 1;
+      continue;
+    }
+    scored.push({
+      tool,
+      score: scoreTool(tool, queryTokens),
+    });
+  }
+  scored.sort((a, b) => b.score - a.score || a.tool.name.localeCompare(b.tool.name));
+
+  const start = Math.min(normalizeCursor(cursor), scored.length);
+  const tools = [];
+  let index = start;
+  while (index < scored.length && tools.length < boundedMax) {
+    const tool = scored[index].tool;
+    const item = {
+      name: tool.name,
+      description: truncate(tool.description, TOOL_DISCOVERY_MAX_DESCRIPTION_CHARS),
+    };
+    const hasMoreAfterItem = index + 1 < scored.length;
+    const tentative = {
+      tools: [...tools, item],
+      next_cursor: hasMoreAfterItem ? index + 1 : null,
+      total: scored.length,
+      omitted_invalid: omittedInvalid,
+    };
+    if (byteLength(tentative) > TOOL_DISCOVERY_MAX_OUTPUT_BYTES) break;
+    tools.push(item);
+    index += 1;
+  }
+
+  const nextCursor = index < scored.length && tools.length > 0 ? index : null;
+  const result = {
+    tools,
+    next_cursor: nextCursor,
+    total: scored.length,
+    omitted_invalid: omittedInvalid,
+  };
+  if (byteLength(result) > TOOL_DISCOVERY_MAX_OUTPUT_BYTES) {
+    return { tools: [], next_cursor: null, total: 0, omitted_invalid: omittedInvalid };
+  }
+  return result;
 }
 
 export default defineTool({
@@ -90,10 +132,10 @@ export default defineTool({
   description: {
     en: `Discover registered tools whose full schemas are not currently active.
 
-Use this when the visible tools do not clearly cover the user's request. Search by the user's goal or capability, not by a guessed tool name. The result returns a bounded set of matching tool names and short descriptions; matching schemas become available on the next model loop. This preserves direct tool calls after one lightweight discovery step without exposing the full catalogue on every request.`,
+Use this when the visible tools do not clearly cover the user's request. Search by the user's goal or capability, not by a guessed tool name. The result is a bounded page from the complete hidden tool directory, ordered by likely relevance; lexical similarity affects ordering only and never removes capabilities. If the target is absent, continue with next_cursor until found or the directory is exhausted. Returned tool schemas become available on the next model loop.`,
     zh: `发现已注册但当前未激活完整 schema 的工具。
 
-当可见工具不能明确覆盖用户请求时使用。应按用户目标或能力搜索，不要猜工具名。结果返回有界的匹配工具名称和简短描述；对应 schema 会在下一轮模型调用中可用。这样无需每次暴露完整目录，也能在一次轻量发现后直接调用目标工具。`,
+当可见工具不能明确覆盖用户请求时使用。应按用户目标或能力搜索，不要猜工具名。结果是完整隐藏工具目录中的有界分页，并按可能相关性排序；词法相似度只影响顺序，绝不会让能力不可达。如果当前页没有目标，应使用 next_cursor 继续翻页直到找到或目录耗尽。返回工具的 schema 会在下一轮模型调用中可用。`,
   },
   parameters: {
     type: 'object',
@@ -101,15 +143,22 @@ Use this when the visible tools do not clearly cover the user's request. Search 
       query: {
         type: 'string',
         description: {
-          en: 'User goal or capability to search for',
-          zh: '要搜索的用户目标或能力',
+          en: 'User goal or capability used to rank the complete hidden directory',
+          zh: '用于排序完整隐藏目录的用户目标或能力',
+        },
+      },
+      cursor: {
+        type: 'number',
+        description: {
+          en: 'Pagination cursor returned by a previous discovery page',
+          zh: '上一页发现结果返回的分页游标',
         },
       },
       max_results: {
         type: 'number',
         description: {
-          en: 'Maximum matches to activate (default and maximum: 24)',
-          zh: '最多激活的匹配项（默认及上限为 24）',
+          en: 'Maximum directory entries to activate (default and maximum: 24)',
+          zh: '最多激活的目录项数（默认及上限为 24）',
         },
       },
     },
@@ -125,11 +174,12 @@ Use this when the visible tools do not clearly cover the user's request. Search 
     }
     const result = await ctx.discoverTools({
       query,
+      cursor: input?.cursor,
       maxResults: input?.max_results,
     });
     const output = JSON.stringify(result);
     if (Buffer.byteLength(output, 'utf8') > TOOL_DISCOVERY_MAX_OUTPUT_BYTES) {
-      throw new Error('Tool discovery output exceeded its bounded result budget');
+      throw new Error('Tool discovery violated its bounded result budget');
     }
     return output;
   },

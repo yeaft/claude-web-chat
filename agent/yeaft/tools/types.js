@@ -22,7 +22,7 @@
  * @property {object} [skillManager] — Skill manager
  * @property {object} [trace] — debug trace
  * @property {object} [config] — engine config
- * @property {(input: {query:string, maxResults?:number}) => Promise<object>|object} [discoverTools] — query hidden registered tool capabilities and activate matches for the next provider loop
+ * @property {(input: {query:string, cursor?:number, maxResults?:number}) => Promise<object>|object} [discoverTools] — page through hidden registered tool capabilities and activate returned entries for the next provider loop
  * @property {import('../tasks/manager.js').TaskManager} [taskManager] — Session task manager
  * @property {string} [sessionId] — current Session id
  * @property {string[]} [projectSessionIds] — same-Agent sibling Session ids in the current Project

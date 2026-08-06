@@ -3899,7 +3899,7 @@ export class Engine {
         setCurrentTodos,
         askUser,
         workDir,
-        discoverTools: ({ query, maxResults } = {}) => {
+        discoverTools: ({ query, cursor, maxResults } = {}) => {
           if (!this.#toolRegistry) return { query: String(query || ''), tools: [], activated: 0 };
           const language = this.#config.language || 'en';
           const candidates = this.#toolRegistry.getAllTools()
@@ -3910,15 +3910,17 @@ export class Engine {
               description: localizeVisibleText(tool.description, language, tool.name),
               parameters: tool.parameters,
             }));
-          const tools = discoverToolCapabilities({ query, candidates, language, maxResults });
-          applyDiscoveredTools(tools.map(tool => tool.name));
+          const result = discoverToolCapabilities({ query, candidates, language, cursor, maxResults });
+          applyDiscoveredTools(result.tools.map(tool => tool.name));
           return {
             query: String(query || ''),
-            tools,
-            activated: tools.length,
-            message: tools.length > 0
-              ? 'Matching tool schemas will be available on the next model loop.'
-              : 'No hidden registered tools matched this query.',
+            ...result,
+            activated: result.tools.length,
+            message: result.tools.length > 0
+              ? (result.next_cursor == null
+                  ? 'This discovery page is active on the next model loop; the hidden directory is exhausted.'
+                  : 'This discovery page is active on the next model loop; use next_cursor if the target is not listed.')
+              : 'No valid hidden registered tools remain on this directory page.',
           };
         },
         currentToolCall: () => currentToolCallForAsyncTask ? { ...currentToolCallForAsyncTask } : null,
