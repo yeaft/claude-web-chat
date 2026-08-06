@@ -829,6 +829,65 @@ describe('Engine', () => {
       } finally {
         globalThis.fetch = snapshotFetch;
       }
+
+      const preflightFetch = globalThis.fetch;
+      const preflightRequests = [];
+      globalThis.fetch = async (url, init) => {
+        preflightRequests.push({ url: String(url), body: JSON.parse(init.body) });
+        return new Response(
+          'event: response.completed\n' +
+          'data: {"type":"response.completed","response":{"status":"completed","output":[],"usage":{}}}\n\n',
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      };
+
+      try {
+        const router = new AdapterRouter({
+          providers: [{
+            name: 'old',
+            baseUrl: 'https://old.example/v1',
+            apiKey: 'old-key',
+            protocol: 'openai-responses',
+            models: ['old-model'],
+          }],
+        });
+        const adapter = withUsageAccounting(router, () => {});
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'old/old-model', maxOutputTokens: 111 },
+        });
+        let refreshed = false;
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'keep one config revision',
+          drainPendingUserMessages: () => {
+            if (refreshed) return [];
+            refreshed = true;
+            router.refreshProviders([{
+              name: 'new',
+              baseUrl: 'https://new.example/v1',
+              apiKey: 'new-key',
+              protocol: 'openai-responses',
+              models: ['new-model'],
+            }]);
+            engine.refreshConfig({ model: 'new/new-model', maxOutputTokens: 222 });
+            return [{ content: 'refresh raced preflight', preview: 'refresh raced preflight' }];
+          },
+        })) {
+          events.push(event);
+        }
+
+        expect(events.some(event => event.type === 'error')).toBe(false);
+        expect(preflightRequests).toEqual([
+          expect.objectContaining({
+            url: 'https://old.example/v1/responses',
+            body: expect.objectContaining({ model: 'old-model', max_output_tokens: 111 }),
+          }),
+        ]);
+      } finally {
+        globalThis.fetch = preflightFetch;
+      }
     });
 
     it('refreshes configured effort at tool and retry request boundaries while preserving an explicit override', async () => {

@@ -2663,6 +2663,12 @@ export class Engine {
       // this request. Fallback retries intentionally retain their selected
       // model, but still use the current policy and configured effort.
       const requestConfig = { ...this.#config };
+      // Capture the matching provider catalog in the same synchronous boundary
+      // as config/model. Preflight may yield user/task events before the stream
+      // is built, but one request must never mix two refresh revisions.
+      const requestAdapter = typeof this.#adapter.captureRequest === 'function'
+        ? this.#adapter.captureRequest()
+        : this.#adapter;
       retryPolicy = resolveRetryPolicy(requestConfig);
 
       // task-324: no hard MAX_TURNS cap. Loop terminates on end_turn,
@@ -2928,13 +2934,13 @@ export class Engine {
         // state; both the retry continuation and Work Center EngineTurn remain
         // uncommitted until the consumer resumes this `turn_start`.
         //
-        // Engine configuration is deliberately captured here, before the yield.
-        // AdapterRouter then freezes only its provider catalog; bridge config
-        // refreshes while `turn_start` is visible cannot alter this request.
-        const hasCaptureStream = typeof this.#adapter.captureStream === 'function';
+        // Engine configuration and AdapterRouter catalog were captured together
+        // at the loop boundary above. Building the stream here and refreshing
+        // while `turn_start` is visible cannot alter this request revision.
+        const hasCaptureStream = typeof requestAdapter.captureStream === 'function';
         const captureStream = hasCaptureStream
-          ? this.#adapter.captureStream.bind(this.#adapter)
-          : this.#adapter.stream.bind(this.#adapter);
+          ? requestAdapter.captureStream.bind(requestAdapter)
+          : requestAdapter.stream.bind(requestAdapter);
         let continuationCommitted = false;
         const commitRetryContinuation = () => {
           if (continuationCommitted

@@ -618,12 +618,21 @@ export class AdapterRouter extends LLMAdapter {
     err.credentialRefreshable = Boolean(provider?.credentialProvider);
   }
 
+  captureRequest() {
+    // Engine captures this object in the same synchronous boundary as its
+    // config snapshot. The returned closure keeps the matching provider
+    // catalog even when request preflight yields before stream construction.
+    const dispatchSnapshot = this.#captureDispatchSnapshot();
+    return {
+      captureStream: params => this.#streamWithSnapshot(params, dispatchSnapshot),
+    };
+  }
+
   captureStream(params) {
     // `async *stream()` does not execute until its first `next()`. Capture the
     // route in this ordinary method so a config save after capture returns
     // cannot replace the catalog before the request actually dispatches.
-    const dispatchSnapshot = this.#captureDispatchSnapshot();
-    return this.#streamWithSnapshot(params, dispatchSnapshot);
+    return this.captureRequest().captureStream(params);
   }
 
   stream(params) {
