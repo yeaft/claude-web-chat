@@ -1085,6 +1085,7 @@ describe('Yeaft Session online Agent filtering', () => {
 
     ownerClient.sent = [];
     otherTab.sent = [];
+    CONFIG.skipAuth = false;
     getForAgent.mockReturnValue({ id: 'same-id', agentId: 'agent-a', userId: 'user-1' });
     const debugRelayClient = {
       authenticated: true,
@@ -1125,6 +1126,57 @@ describe('Yeaft Session online Agent filtering', () => {
     expect(pendingYeaftDebugRequests.size).toBe(0);
 
     ownerClient.sent = [];
+    otherTab.sent = [];
+    CONFIG.skipAuth = true;
+    await handleClientConversation('owner-client', debugRelayClient, {
+      type: 'yeaft_fetch_debug_history',
+      agentId: 'agent-a',
+      sessionId: 'same-id',
+      requestId: 'debug-skip-auth-ownerless',
+      requestKind: 'detail',
+      detailTurnId: 'turn-skip-auth-ownerless',
+    }, allow);
+    await handleAgentOutput('agent-a', { ...agent, ownerId: null }, {
+      type: 'yeaft_debug_history',
+      requestId: 'debug-skip-auth-ownerless',
+      requestKind: 'detail',
+      detailTurnId: 'turn-skip-auth-ownerless',
+      sessionId: 'same-id',
+      turns: [{ turnId: 'turn-skip-auth-ownerless' }],
+      loops: [{ turnId: 'turn-skip-auth-ownerless', loopNumber: 1 }],
+      dreamEvents: [],
+    });
+    expect(ownerClient.sent.at(-1)).toMatchObject({
+      type: 'yeaft_debug_history',
+      agentId: 'agent-a',
+      requestId: 'debug-skip-auth-ownerless',
+      detailTurnId: 'turn-skip-auth-ownerless',
+    });
+    expect(otherTab.sent).toEqual([]);
+    expect(pendingYeaftDebugRequests.size).toBe(0);
+
+    ownerClient.sent = [];
+    otherTab.sent = [];
+    CONFIG.skipAuth = false;
+    await handleClientConversation('owner-client', debugRelayClient, {
+      type: 'yeaft_fetch_debug_history',
+      agentId: 'agent-a',
+      sessionId: 'same-id',
+      requestId: 'debug-owner-mismatch',
+      detailTurnId: 'turn-owner-mismatch',
+    }, allow);
+    await handleAgentOutput('agent-a', { ...agent, ownerId: 'other-user' }, {
+      type: 'yeaft_debug_history',
+      requestId: 'debug-owner-mismatch',
+      sessionId: 'same-id',
+      turns: [{ turnId: 'turn-owner-mismatch' }],
+      loops: [],
+      dreamEvents: [],
+    });
+    expect(ownerClient.sent).toEqual([]);
+    expect(otherTab.sent).toEqual([]);
+    expect(pendingYeaftDebugRequests.size).toBe(0);
+
     await handleAgentOutput('agent-a', agent, {
       type: 'yeaft_debug_history',
       requestId: 'unregistered-debug',

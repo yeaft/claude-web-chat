@@ -998,9 +998,11 @@ export async function handleAgentOutput(agentId, agent, msg) {
         sessionId: msg.sessionId,
       });
       const targetClient = pending ? webClients.get(pending.clientId) : null;
-      if (targetClient?.authenticated
-        && pending.userId === agent.ownerId
-        && (CONFIG.skipAuth || targetClient.userId === pending.userId)) {
+      const ownerMatches = CONFIG.skipAuth || (
+        pending?.userId === agent.ownerId
+        && targetClient?.userId === pending.userId
+      );
+      if (targetClient?.authenticated && ownerMatches) {
         await sendToWebClient(targetClient, {
           type: 'yeaft_debug_history',
           agentId,
