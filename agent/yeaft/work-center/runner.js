@@ -1173,12 +1173,8 @@ export class WorkItemRunner {
       runTools,
       operationLifecycle,
     });
-    // Work Center is intentionally outside the Agent Plugins MVP. Its Engine
-    // must retain its own control-plane tools and runtime lifecycle, without
-    // mutating the shared Agent runtime configuration.
-    const { plugins: _plugins, ...engineBaseConfig } = runtime.config;
     const config = {
-      ...engineBaseConfig,
+      ...runtime.config,
       model: resolvedModel.model,
       // WorkItem model policy is part of the frozen execution contract. The
       // Agent-level fallback would silently execute a different model while

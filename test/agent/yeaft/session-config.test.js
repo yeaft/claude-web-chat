@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -12,6 +12,7 @@ import { closeConversationHistoryIndexes } from '../../../agent/yeaft/conversati
 import { estimateTokens } from '../../../agent/yeaft/dream/segment.js';
 import { buildPluginCatalog } from '../../../agent/yeaft/plugins.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
+import { MCPManager } from '../../../agent/yeaft/mcp.js';
 import { __testGetOrCreateVpEngine, __testHooks, __testLoadPluginCatalogMcpConfig, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftLoadHistoryOutline, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
 import { _resetAgentRegistry, getAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
@@ -243,9 +244,9 @@ describe('Yeaft session-scoped model config', () => {
     expect(sharedSessionIdsForProject(root, 'session-a')).toEqual(['session-b']);
     const siblingSummary = join(root, 'memory', 'sessions', 'session-b');
     mkdirSync(siblingSummary, { recursive: true });
-    writeFileSync(join(siblingSummary, 'summary.zh.md'), 'å…±äº«å‘å¸ƒå†³ç­–\n');
+    writeFileSync(join(siblingSummary, 'summary.zh.md'), '共享发布决策\n');
     expect(await __testHooks.sharedProjectContext(root, 'session-a', { language: 'zh' }))
-      .toBe('[Session session-b]\nå…±äº«å‘å¸ƒå†³ç­–');
+      .toBe('[Session session-b]\n共享发布决策');
     expect(await __testHooks.sharedProjectContext(root, 'session-a', {
       language: 'zh',
       sessionIds: [],
@@ -376,11 +377,11 @@ describe('Yeaft session-scoped model config', () => {
       projectId: beta.id,
       projectName: 'Beta',
       sessionIds: ['session-b'],
-    }, '[Session session-b]\nå…±äº«å‘å¸ƒå†³ç­–')).toContain('this Project on this Agent only');
+    }, '[Session session-b]\n共享发布决策')).toContain('this Project on this Agent only');
     expect(await __testHooks.sharedProjectContext(root, 'session-outside', {
       language: 'zh',
       sessionIds: ['session-b'],
-    })).toBe('[Session session-b]\nå…±äº«å‘å¸ƒå†³ç­–');
+    })).toBe('[Session session-b]\n共享发布决策');
     rmSync(join(siblingSummary, 'summary.zh.md'));
     writeFileSync(join(siblingSummary, 'summary.md'), 'English fallback decision\n');
     expect(await __testHooks.sharedProjectContext(root, 'session-a', { language: 'zh' }))
@@ -410,6 +411,44 @@ describe('Yeaft session-scoped model config', () => {
     expect(loadProjects(root).map(project => project.id)).toEqual([alpha.id]);
   });
 
+
+  it('connects only allowlisted MCP servers for a normal Session', async () => {
+    const root = makeDir();
+    writeFileSync(join(root, 'config.json'), `${JSON.stringify({
+      providers: [{
+        name: 'test-provider',
+        baseUrl: 'https://example.invalid/v1',
+        apiKey: 'test-key',
+        protocol: 'openai-responses',
+        models: ['gpt-5'],
+      }],
+      primaryModel: 'test-provider/gpt-5',
+      plugins: { mcpServers: ['github'] },
+      mcpServers: [
+        { name: 'github', command: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'] },
+        { name: 'slack', command: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'] },
+      ],
+    }, null, 2)}\n`);
+
+    const connected = [];
+    const originalConnectAll = MCPManager.prototype.connectAll;
+    const originalDisconnectAll = MCPManager.prototype.disconnectAll;
+    MCPManager.prototype.connectAll = async function connectAll(servers) {
+      connected.push(...servers.map(server => server.name));
+      return { connected: servers.map(server => server.name), failed: [] };
+    };
+    MCPManager.prototype.disconnectAll = async function disconnectAll() {};
+    let session = null;
+    try {
+      session = await loadSession({ dir: root, skipSkills: true });
+      expect(connected).toEqual(['github']);
+      expect(session.status.mcpServers).toEqual(['github']);
+    } finally {
+      await session?.shutdown?.();
+      MCPManager.prototype.connectAll = originalConnectAll;
+      MCPManager.prototype.disconnectAll = originalDisconnectAll;
+    }
+  });
 
   it('uses the user-level Session config for reads, writes, and metadata updates', () => {
     {
@@ -463,6 +502,77 @@ describe('Yeaft session-scoped model config', () => {
     })).toThrow('unknown config key: modelSource');
   });
 
+
+  it('rebuilds the live normal Session runtime with the updated MCP allowlist', async () => {
+    const root = makeDir();
+    const connectedByRuntime = [];
+    const disconnectedRuntimes = [];
+    let nextRuntimeId = 0;
+    const createMcpManager = () => {
+      const id = ++nextRuntimeId;
+      return {
+        async connectAll(servers) {
+          connectedByRuntime.push({ id, servers: servers.map(server => server.name) });
+          return { connected: servers.map(server => server.name), failed: [] };
+        },
+        async disconnectAll() { disconnectedRuntimes.push(id); },
+        status: () => [],
+      };
+    };
+    const liveSession = {
+      yeaftDir: root,
+      config: {
+        dir: root,
+        model: 'test-provider/gpt-5',
+        primaryModel: 'test-provider/gpt-5',
+        plugins: { mcpServers: ['github'] },
+      },
+      adapter: { refreshProviders() {} },
+      engine: { refreshConfig: vi.fn() },
+      trace: { refreshConfig() {} },
+      toolRegistry: { size: 0, replaceMcpTools: vi.fn(() => ({})) },
+      skillManager: { size: 0, list: () => [] },
+      mcpManager: { disconnectAll: vi.fn() },
+      status: {},
+    };
+    writeFileSync(join(root, 'config.json'), `${JSON.stringify({
+      providers: [{
+        name: 'test-provider',
+        baseUrl: 'https://example.invalid/v1',
+        apiKey: 'test-key',
+        protocol: 'openai-responses',
+        models: ['gpt-5'],
+      }],
+      primaryModel: 'test-provider/gpt-5',
+      mcpServers: [
+        { name: 'github', command: 'github' },
+        { name: 'slack', command: 'slack' },
+      ],
+      plugins: { mcpServers: ['slack'] },
+    }, null, 2)}\n`);
+    ctx.CONFIG = { yeaftDir: root };
+    __testSetSession(liveSession);
+    __testHooks.setRuntimeFactoriesForTest({
+      createSkillManager: () => ({ size: 0, list: () => [] }),
+      createMcpManager,
+      loadMcpConfig: () => ({
+        servers: [
+          { name: 'github', command: 'github' },
+          { name: 'slack', command: 'slack' },
+        ],
+        skipped: [],
+      }),
+    });
+    try {
+      await refreshLiveSessionConfig();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(connectedByRuntime).toHaveLength(1);
+      expect(connectedByRuntime[0].servers).toEqual(['slack']);
+      expect(disconnectedRuntimes).toEqual([]);
+    } finally {
+      __testHooks.resetRuntimeFactoriesForTest();
+    }
+  });
 
   it('removes a stale bare managed override from persisted Session config', () => {
     const root = makeDir();

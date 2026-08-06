@@ -30,7 +30,6 @@ import { resolveTopicRedirect } from '../../../agent/yeaft/memory/topic-redirect
 import { runDream } from '../../../agent/yeaft/dream/runner.js';
 import { extractAndWriteMemorySegments } from '../../../agent/yeaft/dream/segment-extract.js';
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
-import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import { defineTool } from '../../../agent/yeaft/tools/types.js';
 import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
 import todoWriteTool from '../../../agent/yeaft/tools/todo-write.js';
@@ -5314,7 +5313,7 @@ describe('Engine', () => {
   });
 
   describe('tools passed to adapter', () => {
-    it('should pass tool definitions to adapter when tools are registered', async () => {
+    it('filters plugin-disabled tools and MCP servers from adapter definitions and execution', async () => {
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'ok' },
         { type: 'stop', stopReason: 'end_turn' },
@@ -5398,6 +5397,62 @@ describe('Engine', () => {
       expect(events.find(event => event.type === 'tool_end')).toMatchObject({
         name: 'DisabledTool',
         isError: true,
+      });
+    });
+
+    it('filters disabled skills from automatic and explicit prompt injection', async () => {
+      const skillManager = {
+        has: name => ['allowed-skill', 'blocked-skill'].includes(name),
+        list: () => [
+          { name: 'allowed-skill', description: 'Allowed skill' },
+          { name: 'blocked-skill', description: 'Blocked skill' },
+        ],
+        get: name => ({ name }),
+        resolve: name => ({ name }),
+        view: name => ({ name }),
+        findRelevant: () => [
+          { name: 'allowed-skill', description: 'Allowed skill' },
+          { name: 'blocked-skill', description: 'Blocked skill' },
+        ],
+        getPromptContent: name => name === 'allowed-skill'
+          ? 'ALLOWED SKILL CONTENT'
+          : 'BLOCKED SKILL CONTENT',
+      };
+
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'automatic complete' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const automaticEngine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024, plugins: { skills: ['allowed-skill'] } },
+        skillManager,
+      });
+      const automaticEvents = [];
+      for await (const event of automaticEngine.query({ prompt: 'use relevant skills' })) automaticEvents.push(event);
+      expect(mockAdapter.callLog.at(-1).system).toContain('ALLOWED SKILL CONTENT');
+      expect(mockAdapter.callLog.at(-1).system).not.toContain('BLOCKED SKILL CONTENT');
+      expect(automaticEvents.filter(event => event.type === 'skill_loaded').map(event => event.skill.name))
+        .toEqual(['allowed-skill']);
+
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'explicit complete' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const explicitEngine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024, plugins: { skills: ['allowed-skill'] } },
+        skillManager,
+      });
+      const explicitEvents = [];
+      for await (const event of explicitEngine.query({ prompt: '/skill:blocked-skill inspect this' })) {
+        explicitEvents.push(event);
+      }
+      expect(mockAdapter.callLog.at(-1).system).not.toContain('BLOCKED SKILL CONTENT');
+      expect(explicitEvents.find(event => event.type === 'skill_error')).toMatchObject({
+        skillName: 'blocked-skill',
       });
     });
 
