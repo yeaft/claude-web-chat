@@ -5,7 +5,7 @@ import { generateSkipAuthSession } from './auth.js';
 import { authenticateRequest } from './auth/request-auth.js';
 import { encodeKey } from './encryption.js';
 import { userDb } from './database.js';
-import { agents, webClients, isHeartbeatMessageType, trackRequest } from './context.js';
+import { agents, clearYeaftDebugRequestsForClient, webClients, isHeartbeatMessageType, trackRequest } from './context.js';
 import {
   parseMessage, sendToWebClient, sendToAgent,
   broadcastAgentList, resolveAgentAccessError
@@ -163,6 +163,7 @@ export function handleWebConnection(ws, url, req = {}) {
       }
     }
     clearWorkCenterRequestsForClient(client);
+    clearYeaftDebugRequestsForClient(clientId);
     webClients.delete(clientId);
     console.log(`Web client disconnected: ${clientId}`);
   });

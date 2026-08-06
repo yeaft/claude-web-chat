@@ -94,7 +94,7 @@ vi.mock('../../server/handlers/session-pin-router.js', () => ({
 }));
 
 const { CONFIG } = await import('../../server/config.js');
-const { agents, webClients } = await import('../../server/context.js');
+const { agents, pendingYeaftDebugRequests, webClients } = await import('../../server/context.js');
 const { handleAgentOutput } = await import('../../server/handlers/agent-output.js');
 const {
   groupOnlineYeaftSessions,
@@ -108,6 +108,7 @@ afterEach(() => {
   CONFIG.skipAuth = originalSkipAuth;
   agents.clear();
   webClients.clear();
+  pendingYeaftDebugRequests.clear();
   getByUser.mockReset();
   getByUser.mockReturnValue([]);
   getByAgent.mockReset();
@@ -1084,13 +1085,30 @@ describe('Yeaft Session online Agent filtering', () => {
 
     ownerClient.sent = [];
     otherTab.sent = [];
+    getForAgent.mockReturnValue({ id: 'same-id', agentId: 'agent-a', userId: 'user-1' });
+    const debugRelayClient = {
+      authenticated: true,
+      userId: 'user-1',
+      currentAgent: 'agent-a',
+      sent: ownerClient.sent,
+    };
+    await handleClientConversation('owner-client', debugRelayClient, {
+      type: 'yeaft_fetch_debug_history',
+      agentId: 'agent-a',
+      sessionId: 'same-id',
+      requestId: 'debug-owner-only',
+      requestKind: 'detail',
+      detailTurnId: 'turn-owner-only',
+    }, allow);
+    expect(pendingYeaftDebugRequests.size).toBe(1);
+    // Simulate the rolling topology: an old Agent echoes requestId/sessionId
+    // but drops the newly introduced private browser client field.
     await handleAgentOutput('agent-a', agent, {
       type: 'yeaft_debug_history',
       requestId: 'debug-owner-only',
       requestKind: 'detail',
       detailTurnId: 'turn-owner-only',
       sessionId: 'same-id',
-      _requestClientId: 'owner-client',
       turns: [{ turnId: 'turn-owner-only' }],
       loops: [{ turnId: 'turn-owner-only', loopNumber: 1 }],
       dreamEvents: [],
@@ -1104,8 +1122,41 @@ describe('Yeaft Session online Agent filtering', () => {
       projection: { truncated: true, reason: 'debug_detail_wire_budget' },
     });
     expect(otherTab.sent).toEqual([]);
+    expect(pendingYeaftDebugRequests.size).toBe(0);
 
     ownerClient.sent = [];
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_debug_history',
+      requestId: 'unregistered-debug',
+      sessionId: 'same-id',
+      turns: [{ turnId: 'must-not-broadcast' }],
+      loops: [],
+      dreamEvents: [],
+    });
+    expect(ownerClient.sent).toEqual([]);
+    expect(otherTab.sent).toEqual([]);
+
+    await handleClientConversation('owner-client', debugRelayClient, {
+      type: 'yeaft_fetch_debug_history',
+      agentId: 'agent-a',
+      sessionId: 'same-id',
+      requestId: 'expired-debug',
+      detailTurnId: 'expired-turn',
+    }, allow);
+    const expiredPending = [...pendingYeaftDebugRequests.values()].find(item => item.requestId === 'expired-debug');
+    expiredPending.expiresAt = Date.now() - 1;
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_debug_history',
+      requestId: 'expired-debug',
+      sessionId: 'same-id',
+      turns: [{ turnId: 'expired-turn' }],
+      loops: [],
+      dreamEvents: [],
+    });
+    expect(ownerClient.sent).toEqual([]);
+    expect(otherTab.sent).toEqual([]);
+    expect(pendingYeaftDebugRequests.size).toBe(0);
+
     await handleAgentOutput('agent-a', agent, {
       type: 'yeaft_history_chunk',
       conversationId: 'yeaft-agent-a',

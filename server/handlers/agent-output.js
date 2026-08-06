@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { messageDb, sessionUiMetadataDb, yeaftProjectDb, yeaftSessionDb } from '../database.js';
 import { transaction } from '../db/connection.js';
 import { broadcastAgentList, broadcastSessionCatalog, forwardToClients, sendToAgent, sendToWebClient } from '../ws-utils.js';
-import { webClients, previewFiles } from '../context.js';
+import { consumeYeaftDebugRequest, webClients, previewFiles } from '../context.js';
 import { CONFIG } from '../config.js';
 import { yeaftAssetStore } from '../yeaft-asset-store.js';
 import { recordPerfTraceEvent } from '../perf-trace.js';
@@ -989,10 +989,18 @@ export async function handleAgentOutput(agentId, agent, msg) {
 
     case 'yeaft_debug_history': {
       // Debug history is request/Turn scoped and may contain raw provider or
-      // tool payloads. Route correlated replies only to the requesting tab;
-      // never broadcast them to every authenticated tab for the owner.
-      const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
-      if (targetClient?.authenticated && (CONFIG.skipAuth || targetClient.userId === agent.ownerId)) {
+      // tool payloads. The Server registered this Agent + requestId after the
+      // compound Session ownership check, so rolling upgrades remain safe even
+      // when an older Agent does not echo the private browser client id.
+      const pending = consumeYeaftDebugRequest({
+        agentId,
+        requestId: msg.requestId,
+        sessionId: msg.sessionId,
+      });
+      const targetClient = pending ? webClients.get(pending.clientId) : null;
+      if (targetClient?.authenticated
+        && pending.userId === agent.ownerId
+        && (CONFIG.skipAuth || targetClient.userId === pending.userId)) {
         await sendToWebClient(targetClient, {
           type: 'yeaft_debug_history',
           agentId,

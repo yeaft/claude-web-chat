@@ -6219,6 +6219,48 @@ describe('Engine', () => {
           loop.rawResponse?.__truncated === true
           && loop.rawResponse?.reason === 'debug_detail_wire_budget'
         ))).toBe(true);
+
+        for (const toolCount of [24, 100]) {
+          const toolDetail = {
+            loops: [],
+            turns: [{
+              turnId: `tool-turn-${toolCount}`,
+              tools: Array.from({ length: toolCount }, (_, index) => ({
+                name: 'large-tool',
+                toolInput: `input-${index}`,
+                toolOutput: 'T'.repeat(256 * 1024),
+              })),
+            }],
+            dreamEvents: [],
+          };
+          const projectedTools = projectDebugDetailForWire(toolDetail);
+          expect(Buffer.byteLength(JSON.stringify(projectedTools), 'utf8')).toBeLessThan(6 * 1024 * 1024);
+          expect(projectedTools.turns[0].tools).toHaveLength(toolCount);
+          expect(projectedTools.turns[0].tools.every(tool => (
+            typeof tool.toolOutput === 'string' && tool.toolOutput.includes('wire truncated')
+          ))).toBe(true);
+        }
+
+        const cumulativeRequest = { body: 'Q'.repeat(2 * 1024 * 1024) };
+        const cumulativeDetail = {
+          loops: Array.from({ length: 50 }, (_, index) => ({
+            turnId: 'cumulative-turn',
+            loopNumber: index + 1,
+            rawRequest: cumulativeRequest,
+            response: 'ok',
+          })),
+          turns: [{ turnId: 'cumulative-turn' }],
+          dreamEvents: [],
+        };
+        const projectionStartedAt = performance.now();
+        const projectedCumulative = projectDebugDetailForWire(cumulativeDetail);
+        const projectionElapsedMs = performance.now() - projectionStartedAt;
+        expect(Buffer.byteLength(JSON.stringify(projectedCumulative), 'utf8')).toBeLessThan(6 * 1024 * 1024);
+        expect(projectedCumulative.projection.truncatedFields).toBe(50);
+        // The old implementation re-stringified the entire 100 MiB payload for
+        // every loop and independently took over 13 seconds for this shape.
+        // Leave ample CI headroom while fencing it below the browser's 10s timer.
+        expect(projectionElapsedMs).toBeLessThan(5_000);
         // The wire projection is derived after persistence; canonical event
         // records retain their normal per-field storage bounds.
         expect(storedLoops.every(loop => loop.rawResponse?.maxBytes === 64 * 1024)).toBe(true);

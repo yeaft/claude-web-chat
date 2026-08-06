@@ -40,7 +40,6 @@ const DEFAULT_TRACE_TEXT_MAX_BYTES = 256 * 1024;
 // comfortably below the Agent connection's 8 MiB outbound queue ceiling while
 // preserving the canonical file-backed trace without any extra truncation.
 const DEBUG_DETAIL_WIRE_MAX_BYTES = 6 * 1024 * 1024;
-const DEBUG_DETAIL_MIN_FIELD_BYTES = 1024;
 
 function isPlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
@@ -808,100 +807,164 @@ function expandTrace(trace) {
   return { loops, turns: Array.from(turnsById.values()) };
 }
 
-function debugDetailTextSentinel(value, maxBytes, path) {
+function debugDetailTextSentinel(value, maxBytes, path, originalBytes = jsonByteLength(value)) {
   const text = value == null ? '' : String(value);
-  const originalBytes = Buffer.byteLength(text, 'utf8');
-  if (originalBytes <= maxBytes) return text;
-  if (maxBytes <= 0) return '';
+  const budget = Math.max(2, Math.floor(Number(maxBytes) || 0));
+  if (originalBytes <= budget) return text;
   const marker = `\n... [wire truncated ${path}; original ${originalBytes} bytes]`;
-  const markerBytes = Buffer.byteLength(marker, 'utf8');
-  if (markerBytes >= maxBytes) return truncateUtf8Text(text, maxBytes).value;
-  return `${truncateUtf8Text(text, maxBytes - markerBytes).value}${marker}`;
+  const rawBytes = Math.max(1, Buffer.byteLength(text, 'utf8'));
+  const expansion = Math.max(1, originalBytes / rawBytes);
+  const markerBytes = jsonByteLength(marker) - 2;
+  let previewBytes = Math.max(0, Math.floor((budget - markerBytes - 2) / expansion));
+  let projected = `${truncateUtf8Text(text, previewBytes).value}${marker}`;
+  let projectedBytes = jsonByteLength(projected);
+  if (projectedBytes > budget && previewBytes > 0) {
+    previewBytes = Math.max(0, Math.floor(previewBytes * (budget / projectedBytes)) - 8);
+    projected = `${truncateUtf8Text(text, previewBytes).value}${marker}`;
+    projectedBytes = jsonByteLength(projected);
+  }
+  if (projectedBytes <= budget) return projected;
+  if (jsonByteLength(marker) <= budget) return marker;
+  return '';
 }
 
-function debugDetailJsonSentinel(value, maxBytes, path) {
+function debugDetailJsonSentinel(value, maxBytes, path, originalBytes = jsonByteLength(value)) {
   if (value == null) return value;
-  const originalBytes = jsonByteLength(value);
-  if (originalBytes <= maxBytes) return value;
-  const previewBudget = Math.max(0, maxBytes - 512);
-  let preview = '';
-  try {
-    preview = debugDetailTextSentinel(JSON.stringify(value), previewBudget, path);
-  } catch { /* metadata-only sentinel below */ }
-  return {
+  const budget = Math.max(0, Math.floor(Number(maxBytes) || 0));
+  if (originalBytes <= budget) return value;
+  const base = {
     __truncated: true,
     reason: 'debug_detail_wire_budget',
     path,
     originalBytes,
-    maxBytes,
-    ...(preview ? { preview } : {}),
+    maxBytes: budget,
   };
+  const baseBytes = jsonByteLength(base);
+  if (baseBytes > budget) return budget >= 4 ? null : '';
+  let preview = '';
+  try {
+    const encoded = JSON.stringify(value);
+    preview = debugDetailTextSentinel(
+      encoded,
+      Math.max(2, budget - baseBytes - 16),
+      path,
+      jsonByteLength(encoded),
+    );
+  } catch { /* metadata-only sentinel below */ }
+  const projected = preview ? { ...base, preview } : base;
+  return jsonByteLength(projected) <= budget ? projected : base;
+}
+
+function allocateDebugCandidateBudgets(candidates, totalBytes) {
+  const sorted = [...candidates].sort((a, b) => a.originalBytes - b.originalBytes || a.path.localeCompare(b.path));
+  let remainingBytes = Math.max(0, Math.floor(totalBytes));
+  let remainingCount = sorted.length;
+  for (let index = 0; index < sorted.length; index += 1) {
+    const candidate = sorted[index];
+    const fairShare = remainingCount > 0 ? Math.floor(remainingBytes / remainingCount) : 0;
+    if (candidate.originalBytes <= fairShare) {
+      candidate.budget = candidate.originalBytes;
+      remainingBytes -= candidate.budget;
+      remainingCount -= 1;
+      continue;
+    }
+    for (let tail = index; tail < sorted.length; tail += 1) {
+      const count = sorted.length - tail;
+      const budget = count > 0 ? Math.floor(remainingBytes / count) : 0;
+      sorted[tail].budget = budget;
+      remainingBytes -= budget;
+    }
+    break;
+  }
 }
 
 export function projectDebugDetailForWire(detail, maxBytes = DEBUG_DETAIL_WIRE_MAX_BYTES) {
-  const wire = cloneJsonValue(detail) || { loops: [], turns: [], dreamEvents: [] };
+  // `fetchTurnDebug()` hands us a freshly expanded response object; mutate that
+  // disposable projection rather than cloning tens or hundreds of cumulative
+  // request snapshots. Canonical file records and the request cache are separate.
+  const wire = detail && typeof detail === 'object'
+    ? detail
+    : { loops: [], turns: [], dreamEvents: [] };
   const payloadBudget = Math.max(0, maxBytes - 2048);
-  let size = jsonByteLength(wire);
-  if (size <= payloadBudget) return wire;
-
-  const loops = Array.isArray(wire.loops) ? wire.loops : [];
-  const textFields = ['rawRequest', 'rawResponse', 'messages', 'requestBase', 'requestDelta', 'toolCalls', 'response', 'systemPrompt'];
   const candidates = [];
-  for (let loopIndex = 0; loopIndex < loops.length; loopIndex += 1) {
-    const loop = loops[loopIndex];
+  const addCandidate = (container, field, path) => {
+    if (!container || container[field] == null) return;
+    const value = container[field];
+    candidates.push({
+      container,
+      field,
+      path,
+      value,
+      originalBytes: jsonByteLength(value),
+      budget: 0,
+    });
+    // Measure the non-candidate envelope exactly once without serializing every
+    // cumulative request again after each replacement.
+    container[field] = null;
+  };
+
+  const loopFields = ['rawRequest', 'rawResponse', 'messages', 'requestBase', 'requestDelta', 'toolCalls', 'response', 'systemPrompt'];
+  for (const [loopIndex, loop] of (Array.isArray(wire.loops) ? wire.loops : []).entries()) {
     if (!loop || typeof loop !== 'object') continue;
-    for (const field of textFields) {
-      if (loop[field] == null) continue;
-      candidates.push({ loopIndex, field, bytes: jsonByteLength(loop[field]) });
+    for (const field of loopFields) addCandidate(loop, field, `loops[${loopIndex}].${field}`);
+  }
+  for (const [turnIndex, turn] of (Array.isArray(wire.turns) ? wire.turns : []).entries()) {
+    if (!turn || typeof turn !== 'object') continue;
+    for (const field of ['userPrompt', 'memoryLoaded', 'memoryAdjust']) {
+      addCandidate(turn, field, `turns[${turnIndex}].${field}`);
+    }
+    for (const [toolIndex, tool] of (Array.isArray(turn.tools) ? turn.tools : []).entries()) {
+      if (!tool || typeof tool !== 'object') continue;
+      addCandidate(tool, 'toolInput', `turns[${turnIndex}].tools[${toolIndex}].toolInput`);
+      addCandidate(tool, 'toolOutput', `turns[${turnIndex}].tools[${toolIndex}].toolOutput`);
     }
   }
-  candidates.sort((a, b) => b.bytes - a.bytes || a.loopIndex - b.loopIndex || a.field.localeCompare(b.field));
+  for (const [eventIndex] of (Array.isArray(wire.dreamEvents) ? wire.dreamEvents : []).entries()) {
+    addCandidate(wire.dreamEvents, eventIndex, `dreamEvents[${eventIndex}]`);
+  }
 
+  const skeletonBytes = jsonByteLength(wire);
+  const candidateBytes = candidates.reduce((sum, candidate) => sum + candidate.originalBytes, 0);
+  const originalBytes = skeletonBytes - (4 * candidates.length) + candidateBytes;
+  if (originalBytes <= payloadBudget) {
+    for (const candidate of candidates) candidate.container[candidate.field] = candidate.value;
+    return wire;
+  }
+  if (candidates.length === 0 || skeletonBytes > payloadBudget) {
+    throw new Error(`Debug detail metadata exceeds the ${maxBytes}-byte wire budget`);
+  }
+
+  // Each candidate currently occupies JSON `null` (4 bytes) in the skeleton.
+  // Water-fill the exact value budget: small fields stay complete, while large
+  // cumulative requests and tool outputs receive fair, independently bounded
+  // previews. This is O(total input bytes + candidates log candidates), with
+  // one final whole-envelope serialization rather than one per candidate.
+  const valueBudget = payloadBudget - skeletonBytes + (4 * candidates.length);
+  allocateDebugCandidateBudgets(candidates, valueBudget);
   let truncatedFields = 0;
   for (const candidate of candidates) {
-    if (size <= payloadBudget) break;
-    const loop = loops[candidate.loopIndex];
-    const current = loop?.[candidate.field];
-    if (current == null) continue;
-    const currentBytes = jsonByteLength(current);
-    const excess = Math.max(0, size - payloadBudget);
-    const targetBytes = Math.max(DEBUG_DETAIL_MIN_FIELD_BYTES, currentBytes - excess - 1024);
-    const path = `loops[${candidate.loopIndex}].${candidate.field}`;
-    loop[candidate.field] = typeof current === 'string'
-      ? debugDetailTextSentinel(current, targetBytes, path)
-      : debugDetailJsonSentinel(current, targetBytes, path);
-    truncatedFields += 1;
-    size = jsonByteLength(wire);
-  }
-
-  // Keep the exact Turn identity and diagnostic metadata even in a pathologic
-  // trace whose many small fields still exceed the envelope after first pass.
-  if (size > payloadBudget) {
-    for (let loopIndex = 0; loopIndex < loops.length && size > payloadBudget; loopIndex += 1) {
-      const loop = loops[loopIndex];
-      if (!loop || typeof loop !== 'object') continue;
-      for (const field of textFields) {
-        if (loop[field] == null || size <= payloadBudget) continue;
-        const path = `loops[${loopIndex}].${field}`;
-        loop[field] = typeof loop[field] === 'string'
-          ? debugDetailTextSentinel(loop[field], DEBUG_DETAIL_MIN_FIELD_BYTES, path)
-          : debugDetailJsonSentinel(loop[field], DEBUG_DETAIL_MIN_FIELD_BYTES, path);
-        truncatedFields += 1;
-        size = jsonByteLength(wire);
-      }
+    if (candidate.originalBytes <= candidate.budget) {
+      candidate.container[candidate.field] = candidate.value;
+      continue;
     }
+    const fieldBudget = candidate.budget;
+    candidate.container[candidate.field] = typeof candidate.value === 'string'
+      ? debugDetailTextSentinel(candidate.value, fieldBudget, candidate.path, candidate.originalBytes)
+      : debugDetailJsonSentinel(candidate.value, fieldBudget, candidate.path, candidate.originalBytes);
+    truncatedFields += 1;
   }
 
   wire.projection = {
     truncated: true,
     reason: 'debug_detail_wire_budget',
     maxBytes,
-    projectedBytes: size,
     truncatedFields,
   };
-  size = jsonByteLength(wire);
-  wire.projection.projectedBytes = size;
-  if (size > maxBytes) {
+  const projectedBytesBase = jsonByteLength(wire);
+  let projectedBytes = projectedBytesBase + Buffer.byteLength(`,\"projectedBytes\":${projectedBytesBase}`, 'utf8');
+  projectedBytes = projectedBytesBase + Buffer.byteLength(`,\"projectedBytes\":${projectedBytes}`, 'utf8');
+  wire.projection.projectedBytes = projectedBytes;
+  if (projectedBytes > maxBytes) {
     throw new Error(`Debug detail projection still exceeds the ${maxBytes}-byte wire budget`);
   }
   return wire;

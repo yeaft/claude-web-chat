@@ -37,6 +37,84 @@ export const userFileTabs = new Map();
 // fileId → { buffer, mimeType, filename, createdAt, token }
 export const previewFiles = new Map();
 
+// Debug trace replies may come from an older Agent that does not echo the
+// private browser client id. Keep the correlation on the Server, where the
+// original Agent/Session ownership check happened, and consume it exactly once.
+const YEAFT_DEBUG_REQUEST_TTL_MS = 30_000;
+const YEAFT_DEBUG_REQUEST_MAX_PENDING = 2048;
+export const pendingYeaftDebugRequests = new Map();
+
+function yeaftDebugRequestKey(agentId, requestId) {
+  return `${String(agentId || '')}\u0000${String(requestId || '')}`;
+}
+
+function pruneYeaftDebugRequests(now = Date.now()) {
+  for (const [key, pending] of pendingYeaftDebugRequests) {
+    if (!pending || pending.expiresAt <= now || !webClients.has(pending.clientId)) {
+      pendingYeaftDebugRequests.delete(key);
+    }
+  }
+}
+
+/**
+ * Register one owner-checked browser request before forwarding it to an Agent.
+ * @param {{agentId:string, requestId:string, sessionId:string, clientId:string, userId:string}} request
+ * @returns {boolean}
+ */
+export function registerYeaftDebugRequest({ agentId, requestId, sessionId, clientId, userId }) {
+  if (!agentId || !requestId || !sessionId || !clientId || !userId) return false;
+  const now = Date.now();
+  pruneYeaftDebugRequests(now);
+  const key = yeaftDebugRequestKey(agentId, requestId);
+  if (pendingYeaftDebugRequests.has(key)) return false;
+  if (pendingYeaftDebugRequests.size >= YEAFT_DEBUG_REQUEST_MAX_PENDING) {
+    const oldestKey = pendingYeaftDebugRequests.keys().next().value;
+    if (oldestKey != null) pendingYeaftDebugRequests.delete(oldestKey);
+  }
+  pendingYeaftDebugRequests.set(key, {
+    agentId,
+    requestId,
+    sessionId,
+    clientId,
+    userId,
+    expiresAt: now + YEAFT_DEBUG_REQUEST_TTL_MS,
+  });
+  return true;
+}
+
+/**
+ * Consume a matching, unexpired correlation exactly once.
+ * @param {{agentId:string, requestId:string, sessionId?:string|null}} response
+ * @returns {{agentId:string, requestId:string, sessionId:string, clientId:string, userId:string, expiresAt:number}|null}
+ */
+export function consumeYeaftDebugRequest({ agentId, requestId, sessionId }) {
+  if (!agentId || !requestId) return null;
+  const now = Date.now();
+  pruneYeaftDebugRequests(now);
+  const key = yeaftDebugRequestKey(agentId, requestId);
+  const pending = pendingYeaftDebugRequests.get(key);
+  if (!pending) return null;
+  if (sessionId && pending.sessionId !== sessionId) return null;
+  pendingYeaftDebugRequests.delete(key);
+  return pending;
+}
+
+/** Remove one correlation after forwarding fails. */
+export function deleteYeaftDebugRequest({ agentId, requestId, clientId = null }) {
+  const key = yeaftDebugRequestKey(agentId, requestId);
+  const pending = pendingYeaftDebugRequests.get(key);
+  if (!pending || (clientId && pending.clientId !== clientId)) return false;
+  return pendingYeaftDebugRequests.delete(key);
+}
+
+/** Remove all correlations owned by a disconnected browser client. */
+export function clearYeaftDebugRequestsForClient(clientId) {
+  if (!clientId) return;
+  for (const [key, pending] of pendingYeaftDebugRequests) {
+    if (pending?.clientId === clientId) pendingYeaftDebugRequests.delete(key);
+  }
+}
+
 // Admin dashboard usage stats.
 // userId → { requests, bytesSent, bytesReceived, messages, sessions }
 // `messages` is user turn count. bytesSent/bytesReceived are message traffic
