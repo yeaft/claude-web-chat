@@ -41,9 +41,12 @@ describe('MessageList virtualization wiring', () => {
     const transcript = read('components/VirtualTranscript.js');
 
     expect(messageList).toContain('const pauseAutoFollow = () => {');
-    expect(messageList).toContain('if (Number(event?.deltaY) < 0) pauseAutoFollow();');
-    expect(messageList).toContain("if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') pauseAutoFollow();");
-    expect(messageList).toContain('resumeBoundaryReached: reachedBottom,');
+    expect(messageList).toContain('const markUserScrollIntent = () => {\n      pauseAutoFollow();');
+    expect(messageList).toContain('const onPointerScrollStart = (event) => {\n      if (!isTranscriptScrollbarPointer(event, containerRef.value)) return;\n      pauseAutoFollow();');
+    expect(messageList).toContain('const onScrollKey = (event) => {\n      if (!shouldMarkTranscriptKeyScroll(event, containerRef.value)) return;\n      pauseAutoFollow();');
+    expect(messageList).not.toContain('resumeBoundaryReached: reachedBottom,');
+    expect(messageList).toContain('const scrollToLatest = () => {');
+    expect(messageList).toContain('clearUserScrollInteraction();\n      resumeAutoFollow();\n      Vue.nextTick(scrollToBottom);');
     expect(messageList).toContain('virtualTranscriptRef.value?.cancelPendingBottomFollow?.();');
     expect(messageList).toContain('const revealMessage = async (target) => {\n      if (!target) return false;\n      pauseAutoFollow();');
     expect(messageList).not.toContain('scrollToBlock: (blockId) => {\n          resumeAutoFollow();');
