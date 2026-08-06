@@ -157,7 +157,7 @@ export default {
             v-if="!showOnboardingGuide"
             class="yeaft-topbar-right"
             :search-open="historySearchOpen"
-            :loading-more-history="store.yeaftLoadingMoreHistory || !!store.yeaftSessionHydrateRequestId"
+            :loading-more-history="store.yeaftLoadingMoreHistory"
             :session-status-visible="sessionStatusVisible"
             :debug-mode="debugMode"
             :show-page-reload="isMobile"
