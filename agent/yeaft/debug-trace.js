@@ -36,6 +36,11 @@ const TRACE_APPEND_BATCH_MS = 100;
 const EVENT_FLUSH_INTERVAL_MS = 30_000;
 const MAX_SEARCH_PATTERN_CHARS = 300;
 const DEFAULT_TRACE_TEXT_MAX_BYTES = 256 * 1024;
+// A turn detail is returned as one WebSocket message. Keep its UI projection
+// comfortably below the Agent connection's 8 MiB outbound queue ceiling while
+// preserving the canonical file-backed trace without any extra truncation.
+const DEBUG_DETAIL_WIRE_MAX_BYTES = 6 * 1024 * 1024;
+const DEBUG_DETAIL_MIN_FIELD_BYTES = 1024;
 
 function isPlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
@@ -803,6 +808,105 @@ function expandTrace(trace) {
   return { loops, turns: Array.from(turnsById.values()) };
 }
 
+function debugDetailTextSentinel(value, maxBytes, path) {
+  const text = value == null ? '' : String(value);
+  const originalBytes = Buffer.byteLength(text, 'utf8');
+  if (originalBytes <= maxBytes) return text;
+  if (maxBytes <= 0) return '';
+  const marker = `\n... [wire truncated ${path}; original ${originalBytes} bytes]`;
+  const markerBytes = Buffer.byteLength(marker, 'utf8');
+  if (markerBytes >= maxBytes) return truncateUtf8Text(text, maxBytes).value;
+  return `${truncateUtf8Text(text, maxBytes - markerBytes).value}${marker}`;
+}
+
+function debugDetailJsonSentinel(value, maxBytes, path) {
+  if (value == null) return value;
+  const originalBytes = jsonByteLength(value);
+  if (originalBytes <= maxBytes) return value;
+  const previewBudget = Math.max(0, maxBytes - 512);
+  let preview = '';
+  try {
+    preview = debugDetailTextSentinel(JSON.stringify(value), previewBudget, path);
+  } catch { /* metadata-only sentinel below */ }
+  return {
+    __truncated: true,
+    reason: 'debug_detail_wire_budget',
+    path,
+    originalBytes,
+    maxBytes,
+    ...(preview ? { preview } : {}),
+  };
+}
+
+export function projectDebugDetailForWire(detail, maxBytes = DEBUG_DETAIL_WIRE_MAX_BYTES) {
+  const wire = cloneJsonValue(detail) || { loops: [], turns: [], dreamEvents: [] };
+  const payloadBudget = Math.max(0, maxBytes - 2048);
+  let size = jsonByteLength(wire);
+  if (size <= payloadBudget) return wire;
+
+  const loops = Array.isArray(wire.loops) ? wire.loops : [];
+  const textFields = ['rawRequest', 'rawResponse', 'messages', 'requestBase', 'requestDelta', 'toolCalls', 'response', 'systemPrompt'];
+  const candidates = [];
+  for (let loopIndex = 0; loopIndex < loops.length; loopIndex += 1) {
+    const loop = loops[loopIndex];
+    if (!loop || typeof loop !== 'object') continue;
+    for (const field of textFields) {
+      if (loop[field] == null) continue;
+      candidates.push({ loopIndex, field, bytes: jsonByteLength(loop[field]) });
+    }
+  }
+  candidates.sort((a, b) => b.bytes - a.bytes || a.loopIndex - b.loopIndex || a.field.localeCompare(b.field));
+
+  let truncatedFields = 0;
+  for (const candidate of candidates) {
+    if (size <= payloadBudget) break;
+    const loop = loops[candidate.loopIndex];
+    const current = loop?.[candidate.field];
+    if (current == null) continue;
+    const currentBytes = jsonByteLength(current);
+    const excess = Math.max(0, size - payloadBudget);
+    const targetBytes = Math.max(DEBUG_DETAIL_MIN_FIELD_BYTES, currentBytes - excess - 1024);
+    const path = `loops[${candidate.loopIndex}].${candidate.field}`;
+    loop[candidate.field] = typeof current === 'string'
+      ? debugDetailTextSentinel(current, targetBytes, path)
+      : debugDetailJsonSentinel(current, targetBytes, path);
+    truncatedFields += 1;
+    size = jsonByteLength(wire);
+  }
+
+  // Keep the exact Turn identity and diagnostic metadata even in a pathologic
+  // trace whose many small fields still exceed the envelope after first pass.
+  if (size > payloadBudget) {
+    for (let loopIndex = 0; loopIndex < loops.length && size > payloadBudget; loopIndex += 1) {
+      const loop = loops[loopIndex];
+      if (!loop || typeof loop !== 'object') continue;
+      for (const field of textFields) {
+        if (loop[field] == null || size <= payloadBudget) continue;
+        const path = `loops[${loopIndex}].${field}`;
+        loop[field] = typeof loop[field] === 'string'
+          ? debugDetailTextSentinel(loop[field], DEBUG_DETAIL_MIN_FIELD_BYTES, path)
+          : debugDetailJsonSentinel(loop[field], DEBUG_DETAIL_MIN_FIELD_BYTES, path);
+        truncatedFields += 1;
+        size = jsonByteLength(wire);
+      }
+    }
+  }
+
+  wire.projection = {
+    truncated: true,
+    reason: 'debug_detail_wire_budget',
+    maxBytes,
+    projectedBytes: size,
+    truncatedFields,
+  };
+  size = jsonByteLength(wire);
+  wire.projection.projectedBytes = size;
+  if (size > maxBytes) {
+    throw new Error(`Debug detail projection still exceeds the ${maxBytes}-byte wire budget`);
+  }
+  return wire;
+}
+
 function traceToLegacyRows(trace) {
   let snapshot = null;
   let rawRequest = trace?.baseRequest?.rawRequest ?? null;
@@ -1249,7 +1353,7 @@ export class DebugTrace {
     const dreamEvents = this.#readDreamEvents({ sessionId: requestedSessionId, dreamLimit });
     if (!trace) return { loops: [], turns: [], dreamEvents, detailTurnId: requestedTurnId };
     const expanded = expandTrace(trace);
-    return { ...expanded, dreamEvents, detailTurnId: requestedTurnId };
+    return projectDebugDetailForWire({ ...expanded, dreamEvents, detailTurnId: requestedTurnId });
   }
 
   async fetchRecentDebugHistory({ limit = MAX_HISTORY_LIMIT, dreamLimit = 5, sessionId = null, threadId = null, indexOnly = false, detailTurnId = null, search = '' } = {}) {

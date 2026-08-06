@@ -122,8 +122,8 @@ export default {
       <WorkCenterPage v-if="store.workCenterOpen" />
 
       <!-- Center Conversation. The Session status pane is rendered as a
-           sibling to the RIGHT of this main column so the visual order is
-           [conversation][Session status][debug], with debug always far right. -->
+           sibling to the RIGHT of this main column; turn debug opens as the
+           far-right detail pane only from a finished AI message. -->
       <div v-else class="yeaft-main" :class="{ 'workbench-active': canUseWorkbench && store.workbenchExpanded, 'workbench-maximized': canUseWorkbench && store.workbenchMaximized && store.workbenchExpanded }">
         <!-- Center column: topbar + (settings | empty-hero | MessageList) + ChatInput. -->
         <div class="yeaft-main-center">
@@ -159,12 +159,10 @@ export default {
             :search-open="historySearchOpen"
             :loading-more-history="store.yeaftManualHistoryRefreshLoading"
             :session-status-visible="sessionStatusVisible"
-            :debug-mode="debugMode"
             :show-page-reload="isMobile"
             @toggle-search="toggleHistorySearch"
             @reload-messages="reloadMessages"
             @toggle-session-status="toggleSessionStatus"
-            @toggle-debug="toggleDebug"
             @reload-page="reloadPage"
           />
         </div>
@@ -534,8 +532,7 @@ export default {
     // detail panel is only rendered when debugMode is on, so the
     // conversation column gets the full width by default.
     // Turn-level debug: the detail panel visibility follows the store's
-    // `yeaftDebugPanel.open` so both the header entry and the per-turn
-    // turn debug action can open/close it from anywhere.
+    // `yeaftDebugPanel.open`; finished AI turns are the sole entry point.
     const debugMode = Vue.computed(() => !!(
       store.yeaftDebugPanel && store.yeaftDebugPanel.open
     ));
@@ -1035,15 +1032,6 @@ export default {
     // button that opened/collapsed the placeholder detail panel; the
     // button + placeholder are gone, so the helper is removed too.
 
-    const toggleDebug = () => {
-      if (debugMode.value) {
-        store.closeYeaftDebugPanel();
-      } else if (typeof store.openYeaftTurnDebug === 'function') {
-        // Header entry: open an empty panel. The debug action on AI turns
-        // opens the panel pre-scoped to that exact turn.
-        store.openYeaftTurnDebug({});
-      }
-    };
     const closeDebug = () => {
       store.closeYeaftDebugPanel();
     };
@@ -1663,7 +1651,6 @@ export default {
       cancelYeaft,
       openWorkItemDraft,
       toggleSidebar,
-      toggleDebug,
       closeDebug,
       reloadMessages,
       retryConversationInventory,

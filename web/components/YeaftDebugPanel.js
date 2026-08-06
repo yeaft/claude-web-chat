@@ -186,7 +186,15 @@ export default {
       return !!this.store?.yeaftDebugHistoryLoading;
     },
     requestHistoryError() {
-      return this.store?.yeaftDebugHistoryError || '';
+      const error = this.store?.yeaftDebugHistoryError || '';
+      return error === 'debug_history_timeout'
+        ? this.$t('yeaft.debugHistoryUnavailable')
+        : error;
+    },
+    requestHistoryProjectionNotice() {
+      return this.store?.yeaftDebugHistoryProjection?.truncated === true
+        ? this.$t('yeaft.debugHistoryTruncated')
+        : '';
     },
     toolStats() {
       return this.store?.yeaftToolStats || null;
@@ -1402,6 +1410,7 @@ export default {
           <code v-if="currentTurnSessionId" class="yeaft-debug-turn-context-session" :title="currentTurnSessionId">{{ currentTurnSessionId }}</code>
         </div>
         <div v-if="requestHistoryError" class="yeaft-debug-error">{{ requestHistoryError }}</div>
+        <div v-if="requestHistoryProjectionNotice" class="yeaft-debug-notice">{{ requestHistoryProjectionNotice }}</div>
         <div v-for="turn in turns" :key="turn.turnId" class="yeaft-debug-turn">
           <!-- Turn header -->
           <div class="yeaft-debug-turn-header" :class="{ expanded: expandedTurns[turn.turnId] }" @click="toggleTurn(turn.turnId)">

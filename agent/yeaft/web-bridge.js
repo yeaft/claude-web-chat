@@ -6489,11 +6489,13 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
   const search = typeof msg?.search === 'string' ? msg.search.trim() : '';
   const requestId = typeof msg?.requestId === 'string' && msg.requestId ? msg.requestId : null;
   const requestKind = typeof msg?.requestKind === 'string' && msg.requestKind ? msg.requestKind : null;
+  const requestClientId = typeof msg?._requestClientId === 'string' && msg._requestClientId ? msg._requestClientId : null;
   const indexOnly = !!msg?.indexOnly;
   const detailTurnId = typeof msg?.detailTurnId === 'string' && msg.detailTurnId ? msg.detailTurnId : null;
   let loops = [];
   let turns = [];
   let dreamEvents = [];
+  let projection = null;
   let hasMore = false;
   try {
     if (session?.trace && detailTurnId && sessionId && typeof session.trace.fetchTurnDebug === 'function') {
@@ -6501,12 +6503,14 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
       loops = Array.isArray(out?.loops) ? out.loops : [];
       turns = Array.isArray(out?.turns) ? out.turns : [];
       dreamEvents = Array.isArray(out?.dreamEvents) ? out.dreamEvents : [];
+      projection = out?.projection && typeof out.projection === 'object' ? out.projection : null;
       hasMore = false;
     } else if (session?.trace && typeof session.trace.fetchRecentDebugHistory === 'function') {
       const out = await session.trace.fetchRecentDebugHistory({ limit, dreamLimit, sessionId, threadId, indexOnly, detailTurnId, search });
       loops = Array.isArray(out?.loops) ? out.loops : [];
       turns = Array.isArray(out?.turns) ? out.turns : [];
       dreamEvents = Array.isArray(out?.dreamEvents) ? out.dreamEvents : [];
+      projection = out?.projection && typeof out.projection === 'object' ? out.projection : null;
       hasMore = !!out?.hasMore;
     }
   } catch (err) {
@@ -6517,6 +6521,7 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
       dreamEvents: [],
       requestId,
       requestKind,
+      ...(requestClientId ? { _requestClientId: requestClientId } : {}),
       sessionId,
       threadId,
       search,
@@ -6532,8 +6537,10 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
     loops,
     turns,
     dreamEvents,
+    ...(projection ? { projection } : {}),
     requestId,
     requestKind,
+    ...(requestClientId ? { _requestClientId: requestClientId } : {}),
     sessionId,
     threadId,
     search,

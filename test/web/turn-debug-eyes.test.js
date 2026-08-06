@@ -78,7 +78,10 @@ describe('VpTurnBlock debug action', () => {
     expect(btn.exists()).toBe(true);
     expect(actions[0].classes()).toContain('debug-turn-action-btn');
     expect(btn.attributes('aria-label')).toContain('debug trace');
-    expect(btn.find('.debug-turn-action-icon').exists()).toBe(true);
+    const icon = btn.get('.debug-turn-action-icon');
+    expect(icon.exists()).toBe(true);
+    expect(icon.find('path').attributes('d')).toContain('M20 8h-2.81');
+    expect(icon.findAll('path')).toHaveLength(1);
     expect(wrapper.find('.vp-turn-debug-btn').exists()).toBe(false);
     expect(wrapper.find('.vp-turn-block-actions').exists()).toBe(false);
   });
@@ -133,6 +136,7 @@ describe('handleMessage turn-level panel status', () => {
       yeaftDebugHistoryLoading: false,
       yeaftDebugHistoryError: null,
       yeaftDebugHistoryFetchedAt: 0,
+      yeaftDebugHistoryProjection: null,
       yeaftDebugHistoryHasMore: false,
       yeaftDebugHistoryLimit: 1,
       yeaftDebugTurnsById: {},
@@ -181,6 +185,11 @@ describe('handleMessage turn-level panel status', () => {
         latencyMs: 42,
       }],
       dreamEvents: [],
+      projection: {
+        truncated: true,
+        reason: 'debug_detail_wire_budget',
+        projectedBytes: 1024,
+      },
     });
 
     window.Pinia.useChatStore = () => store;
@@ -190,10 +199,12 @@ describe('handleMessage turn-level panel status', () => {
     await Vue.nextTick();
 
     expect(store.yeaftDebugPanel.status).toBe('ready');
+    expect(store.yeaftDebugHistoryProjection).toMatchObject({ truncated: true });
     expect(store.yeaftDebugTurnsById['turn-abc'].loops).toBeUndefined();
     expect(store.yeaftDebugLoops).toHaveLength(1);
     await wrapper.get('.yeaft-debug-turn-header').trigger('click');
     expect(wrapper.get('.yeaft-debug-turn-body').isVisible()).toBe(true);
+    expect(wrapper.get('.yeaft-debug-notice').text()).toBe('yeaft.debugHistoryTruncated');
     expect(wrapper.get('.yeaft-debug-section-title').text()).toBe('yeaft.systemPrompt');
     await wrapper.get('.yeaft-debug-show-btn').trigger('click');
     expect(wrapper.get('.yeaft-debug-pre').text()).toBe('You are the traced system prompt.');
@@ -205,6 +216,29 @@ describe('handleMessage turn-level panel status', () => {
     await wrapper.get('.yeaft-debug-loop-body .yeaft-debug-show-btn').trigger('click');
     expect(wrapper.get('.yeaft-debug-loop-body .yeaft-debug-pre').text()).toBe('The loop detail is present.');
     expect(loadYeaftDebugHistory).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it('localizes the retryable timeout diagnostic instead of blaming reconnect alone', async () => {
+    const store = makeStore({
+      yeaftDebugHistoryError: 'debug_history_timeout',
+      yeaftDebugPanel: {
+        open: true,
+        status: 'error',
+        requestId: 'dbgpanel_req_1',
+        agentId: 'agent-1',
+        sessionId: 'session-1',
+        turnId: 'turn-abc',
+        error: 'debug_history_timeout',
+      },
+    });
+    window.Pinia.useChatStore = () => store;
+    const wrapper = mount(YeaftDebugPanel, {
+      global: { mocks: { $t: key => key } },
+    });
+    await Vue.nextTick();
+
+    expect(wrapper.get('.yeaft-debug-error').text()).toBe('yeaft.debugHistoryUnavailable');
     wrapper.unmount();
   });
 

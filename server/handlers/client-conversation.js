@@ -1288,6 +1288,31 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       break;
     }
 
+    case 'yeaft_fetch_debug_history': {
+      // Debug traces can contain raw prompts, provider payloads, and tool
+      // output. Treat this as a precise Session-owned request instead of the
+      // generic Yeaft relay: require the compound Agent + Session identity and
+      // correlate the response back to the requesting browser tab.
+      const debugAgentId = msg.agentId;
+      const debugSessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
+      if (!debugAgentId || !debugSessionId) return;
+      if (!await checkAgentAccess(debugAgentId)) return;
+      if (!CONFIG.skipAuth && !yeaftSessionDb.getForAgent(client.userId, debugAgentId, debugSessionId)) return;
+      await forwardToAgent(debugAgentId, {
+        type: 'yeaft_fetch_debug_history',
+        sessionId: debugSessionId,
+        requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
+        requestKind: msg.requestKind === 'detail' ? 'detail' : 'list',
+        limit: typeof msg.limit === 'number' ? msg.limit : 10,
+        dreamLimit: typeof msg.dreamLimit === 'number' ? msg.dreamLimit : 5,
+        indexOnly: msg.indexOnly === true,
+        detailTurnId: typeof msg.detailTurnId === 'string' ? msg.detailTurnId : null,
+        search: typeof msg.search === 'string' ? msg.search.slice(0, 500) : '',
+        _requestClientId: clientId,
+      });
+      break;
+    }
+
     case 'yeaft_load_history_outline': {
       const outlineAgentId = msg.agentId;
       const outlineSessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';

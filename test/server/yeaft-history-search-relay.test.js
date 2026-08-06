@@ -123,6 +123,29 @@ describe('Yeaft Session history search relay', () => {
       _requestClientId: 'client-1',
     }));
 
+    forwardToAgent.mockClear();
+    await handleClientConversation('client-1', client, {
+      type: 'yeaft_fetch_debug_history',
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      requestId: 'debug-1',
+      requestKind: 'detail',
+      detailTurnId: 'turn-1',
+      limit: 1,
+      dreamLimit: 5,
+    }, allow);
+    expect(getForAgent).toHaveBeenCalledWith('owner-1', 'agent-1', 'sess-1');
+    expect(forwardToAgent).toHaveBeenCalledWith('agent-1', expect.objectContaining({
+      type: 'yeaft_fetch_debug_history',
+      sessionId: 'sess-1',
+      requestId: 'debug-1',
+      requestKind: 'detail',
+      detailTurnId: 'turn-1',
+      limit: 1,
+      dreamLimit: 5,
+      _requestClientId: 'client-1',
+    }));
+
     contextForSession.mockReturnValue({
       projectId: 'project-1',
       projectName: 'Project 1',
@@ -206,6 +229,13 @@ describe('Yeaft Session history search relay', () => {
       sessionId: 'sess-1',
       anchorMessageId: 'm000001',
       anchorSeq: 1,
+    }, allow);
+    await handleClientConversation('client-1', client, {
+      type: 'yeaft_fetch_debug_history',
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      requestId: 'debug-unowned',
+      detailTurnId: 'turn-1',
     }, allow);
     expect(forwardToAgent).not.toHaveBeenCalled();
   });

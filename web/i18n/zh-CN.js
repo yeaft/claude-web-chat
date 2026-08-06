@@ -244,6 +244,8 @@ export default {
   'yeaft.debugHistoryLoad': '加载请求历史',
   'yeaft.debugHistoryLoading': '加载中...',
   'yeaft.debugHistoryLoaded': '已加载 {count} 条',
+  'yeaft.debugHistoryUnavailable': '调试轨迹请求超时。Agent 可能离线，或响应已被丢弃，请重试。',
+  'yeaft.debugHistoryTruncated': '该轨迹过大，无法在一次响应中完整传输。此处显示大字段预览，完整轨迹仍保留在 Agent。',
   'yeaft.debugSearchPlaceholder': '正则搜索请求日志',
   'yeaft.debugSearchHint': '默认显示全局最近 10 条；搜索会跨 Session 匹配请求摘要。',
   'yeaft.debugTurnAction': '查看该轮对话的调试轨迹',

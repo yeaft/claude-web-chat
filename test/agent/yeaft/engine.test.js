@@ -26,7 +26,7 @@ import { withUsageAccounting } from '../../../agent/yeaft/llm/usage-accounting.j
 import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js';
 import { AmsRegistry } from '../../../agent/yeaft/memory/ams-registry.js';
 import { writeContent, writeSummary } from '../../../agent/yeaft/memory/store.js';
-import { NullTrace, DebugTrace } from '../../../agent/yeaft/debug-trace.js';
+import { NullTrace, DebugTrace, projectDebugDetailForWire } from '../../../agent/yeaft/debug-trace.js';
 import { consolidateSessionTopics } from '../../../agent/yeaft/dream/topic-consolidation.js';
 import { resolveTopicRedirect } from '../../../agent/yeaft/memory/topic-redirect.js';
 import { runDream } from '../../../agent/yeaft/dream/runner.js';
@@ -6194,6 +6194,34 @@ describe('Engine', () => {
         expect(detail.turns).toHaveLength(1);
         expect(detail.loops).toHaveLength(100);
         expect(detail.loops.at(-1)?.loopNumber).toBe(100);
+        expect(Buffer.byteLength(JSON.stringify(detail), 'utf8')).toBeLessThan(6 * 1024 * 1024);
+
+        const oversizedDetail = {
+          loops: Array.from({ length: 4 }, (_, index) => ({
+            turnId: 'oversized-turn',
+            loopNumber: index + 1,
+            systemPrompt: 'system prompt',
+            response: 'R'.repeat(3 * 1024 * 1024),
+            rawResponse: { body: 'X'.repeat(3 * 1024 * 1024) },
+          })),
+          turns: [{ turnId: 'oversized-turn', loopCount: 4 }],
+          dreamEvents: [],
+          detailTurnId: 'oversized-turn',
+        };
+        const projectedDetail = projectDebugDetailForWire(oversizedDetail);
+        expect(Buffer.byteLength(JSON.stringify(projectedDetail), 'utf8')).toBeLessThan(6 * 1024 * 1024);
+        expect(projectedDetail.projection).toMatchObject({
+          truncated: true,
+          reason: 'debug_detail_wire_budget',
+          maxBytes: 6 * 1024 * 1024,
+        });
+        expect(projectedDetail.loops.some(loop => (
+          loop.rawResponse?.__truncated === true
+          && loop.rawResponse?.reason === 'debug_detail_wire_budget'
+        ))).toBe(true);
+        // The wire projection is derived after persistence; canonical event
+        // records retain their normal per-field storage bounds.
+        expect(storedLoops.every(loop => loop.rawResponse?.maxBytes === 64 * 1024)).toBe(true);
 
         // Aggregate queries must not pin every full request payload in memory.
         // After stats(), detail still comes from disk rather than a process-life

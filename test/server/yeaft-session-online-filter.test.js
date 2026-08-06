@@ -1082,6 +1082,30 @@ describe('Yeaft Session online Agent filtering', () => {
     expect(ownerClient.sent).toEqual([]);
     expect(otherTab.sent).toEqual([]);
 
+    ownerClient.sent = [];
+    otherTab.sent = [];
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_debug_history',
+      requestId: 'debug-owner-only',
+      requestKind: 'detail',
+      detailTurnId: 'turn-owner-only',
+      sessionId: 'same-id',
+      _requestClientId: 'owner-client',
+      turns: [{ turnId: 'turn-owner-only' }],
+      loops: [{ turnId: 'turn-owner-only', loopNumber: 1 }],
+      dreamEvents: [],
+      projection: { truncated: true, reason: 'debug_detail_wire_budget' },
+    });
+    expect(ownerClient.sent.at(-1)).toMatchObject({
+      type: 'yeaft_debug_history',
+      agentId: 'agent-a',
+      requestId: 'debug-owner-only',
+      detailTurnId: 'turn-owner-only',
+      projection: { truncated: true, reason: 'debug_detail_wire_budget' },
+    });
+    expect(otherTab.sent).toEqual([]);
+
+    ownerClient.sent = [];
     await handleAgentOutput('agent-a', agent, {
       type: 'yeaft_history_chunk',
       conversationId: 'yeaft-agent-a',

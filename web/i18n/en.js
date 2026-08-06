@@ -244,6 +244,8 @@ export default {
   'yeaft.debugHistoryLoad': 'Load request history',
   'yeaft.debugHistoryLoading': 'Loading...',
   'yeaft.debugHistoryLoaded': '{count} loaded',
+  'yeaft.debugHistoryUnavailable': 'The debug trace request timed out. The Agent may be offline or the response may have been dropped. Try again.',
+  'yeaft.debugHistoryTruncated': 'This trace was too large for one response. Large fields are previewed here; the full trace remains on the Agent.',
   'yeaft.debugSearchPlaceholder': 'Regex search request logs',
   'yeaft.debugSearchHint': 'Shows the latest 10 globally by default; search matches request summaries across Sessions.',
   'yeaft.debugTurnAction': 'View debug trace for this turn',

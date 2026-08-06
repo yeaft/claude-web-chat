@@ -289,12 +289,20 @@ describe('YeaftPage setup', () => {
     }
   });
 
-  it('follows the store debug panel state and routes header toggles through the panel actions', () => {
+  it('keeps debug scoped to finished AI messages and removes the header entry', () => {
     const page = YeaftPage.setup();
+    const source = YeaftPage.template;
+    const actionsStart = source.indexOf('<YeaftSessionActions');
+    const actionsEnd = source.indexOf('/>', actionsStart);
+    const actions = source.slice(actionsStart, actionsEnd);
+
     expect(page.debugMode.value).toBe(false);
+    expect(actions).not.toContain(':debug-mode=');
+    expect(actions).not.toContain('@toggle-debug=');
+    expect(page.toggleDebug).toBeUndefined();
 
     // The per-turn debug icon opens the panel via the store; YeaftPage
-    // must render the detail panel as soon as the store opens it.
+    // renders the detail panel as soon as the store opens it.
     chatStore.yeaftDebugPanel = {
       open: true,
       status: 'loading',
@@ -305,18 +313,7 @@ describe('YeaftPage setup', () => {
       error: null,
     };
     expect(page.debugMode.value).toBe(true);
-
-    // Header entry closes the panel through the store, not a local ref.
-    page.toggleDebug();
+    page.closeDebug();
     expect(chatStore.closeYeaftDebugPanel).toHaveBeenCalled();
-
-    // Re-opening via the header opens an empty panel (no turn scoping).
-    chatStore.yeaftDebugPanel.open = false;
-    page.toggleDebug();
-    expect(chatStore.openYeaftTurnDebug).toHaveBeenCalledWith({});
-    expect(page.debugMode.value).toBe(false);
-
-    chatStore.yeaftDebugPanel.open = true;
-    expect(page.debugMode.value).toBe(true);
   });
 });

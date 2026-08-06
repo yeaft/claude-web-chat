@@ -473,6 +473,8 @@ export function handleMessage(store, msg) {
     // we route it from the top-level switch here. Without this, the debug
     // panel only shows turns that happened after the panel was opened.
     case 'yeaft_debug_history': {
+      const panelAgentId = store.yeaftDebugPanel?.agentId || null;
+      if (panelAgentId && msg?.agentId && msg.agentId !== panelAgentId) break;
       const requestId = typeof msg?.requestId === 'string' ? msg.requestId : '';
       const isDetailFetch = typeof msg?.detailTurnId === 'string' && msg.detailTurnId;
       const expectedRequestId = isDetailFetch
@@ -602,6 +604,9 @@ export function handleMessage(store, msg) {
       }
       store.yeaftDebugHistoryLoading = false;
       store.yeaftDebugHistoryError = typeof msg?.error === 'string' ? msg.error : null;
+      store.yeaftDebugHistoryProjection = msg?.projection && typeof msg.projection === 'object'
+        ? msg.projection
+        : null;
       store.yeaftDebugHistoryFetchedAt = Date.now();
       // Turn-level debug panel: a detail fetch that matches the panel's
       // current turn flips status to ready/error. Stale detail responses
