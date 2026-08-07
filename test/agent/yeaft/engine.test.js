@@ -1133,13 +1133,13 @@ describe('Engine memory prompt hygiene', () => {
         scope: broadUserScope,
         kind: 'context',
         tags: ['canonical-content'],
-        body: '服务器清理失败需要明确调查磁盘，并核验容器和卷的状态。',
+        body: 'Server cleanup failures require explicit disk investigation and container verification.',
         sourceMessages: [],
         createdAt: '2026-08-04T00:00:00.000Z',
         updatedAt: '2026-08-04T00:00:00.000Z',
       }));
       const weakUser = runPreflow(index, {
-        userMsg: 'Dream 为什么失败？',
+        userMsg: 'Dream failure',
         relevantScopes: [broadUserScope],
         strictScopes: [broadUserScope],
         uniqueScopes: true,
@@ -1148,7 +1148,7 @@ describe('Engine memory prompt hygiene', () => {
       expect(weakUser.picked).toEqual([]);
       expect(weakUser.droppedByRelevance).toBe(1);
       const strongUser = runPreflow(index, {
-        userMsg: '服务器清理失败时怎么调查磁盘？',
+        userMsg: 'server cleanup failure disk',
         relevantScopes: [broadUserScope],
         strictScopes: [broadUserScope],
         uniqueScopes: true,
@@ -2989,7 +2989,7 @@ describe('Engine', () => {
             ].filter(scope => scopeFilter.includes(scope));
             return scopes.map((scope, index) => ({
               id: `content-${index}`, scope, kind: 'context', tags: ['canonical-content'],
-              sourceMessages: [], body: 'Dream recall canonical evidence selector.', rank: -1 - index,
+              sourceMessages: [], body: 'Dream recall test canonical evidence selector.', rank: -1 - index,
               createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z',
             }));
           },
@@ -3020,7 +3020,7 @@ describe('Engine', () => {
       expect(system).not.toContain('**sessions/g1/topic/dream/recall**');
       expect(system).not.toContain('**sessions/g1**');
       expect(system).not.toContain('Catalog-only topic summary');
-      expect(system).not.toContain('Dream recall canonical evidence selector.');
+      expect(system).not.toContain('Dream recall test canonical evidence selector.');
 
       await writeContent(
         { kind: 'session-vp', sessionId: 'g1', id: 'vp2' },
