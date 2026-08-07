@@ -13,6 +13,7 @@ import ReflectionCard from './ReflectionCard.js';
 import SubAgentCard from './SubAgentCard.js';
 import UserTurnBlock from './UserTurnBlock.js';
 import VirtualTranscript from './VirtualTranscript.js';
+import { applyRunningCatFrame, createRunningCatLoop, resolveRunningCatFrame } from '../utils/running-cat.js';
 import {
   orderYeaftVpTurnMessagesByExecution,
   shouldCloseYeaftVpTurn,
@@ -380,8 +381,8 @@ export default {
         <div v-if="previewShowTypingDots" class="typing-indicator" :class="waitingStatus ? ('status-' + waitingStatus) : ''">
           <span></span><span></span><span></span>
           <template v-if="animationType === 'cat'">
-          <span class="svg-cat-walk" :style="catStyle">
-          <span class="svg-running-cat" :class="catSpeed" aria-hidden="true">
+          <span class="svg-cat-walk" ref="catWalkRef">
+          <span class="svg-running-cat speed-normal" ref="catSpriteRef" aria-hidden="true">
             <svg viewBox="0 0 36 28" xmlns="http://www.w3.org/2000/svg">
               <!-- Silhouette group: single opacity prevents overlap darkening -->
               <g class="svg-cat-silhouette">
@@ -541,8 +542,8 @@ export default {
       <div v-if="isPreviewMode && !store.currentConversation" class="typing-indicator preview-animation-indicator" style="position: fixed; bottom: 100px; left: 0; right: 0; padding: 16px 24px; z-index: 100;">
         <span></span><span></span><span></span>
         <template v-if="animationType === 'cat'">
-        <span class="svg-cat-walk" :style="catStyle">
-        <span class="svg-running-cat" :class="catSpeed" aria-hidden="true">
+        <span class="svg-cat-walk" ref="catWalkRef">
+        <span class="svg-running-cat speed-normal" ref="catSpriteRef" aria-hidden="true">
           <svg viewBox="0 0 36 28" xmlns="http://www.w3.org/2000/svg">
             <g class="svg-cat-silhouette">
               <g class="svg-cat-tail-group">
@@ -1453,17 +1454,14 @@ export default {
     // Reactive timer for long-processing fallback status
     const typingStartTime = Vue.ref(0);
     const now = Vue.ref(Date.now());
+    const catWalkRef = Vue.ref(null);
+    const catSpriteRef = Vue.ref(null);
     let typingTimer = null;
-    let catRafId = null;
 
     // Animation type: randomly chosen each time typing starts
     const animationType = Vue.ref('cat');
     // Check URL for preview mode (?preview=cat or ?preview=dog)
     const urlPreview = new URLSearchParams(window.location.search).get('preview');
-
-    // Cat walk position (0-100%) and direction (1=right, -1=left)
-    const catPosition = Vue.ref(0);
-    const catDirection = Vue.ref(1);
 
     // Dog walk state
     const dogPosL = Vue.ref(5);
@@ -1475,39 +1473,22 @@ export default {
 
     function updateCatWalk() {
       if (!typingStartTime.value) return;
-      now.value = Date.now();
-      const elapsed = (now.value - typingStartTime.value) % 19000;
-
-      if (elapsed < 4000) {
-        // 0-4s: napping — stay at start
-        catPosition.value = 0;
-        catDirection.value = 1;
-      } else if (elapsed < 11500) {
-        // 4-11.5s: walk forward — Normal 2.5s, Fast 2.5s, Turbo 2.5s
-        // Distance: Normal 16%, Fast 29%, Turbo 55%
-        const walkElapsed = elapsed - 4000;
-        let pos;
-        if (walkElapsed < 2500) {
-          pos = (walkElapsed / 2500) * 16;                     // 0→16%
-        } else if (walkElapsed < 5000) {
-          pos = 16 + ((walkElapsed - 2500) / 2500) * 29;      // 16→45%
-        } else {
-          pos = 45 + ((walkElapsed - 5000) / 2500) * 55;      // 45→100%
-        }
-        catPosition.value = pos;
-        catDirection.value = 1;
-      } else if (elapsed < 14000) {
-        // 11.5-14s (crazy): sprint back — 100% in 2.5s
-        catPosition.value = (1 - (elapsed - 11500) / 2500) * 100;
-        catDirection.value = -1;
-      } else {
-        // 14-19s (tired + petted): stay at start, face right (same as napping)
-        catPosition.value = 0;
-        catDirection.value = 1;
+      const walkElement = catWalkRef.value;
+      const spriteElement = catSpriteRef.value;
+      if (walkElement && spriteElement) {
+        const indicator = walkElement.parentElement;
+        const travelPx = Math.max(0, (indicator?.clientWidth || 0) - 80);
+        applyRunningCatFrame(
+          walkElement,
+          spriteElement,
+          resolveRunningCatFrame(Date.now() - typingStartTime.value, travelPx),
+        );
       }
-
-      catRafId = requestAnimationFrame(updateCatWalk);
+      // Deliberately keep animation state outside Vue reactivity. Updating refs
+      // here at 60 Hz invalidated the entire MessageList render effect, so long
+      // transcripts made both input and the cat itself visibly stall.
     }
+    const catLoop = createRunningCatLoop({ onFrame: updateCatWalk });
 
     function updateDogWalk() {
       if (!typingStartTime.value || animationType.value !== 'dog') return;
@@ -1672,15 +1653,18 @@ export default {
         displayTypingDots.value = true;
         typingStartTime.value = Date.now();
         now.value = Date.now();
+        if (!typingTimer) {
+          typingTimer = setInterval(() => {
+            now.value = Date.now();
+          }, 1000);
+        }
         // Always use cat for now; dog animation needs more polish
         // Dog can still be previewed via ?preview=dog
         animationType.value = 'cat';
-        catPosition.value = 0;
-        catDirection.value = 1;
         dogPosL.value = 5; dogPosR.value = 95; dogPhase.value = 'bark-both';
         dogFlipL.value = 1; dogFlipR.value = -1;
         if (animationType.value === 'cat') {
-          catRafId = requestAnimationFrame(updateCatWalk);
+          catLoop.start();
         } else {
           dogRafId = requestAnimationFrame(updateDogWalk);
         }
@@ -1691,9 +1675,8 @@ export default {
           typingHideTimer = null;
           displayTypingDots.value = false;
           typingStartTime.value = 0;
-          catPosition.value = 0;
-          catDirection.value = 1;
-          if (catRafId) { cancelAnimationFrame(catRafId); catRafId = null; }
+          if (typingTimer) { clearInterval(typingTimer); typingTimer = null; }
+          catLoop.stop();
           if (dogRafId) { cancelAnimationFrame(dogRafId); dogRafId = null; }
         };
         if (remaining === 0) {
@@ -1717,7 +1700,7 @@ export default {
         animationType.value = 'cat';
       }
       if (animationType.value === 'cat') {
-        catRafId = requestAnimationFrame(updateCatWalk);
+        catLoop.start();
       } else {
         dogPosL.value = 5; dogPosR.value = 95; dogPhase.value = 'bark-both';
         dogFlipL.value = 1; dogFlipR.value = -1;
@@ -1736,29 +1719,6 @@ export default {
       // Fallback: show "thinking" after 8s of no output
       if (typingStartTime.value && now.value - typingStartTime.value > 8000) return 'thinking';
       return null;
-    });
-
-    // Cat running speed based on waiting time (7 tiers, 19s cycle)
-    const catSpeed = Vue.computed(() => {
-      if (!typingStartTime.value) return 'speed-napping';
-      const elapsed = (now.value - typingStartTime.value) % 19000;
-      if (elapsed >= 16000) return 'speed-petted';
-      if (elapsed >= 14000) return 'speed-tired';
-      if (elapsed >= 11500) return 'speed-crazy';
-      if (elapsed >= 9000) return 'speed-turbo';
-      if (elapsed >= 6500) return 'speed-fast';
-      if (elapsed >= 4000) return 'speed-normal';
-      return 'speed-napping';
-    });
-
-    // Cat walk style — position range: 40px (after dots) to calc(100% - 40px)
-    const catStyle = Vue.computed(() => {
-      const pos = catPosition.value;
-      const dir = catDirection.value;
-      const frac = pos / 100;
-      const style = { left: `calc(40px + (100% - 80px) * ${frac})` };
-      if (dir < 0) style.transform = 'scaleX(-1)';
-      return style;
     });
 
     function refreshSession() {
@@ -2018,10 +1978,16 @@ export default {
     };
 
     const scrollToLatest = () => {
-      // If the user jumped away while an initial Yeaft Session page was still
-      // being hydrated, make the intent explicit: stay on the newest loaded
-      // row, and when the in-flight page lands the existing smart-scroll
-      // watchers will keep us pinned because auto-follow has resumed.
+      // A search/outline jump owns a detached contiguous window. Returning to
+      // latest must first restore the recent tail projection; scrolling the
+      // detached window itself to its bottom would still leave newer turns absent.
+      virtualTranscriptRef.value?.clearTargetAnchor?.();
+      if (store.currentView === 'yeaft') {
+        store.showLatestYeaftMessageWindow?.(
+          activeYeaftSessionId.value || store.yeaftActiveSessionFilter || null,
+          store.currentAgent || null,
+        );
+      }
       clearUserScrollInteraction();
       resumeAutoFollow();
       Vue.nextTick(scrollToBottom);
@@ -2077,16 +2043,18 @@ export default {
 
     Vue.watch(visibleTranscriptTailSignature, smartScrollToBottom);
     Vue.watch(previewShowTypingDots, (show) => { if (show) smartScrollToBottom(); });
-    Vue.watch(
-      () => [store.activeConversationId, activeYeaftSessionId.value],
-      () => {
-        for (const key of Object.keys(assistantTurnActionStates)) delete assistantTurnActionStates[key];
-        for (const key of Object.keys(toolExpandStates)) delete toolExpandStates[key];
-        for (const key of Object.keys(messageTurnCollapseStates)) delete messageTurnCollapseStates[key];
-        resumeAutoFollow();
-        Vue.nextTick(scrollToBottom);
-      }
-    );
+    // Reset local transcript state only when the user actually navigates to a
+    // different conversation. Yeaft history loading may replace the transport
+    // conversation id while retaining the same Agent + Session identity; using
+    // that transient id here would discard a user's paused-follow intent and
+    // jump them back to the latest message when loading completes.
+    Vue.watch(virtualTranscriptIdentity, () => {
+      for (const key of Object.keys(assistantTurnActionStates)) delete assistantTurnActionStates[key];
+      for (const key of Object.keys(toolExpandStates)) delete toolExpandStates[key];
+      for (const key of Object.keys(messageTurnCollapseStates)) delete messageTurnCollapseStates[key];
+      resumeAutoFollow();
+      Vue.nextTick(scrollToBottom);
+    });
 
     const flashMsgId = Vue.ref(null);
     let flashGeneration = 0;
@@ -2147,7 +2115,7 @@ export default {
       clearUserScrollInteraction();
       if (typingTimer) { clearInterval(typingTimer); typingTimer = null; }
       if (typingHideTimer) { clearTimeout(typingHideTimer); typingHideTimer = null; }
-      if (catRafId) { cancelAnimationFrame(catRafId); catRafId = null; }
+      catLoop.stop();
       if (dogRafId) { cancelAnimationFrame(dogRafId); dogRafId = null; }
     });
 
@@ -2167,8 +2135,8 @@ export default {
       isPreviewMode,
       waitingStatus,
       animationType,
-      catSpeed,
-      catStyle,
+      catWalkRef,
+      catSpriteRef,
       dogPhase,
       spikeTransform,
       teddyTransform,

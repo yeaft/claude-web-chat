@@ -265,9 +265,11 @@
    No transition on transform — flip should be instant (not animated). */
 .svg-cat-walk {
   position: absolute;
-  left: 0;
+  left: 40px;
   bottom: 8px;
   display: inline-block;
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
 }
 
 .typing-indicator > span:not(.typing-status-text):not(.svg-cat-walk):not(.svg-dog-scene) {

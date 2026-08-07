@@ -184,7 +184,17 @@ function chooseDurableRows(rows, limits) {
   const maxTurns = Number.isFinite(limits.maxTurnsPerSession)
     ? Math.max(0, Math.floor(limits.maxTurnsPerSession))
     : YEAFT_HISTORY_MAX_TURNS;
-  return new Set(durableTurnRows(rows).slice(-maxTurns).flat());
+  const turns = durableTurnRows(rows);
+  const selected = new Set(turns.slice(-maxTurns).flat());
+  // A click-driven search/outline window is the user's current read surface.
+  // Keep its complete turns resident even when the recent tail already fills the
+  // normal retention budget; it is removed when another window replaces it or
+  // when Session memory is cleared. Hover prefetch rows are not pinned.
+  for (const turn of turns) {
+    if (!turn.some(row => row?._historyWindowDetached === true)) continue;
+    for (const row of turn) selected.add(row);
+  }
+  return selected;
 }
 
 function compactRanges(rows) {

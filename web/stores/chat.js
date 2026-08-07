@@ -802,6 +802,10 @@ export const useChatStore = defineStore('chat', {
     _yeaftHistoryResultRefreshByRequestId: {},
     _yeaftHistoryRevealLeases: {},
     _yeaftHistoryRevealSequence: 0,
+    // Search/outline navigation temporarily renders one server-provided,
+    // contiguous history window. Detached windows remain cached but never mix
+    // with the recent tail as if the missing interval were present.
+    yeaftHistoryFocusWindowBySession: {},
     // One-shot marker: set true by the websocket onclose handler on a real
     // disconnect, consumed by handleAgentList to run bounded Yeaft history and
     // visible Work Center catch-up after the socket comes back. Without this
@@ -1217,7 +1221,13 @@ export const useChatStore = defineStore('chat', {
         const sessionKey = yeaftHistoryIdentityKey(resolveAgentIdForSession(state, sessionId), sessionId);
         const visibleTurns = state.yeaftMessageWindowState[sessionKey]?.visibleTurns
           || getDefaultYeaftVisibleTurns();
-        return sliceScopedYeaftMessagesByRecentTurns(raw, state.yeaftActiveSessionFilter || null, visibleTurns);
+        const focusWindowKey = state.yeaftHistoryFocusWindowBySession?.[sessionKey]?.windowKey || null;
+        return sliceScopedYeaftMessagesByRecentTurns(
+          raw,
+          state.yeaftActiveSessionFilter || null,
+          visibleTurns,
+          focusWindowKey,
+        );
       }
       return raw;
     },
@@ -1233,7 +1243,13 @@ export const useChatStore = defineStore('chat', {
       const sessionKey = yeaftHistoryIdentityKey(resolveAgentIdForSession(state, sessionId), sessionId);
       const visibleTurns = state.yeaftMessageWindowState[sessionKey]?.visibleTurns
         || getDefaultYeaftVisibleTurns();
-      return sliceScopedYeaftMessagesByRecentTurns(raw, state.yeaftActiveSessionFilter || null, visibleTurns);
+      const focusWindowKey = state.yeaftHistoryFocusWindowBySession?.[sessionKey]?.windowKey || null;
+      return sliceScopedYeaftMessagesByRecentTurns(
+        raw,
+        state.yeaftActiveSessionFilter || null,
+        visibleTurns,
+        focusWindowKey,
+      );
     },
     hasHiddenYeaftMessages(state) {
       if (state.currentView !== 'yeaft') return false;
@@ -3677,6 +3693,7 @@ export const useChatStore = defineStore('chat', {
       this.yeaftSessionHistoryState = clearMapKey(this.yeaftSessionHistoryState);
       this.yeaftHistoryCacheState = clearMapKey(this.yeaftHistoryCacheState);
       this.yeaftMessageWindowState = clearMapKey(this.yeaftMessageWindowState);
+      this.yeaftHistoryFocusWindowBySession = clearMapKey(this.yeaftHistoryFocusWindowBySession);
       this._yeaftHistoryBrowserHydrationBySession = clearMapKey(
         this._yeaftHistoryBrowserHydrationBySession,
       );
@@ -3733,6 +3750,14 @@ export const useChatStore = defineStore('chat', {
       const targetSessionId = sessionId || this.yeaftActiveSessionFilter || null;
       const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
       return yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
+    },
+
+    showLatestYeaftMessageWindow(sessionId = null, agentId = null) {
+      const sessionKey = this.getYeaftMessageWindowKey(sessionId, agentId);
+      if (!sessionKey || !this.yeaftHistoryFocusWindowBySession?.[sessionKey]) return false;
+      const { [sessionKey]: _focused, ...remaining } = this.yeaftHistoryFocusWindowBySession;
+      this.yeaftHistoryFocusWindowBySession = remaining;
+      return true;
     },
 
     pruneYeaftMessageWindow(sessionId = null, agentId = null) {
@@ -3805,12 +3830,33 @@ export const useChatStore = defineStore('chat', {
         });
         resolvedTargetIndex = scoped.indexOf(prefetched);
       }
+      const target = scoped[resolvedTargetIndex];
+      const windowKey = target?._historyWindowKey || null;
+      const sessionKey = this.getYeaftMessageWindowKey(targetSessionId, targetAgentId);
+      if (windowKey) {
+        const focusedRows = (this.messagesMap[targetConversationId] || []).filter(message => (
+          (message?.sessionId ?? message?.groupId ?? null) === targetSessionId
+          && message?._historyWindowKey === windowKey
+        ));
+        const spans = buildYeaftMessageTurnSpans(focusedRows);
+        if (spans.length === 0) return false;
+        this.yeaftHistoryFocusWindowBySession = {
+          ...(this.yeaftHistoryFocusWindowBySession || {}),
+          [sessionKey]: { windowKey, messageId, conversationId: targetConversationId },
+        };
+        this.yeaftMessageWindowState = {
+          ...this.yeaftMessageWindowState,
+          [sessionKey]: { visibleTurns: getDefaultYeaftVisibleTurns() },
+        };
+        return true;
+      }
+
+      // Compatibility for already-resident contiguous history and synthetic
+      // tool-only rows that predate explicit history-window metadata.
       const spans = buildYeaftMessageTurnSpans(scoped);
       const targetSpan = spans.findIndex(span => resolvedTargetIndex >= span.start && resolvedTargetIndex < span.end);
       if (targetSpan < 0) return false;
-      scoped[resolvedTargetIndex]._historyWindowPrefetched = false;
       const visibleTurns = Math.max(getDefaultYeaftVisibleTurns(), spans.length - targetSpan);
-      const sessionKey = this.getYeaftMessageWindowKey(targetSessionId, targetAgentId);
       this.yeaftMessageWindowState = {
         ...this.yeaftMessageWindowState,
         [sessionKey]: { visibleTurns },
@@ -4452,6 +4498,7 @@ export const useChatStore = defineStore('chat', {
           resultId,
           messageId: result.messageId,
           prefetch: !validateCached,
+          validateCached: !!validateCached,
           setError: setPendingError,
           resolve: resolvePending,
           timeout,
@@ -4560,7 +4607,10 @@ export const useChatStore = defineStore('chat', {
       const match = this.pendingYeaftHistoryWindow(msg);
       if (!match) return false;
       const { pendingKey, pending } = match;
-      if (pending.prefetch === true && msg.prefetch !== true) msg.prefetch = true;
+      // A validateCached click intentionally promotes a prior hover-prefetched
+      // island into the focused contiguous window. Preserve cache-only semantics
+      // only for the original prefetch response, not for this validation request.
+      if (pending.prefetch === true && msg.prefetch !== true && pending.validateCached !== true) msg.prefetch = true;
       clearTimeout(pending.timeout);
       const { [pendingKey]: _settled, ...rest } = this._yeaftHistoryWindowPendingByKey;
       this._yeaftHistoryWindowPendingByKey = rest;

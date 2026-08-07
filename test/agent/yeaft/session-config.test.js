@@ -117,6 +117,47 @@ describe('Yeaft Session context lifetime', () => {
 });
 
 describe('Yeaft session-scoped model config', () => {
+  it('creates an empty-roster Session from the active Agent instance VP library', () => {
+    const root = makeDir();
+    const vpId = 'vp-instance-only';
+    const vpDir = join(root, 'virtual-persons', vpId);
+    mkdirSync(vpDir, { recursive: true });
+    writeFileSync(join(vpDir, 'role.md'), [
+      '---',
+      `id: ${vpId}`,
+      'name: Instance Only',
+      '---',
+      'INSTANCE_ONLY_SOUL',
+    ].join('\n'));
+    ctx.CONFIG = { ...(originalConfig || {}), yeaftDir: root };
+
+    const responseStart = ctx.messageBuffer.length;
+    handleYeaftCreateSession({
+      requestId: 'create-instance-session',
+      payload: { name: 'Instance-scoped Session', roster: [] },
+    });
+
+    const response = ctx.messageBuffer.slice(responseStart)
+      .map(frame => frame.event)
+      .find(event => event?.type === 'session_crud_result' && event.requestId === 'create-instance-session');
+    expect(response).toMatchObject({
+      op: 'create',
+      ok: true,
+      session: {
+        roster: [vpId],
+        defaultVpId: vpId,
+      },
+    });
+    expect(snapshotSessions(root)).toEqual([
+      expect.objectContaining({
+        id: response.session.id,
+        roster: [vpId],
+        defaultVpId: vpId,
+      }),
+    ]);
+    expect(existsSync(join(root, 'memory', 'sessions', response.session.id, 'summary.md'))).toBe(true);
+  });
+
   async function assertMcpBootstrapRemoveDoesNotRestoreServer({ workDir = '' } = {}) {
     const root = makeDir();
     const configPath = join(root, 'config.json');

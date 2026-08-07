@@ -691,24 +691,37 @@ export function handleYeaftHistoryWindow(store, msg) {
   if (!store.messagesMap[conversationId]) store.messagesMap[conversationId] = [];
 
   const sourceMessageIds = new Set(Array.isArray(msg.sourceMessageIds) ? msg.sourceMessageIds : []);
+  const residentMessageIds = new Set();
+  const randomAccessMessageIds = new Set();
   for (const row of store.messagesMap[conversationId]) {
+    if (rowSessionId(row) !== sessionId) continue;
     const persistedId = row?.persistedMessageId || row?.messageId || row?.id || null;
+    if (persistedId) residentMessageIds.add(persistedId);
+    if (persistedId && (row?._historyWindowPrefetched === true || row?._historyWindowDetached === true)) {
+      randomAccessMessageIds.add(persistedId);
+    }
     if (!msg.entryId || !sourceMessageIds.has(persistedId)) continue;
     row.historyEntryId = msg.entryId;
     if (Number.isFinite(msg.indexGeneration)) row.historyIndexGeneration = msg.indexGeneration;
   }
-  const windowMessages = msg.messages.map(message => (
-    msg.entryId && sourceMessageIds.has(message?.id)
-      ? {
-          ...message,
-          historyEntryId: msg.entryId,
-          ...(msg.prefetch === true ? { _historyWindowPrefetched: true } : {}),
-          ...(Number.isFinite(msg.indexGeneration)
-            ? { historyIndexGeneration: msg.indexGeneration }
-            : {}),
-        }
-      : message
-  ));
+  const windowMessages = msg.messages
+    .filter(message => (
+      msg.prefetch === true
+      || !residentMessageIds.has(message?.id)
+      || randomAccessMessageIds.has(message?.id)
+    ))
+    .map(message => (
+      msg.entryId && sourceMessageIds.has(message?.id)
+        ? {
+            ...message,
+            historyEntryId: msg.entryId,
+            ...(msg.prefetch === true ? { _historyWindowPrefetched: true } : {}),
+            ...(Number.isFinite(msg.indexGeneration)
+              ? { historyIndexGeneration: msg.indexGeneration }
+              : {}),
+          }
+        : message
+    ));
   const { formatted } = formatYeaftHistoryMessages(
     windowMessages,
     sessionId,
@@ -716,21 +729,50 @@ export function handleYeaftHistoryWindow(store, msg) {
     store.messagesMap[conversationId],
     sessionAgentId,
   );
-  if (msg.prefetch === true) {
-    for (const row of formatted) row._historyWindowPrefetched = true;
+  const windowKey = `history-window:${msg.requestId || msg.anchorMessageId || Date.now()}`;
+  for (const row of formatted) {
+    row._historyWindowKey = windowKey;
+    row._historyWindowDetached = msg.prefetch !== true;
+    row._historyWindowPrefetched = msg.prefetch === true;
   }
-  conversationRepositoryFor(store).commitDurable({
+  const repository = conversationRepositoryFor(store);
+  const projection = repository.rows(conversationId);
+  const responseMessageIds = new Set(msg.messages.map(message => message?.id).filter(Boolean));
+  const promoted = [];
+  if (msg.prefetch !== true) {
+    for (const row of projection) {
+      if (rowSessionId(row) !== sessionId) continue;
+      const persistedId = row?.persistedMessageId || row?.messageId || row?.id || null;
+      if (!responseMessageIds.has(persistedId)) continue;
+      // Validation may overlap the ordinary recent tail. Only promote a row
+      // that already belongs to a cache-only/detached random-access window;
+      // converting a normal recent row would make Latest permanently filter it.
+      if (row._historyWindowPrefetched !== true && row._historyWindowDetached !== true) continue;
+      row._historyWindowKey = windowKey;
+      row._historyWindowDetached = true;
+      row._historyWindowPrefetched = false;
+      promoted.push(row);
+    }
+    const retained = projection.filter(row => (
+      rowSessionId(row) !== sessionId
+      || row._historyWindowDetached !== true
+      || row._historyWindowKey === windowKey
+    ));
+    if (retained.length !== projection.length) repository.replaceProjection(conversationId, retained);
+  }
+  repository.commitDurable({
     conversationId,
     sessionId,
     rows: formatted,
     mode: 'window',
   });
+  const incomingWindowRows = formatted.length > 0 ? formatted : promoted;
   const activeIdentity = activeYeaftHistoryIdentity(store);
   pruneYeaftHistoryCache(store, {
     conversationId,
     agentId: sessionAgentId,
     sessionId,
-    incomingRows: formatted,
+    incomingRows: incomingWindowRows,
     activeAgentId: activeIdentity.agentId,
     activeSessionId: activeIdentity.sessionId,
   });
@@ -1196,16 +1238,6 @@ export function handleYeaftHistoryChunk(store, msg) {
       sessionAgentId,
       nextState.latestSeq,
     ));
-  } else if (mode !== 'delta'
-      && nextState.hasMore
-      && msgSessionId
-      && sessionAgentId
-      && residentTurnCount < YEAFT_HISTORY_MAX_TURNS
-      && typeof store.scheduleYeaftHistoryPrefetch === 'function') {
-    // The authoritative chunk commit retired the one-per-Session request fence.
-    // Schedule—not recurse into—the next page so rendering and IndexedDB persist
-    // get a chance to settle between bounded 50-turn transfers.
-    store.scheduleYeaftHistoryPrefetch(msgSessionId, sessionAgentId);
   }
   const activeIdentity = activeYeaftHistoryIdentity(store);
   const activeSessionMatches = activeIdentity.sessionId === (msgSessionId || null);

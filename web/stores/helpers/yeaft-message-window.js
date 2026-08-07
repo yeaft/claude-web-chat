@@ -81,12 +81,21 @@ export function sliceYeaftMessagesByRecentTurns(messages = [], visibleTurns = DE
 }
 
 function messageMatchesSession(msg, sessionId) {
+  // Hover prefetch remains cache-only. A click-promoted random-access window is
+  // part of the same ordered resident transcript as the recent tail; replacing
+  // the whole projection with that detached slice makes its bottom look like the
+  // latest message and breaks virtual offsets when returning from search.
   if (!msg || msg._historyWindowPrefetched === true) return false;
   if (!sessionId) return true;
   return (msg.sessionId ?? msg.groupId) === sessionId;
 }
 
-export function sliceScopedYeaftMessagesByRecentTurns(messages = [], sessionId = null, visibleTurns = DEFAULT_VISIBLE_TURNS) {
+export function sliceScopedYeaftMessagesByRecentTurns(
+  messages = [],
+  sessionId = null,
+  visibleTurns = DEFAULT_VISIBLE_TURNS,
+  _focusWindowKey = null,
+) {
   const safeTurns = Math.max(1, Number.isFinite(visibleTurns) ? Math.floor(visibleTurns) : DEFAULT_VISIBLE_TURNS);
   const scoped = [];
   const spans = [];
