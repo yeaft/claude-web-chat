@@ -15,7 +15,7 @@ Browser Runtime 的实时数据面采用 WebRTC，但系统不做成“只有 We
 - **Yeaft Engine 与 Chromium 同在 Agent**，AI 操作直接调用本地 Browser Runtime，不绕 WebRTC，也不经 Server 中转；
 - **Server 只做 owner-checked 控制面 relay**，不解码媒体、不持久化 SDP/ICE、不成为 SFU；
 - **TURN 是生产必需能力**，不能把“多数情况下能 P2P”当作可用性保证；
-- **授权用户与 Yeaft 可以同时提交动作**，不做用户↔VP 的排他控制权转移；Agent 以 producer 身份、generation、序号和 page revision 做 fencing，并在唯一 action dispatcher 中串行执行；
+- **授权用户与 Yeaft 可以同时提交动作**，不做用户↔VP 的排他控制权转移；Agent 以 producer 身份、generation、独立的 control/pointer 序号和 page revision 做 fencing，并在唯一 action dispatcher 中串行执行；
 - 第一阶段只支持一个可见 page、无音频、无录屏持久化、无多个 Web 用户共同编辑。
 
 主媒体/数据 endpoint 固定为**受控 Chromium 扩展的 offscreen document**：它拥有 `RTCPeerConnection`、DataChannels 和 video sender，Agent Node 只负责授权、信令协调、Chromium 生命周期、AI 工具与串行动作执行。首选媒体源是同一扩展中的 `tabCapture`，`MediaStreamTrack` 不跨进程传递。CDP `Page.startScreencast` 只作为受能力探测约束的 fallback：Agent 把有界的最新 JPEG/PNG 帧经本机 IPC 交给同一个 offscreen endpoint 解码、绘制并从 canvas 生成 track；该路径成本和延迟都更差。
@@ -100,6 +100,8 @@ Agent (workbench + CLI providers + Yeaft engine)
 | `connectionGeneration` | 同一 peer 的 offer/answer/ICE fencing generation |
 | `producerId` | Agent 授予一个输入生产者的短期不透明 ID；Web peer、VP turn 各自独立 |
 | `producerGeneration` | 该 producer 的授权 fencing generation；重连、turn 结束或撤权后递增 |
+| `controlSeq` | 一个 producer 在 reliable control 路径上的连续序号；必须 gap-free |
+| `pointerSeq` | 一个 Web producer 在 lossy pointer 路径上的单调高水位序号；允许 gap，只拒绝 stale/duplicate |
 | `pageRevision` | 顶层导航或 active page 变化后递增，用于丢弃旧坐标事件 |
 | `actionId` | 一次需要 ack 的用户或 AI 动作 ID，在 producer scope 内唯一 |
 
@@ -191,7 +193,7 @@ Agent Browser Control Adapter
 - 启动固定版本、受控参数的 Chromium，不连接用户日常浏览器；
 - 通过受认证、只绑定当前 Browser Session 的本机 runtime port 驱动扩展 offscreen peer；offscreen endpoint 生成 offer、处理 answer/trickle ICE、创建 DataChannels 和 VideoTrack；
 - 接收 Server-stamped identity，不信任 Web payload 中的 owner/client 字段；
-- 串行执行用户与 AI 动作，校验 producer generation/seq/page revision，并应用队列配额；
+- 串行执行用户与 AI 动作，校验 producer generation、对应通道的 sequence space 和 page revision，并应用队列配额；
 - 采集有界状态与指标并通过控制面上报；
 - Agent 控制连接丢失时立即撤销 Web producer、释放按键/按钮并关闭 peer；Agent 重启时关闭内存态 Browser Sessions。
 
@@ -304,7 +306,7 @@ browserRuntime.performAction({
   browserSessionId,
   producer: {
     kind: 'vp', sessionId, vpId, turnId,
-    producerId, producerGeneration, seq
+    producerId, producerGeneration, controlSeq
   },
   pageRevision,
   actionId,
@@ -371,10 +373,11 @@ Agent 为每个 producer 签发 `producerId + producerGeneration`，并绑定不
 
 ### 7.2 动作幂等与时序
 
-- 每个 producer 有独立的单调 `seq`；Agent 只接受 `seq = lastAccepted + 1`，其他 producer 的 seq 不互相阻塞；
+- 每个 producer 有独立的 reliable `controlSeq`；Agent 只接受 `controlSeq = lastAcceptedControlSeq + 1`。AI action 与 Web reliable control 都使用这一 gap-free sequence space；不同 producer 的 `controlSeq` 不互相阻塞；
+- 每个 Web producer 另有独立的 lossy `pointerSeq` high-water。Agent 接受 `pointerSeq > lastAcceptedPointerSeq`，允许 gap；`pointerSeq <= lastAcceptedPointerSeq` 视为 stale/duplicate 丢弃；
 - reliable `control` channel 的 Web producer 还必须匹配 peer 和 connection generation；
-- `pointer` channel 的 move/wheel 是瞬时状态，允许丢失和乱序，以该 producer 的最新 `seq` 为准；
-- `pointerDown` / `pointerUp` / click 不走不可靠 channel，而走 reliable `control`；
+- `pointer` channel 的 move/wheel 是瞬时状态，允许丢失和乱序，只更新 `lastAcceptedPointerSeq`；它绝不能推进、阻塞或导致 `controlSeq` 被拒绝；
+- `pointerDown` / `pointerUp` / click 不走不可靠 channel，而走 reliable `control` 并携带 `controlSeq`；
 - `actionId` 在 `(browserSessionId, producerId, producerGeneration)` 内唯一；重复的相同 payload 返回 ledger 结果，不同 payload 返回 conflict；
 - ack 只表示 Agent 已接受或执行，不表示业务页面已达到预期；
 - Web 或 AI 在超时后可查询 `actionId`，但不能自动重新发送非幂等动作；
@@ -624,9 +627,10 @@ Agent 驱动的 extension offscreen endpoint 作为 offerer 创建三个 in-band
 | `browser.pointer.v1` | `{ ordered: false, maxRetransmits: 0 }` | pointer move、wheel、hover viewport position |
 | `browser.state.v1` | `{ ordered: true }` | Agent → Web page/producer/dialog/status 增量 |
 
-DataChannel payload 使用有版本的 CBOR 或 MessagePack binary envelope；spike 阶段可用 JSON，但生产必须测量解析和 allocation。无论编码，逻辑 schema 保持：
+DataChannel payload 使用有版本的 CBOR 或 MessagePack binary envelope；spike 阶段可用 JSON，但生产必须测量解析和 allocation。公共 fencing 字段保持一致，但 sequence 字段由 channel 决定，不能共享：
 
 ```js
+// browser.control.v1 — reliable / ordered
 {
   v: 1,
   browserSessionId,
@@ -635,11 +639,27 @@ DataChannel payload 使用有版本的 CBOR 或 MessagePack binary envelope；sp
   producerId,
   producerGeneration,
   pageRevision,
-  seq,
+  controlSeq,
+  type,
+  payload
+}
+
+// browser.pointer.v1 — unreliable / unordered
+{
+  v: 1,
+  browserSessionId,
+  peerId,
+  connectionGeneration,
+  producerId,
+  producerGeneration,
+  pageRevision,
+  pointerSeq,
   type,
   payload
 }
 ```
+
+`controlSeq` 和 `pointerSeq` 在 `(browserSessionId, producerId, producerGeneration)` 内分别从 1 开始。Agent 保存两个独立的 high-water；跨 DataChannel 的到达顺序没有协议含义。
 
 ### 9.1 Reliable control messages
 
@@ -670,7 +690,7 @@ DataChannel payload 使用有版本的 CBOR 或 MessagePack binary envelope；sp
 { type: 'wheel', payload: { deltaX, deltaY, deltaMode, x, y, modifiers } }
 ```
 
-Web 端按 animation frame 合并 move，Agent 端只保留最新 seq。`bufferedAmount` 超过 64 KiB 时丢弃 move/wheel，降到 16 KiB 后恢复。绝不让 pointer backlog 增加“看起来能动但落后几秒”的延迟。
+Web 端按 animation frame 合并 move，Agent 端只保留最大的 `pointerSeq` high-water。`bufferedAmount` 超过 64 KiB 时丢弃 move/wheel，降到 16 KiB 后恢复；丢弃不会补洞，也不影响下一条 control。若 `pointerSeq=12` 先于 `pointerSeq=11` 到达，则接受 12 并丢弃 11；无论 pointer 何时到达，后续合法 `controlSeq` 都按 reliable control 自己的 high-water 判定。绝不让 pointer backlog 增加“看起来能动但落后几秒”的延迟。
 
 ### 9.3 State 与 ack
 
@@ -752,7 +772,7 @@ failed | connected → closed
 2. 通过 `resolveAgentAccessError(agentId, userId, role)`；
 3. Server 向 Agent stamp `ownerUserId + clientId + webConnectionId + webConnectionGeneration`，Agent 在权威 Browser Session record 中确认 owner；
 4. 对 peer-scoped signal 再校验 `peerId + exact client/Web connection + connectionGeneration + endpointRole`；
-5. 对输入再校验 `producerId + producerGeneration + producer seq + pageRevision`；AI producer 还校验 `sessionId + vpId + turnId` 生命周期。
+5. 对输入再校验 `producerId + producerGeneration + pageRevision`，并按入口独立校验 `controlSeq` 或 `pointerSeq`；pointer high-water 永不读取或修改 control high-water。AI producer 还校验 `sessionId + vpId + turnId` 生命周期。
 
 管理员访问 ownerless global Agent 的既有规则不自动等于可以观看任意用户 Browser Session。Browser Session 必须始终有明确 `ownerUserId`；跨用户 support/viewer 是未来单独设计。
 
@@ -935,7 +955,8 @@ Web 和 Agent 每 5 秒采样 `getStats()`，本地 UI 可显示更细数据；�
 - identity key 必须包含 `agentId + browserSessionId`；
 - Server 拒绝跨 user、跨 Agent、未知 Browser Session 和 peer/client mismatch；
 - Server-stamped owner/client/Web connection identity，以及 peer/producer/page generation fencing；
-- per-producer seq、pointer coalescing、DataChannel bufferedAmount thresholds；
+- per-producer `controlSeq` gap-free enforcement、`pointerSeq` gap-tolerant high-water、pointer coalescing 和 DataChannel bufferedAmount thresholds；
+- dropped pointer 后 reliable control 仍接受；pointer/control cross-channel reorder 不互相推进或拒绝；stale/duplicate pointer 被丢弃；
 - normalized coordinate mapping、letterbox、DPR 和 viewport resize；
 - action queue count/bytes/credit/deadline 与公平性；timeout/unknown outcome 不自动重放；
 - peer/generation/producer/control loss 时释放 pressed key/button 并清空未开始动作；
@@ -950,7 +971,7 @@ Web 和 Agent 每 5 秒采样 `getStats()`，本地 UI 可显示更细数据；�
 使用真实 Agent Browser Runtime 和虚拟/loopback peer：
 
 1. create → route installed → endpoint-scoped TURN config delivered → offer → answer → candidate → first video frame；并断言 prepare 前没有 offer/candidate；
-2. pointer/keyboard → page DOM change → video reflects change；
+2. pointer/keyboard → page DOM change → video reflects change；丢失 `pointerSeq=n` 后 `controlSeq=m` 仍执行；pointer/control 跨 channel 乱序不互相 gating；旧 `pointerSeq` 在新 pointer 后到达时被丢弃；
 3. AI locator 与用户输入并发提交，Agent 按 action revision 串行且两方都不会被排他撤权；
 4. WebSocket disconnect 后视频可短暂只读，Agent 本地 TTL 到期撤销 Web producer、清队列并释放 held input；
 5. WebSocket reconnect → snapshot → 新 peer/generation/producer attach；旧 peer 不可恢复写权限；
@@ -994,7 +1015,7 @@ Viewer：最新两个 stable 版本的 Chrome/Edge、Firefox、Safari；iOS Safa
 ### 14.6 安全验收
 
 - 未认证、disabled user、跨 owner、跨 Agent 访问全部 fail closed；客户端伪造 owner/client/Web connection stamp 无效；
-- candidate flood、oversized SDP、DataChannel oversized payload、seq abuse 被限流/断开；
+- candidate flood、oversized SDP、DataChannel oversized payload、`controlSeq` gap/replay 和 `pointerSeq` regression/flood 被限流、丢弃或断开，且 pointer abuse 不污染 control high-water；
 - Browser page 无法访问 Yeaft origin credentials；
 - CDP endpoint 不可从网络访问；
 - extension/capture package digest 被篡改时 capability 关闭；
@@ -1110,7 +1131,7 @@ Phase 0 只有在以下条件全部满足后退出：
 
 - 至少 Linux 的首选 capture path 达到延迟/CPU gate；
 - UDP blocked 时 TURN TLS/443 可连接；
-- Server-stamped identity、route-before-offer、endpoint credential、producer generation/seq/page fencing prototype fail closed；
+- Server-stamped identity、route-before-offer、endpoint credential、producer generation/page fencing，以及独立 `controlSeq`/`pointerSeq` sequence spaces 的 prototype fail closed；
 - 选定 extension peer/runtime 与 automation 依赖有维护、安全、浏览器/Node 24 和发布方案；
 - 资源 cleanup 在 100 次循环后无显著泄漏；
 - Martin 对精确 spike/design head 完成独立 review。
