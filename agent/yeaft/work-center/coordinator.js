@@ -130,6 +130,7 @@ function coordinatorStageReferences(detail) {
 }
 
 function boundedAction(action, result, stageReferences, compact = false, dynamic = false) {
+  const preserveCanonicalResult = action?.status === 'completed';
   const brief = action?.brief && typeof action.brief === 'object' ? action.brief : null;
   return {
     ...(dynamic
@@ -163,12 +164,14 @@ function boundedAction(action, result, stageReferences, compact = false, dynamic
       summary: truncateUtf8(result.summary, compact ? 256 : 768),
       evidence: boundedEvidence(result.evidence),
       outputs: boundedEvidence(result.outputs),
-      acceptanceChecks: (Array.isArray(result.acceptanceChecks) ? result.acceptanceChecks : [])
-        .slice(0, 24).map(check => ({
-          criterion: truncateUtf8(check?.criterion, 512),
-          status: truncateUtf8(check?.status, 64),
-          evidence: truncateUtf8(check?.evidence, 1_000),
-        })),
+      acceptanceChecks: preserveCanonicalResult
+        ? (Array.isArray(result.acceptanceChecks) ? result.acceptanceChecks : [])
+          .slice(0, 24).map(check => ({
+            criterion: truncateUtf8(check?.criterion, 512),
+            status: truncateUtf8(check?.status, 64),
+            evidence: truncateUtf8(check?.evidence, 1_000),
+          }))
+        : [],
       waitingReason: truncateUtf8(result.waitingReason, 384) || null,
       error: truncateUtf8(result.error, 384) || null,
       reviewDecision: truncateUtf8(result.reviewDecision, 64) || null,
