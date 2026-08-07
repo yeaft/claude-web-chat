@@ -1827,32 +1827,21 @@ export default {
 
     const preserveScrollAnchorDuringLoad = (loadFn, loadingRef) => {
       const beforeSnapshot = getLoadMoreProgressSnapshot();
-      if (!containerRef.value) {
-        loadFn();
-        continueLoadMoreIfStillNearTop(beforeSnapshot);
-        return;
-      }
-
-      const prevScrollHeight = containerRef.value.scrollHeight;
-      const prevScrollTop = containerRef.value.scrollTop;
-      let restored = false;
+      let finished = false;
       let unwatch = null;
 
-      const restore = () => {
-        if (restored) return;
-        restored = true;
+      const finishLoadMore = () => {
+        if (finished) return;
+        finished = true;
         if (unwatch) unwatch();
-        Vue.nextTick(() => {
-          if (!containerRef.value) return;
-          const newScrollHeight = containerRef.value.scrollHeight;
-          containerRef.value.scrollTop = newScrollHeight - prevScrollHeight + prevScrollTop;
-          continueLoadMoreIfStillNearTop(beforeSnapshot);
-        });
+        // VirtualTranscript owns prepend anchoring by stable block key. Applying
+        // an outer scrollHeight delta here would move the same anchor twice.
+        continueLoadMoreIfStillNearTop(beforeSnapshot);
       };
 
       if (loadingRef) {
         unwatch = Vue.watch(loadingRef, (loading) => {
-          if (!loading) restore();
+          if (!loading) finishLoadMore();
         });
       }
 
@@ -1860,9 +1849,9 @@ export default {
 
       // Covers synchronous test doubles and cached responses that prepend
       // rows without a visible loading-flag round trip. The normal async
-      // path restores from the watcher above when loading flips false.
+      // path finishes from the watcher above when loading flips false.
       Vue.nextTick(() => {
-        if (!loadingRef || !loadingRef()) restore();
+        if (!loadingRef || !loadingRef()) finishLoadMore();
       });
     };
 
