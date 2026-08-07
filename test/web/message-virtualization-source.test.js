@@ -50,6 +50,8 @@ describe('MessageList virtualization wiring', () => {
     expect(messageList).toContain('virtualTranscriptRef.value?.cancelPendingBottomFollow?.();');
     expect(messageList).toContain('const revealMessage = async (target) => {\n      if (!target) return false;\n      pauseAutoFollow();');
     expect(messageList).not.toContain('scrollToBlock: (blockId) => {\n          resumeAutoFollow();');
+    expect(messageList).toContain('Vue.watch(virtualTranscriptIdentity, () => {');
+    expect(messageList).not.toContain('() => [store.activeConversationId, activeYeaftSessionId.value],');
     expect(transcript).toContain('function cancelPendingBottomFollow({ preserveTarget = false } = {}) {');
     expect(transcript).toContain('pendingScrollToBottom = false;');
     expect(transcript).toContain('expose({ scrollToKey, scrollToIndex, anchorTarget, clearTargetAnchor, cancelPendingBottomFollow, setBottomFollowEnabled });');
