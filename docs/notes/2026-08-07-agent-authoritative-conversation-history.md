@@ -1,7 +1,7 @@
 # Agent 权威 Conversation 历史、搜索与虚拟列表设计
 
-状态：Implementation ready  
-Owner：Linus  
+状态：Implementation ready
+Owner：Linus
 日期：2026-08-07
 
 ## 1. 目标
