@@ -52,16 +52,19 @@ export function createWsHandler({
         break;
       }
       case 'file_content': {
+        const nFilePath = normalizePath(msg.requestedFilePath || msg.filePath);
+        const responseTab = openFiles.value.find(f => f.path === nFilePath
+          && (!f.agentId || !msg.agentId || f.agentId === msg.agentId)
+          && (!f.conversationId || !msg.conversationId || f.conversationId === msg.conversationId));
+        if (!responseTab || (responseTab.requestId && msg.requestId && msg.requestId !== responseTab.requestId)) return;
         fileLoading.value = false;
         if (msg.error) {
           debugStatus.value = `Error: ${msg.error}`;
           ops.clearPendingDownload();
-          const errFilePath = normalizePath(msg.requestedFilePath || msg.filePath);
-          const errTab = openFiles.value.find(f => f.path === errFilePath);
-          if (errTab) { errTab.previewLoading = false; errTab.previewError = msg.error; }
+          responseTab.previewLoading = false;
+          responseTab.previewError = msg.error;
           return;
         }
-        const nFilePath = normalizePath(msg.requestedFilePath || msg.filePath);
 
         // Handle pending download
         if (ops.getPendingDownload() && normalizePath(ops.getPendingDownload()) === nFilePath) {
@@ -84,9 +87,9 @@ export function createWsHandler({
           return;
         }
 
-        const tabIndex = openFiles.value.findIndex(f => f.path === nFilePath);
+        const tabIndex = openFiles.value.indexOf(responseTab);
         if (tabIndex >= 0) {
-          const file = openFiles.value[tabIndex];
+          const file = responseTab;
           if (msg.binary) {
             file.previewLoading = false;
             const previewBaseUrl = `${location.protocol}//${location.host}/api/preview/${msg.fileId}?token=${msg.previewToken}`;
@@ -127,15 +130,22 @@ export function createWsHandler({
         break;
       }
       case 'file_saved': {
+        const nSavedPath = normalizePath(msg.requestedFilePath || msg.filePath);
+        const savedFile = openFiles.value.find(f => f.path === nSavedPath
+          && (!f.agentId || !msg.agentId || f.agentId === msg.agentId)
+          && (!f.conversationId || !msg.conversationId || f.conversationId === msg.conversationId));
+        if (!savedFile?.pendingSaveRequestId) return;
+        // New Agents echo requestId. Old Agents do not, so accept a missing id
+        // only for a real pending save after owner + path selected the tab.
+        if (msg.requestId && msg.requestId !== savedFile.pendingSaveRequestId) return;
         fileSaving.value = false;
+        const savedContent = savedFile.pendingSaveContent;
+        delete savedFile.pendingSaveRequestId;
+        delete savedFile.pendingSaveContent;
         if (msg.error) { console.error('File save failed:', msg.error); return; }
-        const nSavedPath = normalizePath(msg.filePath);
-        const savedFile = openFiles.value.find(f => f.path === nSavedPath);
-        if (savedFile) {
-          savedFile.originalContent = savedFile.content;
-          savedFile.isDirty = false;
-          saveTabsState(store.currentConversation);
-        }
+        savedFile.originalContent = savedContent ?? savedFile.content;
+        savedFile.isDirty = savedFile.content !== savedFile.originalContent;
+        saveTabsState(savedFile.conversationId || store.currentConversation);
         break;
       }
       case 'file_search_result': {
@@ -176,12 +186,19 @@ export function createWsHandler({
   };
 
   const handleOpenFile = (event) => {
-    const { filePath: path, hideTree = false, line = null } = event.detail || {};
+    const {
+      filePath: path,
+      agentId = store.currentAgent,
+      conversationId = store.currentConversation,
+      workDir = getEffectiveWorkDir(),
+      hideTree = false,
+      line = null,
+    } = event.detail || {};
     const nPath = normalizePath(path);
-    if (!nPath) return;
+    if (!nPath || !agentId || !conversationId) return;
     if (hideTree && typeof setTreeVisible === 'function') setTreeVisible(false);
     if (Number.isFinite(line) && line > 0) pendingRevealLines.set(nPath, line);
-    openFileInTab(nPath, nPath.split('/').pop());
+    openFileInTab(nPath, nPath.split('/').pop(), { agentId, conversationId, workDir });
     revealLine(activeFile.value, line);
   };
 
