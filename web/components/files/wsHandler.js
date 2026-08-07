@@ -130,15 +130,23 @@ export function createWsHandler({
         break;
       }
       case 'file_saved': {
+        const nSavedPath = normalizePath(msg.requestedFilePath || msg.filePath);
+        const savedFile = openFiles.value.find(f => f.path === nSavedPath
+          && (!f.agentId || !msg.agentId || f.agentId === msg.agentId)
+          && (!f.conversationId || !msg.conversationId || f.conversationId === msg.conversationId));
+        if (!savedFile) return;
+        // New Agents echo requestId. Old Agents do not, so accept a missing id
+        // only after Agent + conversation + path have selected the owner tab.
+        if (savedFile.pendingSaveRequestId && msg.requestId
+          && msg.requestId !== savedFile.pendingSaveRequestId) return;
         fileSaving.value = false;
+        const savedContent = savedFile.pendingSaveContent;
+        delete savedFile.pendingSaveRequestId;
+        delete savedFile.pendingSaveContent;
         if (msg.error) { console.error('File save failed:', msg.error); return; }
-        const nSavedPath = normalizePath(msg.filePath);
-        const savedFile = openFiles.value.find(f => f.path === nSavedPath);
-        if (savedFile) {
-          savedFile.originalContent = savedFile.content;
-          savedFile.isDirty = false;
-          saveTabsState(store.currentConversation);
-        }
+        savedFile.originalContent = savedContent ?? savedFile.content;
+        savedFile.isDirty = savedFile.content !== savedFile.originalContent;
+        saveTabsState(savedFile.conversationId || store.currentConversation);
         break;
       }
       case 'file_search_result': {

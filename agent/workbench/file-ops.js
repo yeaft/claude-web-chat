@@ -84,7 +84,7 @@ export async function handleReadFile(msg) {
 }
 
 export async function handleWriteFile(msg) {
-  const { conversationId, filePath, content, _requestUserId } = msg;
+  const { conversationId, filePath, content, requestId, _requestUserId, _requestClientId } = msg;
   const conv = ctx.conversations.get(conversationId);
   const workDir = msg.workDir || conv?.workDir || ctx.CONFIG.workDir;
 
@@ -95,16 +95,22 @@ export async function handleWriteFile(msg) {
     ctx.sendToServer({
       type: 'file_saved',
       conversationId,
+      requestId,
       _requestUserId,
+      _requestClientId,
       filePath: resolved,
+      requestedFilePath: filePath,
       success: true
     });
   } catch (e) {
     ctx.sendToServer({
       type: 'file_saved',
       conversationId,
+      requestId,
       _requestUserId,
+      _requestClientId,
       filePath,
+      requestedFilePath: filePath,
       success: false,
       error: e.message
     });

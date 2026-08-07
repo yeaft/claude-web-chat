@@ -78,7 +78,16 @@ export async function handleAgentFileTerminal(agentId, agent, msg) {
     case 'file_saved': {
       // Phase 4: 文件保存后失效父目录缓存
       invalidateParentDirCache(agentId, msg.filePath);
-      await forwardToClients(agentId, msg.conversationId, msg);
+      const fwdMsg = { ...msg, agentId };
+      const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
+      const targetMatchesUser = !msg._requestUserId || targetClient?.userId === msg._requestUserId;
+      if (targetClient?.authenticated && targetMatchesUser) {
+        const { _requestClientId, _requestUserId, ...cleanMsg } = fwdMsg;
+        await sendToWebClient(targetClient, cleanMsg);
+      } else {
+        const { _requestClientId, ...fallbackMsg } = fwdMsg;
+        await forwardToClients(agentId, msg.conversationId, fallbackMsg);
+      }
       break;
     }
 

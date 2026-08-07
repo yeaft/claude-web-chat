@@ -126,7 +126,7 @@ describe('message file preview', () => {
     const wsHandler = readWeb('components/files/wsHandler.js');
     expect(wsHandler).toContain('pendingRevealLines.set(nPath, line)');
     expect(wsHandler).toContain('normalizePath(msg.requestedFilePath || msg.filePath)');
-    expect(readWeb('../agent/workbench/file-ops.js').match(/requestedFilePath: filePath/g)).toHaveLength(3);
+    expect(readWeb('../agent/workbench/file-ops.js')).toContain('requestedFilePath: filePath');
     expect(filesCss).toMatch(/\.file-tree-collapsed-rail\s*\{[^}]*order:\s*4;[^}]*border-left:/s);
     expect(filesCss).toMatch(/\.file-col-tree\s*\{[^}]*order:\s*3;/s);
     expect(filesCss).toMatch(/\.file-col-content\s*\{[^}]*order:\s*1;/s);

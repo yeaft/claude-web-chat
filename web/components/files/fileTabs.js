@@ -197,10 +197,14 @@ export function createFileTabs(store, {
     const file = activeFile.value;
     if (!file || !file.isDirty) return;
     fileSaving.value = true;
+    const requestId = `file-save-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    file.pendingSaveRequestId = requestId;
+    file.pendingSaveContent = file.content;
     store.sendWsMessage({
       type: 'write_file',
       conversationId: file.conversationId || store.currentConversation || '_explorer',
       agentId: file.agentId || store.currentAgent,
+      requestId,
       filePath: file.path,
       content: file.content,
       workDir: file.workDir || getEffectiveWorkDir(),

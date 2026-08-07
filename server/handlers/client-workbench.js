@@ -79,7 +79,12 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
           return;
         }
       }
-      await forwardToAgent(writeAgentId, { ...msg, conversationId: writeConvId, _requestUserId: client.userId });
+      await forwardToAgent(writeAgentId, {
+        ...msg,
+        conversationId: writeConvId,
+        _requestUserId: client.userId,
+        _requestClientId: clientId,
+      });
       break;
     }
 
