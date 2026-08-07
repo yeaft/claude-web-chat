@@ -65,6 +65,7 @@ export const CORE_TEST_FILES = Object.freeze([
 
 export const SANDBOX_TEST_FILES = Object.freeze([
   'test/agent/container-manager.test.js',
+  'test/server/sandbox-routes.test.js',
   'test/web/sandbox-settings.test.js',
 ]);
 

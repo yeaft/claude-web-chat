@@ -54,7 +54,11 @@ function ensureAgentSecret(user) {
 /**
  * Register user profile, agent secret, and admin user management routes.
  */
-export function registerUserRoutes(app, { requireAuth, requireAdmin }) {
+export function registerUserRoutes(app, {
+  requireAuth,
+  requireAdmin,
+  containerService = containerAgentService,
+}) {
   // Get my profile
   app.get('/api/user/profile', requireAuth, (req, res) => {
     try {
@@ -155,10 +159,12 @@ export function registerUserRoutes(app, { requireAuth, requireAdmin }) {
         }
       }
 
-      // Remove the Server-managed container before deleting the owner record.
-      // Manually launched remote container Agents remain outside Server lifecycle control.
-      await containerAgentService.action(user.id, 'remove');
-      const deletion = userDb.beginDeletion(user.id);
+      // Keep managed cleanup and the durable active -> pending transition inside
+      // one owner lifecycle fence so an admitted create cannot outlive deletion.
+      const deletion = await containerService.prepareOwnerDeletion(
+        user.id,
+        () => userDb.beginDeletion(user.id),
+      );
       if (!deletion) return res.status(404).json({ error: 'User not found or already deleted' });
 
       // Durable eligibility is enforced from the user row. These sweeps close

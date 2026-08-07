@@ -35,6 +35,7 @@ async function runRoute(app, key, req = {}) {
 describe('user agent secret routes', () => {
   let userDb;
   let registerUserRoutes;
+  let containerService;
 
   beforeEach(async () => {
     vi.resetModules();
@@ -42,6 +43,7 @@ describe('user agent secret routes', () => {
       getByUsername: vi.fn(),
       getOrCreate: vi.fn(),
       resetAgentSecret: vi.fn(() => 'agent-secret-generated'),
+      beginDeletion: vi.fn(),
       getAll: vi.fn(() => []),
     };
 
@@ -56,8 +58,20 @@ describe('user agent secret routes', () => {
     }));
     vi.doMock('../../server/auth/session-store.js', () => ({
       activeSessions: new Map(),
+      pendingVerifications: new Map(),
+      pendingTotpVerifications: new Map(),
+      pendingTotpSetup: new Map(),
       revokedTokens: new Set(),
     }));
+    vi.doMock('../../server/auth/request-auth.js', () => ({ clearSessionCookie: vi.fn() }));
+    vi.doMock('../../server/context.js', () => ({
+      agents: new Map(),
+      webClients: new Map(),
+      userStatsDeltas: new Map(),
+    }));
+    containerService = {
+      prepareOwnerDeletion: vi.fn(async (_userId, beginDeletion) => beginDeletion()),
+    };
 
     ({ registerUserRoutes } = await import('../../server/routes/user-routes.js'));
   });
@@ -67,6 +81,7 @@ describe('user agent secret routes', () => {
     registerUserRoutes(app, {
       requireAuth: (_req, _res, next) => next(),
       requireAdmin: (_req, _res, next) => next(),
+      containerService,
     });
     return app;
   }
@@ -119,5 +134,41 @@ describe('user agent secret routes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ agentSecret: 'agent-secret-new' });
     expect(userDb.resetAgentSecret).toHaveBeenCalledWith('u1');
+  });
+
+  it('does not tombstone the owner when serialized managed cleanup fails', async () => {
+    userDb.getByUsername.mockReturnValue({
+      id: 'u1', username: 'dev-user', password_hash: null,
+    });
+    containerService.prepareOwnerDeletion.mockRejectedValue(new Error('docker unavailable'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await runRoute(mountRoutes(), 'DELETE /api/user/me', {
+      body: { confirm: 'DELETE' },
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toEqual({ error: 'Failed to delete account' });
+    expect(userDb.beginDeletion).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('keeps cleanup and deletion admission inside one owner lifecycle fence', async () => {
+    userDb.getByUsername.mockReturnValue({
+      id: 'u1', username: 'dev-user', password_hash: null,
+    });
+    userDb.beginDeletion.mockReturnValue({ deletionId: 'deletion-1', status: 'pending' });
+
+    const res = await runRoute(mountRoutes(), 'DELETE /api/user/me', {
+      body: { confirm: 'DELETE' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(res.body).toEqual({ deletionId: 'deletion-1', status: 'pending' });
+    expect(containerService.prepareOwnerDeletion).toHaveBeenCalledOnce();
+    expect(containerService.prepareOwnerDeletion.mock.calls[0][0]).toBe('u1');
+    const beginDeletion = containerService.prepareOwnerDeletion.mock.calls[0][1];
+    expect(beginDeletion).toEqual(expect.any(Function));
+    expect(userDb.beginDeletion).toHaveBeenCalledWith('u1');
   });
 });
