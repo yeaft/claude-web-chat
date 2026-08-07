@@ -134,11 +134,10 @@ export function createWsHandler({
         const savedFile = openFiles.value.find(f => f.path === nSavedPath
           && (!f.agentId || !msg.agentId || f.agentId === msg.agentId)
           && (!f.conversationId || !msg.conversationId || f.conversationId === msg.conversationId));
-        if (!savedFile) return;
+        if (!savedFile?.pendingSaveRequestId) return;
         // New Agents echo requestId. Old Agents do not, so accept a missing id
-        // only after Agent + conversation + path have selected the owner tab.
-        if (savedFile.pendingSaveRequestId && msg.requestId
-          && msg.requestId !== savedFile.pendingSaveRequestId) return;
+        // only for a real pending save after owner + path selected the tab.
+        if (msg.requestId && msg.requestId !== savedFile.pendingSaveRequestId) return;
         fileSaving.value = false;
         const savedContent = savedFile.pendingSaveContent;
         delete savedFile.pendingSaveRequestId;

@@ -165,6 +165,51 @@ describe('Agent file terminal forwarding', () => {
     const ack = detail => handle(new CustomEvent('workbench-message', {
       detail: { type: 'file_saved', requestedFilePath: 'docs/design.md', success: true, ...detail },
     }));
+    const otherBrowserTab = {
+      path: 'docs/design.md',
+      agentId: 'agent-a',
+      conversationId: 'conversation-a',
+      content: 'unsaved in another browser',
+      originalContent: 'other browser original',
+      isDirty: true,
+    };
+    const otherBrowserFiles = Vue.ref([otherBrowserTab]);
+    const otherBrowserSaveTabsState = vi.fn();
+    const otherBrowserHandle = createWsHandler({
+      store,
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/agent-a/project',
+      openFiles: otherBrowserFiles,
+      activeFileIndex: Vue.ref(0),
+      activeFile: Vue.computed(() => otherBrowserFiles.value[0]),
+      fileLoading: Vue.ref(false),
+      fileSaving: Vue.ref(false),
+      saveTabsState: otherBrowserSaveTabsState,
+      createEditor: vi.fn(),
+      openFileInTab: vi.fn(),
+      tree: { handleDirectoryListing: vi.fn() },
+      setTreeVisible: vi.fn(),
+      fp: { handleFolderPickerListing: vi.fn() },
+      qo: {},
+      ops: { getPendingDownload: () => null, clearPendingDownload: vi.fn() },
+      mdPreviewMode: Vue.ref(false),
+      renderOfficeLocal: vi.fn(),
+      editorContainer: Vue.ref(null),
+      debugStatus: Vue.ref(''),
+    }).handleWorkbenchMessage;
+    otherBrowserHandle(new CustomEvent('workbench-message', { detail: {
+      type: 'file_saved',
+      agentId: 'agent-a',
+      conversationId: 'conversation-a',
+      requestedFilePath: 'docs/design.md',
+      success: true,
+    } }));
+    expect(otherBrowserTab).toMatchObject({
+      originalContent: 'other browser original',
+      isDirty: true,
+    });
+    expect(otherBrowserSaveTabsState).not.toHaveBeenCalled();
+
     ack({ agentId: 'agent-b', conversationId: 'conversation-a', requestId: writeRequest.requestId });
     ack({ agentId: 'agent-a', conversationId: 'conversation-a', requestId: 'stale-save' });
     expect(ownerTab.isDirty).toBe(true);
@@ -183,6 +228,12 @@ describe('Agent file terminal forwarding', () => {
     expect(ownerTab.isDirty).toBe(true);
     expect(wrongOwnerTab.isDirty).toBe(true);
     expect(saveTabsState).toHaveBeenLastCalledWith('conversation-a');
+
+    const savedStateCallCount = saveTabsState.mock.calls.length;
+    ack({ agentId: 'agent-a', conversationId: 'conversation-a' });
+    expect(ownerTab.originalContent).toBe('updated');
+    expect(ownerTab.isDirty).toBe(true);
+    expect(saveTabsState).toHaveBeenCalledTimes(savedStateCallCount);
 
     tabs.saveFile();
     const retryRequest = sent.filter(msg => msg.type === 'write_file').at(-1);
