@@ -370,7 +370,6 @@ describe('Work Center dynamic coordination contract', () => {
     const service = new WorkCenterService({
       yeaftDir: tempDir,
       settingsReader: () => ({ startImmediately: false }),
-      runtimeInfo: async () => ({ defaultWorkDir: tempDir }),
     });
     try {
       const browser = await service.handle('create', {
