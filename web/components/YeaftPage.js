@@ -162,7 +162,7 @@ export default {
             @toggle-search="toggleHistorySearch"
             @reload-messages="reloadMessages"
             @toggle-session-status="toggleSessionStatus"
-            @toggle-workbench="store.toggleWorkbench()"
+            @toggle-workbench="toggleWorkbench"
             @reload-page="reloadPage"
           />
         </div>
@@ -741,8 +741,25 @@ export default {
         localStorage.setItem(SESSION_STATUS_VISIBLE_KEY, sessionStatusVisible.value ? '1' : '0');
       } catch (_) {}
     };
-    const toggleSessionStatus = () => setSessionStatusVisible(!sessionStatusVisible.value);
+    const toggleSessionStatus = () => {
+      const nextVisible = !sessionStatusVisible.value;
+      if (nextVisible) {
+        if (store.workbenchExpanded) store.toggleWorkbench();
+        store.closeYeaftDebugPanel();
+      }
+      setSessionStatusVisible(nextVisible);
+    };
     const closeSessionStatus = () => setSessionStatusVisible(false);
+    const toggleWorkbench = () => {
+      if (!store.workbenchExpanded) closeSessionStatus();
+      store.toggleWorkbench();
+    };
+    Vue.watch(debugMode, (open) => {
+      if (open) closeSessionStatus();
+    }, { flush: 'sync' });
+    Vue.watch(() => store.workbenchExpanded, (open) => {
+      if (open) closeSessionStatus();
+    }, { flush: 'sync' });
     const TIMELINE_MIN_WIDTH = 220;
     const TIMELINE_DEFAULT_WIDTH = 280;
     const savedTimelineWidth = (() => {
@@ -1685,6 +1702,7 @@ export default {
       sessionStatusVisible,
       toggleSessionStatus,
       closeSessionStatus,
+      toggleWorkbench,
       timelineWidthStyle,
       startTimelineResize,
       onEditVpFromTimeline,

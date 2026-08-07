@@ -3117,6 +3117,8 @@ export const useChatStore = defineStore('chat', {
     openYeaftTurnDebug({ sessionId = null, turnId = null } = {}) {
       const targetAgentId = resolveAgentIdForSession(this, sessionId);
       if (!targetAgentId) return;
+      this.workbenchExpanded = false;
+      this.workbenchMaximized = false;
       const requestId = `dbgpanel_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
       // Turn-scoped entries flip to loading until the detail response arrives.
       const status = turnId ? 'loading' : 'idle';
@@ -8067,13 +8069,19 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
+    openWorkbench() {
+      this.workbenchExpanded = true;
+      this.activeRightPanel = null;
+      this.closeYeaftDebugPanel();
+    },
+
     toggleWorkbench() {
-      this.workbenchExpanded = !this.workbenchExpanded;
       if (this.workbenchExpanded) {
-        this.activeRightPanel = null;
-      } else {
+        this.workbenchExpanded = false;
         this.workbenchMaximized = false;
+        return;
       }
+      this.openWorkbench();
     },
 
     toggleSidebar() {
@@ -8109,9 +8117,8 @@ export const useChatStore = defineStore('chat', {
       const path = typeof filePath === 'string' ? filePath.trim() : '';
       if (!path) return false;
       const wasExpanded = this.workbenchExpanded;
-      this.workbenchExpanded = true;
+      this.openWorkbench();
       this.workbenchMaximized = false;
-      this.activeRightPanel = null;
       const dispatchOpen = () => window.dispatchEvent(new CustomEvent('open-file-in-explorer', {
         detail: {
           filePath: path,
