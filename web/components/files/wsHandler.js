@@ -56,12 +56,12 @@ export function createWsHandler({
         if (msg.error) {
           debugStatus.value = `Error: ${msg.error}`;
           ops.clearPendingDownload();
-          const errFilePath = normalizePath(msg.filePath);
+          const errFilePath = normalizePath(msg.requestedFilePath || msg.filePath);
           const errTab = openFiles.value.find(f => f.path === errFilePath);
           if (errTab) { errTab.previewLoading = false; errTab.previewError = msg.error; }
           return;
         }
-        const nFilePath = normalizePath(msg.filePath);
+        const nFilePath = normalizePath(msg.requestedFilePath || msg.filePath);
 
         // Handle pending download
         if (ops.getPendingDownload() && normalizePath(ops.getPendingDownload()) === nFilePath) {

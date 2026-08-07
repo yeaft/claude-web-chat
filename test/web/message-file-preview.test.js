@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import * as Vue from 'vue';
-import { resolveMessageFileReference } from '../../web/utils/message-file-reference.js';
+import { decorateMessageFileReferences, resolveMessageFileReference } from '../../web/utils/message-file-reference.js';
 
 const readWeb = path => readFileSync(resolve(process.cwd(), 'web', path), 'utf8');
 
@@ -17,6 +17,23 @@ describe('message file preview', () => {
     expect(resolveMessageFileReference('https://example.test/design-doc.md')).toBeNull();
     expect(resolveMessageFileReference('#section')).toBeNull();
     expect(resolveMessageFileReference('/api/files/readme.md')).toBeNull();
+  });
+
+  it('decorates file links and standalone inline-code references without touching code blocks', () => {
+    const html = decorateMessageFileReferences([
+      '<a href="docs/design-doc.md#L119">design doc</a>',
+      '<a class="existing" href="docs/notes.md">notes</a>',
+      '<a href="https://example.test">web</a>',
+      '<code>web/components/WorkbenchPanel.js:1</code>',
+      '<pre><code>web/components/FilesTab.js:17</code></pre>',
+    ].join(' '));
+
+    expect(html).toContain('href="docs/design-doc.md#L119" class="message-file-reference"');
+    expect(html).toContain('class="existing message-file-reference" href="docs/notes.md"');
+    expect(html).not.toMatch(/<a[^>]*\bclass=[^>]*\bclass=/);
+    expect(html).toContain('<a href="web/components/WorkbenchPanel.js:1" class="message-file-reference"');
+    expect(html).toContain('<a href="https://example.test">web</a>');
+    expect(html).toContain('<pre><code>web/components/FilesTab.js:17</code></pre>');
   });
 
   it('opens a local Markdown link in the message file panel without intercepting external links', async () => {
@@ -78,7 +95,15 @@ describe('message file preview', () => {
     const mobileCss = filesCss.slice(filesCss.indexOf('@media (max-width: 768px)'));
     expect(mobileCss).toMatch(/\.file-tree-collapsed-rail\s*\{[^}]*display:\s*none;/s);
     expect(mobileCss).toMatch(/\.file-two-col\.tree-collapsed \.file-col-tree\s*\{[^}]*display:\s*flex;/s);
-    expect(readWeb('components/files/wsHandler.js')).toContain('pendingRevealLines.set(nPath, line)');
+    const wsHandler = readWeb('components/files/wsHandler.js');
+    expect(wsHandler).toContain('pendingRevealLines.set(nPath, line)');
+    expect(wsHandler.match(/msg\.requestedFilePath \|\| msg\.filePath/g)).toHaveLength(2);
+    expect(readWeb('../agent/workbench/file-ops.js').match(/requestedFilePath: filePath/g)).toHaveLength(3);
+    expect(filesCss).toMatch(/\.file-tree-collapsed-rail\s*\{[^}]*order:\s*4;[^}]*border-left:/s);
+    expect(filesCss).toMatch(/\.file-col-tree\s*\{[^}]*order:\s*3;/s);
+    expect(filesCss).toMatch(/\.file-col-content\s*\{[^}]*order:\s*1;/s);
+    expect(filesCss).toMatch(/\.file-tree-splitter\s*\{[^}]*order:\s*2;/s);
+    expect(filesTab).toContain('startWidth - (clientX - startX)');
     expect(workbench).toContain('<FilesTab');
     expect(workbench).toContain(':tree-initially-visible="false"');
     expect(readWeb('stores/chat.js')).toContain('else Vue.nextTick(dispatchOpen);');

@@ -50,6 +50,7 @@ export async function handleAgentFileTerminal(agentId, agent, msg) {
           conversationId: msg.conversationId,
           _requestUserId: msg._requestUserId,
           filePath: msg.filePath,
+          requestedFilePath: msg.requestedFilePath,
           binary: true,
           fileId,
           previewToken: token,

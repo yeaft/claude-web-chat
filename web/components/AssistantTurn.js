@@ -7,7 +7,7 @@ import { getTodoDisplayState } from '../utils/todo-display-state.js';
 import { renderMermaidIn } from '../utils/markdown.js';
 import { openImagePreview } from '../utils/imagePreview.js';
 import { formatSessionMessageDateTime, quoteFromAssistantTurn } from '../utils/session-message-quote.js';
-import { resolveMessageFileReference } from '../utils/message-file-reference.js';
+import { decorateMessageFileReferences, resolveMessageFileReference } from '../utils/message-file-reference.js';
 
 export default {
   name: 'AssistantTurn',
@@ -367,7 +367,7 @@ export default {
       try {
         if (typeof marked !== 'undefined') {
           const html = marked.parse(content);
-          return wrapTables(addCodeBlockCopyButtons(html));
+          return decorateMessageFileReferences(wrapTables(addCodeBlockCopyButtons(html)));
         }
       } catch (e) {
         console.error('Markdown parsing error:', e);

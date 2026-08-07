@@ -25,6 +25,7 @@ export async function handleReadFile(msg) {
         conversationId,
         _requestUserId,
         filePath: resolved,
+        requestedFilePath: filePath,
         content: buffer.toString('base64'),
         binary: true,
         mimeType
@@ -58,6 +59,7 @@ export async function handleReadFile(msg) {
         conversationId,
         _requestUserId,
         filePath: resolved,
+        requestedFilePath: filePath,
         content,
         language: langMap[ext] || null
       });
@@ -68,6 +70,7 @@ export async function handleReadFile(msg) {
       conversationId,
       _requestUserId,
       filePath,
+      requestedFilePath: filePath,
       content: '',
       error: e.message
     });
