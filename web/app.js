@@ -11,6 +11,9 @@ import ChatPage from './components/ChatPage.js';
 import YeaftPage from './components/YeaftPage.js';
 import SplitPane from './components/SplitPane.js';
 import ToolLine from './components/ToolLine.js';
+import { removeLegacyYeaftHistoryDatabase } from './stores/helpers/legacy-yeaft-history-cache-cleanup.js';
+
+removeLegacyYeaftHistoryDatabase();
 
 // Make stores globally available for components
 window.Pinia = {

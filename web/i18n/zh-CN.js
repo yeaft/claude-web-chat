@@ -1080,6 +1080,8 @@ export default {
   'files.newFolder': '新建文件夹',
   'files.collapseAll': '折叠所有',
   'files.openFolder': '打开文件夹',
+  'files.showTree': '显示文件夹',
+  'files.hideTree': '隐藏文件夹',
   'files.deleteSelected': '删除选中',
   'files.moveSelected': '移动选中',
   'files.enterPath': '输入路径...',

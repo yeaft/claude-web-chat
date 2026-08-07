@@ -52,7 +52,7 @@ export default {
         <div class="workbench-tab-content">
           <TerminalTab v-if="hasTerminal" v-show="activeTab === 'terminal'" />
           <GitStatusTab v-if="hasExplorer" v-show="activeTab === 'git'" />
-          <FilesTab v-if="hasExplorer" v-show="activeTab === 'files'" />
+          <FilesTab v-if="hasExplorer" v-show="activeTab === 'files'" :tree-initially-visible="false" />
         </div>
       </div>
 
@@ -131,8 +131,9 @@ export default {
 
       const onMove = (e) => {
         const clientX = isTouch ? e.touches[0].clientX : e.clientX;
-        const delta = clientX - startX;
-        // Allow workbench to grow up to window width minus sidebar (~48-260px) minus a small margin
+        // The panel now lives on the right edge, so dragging its left handle
+        // left grows the panel and dragging right shrinks it.
+        const delta = startX - clientX;
         const maxWidth = Math.max(900, window.innerWidth - 100);
         panelWidth.value = Math.max(280, Math.min(maxWidth, startWidth + delta));
       };
