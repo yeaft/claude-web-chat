@@ -158,6 +158,11 @@ export default {
             <strong>{{ tr('workCenter.waitingQuestionTitle', 'Input required') }}</strong>
             <p>{{ waitingQuestion }}</p>
           </section>
+          <section v-if="action.status === 'closed' && action.closeReason" class="work-center-action-closed" role="status">
+            <strong>{{ tr('workCenter.actionClosedTitle', 'Why this Action was closed') }}</strong>
+            <p>{{ action.closeReason }}</p>
+            <small v-if="action.closedAt">{{ tr('workCenter.closedAt', 'Closed at') }} · {{ time(action.closedAt) }}</small>
+          </section>
           <section v-if="action.failure" class="work-center-action-failure" role="alert">
             <strong>{{ tr('workCenter.actionFailedTitle', 'Why this Action failed') }}</strong>
             <p v-if="action.failure.error">{{ action.failure.error }}</p>

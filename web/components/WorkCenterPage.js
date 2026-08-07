@@ -76,6 +76,7 @@ export default {
       form: {
         requirement: '',
         workDir: '',
+        deliveryTarget: '',
         reuseMemory: true,
         start: true,
       },
@@ -336,7 +337,7 @@ export default {
     },
     orderedActions() {
       const actions = Array.isArray(this.selected?.actions) ? this.selected.actions : [];
-      const priority = { running: 0, waiting: 1, failed: 2, ready: 3, completed: 4, done: 4, superseded: 5, cancelled: 6 };
+      const priority = { running: 0, waiting: 1, failed: 2, ready: 3, completed: 4, done: 4, closed: 5, superseded: 6, cancelled: 7 };
       return actions.map((action, index) => ({ action, index })).sort((left, right) => {
         const leftPriority = priority[left.action?.status] ?? 7;
         const rightPriority = priority[right.action?.status] ?? 7;
@@ -475,6 +476,7 @@ export default {
     this.form = {
       requirement: draft.requirement || draft.goal || draft.title || '',
       workDir: draft.workDir || '',
+      deliveryTarget: draft.deliveryTarget || '',
       reuseMemory: true,
       start: this.settings?.startImmediately !== false,
     };
@@ -966,6 +968,7 @@ export default {
           sourceAgentId: agentId || null,
           requirement: draft.requirement || draft.goal || draft.title || '',
           workDir: '',
+          deliveryTarget: draft.deliveryTarget || '',
           origin: null,
           linkedSessionIds: [],
         };
@@ -1133,6 +1136,9 @@ export default {
         if (requestIsCurrent()) this.previewingAttachmentId = null;
       }
     },
+    isExternalOutput(ref) {
+      return /^https?:\/\//i.test(String(ref || ''));
+    },
     formatAttachmentSize(value) {
       const size = Math.max(0, Number(value) || 0);
       if (size < 1024) return `${size} B`;
@@ -1173,6 +1179,7 @@ export default {
           acceptanceCriteria: [],
           workItemType: 'auto',
           workDir: this.form.workDir.trim(),
+          deliveryTarget: this.form.deliveryTarget || null,
           origin: draftOwnedByAgent ? (draft.origin || null) : null,
           linkedSessionIds: draftOwnedByAgent ? (draft.linkedSessionIds || []) : [],
           attachments: this.workItemAttachmentsSupported
@@ -1191,6 +1198,7 @@ export default {
         this.form = {
           requirement: '',
           workDir: '',
+          deliveryTarget: '',
           reuseMemory: true,
           start: this.settings?.startImmediately !== false,
         };
@@ -1536,6 +1544,16 @@ export default {
                               <h3>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}</h3>
                               <ul><li v-for="criterion in selected.acceptanceCriteria" :key="criterion">{{ criterion }}</li></ul>
                             </section>
+                            <section v-if="selected.finalResult?.outputs?.length" class="work-center-section work-center-outputs">
+                              <h3>{{ tr('workCenter.outputs', 'Outputs') }}</h3>
+                              <ul class="work-center-output-list">
+                                <li v-for="output in selected.finalResult.outputs" :key="output.kind + ':' + output.ref">
+                                  <strong>{{ output.label }}</strong>
+                                  <a v-if="isExternalOutput(output.ref)" :href="output.ref" target="_blank" rel="noopener noreferrer">{{ output.ref }}</a>
+                                  <code v-else>{{ output.ref }}</code>
+                                </li>
+                              </ul>
+                            </section>
                             <section v-if="selected.attachments?.length" class="work-center-section work-center-attachments">
                               <h3>{{ tr('workCenter.attachments', 'Attachments') }}</h3>
                               <div class="work-center-attachment-list">
@@ -1684,6 +1702,7 @@ export default {
                         <div v-if="selected.mainline?.progress" class="work-center-mainline-progress" :data-attention="selected.mainline.progress.attentionState">
                           <strong>{{ statusLabel(selected.mainline.progress.lifecycle) }}</strong>
                           <span>{{ selected.mainline.progress.counts.completed }} {{ tr('workCenter.status.completed', 'Completed') }}</span>
+                          <span v-if="selected.mainline.progress.counts.closed">{{ selected.mainline.progress.counts.closed }} {{ tr('workCenter.status.closed', 'Closed') }}</span>
                           <span v-if="selected.mainline.progress.counts.running">{{ selected.mainline.progress.counts.running }} {{ tr('workCenter.status.running', 'Running') }}</span>
                           <span v-if="selected.mainline.progress.counts.waiting">{{ selected.mainline.progress.counts.waiting }} {{ tr('workCenter.status.waiting', 'Waiting') }}</span>
                           <span v-if="selected.mainline.progress.counts.failed">{{ selected.mainline.progress.counts.failed }} {{ tr('workCenter.status.failed', 'Failed') }}</span>
@@ -1806,6 +1825,7 @@ export default {
                 <small class="work-center-field-help">{{ tr('workCenter.workDirPickerHelp', 'Select an existing folder on the chosen Agent.') }}</small>
               </label>
               <div class="work-center-create-options">
+                <label><span>{{ tr('workCenter.deliveryTarget', 'Delivery target') }}</span><select v-model="form.deliveryTarget"><option value="">{{ tr('workCenter.deliveryTargetAsk', 'Ask me before delivery') }}</option><option value="workspace_files">{{ tr('workCenter.deliveryTargetFiles', 'Workspace files') }}</option><option value="pull_request">{{ tr('workCenter.deliveryTargetPr', 'Open a pull request') }}</option><option value="merge">{{ tr('workCenter.deliveryTargetMerge', 'Merge an approved pull request') }}</option></select><small class="work-center-field-help">{{ tr('workCenter.deliveryTargetHelp', 'This is the completion boundary, not permission to bypass review or merge policy.') }}</small></label>
                 <label class="work-center-checkbox"><input v-model="form.reuseMemory" type="checkbox"><span><strong>{{ tr('workCenter.reuseMemory', 'Use relevant Agent memory and completed work from this project') }}</strong><small>{{ tr('workCenter.reuseMemoryHelp', 'Uses scope-bounded Agent memory and structured results from completed WorkItems in the same project.') }}</small></span></label>
                 <label class="work-center-checkbox"><input v-model="form.start" type="checkbox" @change="onCreateStartInput"><span><strong>{{ tr('workCenter.startImmediately', 'Start immediately') }}</strong><small>{{ tr('workCenter.startImmediatelyHint', 'Turn this off to create a draft you can review first.') }}</small></span></label>
               </div>

@@ -5,7 +5,7 @@ import {
   trackOverlayPointerUp,
 } from '../utils/overlay-dismiss.js';
 
-const ACTION_TYPES = ['triage', 'research', 'design', 'diagnose', 'implement', 'migrate', 'test', 'review', 'integrate', 'document', 'operate', 'deliver', 'write', 'custom'];
+const ACTION_TYPES = ['triage', 'research', 'design', 'diagnose', 'implement', 'migrate', 'test', 'review', 'integrate', 'document', 'operate', 'deliver', 'write', 'create_vp', 'custom'];
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));

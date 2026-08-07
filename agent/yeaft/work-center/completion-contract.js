@@ -13,6 +13,12 @@ export function normalizeContractPatch(value) {
     if (!criteria) throw new Error('contractPatch.acceptanceCriteria must be an array');
     patch.acceptanceCriteria = criteria;
   }
+  if (Object.hasOwn(value, 'deliveryTarget')) {
+    if (!['workspace_files', 'pull_request', 'merge'].includes(value.deliveryTarget)) {
+      throw new Error('contractPatch.deliveryTarget must be workspace_files, pull_request, or merge');
+    }
+    patch.deliveryTarget = value.deliveryTarget;
+  }
   return Object.keys(patch).length > 0 ? patch : null;
 }
 

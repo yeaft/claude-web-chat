@@ -827,12 +827,14 @@
 }
 
 .work-center-status[data-status="done"],
-.work-center-status[data-status="completed"] {
+.work-center-status[data-status="completed"],
+.work-center-status[data-status="closed"] {
   color: var(--success);
 }
 
 .work-center-status[data-status="done"] > span,
-.work-center-status[data-status="completed"] > span {
+.work-center-status[data-status="completed"] > span,
+.work-center-status[data-status="closed"] > span {
   background: var(--success);
 }
 
@@ -1090,6 +1092,37 @@
 .work-center-acceptance li {
   color: var(--text-primary);
   font-size: 14px;
+}
+
+.work-center-action-closed {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--bg-sidebar);
+  color: var(--text-secondary);
+}
+
+.work-center-action-closed p {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.work-center-output-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.work-center-output-list li {
+  display: grid;
+  gap: 3px;
+}
+
+.work-center-output-list a,
+.work-center-output-list code {
+  overflow-wrap: anywhere;
+  color: var(--accent-blue);
+  font-size: 12px;
 }
 
 .work-center-failure,

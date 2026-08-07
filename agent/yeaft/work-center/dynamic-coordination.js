@@ -70,6 +70,25 @@ function normalizeSourceActionIds(value, actions) {
   return ids;
 }
 
+export function normalizeDynamicActionClosures(value, actions) {
+  if (!Array.isArray(value)) return [];
+  const byId = new Map(actions.map(action => [action.id, action]));
+  const seen = new Set();
+  return value.map(raw => {
+    const actionId = requiredText(raw?.actionId, 'close actionId', 256);
+    if (seen.has(actionId)) throw new Error(`Work Center dynamic Action close target is duplicated: ${actionId}`);
+    seen.add(actionId);
+    const action = byId.get(actionId);
+    if (!action || !['waiting', 'failed'].includes(action.status)) {
+      throw new Error(`Work Center can close only a waiting or failed Action: ${actionId}`);
+    }
+    return {
+      actionId,
+      reason: requiredText(raw?.reason, 'close reason', 2_000),
+    };
+  });
+}
+
 function normalizeSupersededActionIds(value, actions) {
   const ids = uniqueStrings(value);
   const byId = new Map(actions.map(action => [action.id, action]));
@@ -106,7 +125,12 @@ export function prepareDynamicActionMutation({
   const knownVpIds = Array.isArray(availableVpIds)
     ? new Set(availableVpIds.map(value => String(value || '').trim()).filter(Boolean))
     : null;
+  const closeActions = normalizeDynamicActionClosures(decision.closeActions, actions);
+  const closeActionIds = new Set(closeActions.map(entry => entry.actionId));
   const supersedeActionIds = normalizeSupersededActionIds(decision.supersedeActionIds, actions);
+  if (supersedeActionIds.some(actionId => closeActionIds.has(actionId))) {
+    throw new Error('Work Center cannot both close and supersede the same Action');
+  }
   const effectiveWorkItem = {
     ...workItem,
     ...(decision.contractPatch || {}),
@@ -198,6 +222,7 @@ export function prepareDynamicActionMutation({
   if (!workItemType) throw new Error('Work Center Coordinator must choose a specific WorkItem type');
   return {
     createdActions,
+    closeActions,
     supersedeActionIds,
     contractPatch: decision.contractPatch || null,
     workItemType,

@@ -259,6 +259,8 @@ export class WorkCenterService {
             coordinationMode: DYNAMIC_COORDINATION_MODE,
             executionSchemaVersion: DYNAMIC_EXECUTION_SCHEMA_VERSION,
             workDir,
+            deliveryTarget: ['workspace_files', 'pull_request', 'merge'].includes(payload.deliveryTarget)
+              ? payload.deliveryTarget : null,
             reuseMemory: payload.reuseMemory !== false,
             origin: payload.origin && typeof payload.origin === 'object'
               ? {

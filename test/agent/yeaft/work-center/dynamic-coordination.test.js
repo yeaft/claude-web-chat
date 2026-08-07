@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -10,7 +10,8 @@ import {
   prepareDynamicActionMutation,
   resolveDynamicActionPolicySnapshot,
 } from '../../../../agent/yeaft/work-center/dynamic-coordination.js';
-import { normalizeCoordinatorResponse } from '../../../../agent/yeaft/work-center/coordinator.js';
+import { WorkItemCoordinator, normalizeCoordinatorResponse } from '../../../../agent/yeaft/work-center/coordinator.js';
+import { Registry } from '../../../../agent/yeaft/vp/registry.js';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkCenterService } from '../../../../agent/yeaft/work-center/service.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
@@ -179,7 +180,10 @@ describe('Work Center dynamic coordination contract', () => {
 
   it('normalizes a dynamic Coordinator response without a full graph or replan decision', () => {
     const source = completedAction();
-    const detail = workItem({ actions: [source], runs: [] });
+    const detail = workItem({
+      goal: 'Implement the dynamic loop and stop after the verified repository files are ready.',
+      actions: [source], runs: [],
+    });
     const normalized = normalizeCoordinatorResponse({
       reply: 'I will implement the next verified step.',
       decision: {
@@ -594,6 +598,389 @@ describe('Work Center dynamic coordination contract', () => {
     expect(store.listPendingDynamicCoordinatorWakes()).toEqual([
       expect.objectContaining({ workItemId: created.id, kind: 'action_settled' }),
     ]);
+  });
+
+  it('closes obsolete failed Actions without treating them as acceptance evidence', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-dynamic-close-failed-'));
+    let now = 1_000;
+    store = new WorkItemStore(join(tempDir, 'work-center.db'), { now: () => now++ });
+    const controller = new WorkflowController(store);
+    const created = controller.create({
+      ...workItem(), workDir: tempDir, workflowTemplate: 'coordinator-driven', start: true,
+    });
+    const initialMailbox = store.enqueueCoordinatorMailbox(created.id, 'work_item_created', {}, 'dynamic:create:close');
+    const initialClaim = store.claimCoordinatorMailbox(created.id, 'coordinator-owner');
+    const initialTurn = store.beginDynamicCoordinatorTurn(initialMailbox.id, {
+      ownerBootId: 'coordinator-owner', claimEpoch: initialClaim.claim_epoch,
+    });
+    const initialMutation = prepareDynamicActionMutation({
+      workItem: initialTurn.detail, actions: [], availableVpIds: ['linus'],
+      decision: {
+        workItemType: 'software-change', actions: [{
+          type: 'research', objective: 'Attempt an obsolete specialist review.',
+          approach: 'Run the review once and retain its failure for audit.',
+          expectedOutcome: 'The failed Action can be explicitly closed.',
+          candidateVpIds: ['linus'], assignmentReason: 'Linus exercises the failed path.',
+          sourceActionIds: [], workspaceMode: 'read', maxAttempts: 1,
+        }],
+      },
+    });
+    store.completeCoordinatorTurn(initialTurn.turnId, {
+      reply: 'Starting the obsolete review.',
+      decision: { kind: 'create_actions', reason: 'The failure fixture is runnable.', actions: [] },
+      mutation: initialMutation,
+    }, initialTurn.fence);
+    const failedClaim = store.claimReadyAction('runner-owner', 5_000);
+    controller.submit(failedClaim.run.id, 'runner-owner', failedClaim.run.leaseEpoch, {
+      outcome: 'failed', summary: '', evidence: [], error: 'No matching specialist is available',
+    });
+    const failedDetail = store.getWorkItemDetail(created.id);
+    const reconciliation = store.listPendingDynamicCoordinatorWakes()[0];
+    const closeClaim = store.claimCoordinatorMailbox(created.id, 'coordinator-owner');
+    const closeTurn = store.beginDynamicCoordinatorTurn(reconciliation.id, {
+      ownerBootId: 'coordinator-owner', claimEpoch: closeClaim.claim_epoch,
+    });
+    const replacementMutation = prepareDynamicActionMutation({
+      workItem: closeTurn.detail, actions: closeTurn.detail.actions, availableVpIds: ['linus'],
+      decision: {
+        workItemType: 'software-change', actions: [{
+          type: 'write', objective: 'Produce the canonical verified result.',
+          approach: 'Use the available evidence and emit a structured output.',
+          expectedOutcome: 'A concrete file output backed by canonical Run evidence.',
+          candidateVpIds: ['linus'], assignmentReason: 'Linus can produce the canonical result.',
+          sourceActionIds: [failedClaim.action.id], workspaceMode: 'shared',
+        }],
+      },
+    });
+    const replanned = store.completeCoordinatorTurn(closeTurn.turnId, {
+      reply: 'Closing the obsolete Action and running the viable replacement.',
+      decision: { kind: 'create_actions', reason: 'The failed Action is no longer required.', actions: [] },
+      mutation: replacementMutation,
+    }, closeTurn.fence);
+    expect(replanned.actions.find(action => action.id === failedClaim.action.id)).toMatchObject({
+      status: 'failed',
+    });
+    const replacementClaim = store.claimReadyAction('runner-owner', 5_000);
+    controller.submit(replacementClaim.run.id, 'runner-owner', replacementClaim.run.leaseEpoch, {
+      outcome: 'completed', summary: 'Canonical result produced',
+      evidence: [{ kind: 'file', label: 'Design', ref: 'docs/design.md' }],
+      acceptanceChecks: workItem().acceptanceCriteria.map(criterion => ({
+        criterion, status: 'passed', evidence: 'docs/design.md',
+      })),
+    });
+    const finalWake = store.listPendingDynamicCoordinatorWakes().find(entry => entry.workItemId === created.id);
+    const finalClaim = store.claimCoordinatorMailbox(created.id, 'coordinator-owner');
+    const finalTurn = store.beginDynamicCoordinatorTurn(finalWake.id, {
+      ownerBootId: 'coordinator-owner', claimEpoch: finalClaim.claim_epoch,
+    });
+    const completed = store.completeCoordinatorTurn(finalTurn.turnId, {
+      reply: 'The viable work is complete.',
+      decision: {
+        kind: 'complete', reason: 'All criteria have canonical evidence and obsolete work is closed.',
+        closeActions: [{
+          actionId: failedClaim.action.id,
+          reason: 'The broader evidence Action supersedes this unavailable specialist review.',
+        }],
+        completion: {
+          summary: 'Complete',
+          acceptanceResults: workItem().acceptanceCriteria.map(criterion => ({
+            criterion, status: 'passed', evidenceRunIds: [replacementClaim.run.id],
+          })),
+          evidenceRunIds: [replacementClaim.run.id], residualRisks: [],
+        },
+      },
+    }, finalTurn.fence);
+    expect(failedDetail.actions.find(action => action.id === failedClaim.action.id).status).toBe('failed');
+    expect(completed.actions.find(action => action.id === failedClaim.action.id)).toMatchObject({
+      status: 'closed',
+      closeReason: 'The broader evidence Action supersedes this unavailable specialist review.',
+    });
+    expect(completed.status).toBe('done');
+    expect(completed.finalResult.evidenceRunIds).toEqual([replacementClaim.run.id]);
+  });
+
+  it('keeps canonical Run identity, checks, and outputs in completed Coordinator snapshots', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-dynamic-coordinator-snapshot-'));
+    store = new WorkItemStore(join(tempDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    const created = controller.create({
+      ...workItem(), workDir: tempDir, workflowTemplate: 'coordinator-driven', start: true,
+    });
+    const initial = store.enqueueCoordinatorMailbox(created.id, 'work_item_created', {}, 'dynamic:create:snapshot');
+    const initialClaim = store.claimCoordinatorMailbox(created.id, 'coordinator-owner');
+    const initialTurn = store.beginDynamicCoordinatorTurn(initial.id, {
+      ownerBootId: 'coordinator-owner', claimEpoch: initialClaim.claim_epoch,
+    });
+    const mutation = prepareDynamicActionMutation({
+      workItem: initialTurn.detail, actions: [], availableVpIds: ['linus'],
+      decision: {
+        workItemType: 'documentation', actions: [{
+          type: 'write', objective: 'Produce one canonical document.',
+          approach: 'Write the requested file and return structured evidence.',
+          expectedOutcome: 'The Coordinator can complete directly from the Run snapshot.',
+          candidateVpIds: ['linus'], assignmentReason: 'Linus writes the document.',
+          sourceActionIds: [], workspaceMode: 'shared',
+        }],
+      },
+    });
+    store.completeCoordinatorTurn(initialTurn.turnId, {
+      reply: 'Writing the document.',
+      decision: { kind: 'create_actions', reason: 'The task is actionable.', actions: [] }, mutation,
+    }, initialTurn.fence);
+    const run = store.claimReadyAction('runner-owner', 5_000);
+    controller.submit(run.run.id, 'runner-owner', run.run.leaseEpoch, {
+      outcome: 'completed', summary: 'Document ready',
+      evidence: [{ kind: 'file', label: 'Design', ref: 'docs/design.md' }],
+      outputs: [{ kind: 'file', label: 'Design', ref: 'docs/design.md' }],
+      acceptanceChecks: workItem().acceptanceCriteria.map(criterion => ({
+        criterion, status: 'passed', evidence: 'docs/design.md',
+      })),
+    });
+    let snapshot = null;
+    const coordinator = new WorkItemCoordinator({
+      store,
+      registry: { listVps: () => [{ id: 'linus', name: 'Linus', role: 'systems' }] },
+      policyProvider: async () => ({ coordinatorModelPolicy: { mode: 'inherit' } }),
+      runtimeProvider: async () => ({
+        config: { model: 'provider/model', maxOutputTokens: 1_024 },
+        adapter: { call: async request => {
+          request.onRequestStart?.();
+          snapshot = JSON.parse(request.messages[0].content.match(/Current WorkItem snapshot:\n([\s\S]*?)\n\nLatest user message:/)?.[1]);
+          return { text: JSON.stringify({
+            reply: 'The existing canonical Run is sufficient.',
+            decision: {
+              kind: 'complete', reason: 'No evidence-packaging Action is required.', closeActions: [],
+              completion: {
+                summary: 'Complete',
+                acceptanceResults: workItem().acceptanceCriteria.map(criterion => ({
+                  criterion, status: 'passed', evidenceRunIds: [run.run.id],
+                })),
+                evidenceRunIds: [run.run.id], residualRisks: [],
+              },
+            },
+          }) };
+        } },
+      }),
+    });
+    const existingWake = store.listPendingDynamicCoordinatorWakes()[0];
+    const coordinatorClaim = store.claimCoordinatorMailbox(created.id, coordinator.ownerBootId);
+    const started = store.beginDynamicCoordinatorTurn(existingWake.id, {
+      ownerBootId: coordinator.ownerBootId, claimEpoch: coordinatorClaim.claim_epoch,
+    });
+    const turn = coordinator.resume(started, {
+      text: 'Finish from the existing evidence.',
+    });
+    const completed = await turn.task;
+    expect(snapshot.actions[0].result).toMatchObject({
+      runId: run.run.id,
+      outputs: [{ kind: 'file', label: 'Design', ref: 'docs/design.md' }],
+      acceptanceChecks: workItem().acceptanceCriteria.map(criterion => ({
+        criterion, status: 'passed', evidence: 'docs/design.md',
+      })),
+    });
+    expect(completed.status).toBe('done');
+    expect(completed.actions).toHaveLength(1);
+  });
+
+  it('provisions a specialized VP through an assigned VP authoring Action', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-dynamic-vp-provision-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Systems Engineer', traits: ['systems', 'engineering'],
+      persona: 'Build the smallest correct system.',
+    });
+    store = new WorkItemStore(join(tempDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    const created = controller.create({
+      ...workItem(), workDir: tempDir, workflowTemplate: 'coordinator-driven', start: true,
+    });
+    const mailbox = store.enqueueCoordinatorMailbox(created.id, 'work_item_created', {}, 'dynamic:create:vp-provision');
+    const claim = store.claimCoordinatorMailbox(created.id, 'coordinator-owner');
+    const turn = store.beginDynamicCoordinatorTurn(mailbox.id, {
+      ownerBootId: 'coordinator-owner', claimEpoch: claim.claim_epoch,
+    });
+    const mutation = prepareDynamicActionMutation({
+      workItem: turn.detail, actions: [], availableVpIds: ['linus'],
+      decision: {
+        workItemType: 'software-change', actions: [{
+          type: 'create_vp', objective: 'Create a specialist for accessibility review.',
+          approach: 'Have Linus author a focused persistent VP definition using the dedicated tool.',
+          expectedOutcome: 'The specialist VP is available for later Work Center Actions.',
+          capability: 'vp_authoring', candidateVpIds: ['linus'],
+          assignmentReason: 'Linus is the best available systems-oriented VP to author the specialist.',
+          sourceActionIds: [], workspaceMode: 'shared',
+        }],
+      },
+    });
+    store.completeCoordinatorTurn(turn.turnId, {
+      reply: 'Creating the missing specialist.',
+      decision: { kind: 'create_actions', reason: 'No existing VP covers the required specialty.', actions: [] },
+      mutation,
+    }, turn.fence);
+    const acquired = store.claimReadyAction('runner-owner', 5_000);
+    let adapterCalls = 0;
+    const adapter = {
+      async *stream(params) {
+        params.onRequestStart?.();
+        adapterCalls += 1;
+        if (adapterCalls === 1) {
+          const tool = params.tools.find(candidate => candidate.name === 'CreateWorkItemVp');
+          expect(tool).toBeTruthy();
+          yield { type: 'tool_call', id: 'create-vp', name: 'CreateWorkItemVp', input: {
+            vpId: 'accessibility-reviewer', displayName: 'Accessibility Reviewer',
+            role: 'Accessibility reviewer', area: 'quality', traits: ['accessibility', 'review'],
+            persona: 'Review user-facing behavior for accessibility with concrete evidence.',
+          } };
+          yield { type: 'stop', stopReason: 'tool_use' };
+          return;
+        }
+        yield { type: 'text_delta', text: JSON.stringify({
+          outcome: 'completed', summary: 'Specialist VP created.',
+          evidence: [{ kind: 'text', label: 'VP accessibility-reviewer created' }],
+          acceptanceChecks: workItem().acceptanceCriteria.map(criterion => ({
+            criterion, status: 'deferred', evidence: 'Specialist creation is an intermediate step',
+          })),
+        }) };
+        yield { type: 'stop', stopReason: 'end_turn' };
+      },
+    };
+    const runner = new WorkItemRunner({
+      store, yeaftDir: tempDir,
+      runtimeProvider: async () => ({
+        defaultWorkDir: tempDir,
+        config: { model: 'provider/model', maxOutputTokens: 1_024, projectDocMaxBytes: 0 },
+        adapter,
+      }),
+      registry,
+    });
+    const result = await runner.run({
+      ...acquired, ownerBootId: 'runner-owner', signal: new AbortController().signal,
+    });
+    expect(result).toMatchObject({ outcome: 'completed', summary: 'Specialist VP created.' });
+    expect(registry.getVp('accessibility-reviewer')).toMatchObject({
+      id: 'accessibility-reviewer', role: 'Accessibility reviewer',
+    });
+    expect(existsSync(join(tempDir, 'virtual-persons', 'accessibility-reviewer', 'role.md'))).toBe(true);
+  });
+
+  it('normalizes structured outputs and exposes them on the final WorkItem result', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-dynamic-outputs-'));
+    let now = 1_000;
+    store = new WorkItemStore(join(tempDir, 'work-center.db'), { now: () => now++ });
+    const controller = new WorkflowController(store);
+    const created = controller.create({
+      ...workItem(), workDir: tempDir, workflowTemplate: 'coordinator-driven', start: true,
+    });
+    const mailbox = store.enqueueCoordinatorMailbox(created.id, 'work_item_created', {}, 'dynamic:create:outputs');
+    const claim = store.claimCoordinatorMailbox(created.id, 'coordinator-owner');
+    const turn = store.beginDynamicCoordinatorTurn(mailbox.id, {
+      ownerBootId: 'coordinator-owner', claimEpoch: claim.claim_epoch,
+    });
+    const mutation = prepareDynamicActionMutation({
+      workItem: turn.detail, actions: [], availableVpIds: ['linus'],
+      decision: {
+        workItemType: 'documentation', actions: [{
+          type: 'write', objective: 'Write the requested design document.',
+          approach: 'Create and verify the document in the Work Item workspace.',
+          expectedOutcome: 'A structured file output is available to the user.',
+          candidateVpIds: ['linus'], assignmentReason: 'Linus owns the document.',
+          sourceActionIds: [], workspaceMode: 'shared',
+        }],
+      },
+    });
+    store.completeCoordinatorTurn(turn.turnId, {
+      reply: 'Writing the document.',
+      decision: { kind: 'create_actions', reason: 'The file delivery boundary is explicit.', actions: [] }, mutation,
+    }, turn.fence);
+    const acquired = store.claimReadyAction('runner-owner', 5_000);
+    controller.submit(acquired.run.id, 'runner-owner', acquired.run.leaseEpoch, {
+      outcome: 'completed', summary: 'Document written',
+      evidence: [{ kind: 'file', label: 'Design document', ref: 'docs/design.md' }],
+      outputs: [
+        { kind: 'file', label: 'Design document', ref: 'docs/design.md' },
+        { kind: 'link', label: 'Pull request', ref: 'https://github.com/example/repo/pull/1' },
+      ],
+      acceptanceChecks: workItem().acceptanceCriteria.map(criterion => ({
+        criterion, status: 'passed', evidence: 'docs/design.md',
+      })),
+    });
+    const wake = store.listPendingDynamicCoordinatorWakes()[0];
+    const completeClaim = store.claimCoordinatorMailbox(created.id, 'coordinator-owner');
+    const completeTurn = store.beginDynamicCoordinatorTurn(wake.id, {
+      ownerBootId: 'coordinator-owner', claimEpoch: completeClaim.claim_epoch,
+    });
+    const completed = store.completeCoordinatorTurn(completeTurn.turnId, {
+      reply: 'The requested outputs are ready.',
+      decision: {
+        kind: 'complete', reason: 'The explicit file delivery boundary is satisfied.',
+        completion: {
+          summary: 'Outputs ready',
+          acceptanceResults: workItem().acceptanceCriteria.map(criterion => ({
+            criterion, status: 'passed', evidenceRunIds: [acquired.run.id],
+          })),
+          evidenceRunIds: [acquired.run.id], residualRisks: [],
+        },
+      },
+    }, completeTurn.fence);
+    expect(store.getRun(acquired.run.id).outputs).toEqual([
+      { kind: 'file', label: 'Design document', ref: 'docs/design.md' },
+      { kind: 'link', label: 'Pull request', ref: 'https://github.com/example/repo/pull/1' },
+    ]);
+    expect(completed.finalResult.outputs).toEqual([
+      { kind: 'file', label: 'Design document', ref: 'docs/design.md', runId: acquired.run.id },
+      { kind: 'link', label: 'Pull request', ref: 'https://github.com/example/repo/pull/1', runId: acquired.run.id },
+    ]);
+  });
+
+  it('persists an explicit delivery target and lets it authorize mutating Actions', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-dynamic-delivery-target-'));
+    store = new WorkItemStore(join(tempDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    const created = controller.create({
+      ...workItem(), goal: 'Implement the requested change.', deliveryTarget: 'pull_request',
+      workDir: tempDir, workflowTemplate: 'coordinator-driven', start: true,
+    });
+    const detail = store.getWorkItemDetail(created.id);
+    expect(detail.deliveryTarget).toBe('pull_request');
+    expect(() => normalizeCoordinatorResponse({
+      reply: 'The pull-request boundary is explicit.',
+      decision: {
+        kind: 'create_actions', reason: 'Implementation may proceed.',
+        workItemType: 'software-change', actions: [{
+          type: 'implement', objective: 'Implement the requested change.',
+          approach: 'Modify the repository and verify focused tests.',
+          expectedOutcome: 'A verified change ready for the requested pull request.',
+          candidateVpIds: ['linus'], assignmentReason: 'Linus owns implementation.',
+          sourceActionIds: [], workspaceMode: 'shared',
+        }],
+      },
+    }, detail, { automatic: true, availableVpIds: ['linus'] })).not.toThrow();
+  });
+
+  it('requires a human decision when the delivery boundary is ambiguous', () => {
+    const detail = workItem({ actions: [], runs: [] });
+    expect(() => normalizeCoordinatorResponse({
+      reply: 'I will start coding.',
+      decision: {
+        kind: 'create_actions', reason: 'The technical implementation is clear.',
+        workItemType: 'software-change', actions: [{
+          type: 'implement', objective: 'Implement the requested change.',
+          approach: 'Modify the repository and verify focused tests.',
+          expectedOutcome: 'A code change exists, but delivery is unspecified.',
+          candidateVpIds: ['linus'], assignmentReason: 'Linus owns implementation.',
+          sourceActionIds: [], workspaceMode: 'shared',
+        }],
+      },
+    }, detail, { automatic: true, availableVpIds: ['linus'] }))
+      .toThrow(/delivery boundary.*request_human/i);
+    const question = normalizeCoordinatorResponse({
+      reply: 'The implementation scope is clear, but the delivery boundary is not.',
+      decision: {
+        kind: 'request_human', reason: 'File-only, PR, and merged delivery require different authority.',
+        question: 'Should this Work Item stop after generating files, open a PR, or merge the approved PR?',
+      },
+    }, detail, { automatic: true, availableVpIds: ['linus'] });
+    expect(question.decision.kind).toBe('request_human');
   });
 
   it('requires canonical owned Run evidence for every completion criterion', () => {

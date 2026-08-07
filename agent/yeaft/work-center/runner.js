@@ -4,6 +4,8 @@ import { defineTool } from '../tools/types.js';
 import { allTools } from '../tools/index.js';
 import { parsePatch } from '../tools/apply-patch.js';
 import { defaultRegistry } from '../vp/registry.js';
+import { createVp } from '../vp/vp-crud.js';
+import { loadVpFromDir } from '../vp/vp-store.js';
 import { createTrace } from '../debug-trace.js';
 import { isPathInsideOrEqual } from '../tools/path-safety.js';
 import { resolveWorkItemModel, selectWorkItemVp } from './assignment.js';
@@ -41,7 +43,7 @@ import {
   MAX_REPLAN_ADDED_ACTIONS,
 } from './plan-mutation.js';
 import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
-import { normalizeEvidence } from './evidence.js';
+import { normalizeEvidence, normalizeOutputs } from './evidence.js';
 import {
   MAINLINE_CONTEXT_HARD_LIMIT_BYTES,
   buildMainlineContextSnapshot,
@@ -327,6 +329,47 @@ function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunAct
       return output;
     },
   };
+}
+
+export function createWorkItemVpTool({ yeaftDir, registry, isRunActive }) {
+  return defineTool({
+    name: 'CreateWorkItemVp',
+    description: 'Create one persistent specialist VP in this Agent instance after the Coordinator assigned this VP-authoring Action. Use a narrow role and persona for the missing capability; do not clone an existing VP or create a general-purpose replacement.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['vpId', 'displayName', 'role', 'area', 'traits', 'persona'],
+      properties: {
+        vpId: { type: 'string', minLength: 1, maxLength: 64 },
+        displayName: { type: 'string', minLength: 1, maxLength: 120 },
+        displayNameZh: { type: 'string', maxLength: 120 },
+        description: { type: 'string', maxLength: 500 },
+        descriptionZh: { type: 'string', maxLength: 500 },
+        role: { type: 'string', minLength: 1, maxLength: 200 },
+        roleZh: { type: 'string', maxLength: 200 },
+        area: { type: 'string', minLength: 1, maxLength: 64 },
+        traits: { type: 'array', minItems: 1, maxItems: 20, uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 80 } },
+        modelHint: { type: 'string', enum: ['primary', 'fast'] },
+        persona: { type: 'string', minLength: 1, maxLength: 12_000 },
+      },
+    },
+    async execute(input) {
+      if (!isRunActive()) throw new Error('Work Center Run is no longer active');
+      if (!yeaftDir) throw new Error('Work Center VP creation requires the current Agent data directory');
+      const libDir = path.join(yeaftDir, 'virtual-persons');
+      const { vpId, dir } = createVp(input, {
+        libDir,
+        memoryRoot: path.join(yeaftDir, 'memory'),
+      });
+      const vp = loadVpFromDir(dir);
+      if (!vp) throw new Error(`Created Work Center VP could not be loaded: ${vpId}`);
+      registry?.setVp?.(vp);
+      return JSON.stringify({ created: true, vpId });
+    },
+    isConcurrencySafe: () => false,
+    isReadOnly: () => false,
+    sideEffectScope: 'external',
+  });
 }
 
 export function planningVpCatalog(vps) {
@@ -631,6 +674,7 @@ export function parseStructuredResult(text, actionType) {
       outcome: parsed.outcome,
       summary: String(parsed.summary || ''),
       evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
+      outputs: normalizeOutputs(parsed.outputs),
       waitingReason: parsed.waitingReason ? String(parsed.waitingReason) : null,
       error: parsed.error ? String(parsed.error) : null,
       reviewDecision: ['approved', 'changes_requested'].includes(parsed.reviewDecision)
@@ -689,10 +733,11 @@ function completionContract(action, workItem) {
   "outcome": "completed|waiting|retryable|failed",
   "summary": "short result",
   "evidence": ["test, PR, file, or other verifiable evidence"],
+  "outputs": [{ "kind": "file|link|pr|commit", "label": "user-facing output name", "ref": "relative path, URL, PR, or commit ref" }],
   "acceptanceChecks": ${JSON.stringify(acceptanceChecks)},
   "waitingReason": null,
   "error": null${reviewField}${triageField}${planField}
-}\nFor completed, provide at least one concrete evidence item and exactly one acceptanceChecks entry for every current acceptance criterion, in the same order, with status passed, deferred, or not_applicable and a non-empty evidence reference. Triage must use its proposed criteria when submitting a contractPatch. An intermediate Action may defer criteria outside its task-specific expected result; the final deliver Action, and an approved review with no downstream work, require every criterion to pass. If a criterion is no longer applicable, ask the WorkItem Coordinator to revise the contract instead of pretending it passed. This is a deterministic submission gate, not independent proof: later verification and delivery Actions must verify the claims. A model turn ending is not completion. Use waiting when user or external input is required. Use retryable only for a transient failure. Do not start background jobs or delegate this Action.`;
+}\nFor completed, provide at least one concrete evidence item and exactly one acceptanceChecks entry for every current acceptance criterion, in the same order, with status passed, deferred, or not_applicable and a non-empty evidence reference. Report every user-consumable file, URL, PR, or commit in outputs; evidence proves work, while outputs tell the user where the deliverable is. Triage must use its proposed criteria when submitting a contractPatch. An intermediate Action may defer criteria outside its task-specific expected result; the final deliver Action, and an approved review with no downstream work, require every criterion to pass. If a criterion is no longer applicable, ask the WorkItem Coordinator to revise the contract instead of pretending it passed. This is a deterministic submission gate, not independent proof: later verification and delivery Actions must verify the claims. A model turn ending is not completion. Use waiting when user or external input is required. Use retryable only for a transient failure. Do not start background jobs or delegate this Action.`;
 }
 
 function safeCheckpointUrl(value) {
@@ -1106,6 +1151,11 @@ export class WorkItemRunner {
       && workItem?.workflowSnapshot?.planningMode === 'ai'
       && !replanToolEnabled;
     const runTools = [];
+    if (executionAction.type === 'create_vp') runTools.push(createWorkItemVpTool({
+      yeaftDir: runtime.yeaftDir || this.yeaftDir,
+      registry: this.registry,
+      isRunActive,
+    }));
     if (planToolEnabled) runTools.push(createSubmitWorkItemPlanTool({
       vps: this.registry.listVps(),
       workItem,

@@ -15,6 +15,7 @@ export const BUILT_IN_ACTION_TYPES = Object.freeze([
   'operate',
   'deliver',
   'write',
+  'create_vp',
   'custom',
 ]);
 const STAGE_TYPES = new Set(BUILT_IN_ACTION_TYPES);
@@ -39,6 +40,7 @@ const DEFAULT_STAGE_INSTRUCTIONS = Object.freeze({
   operate: 'Perform the operational change with explicit preconditions, safety fences, observability, and rollback handling. Verify the live or simulated postcondition from authoritative state, avoid destructive shortcuts, and record the exact evidence needed for handoff.',
   deliver: 'Deliver only an approved result using the repository release policy. Recheck the reviewed commit and remote state, run required final verification on the immutable delivery tree, publish only the requested artifacts, and report commit, tag, deployment, and residual-risk evidence.',
   write: 'Produce the requested written deliverable for its intended audience. Use the available evidence, preserve required terminology and structure, avoid unsupported claims, and verify the result against every acceptance criterion.',
+  create_vp: 'Create one persistent specialist VP only when no existing VP can execute a required capability. Author a narrow role, traits, and persona with the CreateWorkItemVp tool, then report the new VP id as evidence. Do not clone an existing VP or create a generic replacement.',
   custom: 'Complete the Action objective using repository facts and the WorkItem contract. State the approach, handle relevant risks and boundary conditions, produce the requested artifact or change, verify the result, and return concrete evidence plus any residual uncertainty.',
 });
 
@@ -56,6 +58,7 @@ const DEFAULT_ACTION_BRIEFS = Object.freeze({
   operate: ['Perform the requested operational change safely.', 'Check preconditions, apply safety fences, preserve rollback options, and verify authoritative state.', 'A verified operational postcondition with handoff and rollback evidence.'],
   deliver: ['Deliver the approved Work Item result using repository release policy.', 'Recheck immutable reviewed state, run final gates, and publish only the requested artifacts.', 'A traceable delivery with commit, artifact, deployment, and residual-risk evidence.'],
   write: ['Produce the written deliverable requested by this Action.', 'Use available evidence, the intended audience, and the required terminology and structure.', 'A complete written artifact verified against the acceptance criteria.'],
+  create_vp: ['Create the missing specialist VP required by this Work Item.', 'Have the assigned existing VP author a narrow persistent role and persona with the dedicated VP creation tool.', 'A new Agent-local VP whose identity and capability can be selected by later Actions.'],
   custom: ['Complete the domain-specific objective defined for this Action.', 'Use repository facts, handle relevant risks and boundaries, and verify the produced result.', 'The requested artifact or change with concrete evidence and residual uncertainty.'],
 });
 

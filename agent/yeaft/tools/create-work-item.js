@@ -40,6 +40,11 @@ Use this when work must continue beyond the current turn, needs role handoffs, r
         type: 'string',
         description: { en: 'Existing project directory for execution', zh: '执行时使用的已存在项目目录' },
       },
+      deliveryTarget: {
+        type: 'string',
+        enum: ['workspace_files', 'pull_request', 'merge'],
+        description: { en: 'Explicit delivery boundary. Omit only when the Coordinator should ask the user before mutating or delivering.', zh: '明确的交付边界。仅当应由 Coordinator 在修改或交付前询问用户时省略。' },
+      },
       start: {
         type: 'boolean',
         description: { en: 'Start Coordinator execution immediately (default true)', zh: '是否立即启动 Coordinator 执行（默认 true）' },
@@ -69,6 +74,7 @@ Use this when work must continue beyond the current turn, needs role handoffs, r
       acceptanceCriteria: cleanCriteria(input.acceptanceCriteria),
       workItemType: typeof input.workItemType === 'string' ? input.workItemType.trim() : 'auto',
       workDir: typeof input.workDir === 'string' ? input.workDir.trim() : (ctx.cwd || ''),
+      deliveryTarget: typeof input.deliveryTarget === 'string' ? input.deliveryTarget : null,
       // Agent-local Work Center settings freeze the Action-template and model
       // policy snapshot. Tool callers create the contract; they cannot smuggle
       // a different dispatch policy into it.

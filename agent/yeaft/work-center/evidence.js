@@ -1,4 +1,5 @@
 const ALLOWED_KINDS = new Set(['text', 'tool', 'test', 'file', 'link', 'pr', 'commit']);
+const OUTPUT_KINDS = new Set(['file', 'link', 'pr', 'commit']);
 const ALLOWED_STATUSES = new Set(['completed', 'passed', 'failed', 'error', 'pending']);
 const MAX_ITEMS = 50;
 const MAX_LABEL_LENGTH = 500;
@@ -42,6 +43,22 @@ export function normalizeEvidence(value) {
   for (const raw of value) {
     const item = normalizeEvidenceItem(raw);
     if (item) result.push(item);
+    if (result.length >= MAX_ITEMS) break;
+  }
+  return result;
+}
+
+export function normalizeOutputs(value) {
+  if (!Array.isArray(value)) return [];
+  const result = [];
+  const seen = new Set();
+  for (const raw of value) {
+    const item = normalizeEvidenceItem(raw);
+    if (!item || !OUTPUT_KINDS.has(item.kind) || !item.ref) continue;
+    const key = `${item.kind}\u0000${item.ref}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(item);
     if (result.length >= MAX_ITEMS) break;
   }
   return result;
