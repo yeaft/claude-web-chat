@@ -7,6 +7,8 @@
  */
 
 const DREAM_STATE_BLOCK_RE = /<!--\s*dream-state\s*-->[\s\S]*?<!--\s*\/dream-state\s*-->/gi;
+const DREAM_RECENT_TRANSCRIPT_HEADER_RE = /^\s*Recent session details from the latest Dream pass:\s*$/i;
+const DREAM_TRANSCRIPT_LINE_RE = /^\s*[-*]\s+\S+\s+(?:user|assistant|tool)(?:\/[^:\s]+)?:\s*/i;
 
 const TRANSIENT_MEMORY_RE = /\b(work\s*item|current\s+(?:state|work|task)|in[_ -]?progress|todo|next\s+step|blocker|blocked|pr\s*#?\d+|pull\s+request|review|merge\s+commit|release\s+tag|tag\s+v\d|v\d+\.\d+\.\d+)\b|(?:工作项|当前(?:状态|任务|工作)|正在|待办|下一步|阻塞|评审|合并|发布|标签|已推|已合并|已完成)/i;
 const ASCII_WORD_RE = /[a-z0-9_]{3,}/gi;
@@ -39,10 +41,25 @@ export function stripDreamStateBlocks(text) {
  * @returns {string}
  */
 export function cleanMemoryPromptText(text) {
-  return stripDreamStateBlocks(text)
+  return stripGeneratedDreamTranscript(stripDreamStateBlocks(text))
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+function stripGeneratedDreamTranscript(text) {
+  const kept = [];
+  let generatedTranscript = false;
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (DREAM_RECENT_TRANSCRIPT_HEADER_RE.test(line)) {
+      generatedTranscript = true;
+      continue;
+    }
+    if (generatedTranscript && DREAM_TRANSCRIPT_LINE_RE.test(line)) continue;
+    generatedTranscript = false;
+    kept.push(line);
+  }
+  return kept.join('\n');
 }
 
 /**
