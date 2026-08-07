@@ -1041,7 +1041,7 @@ function threadSnapshotForClassifier(thread) {
 
 function readVpForClassifier(vpId) {
   try {
-    const vp = readVp(vpId);
+    const vp = readConfiguredVp(vpId);
     return vp ? { vpId, ...vp } : { vpId };
   } catch {
     return { vpId };
@@ -2928,6 +2928,16 @@ function configuredVpPaths() {
   };
 }
 
+function readConfiguredVp(vpId) {
+  const { libDir } = configuredVpPaths();
+  return readVp(vpId, libDir ? { libDir } : {});
+}
+
+function scanConfiguredVpLibrary() {
+  const { libDir } = configuredVpPaths();
+  return scanVpLibrary(libDir ? { dir: libDir } : {});
+}
+
 export function handleYeaftVpSubscribe(msg = {}) {
   if (_vpUnsubscribe) {
     try { _vpUnsubscribe(); } catch { /* ignore */ }
@@ -3282,7 +3292,7 @@ export function handleYeaftCreateSession(msg) {
   const payload = (msg && msg.payload) || {};
   try {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
-    const group = createSessionFromSpec(yeaftDir, payload);
+    const group = createSessionFromSpec(yeaftDir, payload, configuredVpPaths());
     recordAgentSessionCreated();
     group.config = loadSessionConfig(yeaftDir, group.id);
     sendSessionCrudResult({ op: 'create', requestId, ok: true, session: group });
@@ -3577,7 +3587,7 @@ export function handleYeaftSessionSetDefaultVp(msg) {
 function buildVpPersona(vpId) {
   if (!vpId) return null;
   try {
-    const vp = readVp(vpId);
+    const vp = readConfiguredVp(vpId);
     if (!vp) return null;
     return {
       vpId,
@@ -4538,7 +4548,7 @@ async function runYeaftSessionSend(msg) {
     if (wantsAdd.length) {
       for (const vpId of wantsAdd) {
         try {
-          const vp = readVp(vpId);
+          const vp = readConfiguredVp(vpId);
           if (!vp) continue;
           addMember(yeaftDir, sessionId, vpId);
           rosterMutated = true;
@@ -4817,9 +4827,9 @@ export function buildVpQueryOpts({ vpId, sessionCoordinator, sessionId, envelope
   }
   if (!resolvedVpId) {
     try {
-      const lib = scanVpLibrary();
-      if (Array.isArray(lib) && lib.length > 0 && lib[0].vpId) {
-        resolvedVpId = lib[0].vpId;
+      const lib = scanConfiguredVpLibrary();
+      if (Array.isArray(lib) && lib.length > 0 && lib[0].id) {
+        resolvedVpId = lib[0].id;
       }
     } catch { /* library scan is best-effort */ }
   }

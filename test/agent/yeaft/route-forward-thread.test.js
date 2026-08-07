@@ -6,7 +6,9 @@ import { createCoordinator } from '../../../agent/yeaft/sessions/coordinator.js'
 import { createRouter } from '../../../agent/yeaft/routing/router.js';
 import { createLoopGuard, MAX_CHAIN_DEPTH } from '../../../agent/yeaft/routing/loop-guard.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { Engine } from '../../../agent/yeaft/engine.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
+import ctx from '../../../agent/context.js';
 import { createCliSessionRunner, createCliVpEngine } from '../../../agent/yeaft/cli-session-runner.js';
 import {
   normalizeStreamRoutingIntent,
@@ -27,6 +29,8 @@ import {
 } from '../../../agent/yeaft/web-bridge.js';
 
 describe('route_forward thread ownership', () => {
+  const originalConfig = ctx.CONFIG;
+
   it('describes route_forward as the required multi-VP hand-off tool', () => {
     expect(routeForwardTool.description.en).toContain('required hand-off mechanism');
     expect(routeForwardTool.description.en).toContain('VP-authored @mentions');
@@ -61,6 +65,7 @@ describe('route_forward thread ownership', () => {
   afterEach(() => {
     __testSetSession(null);
     __testSetThreadClassifier(null);
+    ctx.CONFIG = originalConfig;
   });
 
   function makeCoordinator() {
@@ -304,6 +309,82 @@ describe('route_forward thread ownership', () => {
 
     const stale = __testGetVpThreads(sessionId, vpId).find(thread => thread.threadId === 'thr-stale');
     expect(stale?.pendingQueries).toHaveLength(0);
+  });
+
+  it('loads distinct VP souls from the active Agent instance into provider requests', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-web-vp-souls-'));
+    try {
+      const souls = {
+        'vp-linus': 'LINUS_INSTANCE_SOUL: simplify the system and prove every claim.',
+        'vp-martin': 'MARTIN_INSTANCE_SOUL: protect architecture boundaries and review independently.',
+      };
+      for (const [vpId, soul] of Object.entries(souls)) {
+        const vpDir = join(root, 'virtual-persons', vpId);
+        mkdirSync(vpDir, { recursive: true });
+        writeFileSync(join(vpDir, 'role.md'), [
+          '---',
+          `id: ${vpId}`,
+          `name: ${vpId === 'vp-linus' ? 'Linus' : 'Martin'}`,
+          '---',
+          soul,
+        ].join('\n'));
+      }
+      ctx.CONFIG = { yeaftDir: root };
+
+      const providerCalls = [];
+      for (const vpId of Object.keys(souls)) {
+        const engine = new Engine({
+          adapter: {
+            async *stream(request) {
+              providerCalls.push({ vpId, system: request.system });
+              yield { type: 'text_delta', text: 'ok' };
+              yield { type: 'stop', stopReason: 'end_turn' };
+            },
+          },
+          trace: new NullTrace(),
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+        });
+        const queryOpts = buildVpQueryOpts({ vpId, sessionId: 'session-soul-proof' });
+        for await (const _event of engine.query({ prompt: 'state your operating principles', ...queryOpts })) {
+          // drain
+        }
+      }
+
+      expect(providerCalls).toHaveLength(2);
+      expect(providerCalls[0].system).toContain(souls['vp-linus']);
+      expect(providerCalls[0].system).not.toContain(souls['vp-martin']);
+      expect(providerCalls[1].system).toContain(souls['vp-martin']);
+      expect(providerCalls[1].system).not.toContain(souls['vp-linus']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('selects the first configured VP when no explicit or default VP is available', () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-web-vp-fallback-'));
+    try {
+      const vpDir = join(root, 'virtual-persons', 'vp-instance-fallback');
+      mkdirSync(vpDir, { recursive: true });
+      writeFileSync(join(vpDir, 'role.md'), [
+        '---',
+        'id: vp-instance-fallback',
+        'name: Instance Fallback',
+        '---',
+        'INSTANCE_FALLBACK_SOUL',
+      ].join('\n'));
+      ctx.CONFIG = { yeaftDir: root };
+      __testSetSession({ config: {} });
+
+      expect(buildVpQueryOpts({ sessionId: 'session-soul-fallback' })).toEqual(expect.objectContaining({
+        senderVpId: 'vp-instance-fallback',
+        vpPersona: expect.objectContaining({
+          vpId: 'vp-instance-fallback',
+          persona: 'INSTANCE_FALLBACK_SOUL',
+        }),
+      }));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('passes the active engine thread id into the route_forward tool context', async () => {
