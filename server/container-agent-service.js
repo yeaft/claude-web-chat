@@ -1,6 +1,7 @@
 import { access, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { CONFIG } from './config.js';
+import { userDb } from './database.js';
 import {
   checkContainerAgentRuntime,
   createContainerAgent,
@@ -26,9 +27,29 @@ function managedName(userId) {
 }
 
 export class ContainerAgentService {
-  constructor(config = CONFIG.sandbox, runtime = DEFAULT_RUNTIME) {
+  constructor(config = CONFIG.sandbox, runtime = DEFAULT_RUNTIME, ownerDb = userDb) {
     this.config = config;
     this.runtime = runtime;
+    this.ownerDb = ownerDb;
+    this.ownerLifecycleTails = new Map();
+  }
+
+  async withOwnerLifecycle(userId, operation) {
+    const ownerKey = String(userId);
+    const previous = this.ownerLifecycleTails.get(ownerKey) || Promise.resolve();
+    let release;
+    const current = new Promise(resolve => { release = resolve; });
+    const tail = previous.catch(() => {}).then(() => current);
+    this.ownerLifecycleTails.set(ownerKey, tail);
+    await previous.catch(() => {});
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.ownerLifecycleTails.get(ownerKey) === tail) {
+        this.ownerLifecycleTails.delete(ownerKey);
+      }
+    }
   }
 
   async capability() {
@@ -70,18 +91,23 @@ export class ContainerAgentService {
     };
   }
 
-  async create(user, { agentName } = {}) {
-    await this.assertAvailable();
-    const name = this.nameForUser(user.id);
-    const secretFile = join(this.config.stateDir, name, 'agent-secret');
-    await this.runtime.writeSecret(secretFile, user.agent_secret);
-    await this.runtime.create({
-      name,
-      serverUrl: this.config.serverUrl,
-      secretFile,
-      image: this.config.image,
+  async create(user) {
+    return this.withOwnerLifecycle(user.id, async () => {
+      await this.assertAvailable();
+      if (!this.ownerDb.isActive(user.id)) {
+        throw Object.assign(new Error('SANDBOX_OWNER_INACTIVE'), { code: 'SANDBOX_OWNER_INACTIVE' });
+      }
+      const name = this.nameForUser(user.id);
+      const secretFile = join(this.config.stateDir, name, 'agent-secret');
+      await this.runtime.writeSecret(secretFile, user.agent_secret);
+      await this.runtime.create({
+        name,
+        serverUrl: this.config.serverUrl,
+        secretFile,
+        image: this.config.image,
+      });
+      return { snapshot: await this.snapshot(user.id), replayed: false };
     });
-    return { snapshot: await this.snapshot(user.id), replayed: false };
   }
 
   async assertAvailable() {
@@ -98,27 +124,36 @@ export class ContainerAgentService {
   // User-visible lifecycle operations are admitted on every request. The
   // feature flag and Docker reachability can change while a browser is open.
   async action(userId, action) {
-    await this.assertAvailable();
-    const name = this.nameForUser(userId);
-    if (action === 'start') await this.runtime.start(name);
-    else if (action === 'retry') {
-      const current = await this.runtime.inspect(name);
-      if (current.exists) await this.runtime.start(name);
-      else throw Object.assign(new Error('SANDBOX_NOT_FOUND'), { code: 'SANDBOX_NOT_FOUND' });
-    }
-    else if (action === 'stop') await this.runtime.stop(name);
-    else if (action === 'remove') {
-      await this.runtime.remove(name);
-      await rm(join(this.config.stateDir, name), { recursive: true, force: true });
-    }
-    else throw Object.assign(new Error('SANDBOX_ACTION_NOT_ALLOWED'), { code: 'SANDBOX_ACTION_NOT_ALLOWED' });
-    return { snapshot: await this.snapshot(userId), replayed: false };
+    return this.withOwnerLifecycle(userId, async () => {
+      await this.assertAvailable();
+      if (!this.ownerDb.isActive(userId)) {
+        throw Object.assign(new Error('SANDBOX_OWNER_INACTIVE'), { code: 'SANDBOX_OWNER_INACTIVE' });
+      }
+      const name = this.nameForUser(userId);
+      if (action === 'start') await this.runtime.start(name);
+      else if (action === 'retry') {
+        const current = await this.runtime.inspect(name);
+        if (current.exists) await this.runtime.start(name);
+        else throw Object.assign(new Error('SANDBOX_NOT_FOUND'), { code: 'SANDBOX_NOT_FOUND' });
+      }
+      else if (action === 'stop') await this.runtime.stop(name);
+      else if (action === 'remove') {
+        await this.runtime.remove(name);
+        await rm(join(this.config.stateDir, name), { recursive: true, force: true });
+      }
+      else throw Object.assign(new Error('SANDBOX_ACTION_NOT_ALLOWED'), { code: 'SANDBOX_ACTION_NOT_ALLOWED' });
+      return { snapshot: await this.snapshot(userId), replayed: false };
+    });
   }
 
   // Account deletion bypasses public admission only for durable Server-owned
   // resources. No marker means this owner never reached a managed create
   // attempt, so a default deployment without Docker must not probe the daemon.
   async cleanupManagedContainer(userId) {
+    return this.withOwnerLifecycle(userId, () => this.cleanupManagedContainerLocked(userId));
+  }
+
+  async cleanupManagedContainerLocked(userId) {
     const name = this.nameForUser(userId);
     const ownerDir = join(this.config.stateDir, name);
     const marker = join(ownerDir, 'agent-secret');
@@ -131,6 +166,16 @@ export class ContainerAgentService {
     await this.runtime.remove(name);
     await rm(ownerDir, { recursive: true, force: true });
     return { cleaned: true };
+  }
+
+  async prepareOwnerDeletion(userId, beginDeletion) {
+    if (typeof beginDeletion !== 'function') {
+      throw new TypeError('beginDeletion must be a function');
+    }
+    return this.withOwnerLifecycle(userId, async () => {
+      await this.cleanupManagedContainerLocked(userId);
+      return beginDeletion();
+    });
   }
 }
 

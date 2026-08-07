@@ -151,15 +151,27 @@ export async function stopContainerAgent(name, runtime = {}) {
   return inspectContainerAgent(name, runtime);
 }
 
+function isMissingDockerVolume(stderr) {
+  return /no such volume/i.test(String(stderr || ''));
+}
+
 export async function removeContainerAgent(name, { removeVolumes = true, ...runtime } = {}) {
   const containerName = containerNameForAgent(name);
   const current = await inspectContainerAgent(name, runtime);
   if (current.exists) await runDocker(['rm', '-f', containerName], runtime);
   if (removeVolumes) {
-    await runDocker(['volume', 'rm', `${containerName}-data`, `${containerName}-workspace`], {
-      ...runtime,
-      allowFailure: true,
-    });
+    for (const volume of [`${containerName}-data`, `${containerName}-workspace`]) {
+      const result = await runDocker(['volume', 'rm', volume], {
+        ...runtime,
+        allowFailure: true,
+      });
+      if (result.code !== 0 && !isMissingDockerVolume(result.stderr)) {
+        throw new ContainerAgentError(
+          'CONTAINER_AGENT_DOCKER_FAILED',
+          result.stderr || `docker volume rm ${volume} failed`,
+        );
+      }
+    }
   }
   return { exists: false, status: 'absent', running: false };
 }

@@ -18,11 +18,13 @@ SANDBOX_STATE_DIR=/var/lib/yeaft/container-agents
 官方 Server 镜像已经包含 Docker CLI，但默认 `docker-compose.yml` 不授予 Docker socket；Sandbox 因此保持关闭。确认宿主机安全边界后，使用显式 override 启动：
 
 ```bash
-export SANDBOX_SERVER_URL=wss://your-yeaft-server.example
-docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d webchat
+cp server/.env.example server/.env
+# 编辑 server/.env：设置 SANDBOX_SERVER_URL、SANDBOX_STATE_DIR，并固定 SANDBOX_AGENT_IMAGE tag 或 digest。
+docker compose --env-file server/.env \
+  -f docker-compose.yml -f docker-compose.sandbox.yml up -d webchat
 ```
 
-`docker-compose.sandbox.yml` 会把 `/var/run/docker.sock` 和 `SANDBOX_STATE_DIR` 挂进 Server 容器。Docker socket 等价于宿主机 root 权限，只能授予可信 Server；不要把它加入默认部署。状态目录必须在 Host 与 Server 容器内使用相同绝对路径，因为子容器的 bind source 由 Host Docker daemon 解析。
+`server/.env` 是 Server 容器和 Compose 插值的统一配置源，因此每次运行 Sandbox override 都必须传 `--env-file server/.env`。`docker-compose.sandbox.yml` 会把 `/var/run/docker.sock` 和 `SANDBOX_STATE_DIR` 挂进 Server 容器。Docker socket 等价于宿主机 root 权限，只能授予可信 Server；不要把它加入默认部署。状态目录必须在 Host 与 Server 容器内使用相同绝对路径，因为子容器的 bind source 由 Host Docker daemon 解析。
 
 每个用户只映射到一个固定名称的容器，Server 使用认证用户 ID 派生名称，用户不能指定或操作其他用户的容器。容器使用独立的 Yeaft 数据卷和 workspace 卷，并采用 `unless-stopped` restart policy。
 

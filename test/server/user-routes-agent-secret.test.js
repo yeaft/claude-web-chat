@@ -69,7 +69,9 @@ describe('user agent secret routes', () => {
       webClients: new Map(),
       userStatsDeltas: new Map(),
     }));
-    containerService = { cleanupManagedContainer: vi.fn() };
+    containerService = {
+      prepareOwnerDeletion: vi.fn(async (_userId, beginDeletion) => beginDeletion()),
+    };
 
     ({ registerUserRoutes } = await import('../../server/routes/user-routes.js'));
   });
@@ -134,11 +136,11 @@ describe('user agent secret routes', () => {
     expect(userDb.resetAgentSecret).toHaveBeenCalledWith('u1');
   });
 
-  it('does not tombstone the owner when internal managed cleanup fails', async () => {
+  it('does not tombstone the owner when serialized managed cleanup fails', async () => {
     userDb.getByUsername.mockReturnValue({
       id: 'u1', username: 'dev-user', password_hash: null,
     });
-    containerService.cleanupManagedContainer.mockRejectedValue(new Error('docker unavailable'));
+    containerService.prepareOwnerDeletion.mockRejectedValue(new Error('docker unavailable'));
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const res = await runRoute(mountRoutes(), 'DELETE /api/user/me', {
@@ -151,12 +153,11 @@ describe('user agent secret routes', () => {
     errorSpy.mockRestore();
   });
 
-  it('uses the internal cleanup path before deleting an account', async () => {
+  it('keeps cleanup and deletion admission inside one owner lifecycle fence', async () => {
     userDb.getByUsername.mockReturnValue({
       id: 'u1', username: 'dev-user', password_hash: null,
     });
     userDb.beginDeletion.mockReturnValue({ deletionId: 'deletion-1', status: 'pending' });
-    containerService.cleanupManagedContainer.mockResolvedValue({ cleaned: false });
 
     const res = await runRoute(mountRoutes(), 'DELETE /api/user/me', {
       body: { confirm: 'DELETE' },
@@ -164,9 +165,10 @@ describe('user agent secret routes', () => {
 
     expect(res.statusCode).toBe(202);
     expect(res.body).toEqual({ deletionId: 'deletion-1', status: 'pending' });
-    expect(containerService.cleanupManagedContainer).toHaveBeenCalledWith('u1');
+    expect(containerService.prepareOwnerDeletion).toHaveBeenCalledOnce();
+    expect(containerService.prepareOwnerDeletion.mock.calls[0][0]).toBe('u1');
+    const beginDeletion = containerService.prepareOwnerDeletion.mock.calls[0][1];
+    expect(beginDeletion).toEqual(expect.any(Function));
     expect(userDb.beginDeletion).toHaveBeenCalledWith('u1');
-    expect(containerService.cleanupManagedContainer.mock.invocationCallOrder[0])
-      .toBeLessThan(userDb.beginDeletion.mock.invocationCallOrder[0]);
   });
 });

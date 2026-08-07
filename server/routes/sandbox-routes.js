@@ -49,9 +49,7 @@ export function registerSandboxRoutes(app, {
     if (!user) return res.status(404).json({ code: 'USER_NOT_FOUND' });
     try {
       const agentSecret = sandboxUserDb.getAgentSecret(user.id) || sandboxUserDb.resetAgentSecret(user.id);
-      const result = await sandboxService.create({ ...user, agent_secret: agentSecret }, {
-        agentName: req.body?.agentName,
-      });
+      const result = await sandboxService.create({ ...user, agent_secret: agentSecret });
       return res.status(201).json(result);
     } catch (error) {
       return sendError(res, error);

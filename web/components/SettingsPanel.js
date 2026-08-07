@@ -727,6 +727,7 @@ export default {
     return undefined;
   },
   beforeUnmount() {
+    this.invalidateSandboxLoads();
     this.stopSandboxPolling();
   },
   watch: {
@@ -737,6 +738,7 @@ export default {
         this.loadData();
         if (this.activeTab === 'sandbox') this.loadSandbox();
       } else {
+        this.invalidateSandboxLoads();
         this.stopSandboxPolling();
         // Closing settings while a bind QR is up should tear it down too.
         if (this.authStore.qrPanel) this.cancelQrBind();
@@ -747,7 +749,10 @@ export default {
         this.loadInvitations();
       }
       if (tab === 'sandbox') this.loadSandbox();
-      else this.stopSandboxPolling();
+      else {
+        this.invalidateSandboxLoads();
+        this.stopSandboxPolling();
+      }
     },
     // When the bind QR completes (server reports status='bound'), close the
     // modal, refresh the linked-identities list, and surface a success toast.
@@ -794,18 +799,28 @@ export default {
       }
     },
 
+    invalidateSandboxLoads() {
+      this._sandboxLoadGeneration = (this._sandboxLoadGeneration || 0) + 1;
+      this.sandboxLoading = false;
+    },
+
     async loadSandbox({ background = false } = {}) {
+      const generation = (this._sandboxLoadGeneration || 0) + 1;
+      this._sandboxLoadGeneration = generation;
       if (!background) this.sandboxLoading = true;
       if (!background) this.sandboxLoadError = false;
       try {
         const state = await loadSandboxState({ headers: this.getHeaders() });
+        if (generation !== this._sandboxLoadGeneration) return;
         this.sandboxCapability = state.capability;
         this.sandboxSnapshot = state.sandbox;
       } catch {
+        if (generation !== this._sandboxLoadGeneration) return;
         this.sandboxLoadError = true;
         this.sandboxCapability = { available: false, reasonCode: 'SANDBOX_CAPACITY_UNAVAILABLE', catalog: [] };
         if (background) this.stopSandboxPolling();
       } finally {
+        if (generation !== this._sandboxLoadGeneration) return;
         if (!background) this.sandboxLoading = false;
         this.syncSandboxPolling();
       }

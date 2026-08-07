@@ -23,6 +23,7 @@ describe('Server production image runtime closure', () => {
       baseCompose.indexOf('  watchtower:'),
     );
     expect(webchatService).not.toContain('/var/run/docker.sock:/var/run/docker.sock');
+    expect(webchatService).toContain('- server/.env');
     expect(sandboxCompose).toContain('SANDBOX_ENABLED: "true"');
     expect(sandboxCompose).toContain('/var/run/docker.sock:/var/run/docker.sock');
     expect(sandboxCompose).toContain('${SANDBOX_STATE_DIR:-/var/lib/yeaft/container-agents}:${SANDBOX_STATE_DIR:-/var/lib/yeaft/container-agents}');

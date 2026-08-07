@@ -159,11 +159,12 @@ export function registerUserRoutes(app, {
         }
       }
 
-      // Account deletion uses an internal cleanup path, not the public Sandbox
-      // admission gate. It only probes Docker when durable Server-owned state
-      // proves that this user had a managed container.
-      await containerService.cleanupManagedContainer(user.id);
-      const deletion = userDb.beginDeletion(user.id);
+      // Keep managed cleanup and the durable active -> pending transition inside
+      // one owner lifecycle fence so an admitted create cannot outlive deletion.
+      const deletion = await containerService.prepareOwnerDeletion(
+        user.id,
+        () => userDb.beginDeletion(user.id),
+      );
       if (!deletion) return res.status(404).json({ error: 'User not found or already deleted' });
 
       // Durable eligibility is enforced from the user row. These sweeps close

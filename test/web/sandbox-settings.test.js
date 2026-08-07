@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -11,11 +11,25 @@ const en = readFileSync(join(root, 'web/i18n/en.js'), 'utf8');
 const zh = readFileSync(join(root, 'web/i18n/zh-CN.js'), 'utf8');
 const css = readFileSync(join(root, 'web/styles/settings.css'), 'utf8');
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function jsonResponse(body, ok = true) {
   return { ok, json: vi.fn(async () => body) };
 }
 
 describe('Sandbox Settings contract', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('keeps the entry visible and gates create from server capability', () => {
     expect(component).toContain("{ key: 'sandbox', label: this.$t('settings.tabs.sandbox') }");
     expect(component).toContain('v-if="!sandboxCapability.available"');
@@ -74,6 +88,95 @@ describe('Sandbox Settings contract', () => {
     expect(component).toContain('beforeUnmount()');
     expect(component).toContain('this.stopSandboxPolling()');
     expect(component).not.toMatch(/sandboxSnapshot\s*=\s*\{[^}]*observedState/s);
+  });
+
+  it('ignores an older Sandbox load that completes after a newer request', async () => {
+    const olderSnapshot = deferred();
+    let capabilityCalls = 0;
+    let snapshotCalls = 0;
+    vi.stubGlobal('Pinia', {
+      defineStore: vi.fn(() => () => ({})),
+      useChatStore: vi.fn(() => ({})),
+    });
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (url === '/api/sandbox/capability') {
+        capabilityCalls += 1;
+        return jsonResponse({
+          available: true,
+          reasonCode: null,
+          catalog: [{ id: 'standard' }],
+          generation: capabilityCalls === 1 ? 'old' : 'new',
+        });
+      }
+      snapshotCalls += 1;
+      if (snapshotCalls === 1) return olderSnapshot.promise;
+      return jsonResponse({ sandbox: { generation: 'new', observedState: 'stopped' } });
+    }));
+    const { default: SettingsPanel } = await import('../../web/components/SettingsPanel.js');
+    const context = {
+      sandboxLoading: false,
+      sandboxLoadError: false,
+      sandboxCapability: null,
+      sandboxSnapshot: null,
+      visible: false,
+      activeTab: 'sandbox',
+      getHeaders: () => ({}),
+      stopSandboxPolling: vi.fn(),
+      syncSandboxPolling: vi.fn(),
+    };
+
+    const olderLoad = SettingsPanel.methods.loadSandbox.call(context);
+    await vi.waitFor(() => expect(snapshotCalls).toBe(1));
+    const newerLoad = SettingsPanel.methods.loadSandbox.call(context);
+    await newerLoad;
+    expect(context.sandboxSnapshot).toEqual({ generation: 'new', observedState: 'stopped' });
+
+    olderSnapshot.resolve(jsonResponse({
+      sandbox: { generation: 'old', observedState: 'running' },
+    }));
+    await olderLoad;
+
+    expect(context.sandboxSnapshot).toEqual({ generation: 'new', observedState: 'stopped' });
+    expect(context.sandboxCapability.generation).toBe('new');
+  });
+
+  it('invalidates an in-flight Sandbox load when the panel closes', async () => {
+    const pendingCapability = deferred();
+    vi.stubGlobal('Pinia', {
+      defineStore: vi.fn(() => () => ({})),
+      useChatStore: vi.fn(() => ({})),
+    });
+    vi.stubGlobal('fetch', vi.fn(() => pendingCapability.promise));
+    const { default: SettingsPanel } = await import('../../web/components/SettingsPanel.js');
+    const context = {
+      sandboxLoading: false,
+      sandboxLoadError: false,
+      sandboxCapability: { available: false, reasonCode: 'SANDBOX_DISABLED', catalog: [] },
+      sandboxSnapshot: null,
+      visible: false,
+      activeTab: 'sandbox',
+      getHeaders: () => ({}),
+      stopSandboxPolling: vi.fn(),
+      syncSandboxPolling: vi.fn(),
+    };
+
+    const loading = SettingsPanel.methods.loadSandbox.call(context);
+    SettingsPanel.methods.invalidateSandboxLoads.call(context);
+    pendingCapability.resolve(jsonResponse({
+      available: true,
+      reasonCode: null,
+      catalog: [{ id: 'standard' }],
+    }));
+    await loading;
+
+    expect(context.sandboxCapability).toEqual({
+      available: false,
+      reasonCode: 'SANDBOX_DISABLED',
+      catalog: [],
+    });
+    expect(context.sandboxSnapshot).toBeNull();
+    expect(context.sandboxLoading).toBe(false);
+    expect(context.syncSandboxPolling).not.toHaveBeenCalled();
   });
 
   it('reuses idempotency keys while a lifecycle response is uncertain', () => {
