@@ -15,7 +15,7 @@ import { ActiveMemorySet } from '../../../agent/yeaft/memory/ams.js';
 import { backfillCanonicalContent } from '../../../agent/yeaft/memory/content-backfill.js';
 import { openSegmentIndex } from '../../../agent/yeaft/memory/index-db.js';
 import { runPreflow } from '../../../agent/yeaft/memory/preflow.js';
-import { filterMemoryPromptTextForPrompt } from '../../../agent/yeaft/memory/prompt-cleanup.js';
+import { cleanMemoryPromptText, filterMemoryPromptTextForPrompt } from '../../../agent/yeaft/memory/prompt-cleanup.js';
 import { makeSegment, serializeSegments } from '../../../agent/yeaft/memory/segment.js';
 import { readScope } from '../../../agent/yeaft/memory/segment-store.js';
 import { syncAll } from '../../../agent/yeaft/memory/segment-sync.js';
@@ -1163,6 +1163,41 @@ describe('Engine memory prompt hygiene', () => {
       expect(selectRelatedSessionIds(['sibling', 'other'], recalled)).toEqual(['sibling']);
     } finally {
       if (index) index.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps transcript-shaped Dream details out of prompt-facing memory', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-segment-transcript-'));
+    try {
+      await extractAndWriteMemorySegments({
+        root,
+        sessionId: 's1',
+        messages: [
+          { id: 'm101', role: 'assistant', vpId: 'linus', body: 'I will inspect the repository.' },
+          { id: 'm102', role: 'tool', body: '{"command":"git status --short"}' },
+        ],
+        nowIso: () => '2026-08-07T00:00:00.000Z',
+        llm: async () => '[]',
+      });
+
+      expect(readScope(root, 'sessions/s1')).toEqual([]);
+      expect(cleanMemoryPromptText([
+        '# Session experience',
+        '',
+        'Keep this durable lesson.',
+        '- m900 tool: This authored example is not part of the generated transcript block.',
+        '',
+        'Recent session details from the latest Dream pass:',
+        '- m101 assistant/linus: I will inspect the repository.',
+        '- m102 tool: {"command":"git status --short"}',
+      ].join('\n'))).toBe([
+        '# Session experience',
+        '',
+        'Keep this durable lesson.',
+        '- m900 tool: This authored example is not part of the generated transcript block.',
+      ].join('\n'));
+    } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -2993,7 +3028,13 @@ describe('Engine', () => {
       try {
         await writeContent(
           { kind: 'session', id: 'sibling-session' },
-          'Reusable release experience: verify origin/main and the remote tag target before publishing.',
+          [
+            'Reusable release experience: verify origin/main and the remote tag target before publishing.',
+            '',
+            'Recent session details from the latest Dream pass:',
+            '- m174797 assistant/linus: closing report',
+            '- m174798 tool: {"ok":true,"dispatched":["martin"]}',
+          ].join('\n'),
           { root: join(yeaftDir, 'memory'), language: 'zh' },
         );
         const memoryIndex = {
@@ -3051,6 +3092,9 @@ describe('Engine', () => {
         expect(system).toContain('## 相关上下文');
         expect(system).toContain('### 过去 Session 的经验总结');
         expect(system).toContain('**sibling-session**: Reusable release experience');
+        expect(system).not.toContain('Recent session details from the latest Dream pass');
+        expect(system).not.toContain('m174797 assistant/linus');
+        expect(system).not.toContain('m174798 tool:');
         expect(system).not.toContain('### 相关记忆');
         expect(system).not.toContain('Timeout cleanup failures must return a tool result');
         expect(system).toContain('## 可能相关的任务');
