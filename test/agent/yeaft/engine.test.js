@@ -3011,7 +3011,7 @@ describe('Engine', () => {
       expect(system).toContain('## Relevant Context');
       expect(system).toContain('### Relevant Memory');
       expect(system).toContain('Dream memory loaded into the prompt');
-      expect(system).toContain('User-level canonical content should enter the prompt');
+      expect(system).not.toContain('User-level canonical content should enter the prompt');
       expect(system).toContain('VP canonical content should enter the prompt');
       expect(system).toContain('**session**: The user prefers concrete execution notes and wants Dream memory loaded into the prompt.');
       expect(system).not.toContain('dream-state');
