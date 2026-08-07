@@ -8,11 +8,12 @@ const KNOWN_EXTENSIONLESS_FILE = /^(?:README|LICENSE|CHANGELOG|CONTRIBUTING|Dock
 
 const isRecognizableFilePath = value => {
   const basename = value.split(/[\\/]/).pop() || '';
-  if (!basename || VERSION_BASENAME.test(basename)) return false;
+  if (!basename) return false;
   if (WINDOWS_ABSOLUTE_PATH.test(value) || /^(?:\/|\.\.?[\\/]|~[\\/])/.test(value)) return true;
+  if (VERSION_BASENAME.test(basename)) return false;
   if (basename.startsWith('.') && basename.length > 1) return true;
   if (KNOWN_EXTENSIONLESS_FILE.test(basename)) return true;
-  return /\.[A-Za-z][A-Za-z\d_-]*$/.test(basename);
+  return /\.[A-Za-z\d][A-Za-z\d_-]*$/.test(basename);
 };
 
 /**

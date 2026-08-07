@@ -24,6 +24,10 @@ describe('message file preview', () => {
     expect(resolveMessageFileReference('feature/message-preview')).toBeNull();
     expect(resolveMessageFileReference('v1.0.403')).toBeNull();
     expect(resolveMessageFileReference('release/v1.0.403')).toBeNull();
+    expect(resolveMessageFileReference('./v1.0.403')).toEqual({ path: './v1.0.403', line: null });
+    expect(resolveMessageFileReference('/workspace/v1.0.403')).toEqual({ path: '/workspace/v1.0.403', line: null });
+    expect(resolveMessageFileReference('file:///workspace/v1.0.403')).toEqual({ path: '/workspace/v1.0.403', line: null });
+    expect(resolveMessageFileReference('artifact.7z')).toEqual({ path: 'artifact.7z', line: null });
     expect(resolveMessageFileReference('README')).toEqual({ path: 'README', line: null });
     expect(resolveMessageFileReference('Dockerfile')).toEqual({ path: 'Dockerfile', line: null });
     expect(resolveMessageFileReference('docs/README')).toEqual({ path: 'docs/README', line: null });
