@@ -1203,8 +1203,8 @@ describe('Engine memory prompt hygiene', () => {
         id: 'strict-sibling',
         scope: strictScope,
         kind: 'context',
-        tags: ['canonical-content'],
-        body: 'Timeout cleanup failures must return a tool result so Engine continuation stays reliable.',
+        tags: ['canonical-content', 'timeout'],
+        body: '# timeout\n\nTimeout cleanup failures must return a tool result so Engine continuation stays reliable.',
         sourceMessages: [],
         createdAt: '2026-08-04T00:00:00.000Z',
         updatedAt: '2026-08-04T00:00:00.000Z',
@@ -1229,6 +1229,124 @@ describe('Engine memory prompt hygiene', () => {
         expect.objectContaining({ id: 'strict-sibling', scope: strictScope }),
       ]);
       expect(strongSibling.droppedByRelevance).toBe(0);
+      const preciseTimeout = runPreflow(index, {
+        userMsg: 'timeout',
+        relevantScopes: [strictScope],
+        strictScopes: [strictScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      });
+      expect(preciseTimeout.picked).toEqual([
+        expect.objectContaining({ id: 'strict-sibling', scope: strictScope }),
+      ]);
+      expect(runPreflow(index, {
+        userMsg: 'check timeout behavior',
+        relevantScopes: [strictScope],
+        strictScopes: [strictScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      }).picked).toEqual([]);
+
+      const postgresUser = 'user-postgresql';
+      index.upsert(makeSegment({
+        id: postgresUser,
+        scope: broadUserScope,
+        kind: 'context',
+        tags: ['canonical-content', 'postgresql'],
+        body: '# PostgreSQL\n\nPostgreSQL stores the workspace metadata for this project.',
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      }));
+      expect(runPreflow(index, {
+        userMsg: 'PostgreSQL',
+        relevantScopes: [broadUserScope],
+        strictScopes: [broadUserScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      }).picked).toEqual([
+        expect.objectContaining({ id: postgresUser, scope: broadUserScope }),
+      ]);
+
+      const authSiblingScope = 'sessions/auth-sibling';
+      index.upsert(makeSegment({
+        id: 'auth-sibling',
+        scope: authSiblingScope,
+        kind: 'context',
+        tags: ['canonical-content', '用户认证'],
+        body: '# 用户认证\n\n认证流程必须检查 Agent 和 Session 所有权。',
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      }));
+      expect(runPreflow(index, {
+        userMsg: '用户认证',
+        relevantScopes: [authSiblingScope],
+        strictScopes: [authSiblingScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      }).picked).toEqual([
+        expect.objectContaining({ id: 'auth-sibling', scope: authSiblingScope }),
+      ]);
+
+      const mcpSiblingScope = 'sessions/mcp-sibling';
+      index.upsert(makeSegment({
+        id: 'mcp-sibling',
+        scope: mcpSiblingScope,
+        kind: 'context',
+        tags: ['canonical-content', 'mcp'],
+        body: '# MCP\n\nMCP tools must preserve project ownership boundaries.',
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      }));
+      expect(runPreflow(index, {
+        userMsg: 'MCP',
+        relevantScopes: [mcpSiblingScope],
+        strictScopes: [mcpSiblingScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      }).picked).toEqual([
+        expect.objectContaining({ id: 'mcp-sibling', scope: mcpSiblingScope }),
+      ]);
+
+      const bodyOnlyScope = 'sessions/body-only-sibling';
+      index.upsert(makeSegment({
+        id: 'body-only-postgresql',
+        scope: bodyOnlyScope,
+        kind: 'context',
+        tags: ['canonical-content', 'postgresql'],
+        body: 'The current deployment happens to use PostgreSQL for unrelated storage.',
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      }));
+      expect(runPreflow(index, {
+        userMsg: 'PostgreSQL',
+        relevantScopes: [bodyOnlyScope],
+        strictScopes: [bodyOnlyScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      }).picked).toEqual([]);
+
+      const operationalHeadingScope = 'sessions/operational-heading-sibling';
+      index.upsert(makeSegment({
+        id: 'operational-heading',
+        scope: operationalHeadingScope,
+        kind: 'context',
+        tags: ['canonical-content', 'dream', 'failure'],
+        body: '# Dream failure\n\nA historical provider attempt failed during unrelated cleanup.',
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      }));
+      expect(runPreflow(index, {
+        userMsg: 'Dream failure',
+        relevantScopes: [operationalHeadingScope],
+        strictScopes: [operationalHeadingScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      }).picked).toEqual([]);
 
       const uiSiblingScope = 'sessions/ui-sibling';
       index.upsert(makeSegment({
@@ -3263,6 +3381,16 @@ describe('Engine', () => {
           '# Yeaft 设置页\n\n- VP/MCP 下划线标签在窄屏使用横向滚动。',
           { root: join(yeaftDir, 'memory'), language: 'zh' },
         );
+        await writeContent(
+          { kind: 'session', id: 'mcp-sibling-session' },
+          '# MCP\n\nMCP tools must preserve project ownership boundaries.',
+          { root: join(yeaftDir, 'memory'), language: 'zh' },
+        );
+        await writeContent(
+          { kind: 'user' },
+          '# PostgreSQL\n\nPostgreSQL stores the workspace metadata for this project.',
+          { root: join(yeaftDir, 'memory'), language: 'zh' },
+        );
         const memoryIndex = {
           search({ scopeFilter, requiredTag }) {
             if (requiredTag !== 'canonical-content' || !scopeFilter.includes('sessions/sibling-session')) return [];
@@ -3366,6 +3494,66 @@ describe('Engine', () => {
         expect(headingSystem).toContain('### 过去 Session 的经验总结');
         expect(headingSystem).toContain('# Yeaft 设置页');
         expect(headingSystem).toContain('VP/MCP 下划线标签在窄屏使用横向滚动');
+
+        memoryIndex.search = ({ scopeFilter, requiredTag }) => {
+          if (requiredTag !== 'canonical-content') return [];
+          if (scopeFilter.includes('sessions/mcp-sibling-session')) {
+            return [{
+              id: 'mcp-entity-memory',
+              scope: 'sessions/mcp-sibling-session',
+              kind: 'context',
+              tags: ['canonical-content', 'mcp'],
+              sourceMessages: [],
+              body: '# MCP\n\nMCP tools must preserve project ownership boundaries.',
+              rank: -1,
+              createdAt: '2026-08-01T00:00:00.000Z',
+              updatedAt: '2026-08-01T00:00:00.000Z',
+            }];
+          }
+          if (scopeFilter.includes('user')) {
+            return [{
+              id: 'postgresql-entity-memory',
+              scope: 'user',
+              kind: 'context',
+              tags: ['canonical-content', 'postgresql'],
+              sourceMessages: [],
+              body: '# PostgreSQL\n\nPostgreSQL stores the workspace metadata for this project.',
+              rank: -1,
+              createdAt: '2026-08-01T00:00:00.000Z',
+              updatedAt: '2026-08-01T00:00:00.000Z',
+            }];
+          }
+          return [];
+        };
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'ok' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        for await (const _event of engine.query({
+          prompt: 'MCP',
+          sessionId: 'current-session',
+          projectSessionIds: ['mcp-sibling-session'],
+          vpPersona: { vpId: 'linus', name: 'Linus' },
+        })) { /* exhaust */ }
+        const mcpSystem = mockAdapter.callLog.at(-1).system;
+        expect(mcpSystem).toContain('### 过去 Session 的经验总结');
+        expect(mcpSystem).toContain('**mcp-sibling-session**: # MCP');
+        expect(mcpSystem).toContain('MCP tools must preserve project ownership boundaries');
+
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'ok' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        for await (const _event of engine.query({
+          prompt: 'PostgreSQL',
+          sessionId: 'current-session',
+          projectSessionIds: [],
+          vpPersona: { vpId: 'linus', name: 'Linus' },
+        })) { /* exhaust */ }
+        const postgresSystem = mockAdapter.callLog.at(-1).system;
+        expect(postgresSystem).toContain('### 相关记忆');
+        expect(postgresSystem).toContain('**user**: # PostgreSQL');
+        expect(postgresSystem).toContain('PostgreSQL stores the workspace metadata for this project');
       } finally {
         rmSync(yeaftDir, { recursive: true, force: true });
       }

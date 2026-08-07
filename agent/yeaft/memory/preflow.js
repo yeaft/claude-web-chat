@@ -18,7 +18,7 @@
 import { extractKeywords } from './keywords.js';
 import { approxTokens } from './budget.js';
 import { isVpForeign } from './store.js';
-import { promptRelevanceTokens } from './prompt-cleanup.js';
+import { isTransientMemoryText, promptRelevanceTokens } from './prompt-cleanup.js';
 
 export const DEFAULT_PICK_LIMIT = 8;
 const STRICT_SCOPE_MIN_QUERY_TERMS = 2;
@@ -98,7 +98,7 @@ export function runPreflow(index, opts) {
   let dropped = 0;
   let droppedByRelevance = 0;
   for (const h of reranked) {
-    if (strictScopes.has(h.scope) && matchedStrictQueryTermCount(h, userMsg) < STRICT_SCOPE_MIN_QUERY_TERMS) {
+    if (strictScopes.has(h.scope) && !passesStrictScopeGate(h, userMsg)) {
       dropped += 1;
       droppedByRelevance += 1;
       continue;
@@ -123,15 +123,54 @@ export function runPreflow(index, opts) {
   };
 }
 
-function matchedStrictQueryTermCount(hit, userMsg) {
+function passesStrictScopeGate(hit, userMsg) {
+  const queryTerms = promptRelevanceTokens(userMsg);
+  if (matchedStrictQueryTermCount(hit, queryTerms) >= STRICT_SCOPE_MIN_QUERY_TERMS) return true;
+
+  // Broad scopes still need a narrow path for exact entity lookups. The
+  // canonical record's tags are derived from its entire body, so an exact tag is
+  // not strong evidence. Require the whole one-term query to equal an authored
+  // Markdown heading instead; generic sentences and body-only hits stay gated.
+  return isSingleDiscriminativeQuery(userMsg, queryTerms) && hasExactCanonicalHeading(hit, userMsg);
+}
+
+function isSingleDiscriminativeQuery(userMsg, queryTerms) {
+  if (queryTerms.size !== 1 || isTransientMemoryText(userMsg)) return false;
+  const words = String(userMsg || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .match(/[\p{L}\p{N}_]+/gu) || [];
+  return words.length === 1;
+}
+
+function matchedStrictQueryTermCount(hit, queryTerms) {
   const haystack = promptRelevanceTokens(
     `${hit?.body || ''}\n${Array.isArray(hit?.tags) ? hit.tags.join(' ') : ''}`,
   );
   let matched = 0;
-  for (const term of promptRelevanceTokens(userMsg)) {
+  for (const term of queryTerms) {
     if (haystack.has(term)) matched += 1;
   }
   return matched;
+}
+
+function hasExactCanonicalHeading(hit, userMsg) {
+  const query = normalizeStrongEvidenceText(userMsg);
+  if (!query) return false;
+  for (const line of String(hit?.body || '').split(/\r?\n/)) {
+    const match = /^\s*#{1,6}\s+(.+?)\s*$/.exec(line);
+    if (match && normalizeStrongEvidenceText(match[1]) === query) return true;
+  }
+  return false;
+}
+
+function normalizeStrongEvidenceText(text) {
+  return String(text || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[`*_~[\]()<>{}.,，。:：;；!！?？"'“”‘’]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**
