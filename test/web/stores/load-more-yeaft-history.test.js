@@ -943,6 +943,7 @@ describe('Yeaft conversation loading state', () => {
         { id: 'm0200', role: 'user', content: 'Follow up', sessionId: 'g1', quote },
         {
           id: 'm0201', role: 'assistant', content: 'Done', sessionId: 'g1', speakerVpId: 'vp-linus',
+          ts: '2026-05-01T10:00:01.000Z',
           toolCalls: [
             { name: 'TodoWrite', input: { todos: [{ content: 'Old', status: 'pending' }] } },
             { name: 'Bash', input: { command: 'true' } },
@@ -958,9 +959,14 @@ describe('Yeaft conversation loading state', () => {
     expect(store.messagesMap['yeaft-1']).toEqual([
       expect.objectContaining({ id: 'm0200', type: 'user', quote }),
       expect.objectContaining({ id: 'm0201', type: 'assistant', content: 'Done' }),
-      expect.objectContaining({ id: 'm0201:todos', type: 'tool-use', toolName: 'TodoWrite', toolInput: { todos: [{ content: 'Latest', status: 'completed' }] } }),
+      expect.objectContaining({
+        id: 'm0201:todos', type: 'tool-use', toolName: 'TodoWrite',
+        toolInput: { todos: [{ content: 'Latest', status: 'completed' }] },
+        startTime: expect.any(Number),
+      }),
       expect.objectContaining({
         id: 'm0201:tool:index%3A1', type: 'tool-use', toolName: 'Bash', toolInput: { command: 'true' },
+        startTime: expect.any(Number),
       }),
     ]);
   });
@@ -993,10 +999,11 @@ describe('Yeaft conversation loading state', () => {
       hasMore: false,
     });
 
+    const expectedStartTime = Date.parse('2026-05-01T10:00:00.000Z');
     expect(store.messagesMap['yeaft-1']).toEqual([
-      expect.objectContaining({ id: 'm0200:tool:read-1', type: 'tool-use', toolName: 'FileRead', speakerVpId: 'vp-linus' }),
-      expect.objectContaining({ id: 'm0200:tool:grep-1', type: 'tool-use', toolName: 'Grep', speakerVpId: 'vp-linus' }),
-      expect.objectContaining({ id: 'm0200:tool:bash-1', type: 'tool-use', toolName: 'Bash', speakerVpId: 'vp-linus' }),
+      expect.objectContaining({ id: 'm0200:tool:read-1', type: 'tool-use', toolName: 'FileRead', speakerVpId: 'vp-linus', startTime: expectedStartTime }),
+      expect.objectContaining({ id: 'm0200:tool:grep-1', type: 'tool-use', toolName: 'Grep', speakerVpId: 'vp-linus', startTime: expectedStartTime }),
+      expect.objectContaining({ id: 'm0200:tool:bash-1', type: 'tool-use', toolName: 'Bash', speakerVpId: 'vp-linus', startTime: expectedStartTime }),
     ]);
     expect(store.yeaftSessionHistoryState.g1).toEqual(expect.objectContaining({ count: 1 }));
   });
