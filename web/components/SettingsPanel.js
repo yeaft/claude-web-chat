@@ -17,6 +17,7 @@ import DashboardTab from './DashboardTab.js';
 import VpCrudPanel from './VpCrudPanel.js';
 import SearchSettingsTab from './SearchSettingsTab.js';
 import McpTab from './McpTab.js';
+import { loadSandboxState } from '../utils/sandbox-api.js';
 
 export default {
   name: 'SettingsPanel',
@@ -315,8 +316,9 @@ export default {
             <div v-show="activeTab === 'sandbox'" class="settings-pane">
               <div class="sp-group">
                 <div v-if="sandboxLoading" class="sp-desc" role="status">{{ $t('common.loading') }}</div>
-                <div v-else-if="sandboxLoadError" class="sp-error" role="alert">
-                  {{ $t('settings.sandbox.error.SANDBOX_LOAD_FAILED') }}
+                <div v-else-if="sandboxLoadError" role="alert">
+                  <p class="sp-error">{{ $t('settings.sandbox.error.SANDBOX_LOAD_FAILED') }}</p>
+                  <button class="btn-secondary" @click="loadSandbox">{{ $t('settings.sandbox.retryLoad') }}</button>
                 </div>
                 <template v-else-if="sandboxSnapshot">
                   <div class="sp-row">
@@ -703,6 +705,7 @@ export default {
       const code = this.sandboxCapability.reasonCode || 'SANDBOX_CAPACITY_UNAVAILABLE';
       const keys = {
         SANDBOX_DISABLED: 'disabled',
+        SANDBOX_DOCKER_UNAVAILABLE: 'dockerUnavailable',
         SANDBOX_NOT_ENTITLED: 'notEntitled',
         SANDBOX_CAPACITY_UNAVAILABLE: 'capacityUnavailable'
       };
@@ -724,6 +727,7 @@ export default {
     return undefined;
   },
   beforeUnmount() {
+    this.invalidateSandboxLoads();
     this.stopSandboxPolling();
   },
   watch: {
@@ -734,6 +738,7 @@ export default {
         this.loadData();
         if (this.activeTab === 'sandbox') this.loadSandbox();
       } else {
+        this.invalidateSandboxLoads();
         this.stopSandboxPolling();
         // Closing settings while a bind QR is up should tear it down too.
         if (this.authStore.qrPanel) this.cancelQrBind();
@@ -744,7 +749,10 @@ export default {
         this.loadInvitations();
       }
       if (tab === 'sandbox') this.loadSandbox();
-      else this.stopSandboxPolling();
+      else {
+        this.invalidateSandboxLoads();
+        this.stopSandboxPolling();
+      }
     },
     // When the bind QR completes (server reports status='bound'), close the
     // modal, refresh the linked-identities list, and surface a success toast.
@@ -791,23 +799,28 @@ export default {
       }
     },
 
+    invalidateSandboxLoads() {
+      this._sandboxLoadGeneration = (this._sandboxLoadGeneration || 0) + 1;
+      this.sandboxLoading = false;
+    },
+
     async loadSandbox({ background = false } = {}) {
+      const generation = (this._sandboxLoadGeneration || 0) + 1;
+      this._sandboxLoadGeneration = generation;
       if (!background) this.sandboxLoading = true;
       if (!background) this.sandboxLoadError = false;
       try {
-        const headers = this.getHeaders();
-        const [capabilityResponse, snapshotResponse] = await Promise.all([
-          fetch('/api/sandbox/capability', { headers }),
-          fetch('/api/sandbox', { headers })
-        ]);
-        if (!capabilityResponse.ok || !snapshotResponse.ok) throw new Error('SANDBOX_LOAD_FAILED');
-        this.sandboxCapability = await capabilityResponse.json();
-        this.sandboxSnapshot = (await snapshotResponse.json()).sandbox;
+        const state = await loadSandboxState({ headers: this.getHeaders() });
+        if (generation !== this._sandboxLoadGeneration) return;
+        this.sandboxCapability = state.capability;
+        this.sandboxSnapshot = state.sandbox;
       } catch {
+        if (generation !== this._sandboxLoadGeneration) return;
         this.sandboxLoadError = true;
         this.sandboxCapability = { available: false, reasonCode: 'SANDBOX_CAPACITY_UNAVAILABLE', catalog: [] };
         if (background) this.stopSandboxPolling();
       } finally {
+        if (generation !== this._sandboxLoadGeneration) return;
         if (!background) this.sandboxLoading = false;
         this.syncSandboxPolling();
       }
@@ -840,7 +853,10 @@ export default {
         const body = await response.json();
         if (!response.ok) {
           this.clearSandboxIdempotencyKey('create');
-          throw new Error(body.code || 'SANDBOX_CREATE_FAILED');
+          const code = body.code === 'SANDBOX_OWNER_INACTIVE'
+            ? 'SANDBOX_ACTION_FAILED'
+            : (body.code || 'SANDBOX_CREATE_FAILED');
+          throw new Error(code);
         }
         this.clearSandboxIdempotencyKey('create');
         this.sandboxSnapshot = body.snapshot;
@@ -873,7 +889,10 @@ export default {
         const body = await response.json();
         if (!response.ok) {
           this.clearSandboxIdempotencyKey(action);
-          throw new Error(body.code || 'SANDBOX_ACTION_FAILED');
+          const code = body.code === 'SANDBOX_OWNER_INACTIVE'
+            ? 'SANDBOX_ACTION_FAILED'
+            : (body.code || 'SANDBOX_ACTION_FAILED');
+          throw new Error(code);
         }
         this.clearSandboxIdempotencyKey(action);
         this.sandboxSnapshot = body.snapshot;

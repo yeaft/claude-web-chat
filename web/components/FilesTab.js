@@ -54,7 +54,7 @@ export default {
             :aria-label="$t('files.hideTree')"
             aria-expanded="true"
           >
-            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
           </button>
         </div>
         <!-- VS Code 风格 Header: 正常模式 -->
@@ -90,7 +90,7 @@ export default {
               :aria-label="$t('files.hideTree')"
               aria-expanded="true"
             >
-              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
             </button>
           </div>
         </div>
@@ -180,9 +180,6 @@ export default {
           </template>
         </div>
       </div>
-
-      <!-- 拖拽分割线 -->
-      <div class="file-tree-splitter" @mousedown="startTreeResize" @touchstart.prevent="startTreeResize"></div>
 
       <!-- 右栏: 文件编辑器（带标签页） -->
       <div class="file-col-content" v-if="openFiles.length > 0 || fileLoading" @wheel.ctrl.prevent="onWheel">
@@ -316,6 +313,9 @@ export default {
       <div class="file-col-placeholder" v-if="openFiles.length === 0 && !fileLoading">
         <div class="placeholder-text">{{ $t('files.clickToView') }}</div>
       </div>
+
+      <!-- 拖拽分割线：文件树位于内容右侧 -->
+      <div class="file-tree-splitter" @mousedown="startTreeResize" @touchstart.prevent="startTreeResize"></div>
 
       <!-- 文件夹选择器对话框 -->
       <div class="folder-picker-overlay" v-if="folderPickerOpen" @click.self="folderPickerOpen = false">
@@ -531,7 +531,7 @@ export default {
       const maxWidth = container ? container.offsetWidth * 0.5 : 400;
       const onMove = (ev) => {
         const clientX = isTouch ? ev.touches[0].clientX : ev.clientX;
-        treePanelWidth.value = Math.max(120, Math.min(maxWidth, startWidth + (clientX - startX)));
+        treePanelWidth.value = Math.max(120, Math.min(maxWidth, startWidth - (clientX - startX)));
       };
       const onEnd = () => {
         isTreeResizing.value = false;

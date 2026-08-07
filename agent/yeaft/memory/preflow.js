@@ -18,8 +18,10 @@
 import { extractKeywords } from './keywords.js';
 import { approxTokens } from './budget.js';
 import { isVpForeign } from './store.js';
+import { isTransientMemoryText, promptRelevanceTokens } from './prompt-cleanup.js';
 
 export const DEFAULT_PICK_LIMIT = 8;
+const STRICT_SCOPE_MIN_QUERY_TERMS = 2;
 
 /**
  * @typedef {object} PreflowOptions
@@ -32,6 +34,7 @@ export const DEFAULT_PICK_LIMIT = 8;
  * @property {number}       [pickLimit]          max picked segments (default 8)
  * @property {boolean}      [uniqueScopes]       pick at most one best hit per scope
  * @property {boolean}      [canonicalOnly]      search canonical content records only
+ * @property {string[]}     [strictScopes]       scopes that require multiple distinct query-term matches
  */
 
 /**
@@ -42,6 +45,7 @@ export const DEFAULT_PICK_LIMIT = 8;
  * @property {import('./segment.js').Segment[]}          picked
  * @property {number}                                     pickedTokens
  * @property {number}                                     droppedCount
+ * @property {number}                                     droppedByRelevance
  */
 
 /**
@@ -61,12 +65,13 @@ export function runPreflow(index, opts) {
     ? opts.budgetTokens : Infinity;
   const pickLimit = Number.isFinite(opts.pickLimit) && opts.pickLimit > 0
     ? Math.floor(opts.pickLimit) : DEFAULT_PICK_LIMIT;
+  const strictScopes = new Set(Array.isArray(opts.strictScopes) ? opts.strictScopes : []);
 
   const keywords = extractKeywords(userMsg);
   if (keywords.length === 0) {
     return {
       keywords: [], ftsQuery: '', hits: [],
-      picked: [], pickedTokens: 0, droppedCount: 0,
+      picked: [], pickedTokens: 0, droppedCount: 0, droppedByRelevance: 0,
     };
   }
 
@@ -75,7 +80,7 @@ export function runPreflow(index, opts) {
   if (scopeFilter.length === 0) {
     return {
       keywords, ftsQuery, hits: [],
-      picked: [], pickedTokens: 0, droppedCount: 0,
+      picked: [], pickedTokens: 0, droppedCount: 0, droppedByRelevance: 0,
     };
   }
 
@@ -91,7 +96,13 @@ export function runPreflow(index, opts) {
   const pickedScopes = new Set();
   let cost = 0;
   let dropped = 0;
+  let droppedByRelevance = 0;
   for (const h of reranked) {
+    if (strictScopes.has(h.scope) && !passesStrictScopeGate(h, userMsg)) {
+      dropped += 1;
+      droppedByRelevance += 1;
+      continue;
+    }
     if (opts.uniqueScopes && pickedScopes.has(h.scope)) {
       dropped += 1;
       continue;
@@ -108,8 +119,75 @@ export function runPreflow(index, opts) {
 
   return {
     keywords, ftsQuery, hits: reranked,
-    picked, pickedTokens: cost, droppedCount: dropped,
+    picked, pickedTokens: cost, droppedCount: dropped, droppedByRelevance,
   };
+}
+
+function passesStrictScopeGate(hit, userMsg) {
+  const queryTerms = promptRelevanceTokens(userMsg);
+  if (matchedStrictQueryTermCount(hit, queryTerms) >= STRICT_SCOPE_MIN_QUERY_TERMS) return true;
+
+  // Broad scopes still need a narrow path for exact entity lookups. The
+  // canonical record's tags are derived from its entire body, so an exact tag is
+  // not strong evidence. Require the whole one-term query to equal an authored
+  // Markdown heading instead; generic sentences and body-only hits stay gated.
+  return isSingleDiscriminativeQuery(userMsg, queryTerms) && hasExactCanonicalHeading(hit, userMsg);
+}
+
+function isSingleDiscriminativeQuery(userMsg, queryTerms) {
+  if (queryTerms.size !== 1 || isTransientMemoryText(userMsg)) return false;
+  const words = String(userMsg || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .match(/[\p{L}\p{N}_]+/gu) || [];
+  return words.length === 1;
+}
+
+function matchedStrictQueryTermCount(hit, queryTerms) {
+  const haystack = promptRelevanceTokens(
+    `${hit?.body || ''}\n${Array.isArray(hit?.tags) ? hit.tags.join(' ') : ''}`,
+  );
+  let matched = 0;
+  for (const term of queryTerms) {
+    if (haystack.has(term)) matched += 1;
+  }
+  return matched;
+}
+
+function hasExactCanonicalHeading(hit, userMsg) {
+  const query = normalizeStrongEvidenceText(userMsg);
+  if (!query) return false;
+
+  let fence = null;
+  for (const line of String(hit?.body || '').split(/\r?\n/)) {
+    if (fence) {
+      const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (closing && closing[1][0] === fence.marker && closing[1].length >= fence.length) {
+        fence = null;
+      }
+      continue;
+    }
+
+    const opening = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (opening && !(opening[1][0] === '`' && opening[2].includes('`'))) {
+      fence = { marker: opening[1][0], length: opening[1].length };
+      continue;
+    }
+    if (/^(?: {4}| {0,3}\t)/.test(line)) continue;
+
+    const match = /^ {0,3}#{1,6}[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
+    if (match && normalizeStrongEvidenceText(match[1]) === query) return true;
+  }
+  return false;
+}
+
+function normalizeStrongEvidenceText(text) {
+  return String(text || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[`*_~[\]()<>{}.,，。:：;；!！?？"'“”‘’]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**

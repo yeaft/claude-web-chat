@@ -31,7 +31,8 @@ export async function handleAgentFileTerminal(agentId, agent, msg) {
     }
 
     // File operation messages
-    case 'file_content':
+    case 'file_content': {
+      let fwdMsg = { ...msg, agentId };
       if (msg.binary) {
         // Binary file: cache on server, forward fileId instead of base64 content
         const fileId = randomUUID();
@@ -45,27 +46,48 @@ export async function handleAgentFileTerminal(agentId, agent, msg) {
           token
         });
         console.log(`[Server] Cached binary preview: fileId=${fileId}, mime=${msg.mimeType}, path=${msg.filePath}`);
-        const fwdMsg = {
+        fwdMsg = {
           type: 'file_content',
+          agentId,
           conversationId: msg.conversationId,
+          requestId: msg.requestId,
           _requestUserId: msg._requestUserId,
+          _requestClientId: msg._requestClientId,
           filePath: msg.filePath,
+          requestedFilePath: msg.requestedFilePath,
           binary: true,
           fileId,
           previewToken: token,
           mimeType: msg.mimeType
         };
-        await forwardToClients(agentId, msg.conversationId, fwdMsg);
       } else {
         console.log(`[Server] Forwarding file_content to clients, conv=${msg.conversationId}, path=${msg.filePath}`);
-        await forwardToClients(agentId, msg.conversationId, msg);
+      }
+      const targetClient = fwdMsg._requestClientId ? webClients.get(fwdMsg._requestClientId) : null;
+      const targetMatchesUser = !fwdMsg._requestUserId || targetClient?.userId === fwdMsg._requestUserId;
+      if (targetClient?.authenticated && targetMatchesUser) {
+        const { _requestClientId, _requestUserId, ...cleanMsg } = fwdMsg;
+        await sendToWebClient(targetClient, cleanMsg);
+      } else {
+        const { _requestClientId, ...fallbackMsg } = fwdMsg;
+        await forwardToClients(agentId, msg.conversationId, fallbackMsg);
       }
       break;
+    }
 
     case 'file_saved': {
       // Phase 4: 文件保存后失效父目录缓存
       invalidateParentDirCache(agentId, msg.filePath);
-      await forwardToClients(agentId, msg.conversationId, msg);
+      const fwdMsg = { ...msg, agentId };
+      const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
+      const targetMatchesUser = !msg._requestUserId || targetClient?.userId === msg._requestUserId;
+      if (targetClient?.authenticated && targetMatchesUser) {
+        const { _requestClientId, _requestUserId, ...cleanMsg } = fwdMsg;
+        await sendToWebClient(targetClient, cleanMsg);
+      } else {
+        const { _requestClientId, ...fallbackMsg } = fwdMsg;
+        await forwardToClients(agentId, msg.conversationId, fallbackMsg);
+      }
       break;
     }
 

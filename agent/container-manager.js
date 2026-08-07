@@ -91,6 +91,18 @@ export function buildCreateArgs({
   ];
 }
 
+/**
+ * Verify that the Docker client can reach a daemon before the Server advertises
+ * container Agent lifecycle support.
+ *
+ * @param {object} options runDocker overrides used by tests and alternate runtimes
+ * @returns {Promise<{serverVersion: string|null}>}
+ */
+export async function checkContainerAgentRuntime(options = {}) {
+  const result = await runDocker(['version', '--format', '{{.Server.Version}}'], options);
+  return { serverVersion: result.stdout || null };
+}
+
 export async function inspectContainerAgent(name, options = {}) {
   const result = await runDocker([
     'inspect', '--format', '{{json .State}}', containerNameForAgent(name),
@@ -139,15 +151,27 @@ export async function stopContainerAgent(name, runtime = {}) {
   return inspectContainerAgent(name, runtime);
 }
 
+function isMissingDockerVolume(stderr) {
+  return /no such volume/i.test(String(stderr || ''));
+}
+
 export async function removeContainerAgent(name, { removeVolumes = true, ...runtime } = {}) {
   const containerName = containerNameForAgent(name);
   const current = await inspectContainerAgent(name, runtime);
   if (current.exists) await runDocker(['rm', '-f', containerName], runtime);
   if (removeVolumes) {
-    await runDocker(['volume', 'rm', `${containerName}-data`, `${containerName}-workspace`], {
-      ...runtime,
-      allowFailure: true,
-    });
+    for (const volume of [`${containerName}-data`, `${containerName}-workspace`]) {
+      const result = await runDocker(['volume', 'rm', volume], {
+        ...runtime,
+        allowFailure: true,
+      });
+      if (result.code !== 0 && !isMissingDockerVolume(result.stderr)) {
+        throw new ContainerAgentError(
+          'CONTAINER_AGENT_DOCKER_FAILED',
+          result.stderr || `docker volume rm ${volume} failed`,
+        );
+      }
+    }
   }
   return { exists: false, status: 'absent', running: false };
 }

@@ -455,7 +455,7 @@ describe('wait-agent envelope shape', () => {
       expect(agent.status).toBe(STATUS.IDLE);
       expect(adapter.streamCalls).toHaveLength(1);
       expect(adapter.streamCalls[0].system).toContain('OLD PROJECT INSTRUCTION MUST DISAPPEAR');
-      expect(adapter.streamCalls[0].system).toContain('Old sibling experience should be visible');
+      expect(adapter.streamCalls[0].system).not.toContain('Old sibling experience should be visible');
       expect(adapter.streamCalls[0].system).toContain('Sub-agent recall must survive the single AMS render outlet.');
       expect(scopeFilters[0]).toContain('sessions/old-sibling');
 
@@ -474,7 +474,7 @@ describe('wait-agent envelope shape', () => {
       expect(agent.status).toBe(STATUS.IDLE);
       expect(adapter.streamCalls).toHaveLength(2);
       expect(adapter.streamCalls[1].system).toContain('NEW PROJECT INSTRUCTION');
-      expect(adapter.streamCalls[1].system).toContain('New sibling experience should replace the old Project context.');
+      expect(adapter.streamCalls[1].system).not.toContain('New sibling experience should replace the old Project context.');
       expect(adapter.streamCalls[1].system).not.toContain('Old sibling experience should be visible');
       expect(adapter.streamCalls[1].system).not.toContain('OLD PROJECT INSTRUCTION MUST DISAPPEAR');
       expect(scopeFilters[1]).toContain('sessions/new-sibling');

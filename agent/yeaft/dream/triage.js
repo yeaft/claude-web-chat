@@ -145,6 +145,7 @@ export function buildPass2Prompt(ctx) {
  * Run soft classification for one segment of one group's diff.
  *
  * @param {{
+ *   root?: string,
  *   sessionId: string,
  *   messages: Array<object>,
  *   topicSummaries: Array<{ path: string, summary: string }>,
@@ -152,7 +153,7 @@ export function buildPass2Prompt(ctx) {
  * }} args
  * @returns {Promise<Array<{ kind: 'update'|'create', scope: string }>>}
  */
-export async function classifySoft({ sessionId, messages, topicSummaries, llm, language }) {
+export async function classifySoft({ root, sessionId, messages, topicSummaries, llm, language }) {
   if (!llm) throw new Error('triage.classifySoft: llm callable required');
   const pass1Prompt = buildPass1Prompt({ sessionId, messages, topicSummaries, language });
   const pass1Raw = await llm({ pass: 'triage-pass1', prompt: pass1Prompt, system: triageSystem(language) });
@@ -183,8 +184,8 @@ export async function classifySoft({ sessionId, messages, topicSummaries, llm, l
     const segs = path.split('/').filter(Boolean);
     if (!sessionId || sessionId === '_no-session') continue;
     if (!isValidTopic({ kind: 'session-topic', sessionId, path: segs })) continue;
-    const redirected = args.root
-      ? resolveTopicRedirect(args.root, sessionId, segs.join('/'))
+    const redirected = root
+      ? resolveTopicRedirect(root, sessionId, segs.join('/'))
       : segs.join('/');
     const scope = `sessions/${sessionId}/topic/${redirected}`;
     if (pass2.decision === 'match') {

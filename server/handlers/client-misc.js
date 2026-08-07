@@ -183,6 +183,33 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       break;
     }
 
+    case 'get_yeaft_plugins': {
+      const targetAgentId = msg.agentId || client.currentAgent;
+      if (!targetAgentId) break;
+      if (!await checkAgentAccess(targetAgentId)) break;
+      await forwardToAgent(targetAgentId, {
+        type: 'get_yeaft_plugins',
+        requestId: msg.requestId || null,
+      });
+      break;
+    }
+
+    case 'update_yeaft_plugins': {
+      const targetAgentId = msg.agentId || client.currentAgent;
+      if (!targetAgentId) break;
+      if (!await checkAgentAccess(targetAgentId)) break;
+      const hasPlugins = Object.prototype.hasOwnProperty.call(msg, 'plugins');
+      const hasConfig = Object.prototype.hasOwnProperty.call(msg, 'config');
+      await forwardToAgent(targetAgentId, {
+        type: 'update_yeaft_plugins',
+        requestId: msg.requestId || null,
+        // Preserve explicit falsy values so Agent-side schema validation can
+        // reject them. Only an absent payload is the legacy empty selection.
+        plugins: hasPlugins ? msg.plugins : (hasConfig ? msg.config : {}),
+      });
+      break;
+    }
+
     case 'update_yeaft_settings': {
       const targetAgentId = msg.agentId || client.currentAgent;
       if (!targetAgentId) break;

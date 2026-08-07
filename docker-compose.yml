@@ -7,7 +7,7 @@ services:
     volumes:
       - ./data:/app/data
     env_file:
-      - .env
+      - server/.env
     restart: unless-stopped
     stop_grace_period: 10s
     labels:

@@ -720,6 +720,11 @@ export const useChatStore = defineStore('chat', {
     openUnifiedSessionCreate: false,
     openUnifiedChatCreate: false,
     pendingUnifiedSessionSettings: null,
+    pluginCenterOpen: false,
+    pluginCenterAgentId: null,
+    pluginConfigByAgent: {},
+    pluginCatalogByKey: {},
+    _pluginPending: {},
     // Yeaft 分页状态 (parallel to the Chat-mode flags above):
     //  - yeaftHasMoreHistory: server told us there's at least one earlier
     //    turn for the active group that we haven't loaded yet.
@@ -1683,6 +1688,73 @@ export const useChatStore = defineStore('chat', {
     },
     leaveWorkCenter() {
       this.workCenterOpen = false;
+    },
+    openPluginCenter(agentId = null) {
+      const target = this.agents.find(agent => agent?.online && agent.id === agentId)
+        || this.agents.find(agent => agent?.online && agent.id === this.currentAgent)
+        || this.agents.find(agent => agent?.online)
+        || null;
+      if (!target) return false;
+      this.pluginCenterAgentId = target.id;
+      this.pluginCenterOpen = true;
+      return true;
+    },
+    closePluginCenter() {
+      this.pluginCenterOpen = false;
+    },
+    pluginCatalogKey(agentId, workDir = '') {
+      return `${agentId || ''}\u001f${String(workDir || '').trim()}`;
+    },
+    loadPluginConfig(agentId = this.pluginCenterAgentId || this.currentAgent) {
+      if (!agentId) return Promise.resolve({ plugins: {}, error: 'no agent' });
+      const requestId = `plugins-get-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          const pending = this._pluginPending?.[requestId];
+          if (!pending) return;
+          delete this._pluginPending[requestId];
+          resolve({ plugins: {}, error: 'timeout' });
+        }, 10_000);
+        this._pluginPending[requestId] = { resolve, timer, kind: 'config', agentId };
+        this.sendWsMessage({ type: 'get_yeaft_plugins', agentId, requestId });
+      });
+    },
+    savePluginConfig(plugins, agentId = this.pluginCenterAgentId || this.currentAgent) {
+      if (!agentId) return Promise.resolve({ plugins: {}, error: 'no agent' });
+      const requestId = `plugins-save-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          const pending = this._pluginPending?.[requestId];
+          if (!pending) return;
+          delete this._pluginPending[requestId];
+          resolve({ plugins: {}, error: 'timeout' });
+        }, 10_000);
+        this._pluginPending[requestId] = { resolve, timer, kind: 'save', agentId };
+        this.sendWsMessage({ type: 'update_yeaft_plugins', agentId, requestId, plugins });
+      });
+    },
+    loadPluginCatalog(agentId = this.pluginCenterAgentId || this.currentAgent, workDir = '') {
+      if (!agentId) return Promise.resolve({ catalog: { tools: [], skills: [], mcpServers: [] }, error: 'no agent' });
+      const key = this.pluginCatalogKey(agentId, workDir);
+      const requestId = `plugins-catalog-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      this.pluginCatalogByKey = {
+        ...this.pluginCatalogByKey,
+        [key]: { ...(this.pluginCatalogByKey[key] || {}), loading: true, error: null },
+      };
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          const pending = this._pluginPending?.[requestId];
+          if (!pending) return;
+          delete this._pluginPending[requestId];
+          this.pluginCatalogByKey = {
+            ...this.pluginCatalogByKey,
+            [key]: { ...(this.pluginCatalogByKey[key] || {}), loading: false, error: 'timeout' },
+          };
+          resolve({ catalog: { tools: [], skills: [], mcpServers: [] }, error: 'timeout' });
+        }, 10_000);
+        this._pluginPending[requestId] = { resolve, timer, kind: 'catalog', agentId, key };
+        this.sendWsMessage({ type: 'yeaft_plugin_catalog', agentId, requestId, workDir: String(workDir || '').trim() });
+      });
     },
     enterWorkCenterFromSession(session, seedGoal = '') {
       if (!session?.id) return;
@@ -8113,7 +8185,15 @@ export const useChatStore = defineStore('chat', {
     },
 
     openFileInExplorer(filePath, { hideTree = false, line = null } = {}) {
-      if (!this.currentConversation || !this.hasCapability('file_editor')) return false;
+      const route = this.activeSessionRoute;
+      const agentId = route?.agentId || this.currentAgent || null;
+      const conversationId = route?.runtimeProvider === 'yeaft'
+        ? resolveYeaftConversationIdForSession(this, route.sessionId, agentId)
+        : this.currentConversation;
+      const canOpenFiles = agentId === this.currentAgent
+        ? this.hasCapability('file_editor')
+        : agentHasCapability(this, agentId, 'file_editor');
+      if (!agentId || !conversationId || !canOpenFiles) return false;
       const path = typeof filePath === 'string' ? filePath.trim() : '';
       if (!path) return false;
       const wasExpanded = this.workbenchExpanded;
@@ -8122,7 +8202,9 @@ export const useChatStore = defineStore('chat', {
       const dispatchOpen = () => window.dispatchEvent(new CustomEvent('open-file-in-explorer', {
         detail: {
           filePath: path,
-          conversationId: this.currentConversation,
+          agentId,
+          conversationId,
+          workDir: this.effectiveWorkDir || '',
           hideTree: !!hideTree,
           line: Number.isFinite(line) && line > 0 ? line : null,
         }

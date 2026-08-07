@@ -1119,7 +1119,9 @@
   overflow: hidden;
 }
 
-.yeaft-main.workbench-maximized > .yeaft-main-center {
+/* Workbench is a sibling of .yeaft-main. Remove the whole conversation
+   column from flex layout so a maximized Workbench receives its full width. */
+.yeaft-main.workbench-maximized {
   display: none;
 }
 
