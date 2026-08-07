@@ -43,7 +43,7 @@ Use this when work must continue beyond the current turn, needs role handoffs, r
       deliveryTarget: {
         type: 'string',
         enum: ['workspace_files', 'pull_request', 'merge'],
-        description: { en: 'Explicit delivery boundary. Omit only when the Coordinator should ask the user before mutating or delivering.', zh: '明确的交付边界。仅当应由 Coordinator 在修改或交付前询问用户时省略。' },
+        description: { en: 'Explicit delivery boundary selected in the current user request. Omit when the user did not choose one.', zh: '当前用户请求中明确选择的交付边界。用户未选择时必须省略。' },
       },
       start: {
         type: 'boolean',

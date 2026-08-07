@@ -9,6 +9,7 @@ import {
 } from '../llm/adapter.js';
 import { resolveWorkItemModel, selectWorkItemVp } from './assignment.js';
 import { normalizeContractPatch } from './completion-contract.js';
+import { normalizeOutputs } from './evidence.js';
 import {
   normalizeDynamicActionClosures,
   prepareDynamicActionMutation,
@@ -163,7 +164,7 @@ function boundedAction(action, result, stageReferences, compact = false, dynamic
       status: truncateUtf8(result.status, 64),
       summary: truncateUtf8(result.summary, compact ? 256 : 768),
       evidence: boundedEvidence(result.evidence),
-      outputs: boundedEvidence(result.outputs),
+      outputs: boundedEvidence(normalizeOutputs(result.outputs)),
       acceptanceChecks: preserveCanonicalResult
         ? (Array.isArray(result.acceptanceChecks) ? result.acceptanceChecks : [])
           .slice(0, 24).map(check => ({
@@ -280,22 +281,9 @@ function cleanText(value, limit, name) {
   return text;
 }
 
-const DELIVERY_BOUNDARY_PATTERN = /\b(file(?:s)?(?:[- ]only)?|artifact|commit|pull request|pr|merge|release|publish|deploy(?:ment)?)\b|文件|产物|提交|合并|发布|部署|拉取请求|交付边界/i;
-const DELIVERY_ACTION_TYPES = new Set([
-  'implement', 'migrate', 'integrate', 'document', 'operate', 'deliver', 'write', 'custom',
-]);
-
-function requiresDeliveryBoundaryDecision(detail, actions, contractPatch) {
+function requiresDeliveryBoundaryDecision(detail, actions) {
   const requested = Array.isArray(actions) ? actions : [];
-  if (!requested.some(action => DELIVERY_ACTION_TYPES.has(String(action?.type || ''))
-      && action?.workspaceMode !== 'read')) return false;
-  if (detail?.deliveryTarget) return false;
-  const criteria = contractPatch?.acceptanceCriteria ?? detail?.acceptanceCriteria ?? [];
-  const contractText = [
-    contractPatch?.goal ?? detail?.goal,
-    ...(Array.isArray(criteria) ? criteria : []),
-  ].filter(Boolean).join('\n');
-  return !DELIVERY_BOUNDARY_PATTERN.test(contractText);
+  return !detail?.deliveryTarget && requested.some(action => action?.workspaceMode !== 'read');
 }
 
 function permanentCoordinatorDiagnostic(cause, phase, language) {
@@ -484,13 +472,17 @@ export function normalizeCoordinatorResponse(value, detail, options = {}) {
     };
   }
   if (kind === 'request_human') {
+    if (options.automatic === true && source.contractPatch?.deliveryTarget) {
+      throw new Error('Automatic Work Center Coordinator delivery target changes are forbidden');
+    }
+    const contractPatch = dynamic ? normalizeContractPatch(source.contractPatch) : null;
     return {
       reply,
       decision: {
         kind,
         reason,
         question: cleanText(source.question, COORDINATOR_MAX_REPLY_CHARS, 'human question'),
-        contractPatch: dynamic && options.automatic !== true ? normalizeContractPatch(source.contractPatch) : null,
+        contractPatch: dynamic && options.automatic !== true ? contractPatch : null,
         guidance: [],
         actions: [],
       },
@@ -511,9 +503,12 @@ export function normalizeCoordinatorResponse(value, detail, options = {}) {
     };
   }
   if (dynamic && kind === 'create_actions') {
+    if (options.automatic === true && source.contractPatch?.deliveryTarget) {
+      throw new Error('Automatic Work Center Coordinator delivery target changes are forbidden');
+    }
     const contractPatch = normalizeContractPatch(source.contractPatch);
-    if (requiresDeliveryBoundaryDecision(detail, source.actions, contractPatch)) {
-      throw new Error('Work Center delivery boundary is ambiguous; use request_human before creating mutating or delivery Actions');
+    if (requiresDeliveryBoundaryDecision(detail, source.actions)) {
+      throw new Error('Work Center delivery target is unconfirmed; the delivery boundary requires request_human before creating mutating or delivery Actions');
     }
     const decision = {
       kind,

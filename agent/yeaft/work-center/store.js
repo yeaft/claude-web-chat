@@ -213,6 +213,7 @@ function mapAction(row) {
     modelPolicy: parseJson(row.model_policy, null),
     dependsOnStageIds: parseJson(row.depends_on_stage_ids, []),
     sourceActionIds: parseJson(row.source_action_ids, []),
+    creationSource: row.creation_source || 'legacy',
     workspaceMode: row.workspace_mode || 'shared',
     changesRequestedStageId: row.changes_requested_stage_id || null,
     workspace: parseJson(row.workspace, null),
@@ -867,6 +868,7 @@ export class WorkItemStore {
         model_policy TEXT,
         depends_on_stage_ids TEXT NOT NULL DEFAULT '[]',
         source_action_ids TEXT NOT NULL DEFAULT '[]',
+        creation_source TEXT NOT NULL DEFAULT 'legacy',
         workspace_mode TEXT NOT NULL DEFAULT 'shared',
         changes_requested_stage_id TEXT,
         workspace TEXT,
@@ -1120,6 +1122,9 @@ export class WorkItemStore {
     }
     if (!hasColumn(this.db, 'actions', 'source_action_ids')) {
       this.db.exec("ALTER TABLE actions ADD COLUMN source_action_ids TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!hasColumn(this.db, 'actions', 'creation_source')) {
+      this.db.exec("ALTER TABLE actions ADD COLUMN creation_source TEXT NOT NULL DEFAULT 'legacy'");
     }
     if (!hasColumn(this.db, 'actions', 'generation')) {
       this.db.exec('ALTER TABLE actions ADD COLUMN generation INTEGER NOT NULL DEFAULT 1');
@@ -2352,14 +2357,22 @@ export class WorkItemStore {
     });
   }
 
-  #insertAction(workItemId, input, sequence, now = this.now()) {
+  #insertAction(workItemId, input, sequence, now = this.now(), options = {}) {
+    const workItem = this.getWorkItem(workItemId);
     const stageId = input.stageId || input.type;
-    const activeStage = usesLegacyGraph(this.getWorkItem(workItemId))
+    const activeStage = usesLegacyGraph(workItem)
       ? this.db.prepare(`SELECT id FROM actions WHERE work_item_id = ? AND stage_id = ?
           AND status NOT IN ('superseded', 'cancelled') LIMIT 1`).get(workItemId, stageId)
       : null;
     if (activeStage) {
       throw new Error(`Work Center Action stage identity is already active: ${stageId}`);
+    }
+    const creationSource = input.creationSource || 'legacy';
+    if (input.type === 'create_vp'
+        && (!isDynamicWorkItem(workItem)
+          || creationSource !== 'dynamic_coordinator'
+          || options.dynamicCoordinator !== true)) {
+      throw new Error('create_vp Actions can only be persisted by the dynamic WorkItem Coordinator');
     }
     const action = {
       id: input.id || randomUUID(),
@@ -2371,6 +2384,7 @@ export class WorkItemStore {
       modelPolicy: input.modelPolicy || null,
       dependsOnStageIds: Array.isArray(input.dependsOnStageIds) ? input.dependsOnStageIds : [],
       sourceActionIds: Array.isArray(input.sourceActionIds) ? input.sourceActionIds : [],
+      creationSource,
       workspaceMode: input.workspaceMode || 'shared',
       changesRequestedStageId: input.changesRequestedStageId || null,
       workspace: input.workspace || null,
@@ -2395,10 +2409,10 @@ export class WorkItemStore {
     action.identityHistory = actionIdentityHistory(action);
     this.db.prepare(`INSERT INTO actions
       (id, work_item_id, sequence, type, required_role, stage_id, assignment_policy, model_policy,
-       depends_on_stage_ids, source_action_ids, workspace_mode, changes_requested_stage_id, workspace,
+       depends_on_stage_ids, source_action_ids, creation_source, workspace_mode, changes_requested_stage_id, workspace,
        instruction, brief, context, contract_revision, generation, spec_hash, identity_history, result_run_id,
        status, attempt, max_attempts, current_run_id, lease_epoch, replaces_action_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?)`).run(
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?)`).run(
       action.id,
       workItemId,
       action.sequence,
@@ -2409,6 +2423,7 @@ export class WorkItemStore {
       stringify(action.modelPolicy),
       stringify(action.dependsOnStageIds),
       stringify(action.sourceActionIds),
+      action.creationSource,
       action.workspaceMode,
       action.changesRequestedStageId,
       stringify(action.workspace),
@@ -3176,6 +3191,7 @@ export class WorkItemStore {
         ),
         recovery: assistant.recovery ? { ...assistant.recovery } : null,
         automatic: assistant.automatic === true,
+        userOriginated: assistant.userOriginated === true,
         claim: {
           mailboxId: claim.mailboxId,
           ownerBootId: claim.ownerBootId,
@@ -3240,6 +3256,7 @@ export class WorkItemStore {
             (detail.actions || []).filter(action => !['completed', 'closed', 'superseded', 'cancelled'].includes(action.status)),
           ),
           automatic: true,
+          userOriginated: false,
           claim: {
             mailboxId: mailbox.id,
             ownerBootId: expected.ownerBootId,
@@ -3347,6 +3364,7 @@ export class WorkItemStore {
       const assistantMessage = {
         id: randomUUID(), turnId, role: 'assistant', text: '', status: 'thinking',
         createdAt: now, updatedAt: now, decision: null,
+        userOriginated: userMessage !== null,
         ...(recovery ? { recovery: { ...recovery } } : {}),
       };
       if (userMessage) {
@@ -3402,6 +3420,8 @@ export class WorkItemStore {
           status: workItem.status,
           actionFence: coordinatorActionFence(activeActions),
           recovery: recovery ? { ...recovery } : null,
+          userOriginated: userMessage !== null,
+          claim: null,
         },
       };
     });
@@ -3442,6 +3462,9 @@ export class WorkItemStore {
         return this.#completeDynamicCoordinatorTurn({
           turnId, result, expected, workItem, messages, assistantIndex, activeActions, now,
         });
+      }
+      if (decision.contractPatch?.deliveryTarget) {
+        throw new Error('Only a dynamic user-originated Coordinator turn can confirm the WorkItem delivery target');
       }
 
       const graphMode = usesLegacyGraph(workItem);
@@ -3658,11 +3681,25 @@ export class WorkItemStore {
     turnId, result, expected, workItem, messages, assistantIndex, activeActions, now,
   }) {
     const decision = result?.decision || {};
+    if (expected.automatic === true && result?.mutation?.contractPatch?.deliveryTarget) {
+      throw new Error('Automatic Work Center Coordinator delivery target changes are forbidden');
+    }
+    if (decision.contractPatch?.deliveryTarget && expected.userOriginated !== true) {
+      throw new Error('WorkItem delivery target confirmation requires a user-originated Coordinator turn');
+    }
+    if (decision.contractPatch?.deliveryTarget && decision.kind !== 'request_human') {
+      throw new Error('WorkItem delivery target confirmation requires a user-originated request_human decision');
+    }
     let affectedActionIds = [];
     let nextStatus = workItem.status;
     let currentActionId = workItem.currentActionId;
     let finalResult = null;
     const contractPatch = normalizeContractPatch(decision.contractPatch);
+    if (decision.kind === 'create_actions'
+        && !workItem.deliveryTarget
+        && (result?.mutation?.createdActions || []).some(action => action.workspaceMode !== 'read')) {
+      throw new Error('WorkItem delivery target must be confirmed before creating mutating or delivery Actions');
+    }
     if (contractPatch) {
       if (contractPatch.title) workItem.title = contractPatch.title;
       if (contractPatch.goal) workItem.goal = contractPatch.goal;
@@ -3726,8 +3763,11 @@ export class WorkItemStore {
       const current = this.getWorkItem(workItem.id);
       for (const candidate of mutation.createdActions) {
         const action = this.#insertAction(workItem.id, {
-          ...candidate, status: 'ready', contractRevision: current.revision,
-        }, this.#nextSequence(workItem.id), now);
+          ...candidate,
+          creationSource: 'dynamic_coordinator',
+          status: 'ready',
+          contractRevision: current.revision,
+        }, this.#nextSequence(workItem.id), now, { dynamicCoordinator: true });
         affectedActionIds.push(action.id);
       }
       nextStatus = 'ready';

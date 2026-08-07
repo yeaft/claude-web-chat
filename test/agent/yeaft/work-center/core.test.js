@@ -33,7 +33,10 @@ import {
   applyAdditivePlanProposal,
   applyCoordinatorReplan,
 } from '../../../../agent/yeaft/work-center/plan-mutation.js';
-import { resolvePlanningWorkflowSnapshot } from '../../../../agent/yeaft/work-center/workflow.js';
+import {
+  applyGeneratedPlan,
+  resolvePlanningWorkflowSnapshot,
+} from '../../../../agent/yeaft/work-center/workflow.js';
 import {
   MAX_WORK_ITEM_BROWSER_DTO_BYTES,
   projectActionMessagePage,
@@ -1294,6 +1297,36 @@ describe('Work Center core', () => {
         expect(item.workflowSnapshot.stages).toHaveLength(1);
       });
     }
+  });
+
+  it('rejects create_vp Actions from legacy AI planning', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    expect(() => applyGeneratedPlan({
+      workflowSnapshot,
+    }, {
+      workItemType: 'vp-provisioning',
+      actions: [
+        {
+          id: 'create-specialist', name: 'Create specialist', type: 'create_vp',
+          objective: 'Create a specialist VP for accessibility review.',
+          approach: 'Persist a focused VP definition in the Agent library.',
+          expectedOutcome: 'A specialist VP is available to later Actions.',
+          capability: 'vp_authoring', candidateVpIds: ['omni'],
+          assignmentReason: 'Omni would author the specialist.',
+          dependsOnActionIds: [], workspaceMode: 'shared',
+        },
+        {
+          id: 'review-specialist', name: 'Review specialist', type: 'review',
+          objective: 'Review the proposed specialist definition.',
+          approach: 'Inspect the created role and persona for scope and safety.',
+          expectedOutcome: 'The specialist definition has an independent review decision.',
+          capability: 'review', candidateVpIds: ['omni'],
+          assignmentReason: 'Omni would review the definition.',
+          dependsOnActionIds: ['create-specialist'],
+          changesRequestedActionId: 'create-specialist', workspaceMode: 'read',
+        },
+      ],
+    }, { availableVpIds: ['omni'] })).toThrow(/create_vp.*Coordinator/i);
   });
 
   it('rejects AI-planned Actions without task-specific execution fields', () => {

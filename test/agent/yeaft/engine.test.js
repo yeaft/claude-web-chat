@@ -4876,6 +4876,7 @@ describe('Engine', () => {
             goal: 'Update state.txt',
             acceptanceCriteria: [criterion],
             workDir,
+            deliveryTarget: 'workspace_files',
             start: true,
           } },
           { type: 'stop', stopReason: 'tool_use' },

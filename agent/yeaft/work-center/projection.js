@@ -7,6 +7,7 @@ import {
   sanitizeDiagnosticText,
 } from './debug-projection.js';
 import { runMatchesActionIdentity } from './action-identity.js';
+import { normalizeOutputs } from './evidence.js';
 import { taskSpecificActionBrief } from './workflow.js';
 import { buildMainlineProjection } from './mainline-projection.js';
 
@@ -853,7 +854,7 @@ function projectMainlineBrowser(detail) {
           status: result.status,
           summary: sanitizeMainlineDiagnostic(result.summary, MAX_ACTION_DIAGNOSTIC_CHARS),
           evidence: projectCanonicalEvidence(result.evidence),
-          outputs: projectCanonicalEvidence(result.outputs, { preserveRef: true }),
+          outputs: projectCanonicalEvidence(normalizeOutputs(result.outputs), { preserveRef: true }),
           waitingReason: sanitizeDiagnosticText(result.waitingReason, MAX_ACTION_DIAGNOSTIC_CHARS) || null,
           reviewDecision: typeof result.reviewDecision === 'string'
             ? truncateUtf8(result.reviewDecision, 256) : null,
@@ -909,7 +910,7 @@ export function projectWorkItemDetail(detail, options = {}) {
   for (const action of Array.isArray(detail.actions) ? detail.actions : []) {
     const run = action?.resultRunId ? runById.get(action.resultRunId) : null;
     if (!run || run.status !== 'completed') continue;
-    for (const output of Array.isArray(run.outputs) ? run.outputs : []) {
+    for (const output of normalizeOutputs(run.outputs)) {
       const key = `${output.kind}\u0000${output.ref}`;
       if (seenOutputs.has(key)) continue;
       seenOutputs.add(key);
@@ -940,10 +941,14 @@ export function projectWorkItemDetail(detail, options = {}) {
       evidenceRunIds: Array.isArray(detail.finalResult.evidenceRunIds)
         ? detail.finalResult.evidenceRunIds.map(String).slice(0, 64) : [],
       outputs: Array.isArray(detail.finalResult.outputs)
-        ? detail.finalResult.outputs.slice(0, 50).map(output => ({
-            ...projectCanonicalEvidence([output], { preserveRef: true })[0],
-            runId: truncateUtf8(output?.runId || '', 256) || null,
-          })).filter(output => output.kind && output.label && output.ref) : [],
+        ? detail.finalResult.outputs.slice(0, 50).map(rawOutput => {
+            const output = normalizeOutputs([rawOutput])[0];
+            if (!output) return null;
+            return {
+              ...projectCanonicalEvidence([output], { preserveRef: true })[0],
+              runId: truncateUtf8(rawOutput?.runId || '', 256) || null,
+            };
+          }).filter(output => output?.kind && output.label && output.ref) : [],
       residualRisks: Array.isArray(detail.finalResult.residualRisks)
         ? detail.finalResult.residualRisks
           .map(risk => truncateUtf8(risk, MAX_ACTION_MESSAGE_CHARS)).slice(0, 24) : [],

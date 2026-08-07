@@ -524,6 +524,9 @@ export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
     const input = rawAction && typeof rawAction === 'object' && !Array.isArray(rawAction) ? rawAction : {};
     const type = generatedActionType(input.type);
     if (type === 'triage') throw new Error('AI-planned Actions cannot add another triage Action');
+    if (type === 'create_vp') {
+      throw new Error('create_vp Actions can only be created by the dynamic WorkItem Coordinator');
+    }
     const id = canonicalActionId(input.id, `${type}-${index + 1}`);
     if (seen.has(id)) throw new Error(`Duplicate AI-planned Action id: ${id}`);
     if (reservedStageIds.has(id)) {

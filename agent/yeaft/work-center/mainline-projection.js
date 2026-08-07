@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isDynamicWorkItem } from './execution-mode.js';
+import { normalizeOutputs } from './evidence.js';
 import {
   currentActionInputEventIds,
   eventMatchesActionGeneration,
@@ -310,7 +311,7 @@ export function buildMainlineProjection(detail) {
       status: run.status,
       summary: run.summary || '',
       evidence: Array.isArray(run.evidence) ? run.evidence : [],
-      outputs: Array.isArray(run.outputs) ? run.outputs : [],
+      outputs: normalizeOutputs(run.outputs),
       reviewDecision: run.reviewDecision || null,
       waitingReason: run.waitingReason || null,
       endedAt: run.endedAt || null,

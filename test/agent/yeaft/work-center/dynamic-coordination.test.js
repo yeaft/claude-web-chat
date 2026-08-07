@@ -786,6 +786,42 @@ describe('Work Center dynamic coordination contract', () => {
     expect(completed.actions).toHaveLength(1);
   });
 
+  it('rejects create_vp without one explicitly assigned existing VP', () => {
+    const action = {
+      type: 'create_vp', objective: 'Create a specialist for accessibility review.',
+      approach: 'Author a focused persistent VP definition using the dedicated tool.',
+      expectedOutcome: 'The specialist VP is available for later Work Center Actions.',
+      capability: 'vp_authoring', candidateVpIds: [], assignmentReason: '',
+      sourceActionIds: [], workspaceMode: 'shared',
+    };
+    expect(() => prepareDynamicActionMutation({
+      workItem: workItem(), actions: [], availableVpIds: ['linus'],
+      decision: { workItemType: 'software-change', actions: [action] },
+    })).toThrow(/create_vp.*exactly one existing VP.*assignment reason/i);
+    expect(() => prepareDynamicActionMutation({
+      workItem: workItem(), actions: [], availableVpIds: ['linus', 'martin'],
+      decision: {
+        workItemType: 'software-change',
+        actions: [{
+          ...action,
+          candidateVpIds: ['linus', 'martin'],
+          assignmentReason: 'Either VP could author the specialist.',
+        }],
+      },
+    })).toThrow(/create_vp.*exactly one existing VP/i);
+    expect(() => prepareDynamicActionMutation({
+      workItem: workItem(), actions: [],
+      decision: {
+        workItemType: 'software-change',
+        actions: [{
+          ...action,
+          candidateVpIds: ['linus'],
+          assignmentReason: 'Linus would author the specialist.',
+        }],
+      },
+    })).toThrow(/create_vp.*available VP inventory/i);
+  });
+
   it('provisions a specialized VP through an assigned VP authoring Action', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'yeaft-dynamic-vp-provision-'));
     const registry = new Registry();
@@ -863,6 +899,68 @@ describe('Work Center dynamic coordination contract', () => {
     expect(result).toMatchObject({ outcome: 'completed', summary: 'Specialist VP created.' });
     expect(store.getRun(acquired.run.id).toolPolicySnapshot.allowedToolNames)
       .toContain('CreateWorkItemVp');
+
+    store.interruptRun(acquired.run.id, 'runner-owner', acquired.run.leaseEpoch, 'Test cleanup after direct Runner execution');
+    const forgedDir = mkdtempSync(join(tmpdir(), 'yeaft-forged-create-vp-'));
+    const forgedStore = new WorkItemStore(join(forgedDir, 'work-center.db'));
+    const forgedController = new WorkflowController(forgedStore);
+    const forged = forgedController.create({
+      ...workItem({ id: 'forged-create-vp-work-item' }),
+      workDir: forgedDir, workflowTemplate: 'coordinator-driven', start: true,
+    });
+    const forgedSpec = {
+      type: 'create_vp', stageId: 'forged-create-vp', status: 'ready',
+      assignmentPolicy: {
+        mode: 'planned', capability: 'vp_authoring', candidateVpIds: ['linus'],
+        fixedVpId: null, assignmentReason: 'Forged outside Coordinator mutation.',
+        separateFromStageTypes: [],
+      },
+      modelPolicy: null, sourceActionIds: [], dependsOnStageIds: [],
+      workspaceMode: 'shared', changesRequestedStageId: null, requiredRole: '',
+      brief: {
+        objective: 'Create an unauthorized specialist VP.',
+        approach: 'Attempt to reach the Agent-global VP library.',
+        expectedOutcome: 'The Runner rejects the forged Action before tool exposure.',
+      },
+      instruction: 'Attempt unauthorized VP creation.', maxAttempts: 1,
+    };
+    expect(() => forgedStore.createNextAction(forged.id, forgedSpec))
+      .toThrow(/only be persisted by the dynamic WorkItem Coordinator/i);
+    const forgedAction = forgedStore.createNextAction(forged.id, {
+      ...forgedSpec, type: 'custom', stageId: 'forged-custom',
+    });
+    forgedStore.db.prepare(`UPDATE actions SET type = 'create_vp' WHERE id = ?`).run(forgedAction.id);
+    forgedStore.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ? WHERE id = ?`)
+      .run(forgedAction.id, forged.id);
+    const forgedClaim = forgedStore.claimReadyAction('forged-runner-owner', 5_000);
+    expect(forgedClaim?.action.id).toBe(forgedAction.id);
+    const forgedRunner = new WorkItemRunner({
+      store: forgedStore, yeaftDir: forgedDir,
+      runtimeProvider: async () => ({
+        defaultWorkDir: forgedDir,
+        config: { model: 'provider/model', maxOutputTokens: 1_024, projectDocMaxBytes: 0 },
+        adapter,
+      }),
+      registry,
+    });
+    await expect(forgedRunner.run({
+      ...forgedClaim, ownerBootId: 'forged-runner-owner', signal: new AbortController().signal,
+    })).rejects.toThrow(/create_vp.*Coordinator provenance/i);
+    expect(forgedStore.getRun(forgedClaim.run.id).toolPolicySnapshot).toBeNull();
+    forgedStore.db.prepare(`UPDATE actions SET creation_source = 'dynamic_coordinator',
+      assignment_policy = ? WHERE id = ?`).run(JSON.stringify({
+      mode: 'planned', capability: 'vp_authoring', candidateVpIds: ['missing-vp'],
+      fixedVpId: null, assignmentReason: 'The assigned VP no longer exists.',
+      separateFromStageTypes: [],
+    }), forgedAction.id);
+    const unavailableAction = forgedStore.getAction(forgedAction.id);
+    await expect(forgedRunner.run({
+      workItem: forgedStore.getWorkItem(forged.id), action: unavailableAction,
+      run: forgedClaim.run, ownerBootId: 'forged-runner-owner',
+      signal: new AbortController().signal,
+    })).rejects.toThrow(/one explicit existing VP assignment/i);
+    forgedStore.close();
+    rmSync(forgedDir, { recursive: true, force: true });
     expect(registry.getVp('accessibility-reviewer')).toMatchObject({
       id: 'accessibility-reviewer', role: 'Accessibility reviewer',
     });
@@ -946,6 +1044,57 @@ describe('Work Center dynamic coordination contract', () => {
     ]);
   });
 
+  it('rejects mutating Actions when only contract wording implies a delivery target', () => {
+    const detail = workItem({
+      goal: 'Fix the merge algorithm without changing public behavior.',
+      acceptanceCriteria: ['The merge algorithm remains compatible'],
+      deliveryTarget: null,
+      actions: [],
+      runs: [],
+    });
+    expect(() => normalizeCoordinatorResponse({
+      reply: 'I will fix the merge algorithm.',
+      decision: {
+        kind: 'create_actions', reason: 'The implementation is clear.',
+        workItemType: 'software-change', actions: [{
+          type: 'implement', objective: 'Fix the merge algorithm.',
+          approach: 'Modify the implementation and run focused tests.',
+          expectedOutcome: 'The merge algorithm is corrected without public behavior changes.',
+          candidateVpIds: ['linus'], assignmentReason: 'Linus owns implementation.',
+          sourceActionIds: [], workspaceMode: 'shared',
+        }],
+      },
+    }, detail, { automatic: true, availableVpIds: ['linus'] }))
+      .toThrow(/delivery target.*request_human/i);
+  });
+
+  it('rejects automatic delivery-target patches before they can persist', () => {
+    const detail = workItem({ deliveryTarget: null, actions: [], runs: [] });
+    for (const decision of [
+      {
+        kind: 'create_actions', reason: 'I selected the merge boundary.',
+        workItemType: 'software-change',
+        contractPatch: { deliveryTarget: 'merge' },
+        actions: [{
+          type: 'implement', objective: 'Implement the requested change.',
+          approach: 'Modify the repository and verify focused tests.',
+          expectedOutcome: 'A verified change is ready for delivery.',
+          candidateVpIds: ['linus'], assignmentReason: 'Linus owns implementation.',
+          sourceActionIds: [], workspaceMode: 'shared',
+        }],
+      },
+      {
+        kind: 'request_human', reason: 'I inferred the merge boundary.',
+        question: 'Proceed with merge?', contractPatch: { deliveryTarget: 'merge' },
+      },
+    ]) {
+      expect(() => normalizeCoordinatorResponse({
+        reply: 'I will merge the result.', decision,
+      }, detail, { automatic: true, availableVpIds: ['linus'] }))
+        .toThrow(/automatic.*delivery target/i);
+    }
+  });
+
   it('persists an explicit delivery target and lets it authorize mutating Actions', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'yeaft-dynamic-delivery-target-'));
     store = new WorkItemStore(join(tempDir, 'work-center.db'));
@@ -971,18 +1120,65 @@ describe('Work Center dynamic coordination contract', () => {
     }, detail, { automatic: true, availableVpIds: ['linus'] })).not.toThrow();
   });
 
-  it('rejects unsafe output references before persistence', () => {
+  it('rejects unsafe output references before persistence and strips them from projection', () => {
+    const signedUrl = 'https://downloads.example.test/artifact.zip?X-Amz-Credential=AKIASECRET&X-Amz-Signature=deadbeef';
+    const fragmentTokenUrl = 'https://example.test/callback#access_token=secret-token';
     const parsed = parseStructuredResult(JSON.stringify({
       outcome: 'completed', summary: 'Mixed outputs', evidence: ['verified'],
       outputs: [
         { kind: 'file', label: 'Traversal', ref: '../secret.txt' },
         { kind: 'file', label: 'Absolute', ref: '/tmp/secret.txt' },
         { kind: 'link', label: 'Credential URL', ref: 'https://user:pass@example.test/private' },
+        { kind: 'link', label: 'Signed URL', ref: signedUrl },
+        { kind: 'link', label: 'Fragment token', ref: fragmentTokenUrl },
+        { kind: 'link', label: 'Bare fragment token', ref: 'https://example.test/callback#token' },
+        { kind: 'link', label: 'Safe URL', ref: 'https://example.test/artifact?page=1#download' },
         { kind: 'file', label: 'Safe file', ref: './docs/design.md' },
       ],
       acceptanceChecks: [],
     }), 'write');
-    expect(parsed.outputs).toEqual([{ kind: 'file', label: 'Safe file', ref: 'docs/design.md' }]);
+    expect(parsed.outputs).toEqual([
+      { kind: 'link', label: 'Safe URL', ref: 'https://example.test/artifact?page=1#download' },
+      { kind: 'file', label: 'Safe file', ref: 'docs/design.md' },
+    ]);
+
+    const projected = projectWorkItemDetail({
+      ...workItem(),
+      revision: 1,
+      planRevision: 1,
+      ledgerRevision: 1,
+      coordinatorRevision: 1,
+      status: 'running',
+      actions: [{
+        id: 'unsafe-output-action', stageId: 'unsafe-output-action', type: 'write',
+        status: 'completed', resultRunId: 'unsafe-output-run', generation: 1,
+        sourceActionIds: [], dependsOnStageIds: [],
+      }],
+      runs: [{
+        id: 'unsafe-output-run', actionId: 'unsafe-output-action', status: 'completed',
+        outputs: [
+          { kind: 'link', label: 'Signed URL', ref: signedUrl },
+          { kind: 'link', label: 'Fragment token', ref: fragmentTokenUrl },
+        ],
+      }],
+      messages: [],
+      events: [],
+      finalResult: {
+        summary: 'Unsafe legacy result', acceptanceResults: [], evidenceRunIds: [],
+        outputs: [
+          { kind: 'link', label: 'Signed URL', ref: signedUrl, runId: 'unsafe-output-run' },
+          { kind: 'file', label: 'Safe legacy output', ref: 'docs/legacy.md', runId: 'safe-output-run' },
+        ],
+        residualRisks: [],
+      },
+    });
+    expect(projected.outputs).toEqual([]);
+    expect(projected.finalResult.outputs).toEqual([{
+      kind: 'file', label: 'Safe legacy output', ref: 'docs/legacy.md', runId: 'safe-output-run',
+    }]);
+    expect(projected.mainline.actions[0].canonicalResult.outputs).toEqual([]);
+    expect(JSON.stringify(projected)).not.toContain('AKIASECRET');
+    expect(JSON.stringify(projected)).not.toContain('secret-token');
   });
 
   it('requires a human decision when the delivery boundary is ambiguous', () => {
@@ -1009,14 +1205,15 @@ describe('Work Center dynamic coordination contract', () => {
       },
     }, detail, { automatic: true, availableVpIds: ['linus'] });
     expect(question.decision.kind).toBe('request_human');
-    expect(normalizeCoordinatorResponse({
+    expect(() => normalizeCoordinatorResponse({
       reply: 'I inferred a pull request.',
       decision: {
         kind: 'request_human', reason: 'Confirmation is required.',
         question: 'Should I open a pull request?',
         contractPatch: { deliveryTarget: 'pull_request' },
       },
-    }, detail, { automatic: true, availableVpIds: ['linus'] }).decision.contractPatch).toBeNull();
+    }, detail, { automatic: true, availableVpIds: ['linus'] }))
+      .toThrow(/automatic.*delivery target/i);
     expect(normalizeCoordinatorResponse({
       reply: 'You selected a pull request.',
       decision: {

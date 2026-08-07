@@ -372,6 +372,23 @@ export function createWorkItemVpTool({ yeaftDir, registry, isRunActive }) {
   });
 }
 
+function assertCreateVpActionAuthority(workItem, action, registry) {
+  if (action?.type !== 'create_vp') return;
+  const assignmentPolicy = action.assignmentPolicy;
+  const assignedVpIds = assignmentPolicy?.mode === 'planned'
+    ? assignmentPolicy.candidateVpIds || []
+    : [];
+  if (!isDynamicWorkItem(workItem)
+      || action.creationSource !== 'dynamic_coordinator'
+      || assignedVpIds.length !== 1
+      || !String(assignmentPolicy?.assignmentReason || '').trim()
+      || !registry?.getVp?.(assignedVpIds[0])) {
+    const error = new Error('create_vp Action lacks dynamic Coordinator provenance and one explicit existing VP assignment');
+    error.retryable = false;
+    throw error;
+  }
+}
+
 export function planningVpCatalog(vps) {
   return vps.map(vp => ({
     id: vp.id,
@@ -393,7 +410,7 @@ export function createSubmitWorkItemPlanTool({
 }) {
   const vpCatalog = planningVpCatalog(vps);
   const vpIds = vpCatalog.map(vp => vp.id);
-  const actionTypes = BUILT_IN_ACTION_TYPES.filter(type => type !== 'triage');
+  const actionTypes = BUILT_IN_ACTION_TYPES.filter(type => !['triage', 'create_vp'].includes(type));
   const catalogDescription = `Action types: ${actionTypes.join(', ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'}; ${vp.traits.join(', ') || 'no traits'})`).join('; ')}.`;
   return defineTool({
     name: 'SubmitWorkItemPlan',
@@ -488,7 +505,7 @@ function plannedActionSchema(vpIds, { requireCandidates = true } = {}) {
   if (requireCandidates) required.push('candidateVpIds', 'assignmentReason');
   return { type: 'object', additionalProperties: false, required, properties: {
     id: { type: 'string', minLength: 1, maxLength: 64 }, name: { type: 'string', minLength: 1, maxLength: 120 },
-    type: { type: 'string', enum: BUILT_IN_ACTION_TYPES.filter(type => type !== 'triage') }, capability: { type: 'string', maxLength: 64 },
+    type: { type: 'string', enum: BUILT_IN_ACTION_TYPES.filter(type => !['triage', 'create_vp'].includes(type)) }, capability: { type: 'string', maxLength: 64 },
     objective: { type: 'string', minLength: 1, maxLength: 2_000 }, approach: { type: 'string', minLength: 1, maxLength: 2_000 }, expectedOutcome: { type: 'string', minLength: 1, maxLength: 2_000 },
     candidateVpIds: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string', enum: vpIds } }, assignmentReason: { type: 'string', minLength: 1, maxLength: 1_000 },
     dependsOnActionIds: { type: 'array', uniqueItems: true, items: { type: 'string' } }, workspaceMode: { type: 'string', enum: ['read', 'isolated-write', 'integrate', 'shared'] },
@@ -1068,6 +1085,7 @@ export class WorkItemRunner {
   }
 
   async run({ workItem, action, run, signal, ownerBootId, onProgress, registerProgressReader, registerInputWake, onEngineEvent = null }) {
+    assertCreateVpActionAuthority(workItem, action, this.registry);
     const runtime = await this.runtimeProvider();
     const currentSettings = ['ai', 'coordinator'].includes(workItem?.workflowSnapshot?.planningMode)
       && this.policyProvider ? await this.policyProvider() : null;
@@ -1151,11 +1169,13 @@ export class WorkItemRunner {
       && workItem?.workflowSnapshot?.planningMode === 'ai'
       && !replanToolEnabled;
     const runTools = [];
-    if (executionAction.type === 'create_vp') runTools.push(createWorkItemVpTool({
-      yeaftDir: runtime.yeaftDir || this.yeaftDir,
-      registry: this.registry,
-      isRunActive,
-    }));
+    if (executionAction.type === 'create_vp') {
+      runTools.push(createWorkItemVpTool({
+        yeaftDir: runtime.yeaftDir || this.yeaftDir,
+        registry: this.registry,
+        isRunActive,
+      }));
+    }
     if (planToolEnabled) runTools.push(createSubmitWorkItemPlanTool({
       vps: this.registry.listVps(),
       workItem,

@@ -157,6 +157,12 @@ export function prepareDynamicActionMutation({
       const unavailable = candidateVpIds.find(vpId => !knownVpIds.has(vpId));
       if (unavailable) throw new Error(`Work Center dynamic Action references unavailable VP "${unavailable}"`);
     }
+    if (type === 'create_vp' && !knownVpIds) {
+      throw new Error('Work Center create_vp Action requires the available VP inventory');
+    }
+    if (type === 'create_vp' && candidateVpIds.length !== 1) {
+      throw new Error('Work Center create_vp Action requires exactly one existing VP and an assignment reason');
+    }
     const assignmentReason = candidateVpIds.length > 0
       ? requiredText(raw.assignmentReason, 'assignmentReason', 1_000)
       : '';

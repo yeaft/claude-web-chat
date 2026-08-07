@@ -4,10 +4,61 @@ const ALLOWED_STATUSES = new Set(['completed', 'passed', 'failed', 'error', 'pen
 const MAX_ITEMS = 50;
 const MAX_LABEL_LENGTH = 500;
 const MAX_REF_LENGTH = 1_000;
+const MAX_URL_NAME_DECODE_STEPS = 3;
+const SENSITIVE_URL_NAMES = new Set([
+  'apikey', 'xapikey', 'token', 'accesstoken', 'refreshtoken', 'idtoken',
+  'clientsecret', 'secret', 'signature', 'sig', 'credential', 'password',
+  'passwd', 'authorization', 'proxyauthorization', 'auth', 'code', 'cookie',
+  'setcookie',
+]);
 
 function boundedString(value, maxLength) {
   if (typeof value !== 'string') return '';
   return value.trim().slice(0, maxLength);
+}
+
+function normalizedUrlNames(value) {
+  return String(value || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+function isSensitiveUrlName(value) {
+  let decoded = String(value || '');
+  for (let step = 0; step < MAX_URL_NAME_DECODE_STEPS; step += 1) {
+    const names = normalizedUrlNames(decoded);
+    if (names.some(name => SENSITIVE_URL_NAMES.has(name))
+        || SENSITIVE_URL_NAMES.has(names.join(''))) return true;
+    let next;
+    try {
+      next = decodeURIComponent(decoded.replace(/\+/g, ' '));
+    } catch {
+      return true;
+    }
+    if (next === decoded) return false;
+    decoded = next;
+  }
+  const names = normalizedUrlNames(decoded);
+  return names.some(name => SENSITIVE_URL_NAMES.has(name))
+    || SENSITIVE_URL_NAMES.has(names.join(''))
+    || decoded.includes('%');
+}
+
+function hasSensitiveUrlParameters(url) {
+  if ([...url.searchParams.keys()].some(isSensitiveUrlName)) return true;
+  const fragment = url.hash.startsWith('#') ? url.hash.slice(1) : url.hash;
+  if (!fragment) return false;
+  return fragment.split('&').some(part => {
+    const separator = part.indexOf('=');
+    const name = separator === -1 ? part : part.slice(0, separator);
+    return isSensitiveUrlName(name);
+  });
+}
+
+export function normalizeOutputUrl(value) {
+  let url;
+  try { url = new URL(value); } catch { return ''; }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return '';
+  if (hasSensitiveUrlParameters(url)) return '';
+  return url.toString();
 }
 
 function normalizeEvidenceItem(value) {
@@ -63,10 +114,8 @@ export function normalizeOutputs(value) {
       item.ref = normalized.replace(/^\.\//, '');
       if (!item.ref) continue;
     } else if (item.kind === 'link' || item.kind === 'pr') {
-      let url;
-      try { url = new URL(item.ref); } catch { continue; }
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) continue;
-      item.ref = url.toString();
+      item.ref = normalizeOutputUrl(item.ref);
+      if (!item.ref) continue;
     }
     const key = `${item.kind}\u0000${item.ref}`;
     if (seen.has(key)) continue;

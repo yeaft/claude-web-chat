@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-export const WORK_CENTER_SCHEMA_VERSION = 38;
+export const WORK_CENTER_SCHEMA_VERSION = 39;
 
 const MIGRATIONS = [
   ['23-conversation-stream', migrateConversationStream],
@@ -19,6 +19,7 @@ const MIGRATIONS = [
   ['36-dynamic-coordination', migrateDynamicCoordination],
   ['37-run-acceptance-checks', migrateRunAcceptanceChecks],
   ['38-action-closure-and-outputs', migrateActionClosureAndOutputs],
+  ['39-action-creation-source', migrateActionCreationSource],
 ];
 
 const MIGRATION_ALIASES = new Map([
@@ -563,6 +564,12 @@ function migrateActionClosureAndOutputs(db) {
       SELECT RAISE(ABORT, 'terminal Run result is immutable');
     END;
   `);
+}
+
+function migrateActionCreationSource(db) {
+  if (!hasColumn(db, 'actions', 'creation_source')) {
+    db.exec("ALTER TABLE actions ADD COLUMN creation_source TEXT NOT NULL DEFAULT 'legacy'");
+  }
 }
 
 function migrateReliabilityGuards(db) {
