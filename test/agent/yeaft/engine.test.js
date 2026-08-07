@@ -17,8 +17,8 @@ import { openSegmentIndex } from '../../../agent/yeaft/memory/index-db.js';
 import { runPreflow } from '../../../agent/yeaft/memory/preflow.js';
 import { cleanMemoryPromptText, filterMemoryPromptTextForPrompt, filterRelatedSessionPromptText } from '../../../agent/yeaft/memory/prompt-cleanup.js';
 import { makeSegment, serializeSegments } from '../../../agent/yeaft/memory/segment.js';
-import { readScope } from '../../../agent/yeaft/memory/segment-store.js';
-import { syncAll } from '../../../agent/yeaft/memory/segment-sync.js';
+import { readCanonicalContentRecord, readScope } from '../../../agent/yeaft/memory/segment-store.js';
+import { syncAll, syncScope } from '../../../agent/yeaft/memory/segment-sync.js';
 import { Engine, buildResidentEntries, selectCanonicalMemoryScopes, selectResidentTopicScopes, selectRelatedSessionIds } from '../../../agent/yeaft/engine.js';
 import { flushAgentPerfTrace } from '../../../agent/yeaft/perf-trace.js';
 import { AdapterRouter } from '../../../agent/yeaft/llm/router.js';
@@ -1364,6 +1364,30 @@ describe('Engine memory prompt hygiene', () => {
         });
         expect(codeResult.picked, codeCase.id).toEqual([]);
         expect(codeResult.droppedByRelevance, codeCase.id).toBe(1);
+      }
+
+      for (const [label, codeBody] of [
+        ['leading-spaces', '    # MCP\n    echo disabled'],
+        ['leading-tabs', '\t# MCP\n\techo disabled'],
+      ]) {
+        await writeContent(
+          { kind: 'session', id: `leading-code-${label}` },
+          codeBody,
+          { root, language: 'zh' },
+        );
+        const scope = `sessions/leading-code-${label}`;
+        const record = readCanonicalContentRecord(root, scope);
+        expect(record?.body, label).toBe(codeBody);
+        expect(syncScope(root, index, scope), label).toMatchObject({ upserted: 1 });
+        const codeResult = runPreflow(index, {
+          userMsg: 'MCP',
+          relevantScopes: [scope],
+          strictScopes: [scope],
+          uniqueScopes: true,
+          canonicalOnly: true,
+        });
+        expect(codeResult.picked, label).toEqual([]);
+        expect(codeResult.droppedByRelevance, label).toBe(1);
       }
 
       const operationalHeadingScope = 'sessions/operational-heading-sibling';
@@ -3653,35 +3677,76 @@ describe('Engine', () => {
         expect(indentedUserSystem).not.toContain('echo disabled');
         expect(indentedUserEvents.find(event => event.type === 'memory_used')).toBeUndefined();
 
-        memoryIndex.search = ({ scopeFilter, requiredTag }) => {
-          if (requiredTag !== 'canonical-content' || !scopeFilter.includes('user')) return [];
-          return [{
-            id: 'postgresql-entity-memory',
-            scope: 'user',
-            kind: 'context',
-            tags: ['canonical-content', 'postgresql'],
-            sourceMessages: [],
-            body: '# PostgreSQL\n\nPostgreSQL stores the workspace metadata for this project.',
-            rank: -1,
-            createdAt: '2026-08-01T00:00:00.000Z',
-            updatedAt: '2026-08-01T00:00:00.000Z',
-          }];
-        };
-        await writeContent(
-          { kind: 'user' },
-          '# PostgreSQL\n\nPostgreSQL stores the workspace metadata for this project.',
-          { root: join(yeaftDir, 'memory'), language: 'zh' },
-        );
-        mockAdapter.pushResponse([
-          { type: 'text_delta', text: 'ok' },
-          { type: 'stop', stopReason: 'end_turn' },
-        ]);
-        for await (const _event of engine.query({
-          prompt: 'PostgreSQL',
-          sessionId: 'current-session',
-          projectSessionIds: [],
-          vpPersona: { vpId: 'linus', name: 'Linus' },
-        })) { /* exhaust */ }
+        const productionMemoryIndex = openSegmentIndex(join(yeaftDir, 'memory', 'index.db'));
+        try {
+          for (const [label, codeBody] of [
+            ['spaces', '    # MCP\n    echo disabled'],
+            ['tabs', '\t# MCP\n\techo disabled'],
+          ]) {
+            await writeContent(
+              { kind: 'user' },
+              codeBody,
+              { root: join(yeaftDir, 'memory'), language: 'zh' },
+            );
+            expect(syncScope(join(yeaftDir, 'memory'), productionMemoryIndex, 'user'), label)
+              .toMatchObject({ upserted: 1 });
+            mockAdapter.pushResponse([
+              { type: 'text_delta', text: 'ok' },
+              { type: 'stop', stopReason: 'end_turn' },
+            ]);
+            const productionCodeEvents = [];
+            const productionCodeEngine = new Engine({
+              adapter: mockAdapter,
+              trace,
+              yeaftDir,
+              sessionId: 'current-session',
+              config: { model: 'claude-test', maxOutputTokens: 2048, language: 'zh' },
+              memoryIndex: productionMemoryIndex,
+              taskManager,
+            });
+            for await (const event of productionCodeEngine.query({
+              prompt: 'MCP',
+              sessionId: 'current-session',
+              projectSessionIds: [],
+              vpPersona: { vpId: 'linus', name: 'Linus' },
+            })) {
+              productionCodeEvents.push(event);
+            }
+            const productionCodeSystem = mockAdapter.callLog.at(-1).system;
+            expect(productionCodeSystem, label).not.toContain('### 相关记忆');
+            expect(productionCodeSystem, label).not.toContain('echo disabled');
+            expect(productionCodeEvents.find(event => event.type === 'memory_used'), label).toBeUndefined();
+          }
+
+          await writeContent(
+            { kind: 'user' },
+            '# PostgreSQL\n\nPostgreSQL stores the workspace metadata for this project.',
+            { root: join(yeaftDir, 'memory'), language: 'zh' },
+          );
+          expect(syncScope(join(yeaftDir, 'memory'), productionMemoryIndex, 'user'))
+            .toMatchObject({ upserted: 1 });
+          mockAdapter.pushResponse([
+            { type: 'text_delta', text: 'ok' },
+            { type: 'stop', stopReason: 'end_turn' },
+          ]);
+          const productionPostgresEngine = new Engine({
+            adapter: mockAdapter,
+            trace,
+            yeaftDir,
+            sessionId: 'current-session',
+            config: { model: 'claude-test', maxOutputTokens: 2048, language: 'zh' },
+            memoryIndex: productionMemoryIndex,
+            taskManager,
+          });
+          for await (const _event of productionPostgresEngine.query({
+            prompt: 'PostgreSQL',
+            sessionId: 'current-session',
+            projectSessionIds: [],
+            vpPersona: { vpId: 'linus', name: 'Linus' },
+          })) { /* exhaust */ }
+        } finally {
+          productionMemoryIndex.close();
+        }
         const postgresSystem = mockAdapter.callLog.at(-1).system;
         expect(postgresSystem).toContain('### 相关记忆');
         expect(postgresSystem).toContain('**user**: # PostgreSQL');
