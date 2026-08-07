@@ -19,12 +19,25 @@ describe('message file preview', () => {
     expect(resolveMessageFileReference('/api/files/readme.md')).toBeNull();
   });
 
+  it('rejects Git refs and versions without blocking recognizable extensionless files', () => {
+    expect(resolveMessageFileReference('origin/main')).toBeNull();
+    expect(resolveMessageFileReference('feature/message-preview')).toBeNull();
+    expect(resolveMessageFileReference('v1.0.403')).toBeNull();
+    expect(resolveMessageFileReference('release/v1.0.403')).toBeNull();
+    expect(resolveMessageFileReference('README')).toEqual({ path: 'README', line: null });
+    expect(resolveMessageFileReference('Dockerfile')).toEqual({ path: 'Dockerfile', line: null });
+    expect(resolveMessageFileReference('docs/README')).toEqual({ path: 'docs/README', line: null });
+    expect(resolveMessageFileReference('.gitignore')).toEqual({ path: '.gitignore', line: null });
+  });
+
   it('decorates file links and standalone inline-code references without touching code blocks', () => {
     const html = decorateMessageFileReferences([
       '<a href="docs/design-doc.md#L119">design doc</a>',
       '<a class="existing" href="docs/notes.md">notes</a>',
       '<a href="https://example.test">web</a>',
       '<code>web/components/WorkbenchPanel.js:1</code>',
+      '<code>origin/main</code>',
+      '<code>v1.0.403</code>',
       '<pre><code>web/components/FilesTab.js:17</code></pre>',
     ].join(' '));
 
@@ -32,6 +45,10 @@ describe('message file preview', () => {
     expect(html).toContain('class="existing message-file-reference" href="docs/notes.md"');
     expect(html).not.toMatch(/<a[^>]*\bclass=[^>]*\bclass=/);
     expect(html).toContain('<a href="web/components/WorkbenchPanel.js:1" class="message-file-reference"');
+    expect(html).toContain('<code>origin/main</code>');
+    expect(html).toContain('<code>v1.0.403</code>');
+    expect(html).not.toContain('href="origin/main"');
+    expect(html).not.toContain('href="v1.0.403"');
     expect(html).toContain('<a href="https://example.test">web</a>');
     expect(html).toContain('<pre><code>web/components/FilesTab.js:17</code></pre>');
   });

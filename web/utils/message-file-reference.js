@@ -3,6 +3,17 @@ const URI_SCHEME = /^[A-Za-z][A-Za-z\d+.-]*:/;
 const API_PATH = /^\/api(?:\/|$)/;
 const LINE_HASH = /#L(\d+)(?:C\d+)?$/i;
 const LINE_SUFFIX = /:(\d+)(?::\d+)?$/;
+const VERSION_BASENAME = /^v?\d+(?:\.\d+){1,}(?:[-+][A-Za-z\d.-]+)?$/i;
+const KNOWN_EXTENSIONLESS_FILE = /^(?:README|LICENSE|CHANGELOG|CONTRIBUTING|Dockerfile|Makefile)(?:[-_.][A-Za-z\d-]+)?$/i;
+
+const isRecognizableFilePath = value => {
+  const basename = value.split(/[\\/]/).pop() || '';
+  if (!basename || VERSION_BASENAME.test(basename)) return false;
+  if (WINDOWS_ABSOLUTE_PATH.test(value) || /^(?:\/|\.\.?[\\/]|~[\\/])/.test(value)) return true;
+  if (basename.startsWith('.') && basename.length > 1) return true;
+  if (KNOWN_EXTENSIONLESS_FILE.test(basename)) return true;
+  return /\.[A-Za-z][A-Za-z\d_-]*$/.test(basename);
+};
 
 /**
  * Resolve a rendered Markdown href to an Agent-local file reference.
@@ -46,8 +57,7 @@ export function resolveMessageFileReference(href) {
   }
 
   value = value.split(/[?#]/, 1)[0]?.trim() || '';
-  if (!value || value.endsWith('/')) return null;
-  if (!/[\\/.]/.test(value)) return null;
+  if (!value || value.endsWith('/') || !isRecognizableFilePath(value)) return null;
 
   return { path: value, line: Number.isFinite(line) && line > 0 ? line : null };
 }
