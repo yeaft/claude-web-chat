@@ -937,6 +937,53 @@ describe('Yeaft history outline state', () => {
     expect(focus).toMatchObject({ messageId: 'm42', conversationId: 'conv-a' });
   });
 
+  it('merges an uncached search window into the ordered resident transcript without replacing its latest tail', async () => {
+    const store = primeStore();
+    store.messagesMap['conv-a'] = Array.from({ length: 12 }, (_, index) => ({
+      id: `m${index + 50}`,
+      messageId: `m${index + 50}`,
+      seq: index + 50,
+      type: index % 2 ? 'assistant' : 'user',
+      content: `recent ${index}`,
+      sessionId: 'same',
+      timestamp: index + 50,
+      isHistory: true,
+    }));
+    store.yeaftMessageWindowState = {
+      [yeaftHistoryIdentityKey('agent-a', 'same')]: { visibleTurns: 5 },
+    };
+
+    const clicked = store.revealYeaftHistoryResult(indexedHistoryResult());
+    const request = store._sent.at(-1);
+    const response = indexedHistoryResponse(request, {
+      messages: [
+        { id: 'm41', seq: 41, role: 'user', content: 'old question', createdAt: 41 },
+        { id: 'm42', seq: 42, role: 'assistant', content: 'old answer', createdAt: 42 },
+      ],
+    });
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+    expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(true);
+    await expect(clicked).resolves.toBe(true);
+
+    const visible = sliceScopedYeaftMessagesByRecentTurns(
+      store.messagesMap['conv-a'],
+      'same',
+      store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')].visibleTurns,
+    );
+    expect(visible.map(row => row.id)).toEqual([
+      'm41', 'm42',
+      ...Array.from({ length: 12 }, (_, index) => `m${index + 50}`),
+    ]);
+    expect(visible.at(-1)?.id).toBe('m61');
+    expect(store.yeaftHistoryFocusWindowBySession[yeaftHistoryIdentityKey('agent-a', 'same')]).toMatchObject({
+      messageId: 'm42',
+    });
+    expect(store.showLatestYeaftMessageWindow('same', 'agent-a')).toBe(true);
+    expect(sliceScopedYeaftMessagesByRecentTurns(
+      store.messagesMap['conv-a'], 'same', Number.POSITIVE_INFINITY,
+    ).at(-1)?.id).toBe('m61');
+  });
+
   it('keeps an overlapping recent-tail result resident and visible after returning to Latest', async () => {
     const store = primeStore();
     store.messagesMap['conv-a'] = Array.from({ length: 12 }, (_, index) => ({
