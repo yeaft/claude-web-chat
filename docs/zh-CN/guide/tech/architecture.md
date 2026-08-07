@@ -158,4 +158,5 @@ Server catalog 给 Browser 一个 Agent-aware 的原生/CLI conversation 视图�
 - [H2-AMS memory](./yeaft-memory.md)
 - [原生 LLM 层](./yeaft-llm.md)
 - [WebSocket 协议](./wire-protocol.md)
+- [WebRTC Browser Runtime 设计](../../../notes/2026-08-07-webrtc-browser-runtime-design.md)
 - [Work Center 用户合同](../user/work-center.md)
