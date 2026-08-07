@@ -54,7 +54,7 @@ export default {
             :aria-label="$t('files.hideTree')"
             aria-expanded="true"
           >
-            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
           </button>
         </div>
         <!-- VS Code 风格 Header: 正常模式 -->
@@ -90,7 +90,7 @@ export default {
               :aria-label="$t('files.hideTree')"
               aria-expanded="true"
             >
-              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
             </button>
           </div>
         </div>
