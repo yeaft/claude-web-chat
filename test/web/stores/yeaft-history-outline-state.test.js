@@ -53,6 +53,7 @@ const {
   workItemDetailRefreshIdentity,
 } = await import('../../../web/stores/helpers/work-center.js');
 const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
+const { sliceScopedYeaftMessagesByRecentTurns } = await import('../../../web/stores/helpers/yeaft-message-window.js');
 const { revealOutlineResult } = await import('../../../web/utils/message-search-navigation.js');
 
 function indexedHistoryResult(overrides = {}) {
@@ -97,6 +98,7 @@ function primeStore() {
   store._yeaftHistoryOutlineTimeouts = {};
   store.messagesMap = {};
   store.yeaftHistoryCacheState = {};
+  store.yeaftHistoryFocusWindowBySession = {};
   store._yeaftHistoryWindowPendingByKey = {};
   store.yeaftConversationId = 'conv-a';
   store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-a' };
@@ -933,6 +935,44 @@ describe('Yeaft history outline state', () => {
       .filter(row => row._historyWindowKey === focus.windowKey)
       .map(row => row.content)).toEqual(['old answer']);
     expect(focus).toMatchObject({ messageId: 'm42', conversationId: 'conv-a' });
+  });
+
+  it('keeps an overlapping recent-tail result resident and visible after returning to Latest', async () => {
+    const store = primeStore();
+    store.messagesMap['conv-a'] = Array.from({ length: 12 }, (_, index) => ({
+      id: `m${index + 50}`,
+      messageId: `m${index + 50}`,
+      type: index % 2 ? 'assistant' : 'user',
+      content: `recent ${index}`,
+      sessionId: 'same',
+      timestamp: index + 50,
+    }));
+    const originalIds = store.messagesMap['conv-a'].map(row => row.id);
+    const result = indexedHistoryResult({
+      entryId: 'entry-m55',
+      entryStartSeq: 55,
+      messageId: 'm55',
+      seq: 55,
+      sourceMessageIds: ['m55'],
+    });
+
+    const clicked = store.revealYeaftHistoryResult(result);
+    const request = store._sent.at(-1);
+    const response = indexedHistoryResponse(request, {
+      messages: [{ id: 'm55', role: 'assistant', content: 'recent 5', createdAt: 55 }],
+    });
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+    expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(true);
+    await expect(clicked).resolves.toBe(true);
+    expect(store.yeaftHistoryFocusWindowBySession[yeaftHistoryIdentityKey('agent-a', 'same')]).toBeUndefined();
+
+    // MessageList still executes this action when Latest is clicked. There is no
+    // detached focus to clear because the target retained recent membership.
+    expect(store.showLatestYeaftMessageWindow('same', 'agent-a')).toBe(false);
+    const resident = store.messagesMap['conv-a'];
+    expect(resident.map(row => row.id)).toEqual(originalIds);
+    expect(resident.find(row => row.id === 'm55')).not.toMatchObject({ _historyWindowDetached: true });
+    expect(sliceScopedYeaftMessagesByRecentTurns(resident, 'same', 50).map(row => row.id)).toEqual(originalIds);
   });
 
   it('does not expand or render after the active Session changes while a window is pending', async () => {

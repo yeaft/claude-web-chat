@@ -691,24 +691,36 @@ export function handleYeaftHistoryWindow(store, msg) {
   if (!store.messagesMap[conversationId]) store.messagesMap[conversationId] = [];
 
   const sourceMessageIds = new Set(Array.isArray(msg.sourceMessageIds) ? msg.sourceMessageIds : []);
+  const residentMessageIds = new Set();
+  const randomAccessMessageIds = new Set();
   for (const row of store.messagesMap[conversationId]) {
     const persistedId = row?.persistedMessageId || row?.messageId || row?.id || null;
+    if (persistedId) residentMessageIds.add(persistedId);
+    if (persistedId && (row?._historyWindowPrefetched === true || row?._historyWindowDetached === true)) {
+      randomAccessMessageIds.add(persistedId);
+    }
     if (!msg.entryId || !sourceMessageIds.has(persistedId)) continue;
     row.historyEntryId = msg.entryId;
     if (Number.isFinite(msg.indexGeneration)) row.historyIndexGeneration = msg.indexGeneration;
   }
-  const windowMessages = msg.messages.map(message => (
-    msg.entryId && sourceMessageIds.has(message?.id)
-      ? {
-          ...message,
-          historyEntryId: msg.entryId,
-          ...(msg.prefetch === true ? { _historyWindowPrefetched: true } : {}),
-          ...(Number.isFinite(msg.indexGeneration)
-            ? { historyIndexGeneration: msg.indexGeneration }
-            : {}),
-        }
-      : message
-  ));
+  const windowMessages = msg.messages
+    .filter(message => (
+      msg.prefetch === true
+      || !residentMessageIds.has(message?.id)
+      || randomAccessMessageIds.has(message?.id)
+    ))
+    .map(message => (
+      msg.entryId && sourceMessageIds.has(message?.id)
+        ? {
+            ...message,
+            historyEntryId: msg.entryId,
+            ...(msg.prefetch === true ? { _historyWindowPrefetched: true } : {}),
+            ...(Number.isFinite(msg.indexGeneration)
+              ? { historyIndexGeneration: msg.indexGeneration }
+              : {}),
+          }
+        : message
+    ));
   const { formatted } = formatYeaftHistoryMessages(
     windowMessages,
     sessionId,
@@ -730,6 +742,10 @@ export function handleYeaftHistoryWindow(store, msg) {
     for (const row of projection) {
       const persistedId = row?.persistedMessageId || row?.messageId || row?.id || null;
       if (!responseMessageIds.has(persistedId)) continue;
+      // Validation may overlap the ordinary recent tail. Only promote a row
+      // that already belongs to a cache-only/detached random-access window;
+      // converting a normal recent row would make Latest permanently filter it.
+      if (row._historyWindowPrefetched !== true && row._historyWindowDetached !== true) continue;
       row._historyWindowKey = windowKey;
       row._historyWindowDetached = true;
       row._historyWindowPrefetched = false;
