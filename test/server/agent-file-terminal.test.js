@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Vue from 'vue';
 import { createWsHandler } from '../../web/components/files/wsHandler.js';
+import { createFileTabs } from '../../web/components/files/fileTabs.js';
 
 const forwardToClients = vi.fn(async () => {});
 const previewFiles = new Map();
@@ -66,6 +67,55 @@ describe('Agent file terminal forwarding', () => {
     });
   });
 
+  it('keeps writes bound to the tab owner after the active route drifts', () => {
+    globalThis.Vue = Vue;
+    const sent = [];
+    const store = {
+      currentAgent: 'agent-a',
+      currentConversation: 'conversation-a',
+      clientId: 'client-1',
+      sendWsMessage: msg => sent.push(msg),
+    };
+    const tabs = createFileTabs(store, {
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/agent-a/project',
+      editorContainer: Vue.ref(null),
+      createEditor: vi.fn(),
+      destroyEditor: vi.fn(),
+      clearFindMarkers: vi.fn(),
+      saveCurrentUndoHistory: vi.fn(),
+      saveAllUndoHistory: vi.fn(),
+      cleanupUndoHistory: vi.fn(),
+      deleteConversationHistory: vi.fn(),
+      debugStatus: Vue.ref(''),
+      mdPreviewMode: Vue.ref(false),
+      renderOfficeLocal: vi.fn(),
+      performFind: vi.fn(),
+      findBarVisible: Vue.ref(false),
+      findQuery: Vue.ref(''),
+      t: value => value,
+    });
+
+    tabs.openFileInTab('docs/design.md', 'design.md', {
+      agentId: 'agent-a',
+      conversationId: 'conversation-a',
+      workDir: '/agent-a/project',
+    });
+    tabs.activeFile.value.content = 'updated';
+    tabs.activeFile.value.isDirty = true;
+    store.currentAgent = 'agent-b';
+    store.currentConversation = 'conversation-b';
+    tabs.saveFile();
+
+    expect(sent.find(msg => msg.type === 'write_file')).toMatchObject({
+      agentId: 'agent-a',
+      conversationId: 'conversation-a',
+      workDir: '/agent-a/project',
+      filePath: 'docs/design.md',
+      content: 'updated',
+    });
+  });
+
   it('preserves the requested path when projecting a binary file response', async () => {
     await handleAgentFileTerminal('agent-1', {}, {
       type: 'file_content',
@@ -94,6 +144,17 @@ describe('Agent file terminal forwarding', () => {
 
     globalThis.Vue = Vue;
     globalThis.location = { protocol: 'https:', host: 'yeaft.test' };
+    const wrongOwnerTab = {
+      path: 'docs/diagram.png',
+      name: 'diagram.png',
+      fileType: 'image',
+      agentId: 'agent-2',
+      conversationId: 'session-2',
+      requestId: 'other-request',
+      previewLoading: true,
+      previewError: null,
+      blobUrl: null,
+    };
     const relativeTab = {
       path: 'docs/diagram.png',
       name: 'diagram.png',
@@ -105,14 +166,14 @@ describe('Agent file terminal forwarding', () => {
       previewError: null,
       blobUrl: null,
     };
-    const openFiles = Vue.ref([relativeTab]);
+    const openFiles = Vue.ref([wrongOwnerTab, relativeTab]);
     const handle = createWsHandler({
       store: { currentConversation: 'session-1', currentAgent: 'agent-1' },
       normalizePath: value => value,
       getEffectiveWorkDir: () => '/workspace',
       openFiles,
-      activeFileIndex: Vue.ref(0),
-      activeFile: Vue.computed(() => openFiles.value[0]),
+      activeFileIndex: Vue.ref(1),
+      activeFile: Vue.computed(() => openFiles.value[1]),
       fileLoading: Vue.ref(true),
       fileSaving: Vue.ref(false),
       saveTabsState: vi.fn(),
@@ -140,6 +201,8 @@ describe('Agent file terminal forwarding', () => {
     handle(new CustomEvent('workbench-message', { detail: forwarded }));
     await vi.waitFor(() => expect(relativeTab.blobUrl).toBe('blob:preview'));
     expect(relativeTab.previewLoading).toBe(false);
+    expect(wrongOwnerTab.blobUrl).toBeNull();
+    expect(wrongOwnerTab.previewLoading).toBe(true);
     fetchSpy.mockRestore();
     createObjectUrl.mockRestore();
   });

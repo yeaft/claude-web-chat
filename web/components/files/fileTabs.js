@@ -45,7 +45,8 @@ export function createFileTabs(store, {
         files: openFiles.value.map(f => ({
           path: f.path, name: f.name, content: f.content,
           originalContent: f.originalContent, isDirty: f.isDirty,
-          fileType: f.fileType
+          fileType: f.fileType, agentId: f.agentId,
+          conversationId: f.conversationId, workDir: f.workDir
         })),
         activeIndex: activeFileIndex.value
       };
@@ -85,6 +86,7 @@ export function createFileTabs(store, {
     const nPath = normalizePath(fullPath);
     const agentId = route.agentId || store.currentAgent || null;
     const conversationId = route.conversationId || store.currentConversation || '_explorer';
+    const workDir = route.workDir || getEffectiveWorkDir();
     const existingIndex = openFiles.value.findIndex(f => f.path === nPath
       && (!f.agentId || f.agentId === agentId)
       && (!f.conversationId || f.conversationId === conversationId));
@@ -106,7 +108,7 @@ export function createFileTabs(store, {
     const displayName = name || nPath.split(/[/\\]/).pop();
     const fileType = getFileType(displayName);
     openFiles.value.push({
-      path: nPath, name: displayName, agentId, conversationId,
+      path: nPath, name: displayName, agentId, conversationId, workDir,
       content: null, originalContent: null,
       isDirty: false, cmInstance: null, fileType,
       blobUrl: null, previewUrl: null,
@@ -127,7 +129,7 @@ export function createFileTabs(store, {
       agentId,
       requestId,
       filePath: fullPath,
-      workDir: route.workDir || getEffectiveWorkDir(),
+      workDir,
       _clientId: store.clientId
     });
   }
@@ -197,11 +199,11 @@ export function createFileTabs(store, {
     fileSaving.value = true;
     store.sendWsMessage({
       type: 'write_file',
-      conversationId: store.currentConversation || '_explorer',
-      agentId: store.currentAgent,
+      conversationId: file.conversationId || store.currentConversation || '_explorer',
+      agentId: file.agentId || store.currentAgent,
       filePath: file.path,
       content: file.content,
-      workDir: getEffectiveWorkDir(),
+      workDir: file.workDir || getEffectiveWorkDir(),
       _clientId: store.clientId
     });
   }

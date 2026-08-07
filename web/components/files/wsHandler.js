@@ -87,9 +87,9 @@ export function createWsHandler({
           return;
         }
 
-        const tabIndex = openFiles.value.findIndex(f => f.path === nFilePath);
+        const tabIndex = openFiles.value.indexOf(responseTab);
         if (tabIndex >= 0) {
-          const file = openFiles.value[tabIndex];
+          const file = responseTab;
           if (msg.binary) {
             file.previewLoading = false;
             const previewBaseUrl = `${location.protocol}//${location.host}/api/preview/${msg.fileId}?token=${msg.previewToken}`;
