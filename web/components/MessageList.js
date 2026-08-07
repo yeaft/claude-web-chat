@@ -2018,10 +2018,16 @@ export default {
     };
 
     const scrollToLatest = () => {
-      // If the user jumped away while an initial Yeaft Session page was still
-      // being hydrated, make the intent explicit: stay on the newest loaded
-      // row, and when the in-flight page lands the existing smart-scroll
-      // watchers will keep us pinned because auto-follow has resumed.
+      // A search/outline jump owns a detached contiguous window. Returning to
+      // latest must first restore the recent tail projection; scrolling the
+      // detached window itself to its bottom would still leave newer turns absent.
+      virtualTranscriptRef.value?.clearTargetAnchor?.();
+      if (store.currentView === 'yeaft') {
+        store.showLatestYeaftMessageWindow?.(
+          activeYeaftSessionId.value || store.yeaftActiveSessionFilter || null,
+          store.currentAgent || null,
+        );
+      }
       clearUserScrollInteraction();
       resumeAutoFollow();
       Vue.nextTick(scrollToBottom);

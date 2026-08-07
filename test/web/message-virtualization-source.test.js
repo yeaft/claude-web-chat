@@ -46,6 +46,8 @@ describe('MessageList virtualization wiring', () => {
     expect(messageList).toContain('const onScrollKey = (event) => {\n      if (!shouldMarkTranscriptKeyScroll(event, containerRef.value)) return;\n      pauseAutoFollow();');
     expect(messageList).not.toContain('resumeBoundaryReached: reachedBottom,');
     expect(messageList).toContain('const scrollToLatest = () => {');
+    expect(messageList).toContain('virtualTranscriptRef.value?.clearTargetAnchor?.();');
+    expect(messageList).toContain('store.showLatestYeaftMessageWindow?.(');
     expect(messageList).toContain('clearUserScrollInteraction();\n      resumeAutoFollow();\n      Vue.nextTick(scrollToBottom);');
     expect(messageList).toContain('virtualTranscriptRef.value?.cancelPendingBottomFollow?.();');
     expect(messageList).toContain('const revealMessage = async (target) => {\n      if (!target) return false;\n      pauseAutoFollow();');

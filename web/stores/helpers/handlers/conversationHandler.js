@@ -716,21 +716,45 @@ export function handleYeaftHistoryWindow(store, msg) {
     store.messagesMap[conversationId],
     sessionAgentId,
   );
-  if (msg.prefetch === true) {
-    for (const row of formatted) row._historyWindowPrefetched = true;
+  const windowKey = `history-window:${msg.requestId || msg.anchorMessageId || Date.now()}`;
+  for (const row of formatted) {
+    row._historyWindowKey = windowKey;
+    row._historyWindowDetached = msg.prefetch !== true;
+    row._historyWindowPrefetched = msg.prefetch === true;
   }
-  conversationRepositoryFor(store).commitDurable({
+  const repository = conversationRepositoryFor(store);
+  const projection = repository.rows(conversationId);
+  const responseMessageIds = new Set(msg.messages.map(message => message?.id).filter(Boolean));
+  const promoted = [];
+  if (msg.prefetch !== true) {
+    for (const row of projection) {
+      const persistedId = row?.persistedMessageId || row?.messageId || row?.id || null;
+      if (!responseMessageIds.has(persistedId)) continue;
+      row._historyWindowKey = windowKey;
+      row._historyWindowDetached = true;
+      row._historyWindowPrefetched = false;
+      promoted.push(row);
+    }
+    const retained = projection.filter(row => (
+      rowSessionId(row) !== sessionId
+      || row._historyWindowDetached !== true
+      || row._historyWindowKey === windowKey
+    ));
+    if (retained.length !== projection.length) repository.replaceProjection(conversationId, retained);
+  }
+  repository.commitDurable({
     conversationId,
     sessionId,
     rows: formatted,
     mode: 'window',
   });
+  const incomingWindowRows = formatted.length > 0 ? formatted : promoted;
   const activeIdentity = activeYeaftHistoryIdentity(store);
   pruneYeaftHistoryCache(store, {
     conversationId,
     agentId: sessionAgentId,
     sessionId,
-    incomingRows: formatted,
+    incomingRows: incomingWindowRows,
     activeAgentId: activeIdentity.agentId,
     activeSessionId: activeIdentity.sessionId,
   });
@@ -1196,16 +1220,6 @@ export function handleYeaftHistoryChunk(store, msg) {
       sessionAgentId,
       nextState.latestSeq,
     ));
-  } else if (mode !== 'delta'
-      && nextState.hasMore
-      && msgSessionId
-      && sessionAgentId
-      && residentTurnCount < YEAFT_HISTORY_MAX_TURNS
-      && typeof store.scheduleYeaftHistoryPrefetch === 'function') {
-    // The authoritative chunk commit retired the one-per-Session request fence.
-    // Schedule—not recurse into—the next page so rendering and IndexedDB persist
-    // get a chance to settle between bounded 50-turn transfers.
-    store.scheduleYeaftHistoryPrefetch(msgSessionId, sessionAgentId);
   }
   const activeIdentity = activeYeaftHistoryIdentity(store);
   const activeSessionMatches = activeIdentity.sessionId === (msgSessionId || null);

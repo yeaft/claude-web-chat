@@ -906,7 +906,12 @@ describe('Yeaft history outline state', () => {
 
     expect(store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')]).toBe(initialWindow);
     expect(store.isYeaftMessageCached('same', 'm42')).toBe(true);
-    const renderedReveal = vi.fn(() => store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')].visibleTurns > 5);
+    const renderedReveal = vi.fn(() => {
+      const focus = store.yeaftHistoryFocusWindowBySession[yeaftHistoryIdentityKey('agent-a', 'same')];
+      return !!focus && store.messagesMap['conv-a'].some(row => (
+        row._historyWindowKey === focus.windowKey && (row.messageId || row.id) === 'm42'
+      ));
+    });
     const clicked = revealOutlineResult({
       result: indexedHistoryResult(),
       revealWindow: candidate => store.revealYeaftHistoryResult(candidate),
@@ -923,7 +928,11 @@ describe('Yeaft history outline state', () => {
     await expect(clicked).resolves.toBe(true);
     expect(renderedReveal).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'm42' }));
     expect(store._sent).toHaveLength(2);
-    expect(store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')].visibleTurns).toBeGreaterThan(5);
+    const focus = store.yeaftHistoryFocusWindowBySession[yeaftHistoryIdentityKey('agent-a', 'same')];
+    expect(store.messagesMap['conv-a']
+      .filter(row => row._historyWindowKey === focus.windowKey)
+      .map(row => row.content)).toEqual(['old answer']);
+    expect(focus).toMatchObject({ messageId: 'm42', conversationId: 'conv-a' });
   });
 
   it('does not expand or render after the active Session changes while a window is pending', async () => {

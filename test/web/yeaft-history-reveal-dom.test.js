@@ -592,6 +592,19 @@ describe('Yeaft history result rendered reveal', () => {
     );
     await settleWindow(store, revealWindow);
     await expectRenderedReveal(wrapper, store, scrollToKey);
+    expect(store.messages.map(row => row.content)).toEqual(['old answer']);
+
+    // Returning to latest must swap the detached search window back to the
+    // contiguous recent tail before scrolling. A later virtual measurement must
+    // not re-apply the old search anchor.
+    await messageList.get('.scroll-to-latest').trigger('click');
+    await flushPromises();
+    await Vue.nextTick();
+    expect(store.messages.map(row => row.content)).toEqual(
+      Array.from({ length: 12 }, (_, index) => `recent ${index}`),
+    );
+    expect(store.yeaftHistoryFocusWindowBySession[yeaftHistoryIdentityKey('agent-a', 'same')]).toBeUndefined();
+    expect(scrollTop).toBe(scrollHeight);
 
     wrapper.unmount();
   });
