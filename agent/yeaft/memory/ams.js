@@ -18,6 +18,7 @@ import { approxTokens } from './budget.js';
 import {
   cleanMemoryPromptText,
   filterMemoryPromptTextForPrompt,
+  filterRelatedSessionPromptText,
   isDuplicateMemoryText,
   rememberMemoryText,
 } from './prompt-cleanup.js';
@@ -172,11 +173,11 @@ export class ActiveMemorySet {
     const { picked: resPicked, cost: resCost } = pickMemoryItems({
       items: [...this._resident.entries()].map(([scope, entry]) => ({
         scope,
-        // Related-Session summaries are explicitly historical context. Keep the
-        // bounded prose intact and label it as experience instead of dropping
-        // the whole paragraph because it mentions an old PR/tag/task state.
+        // Related-Session content is broad historical context. Even after FTS
+        // selects its scope, keep only chunks supported by the current user turn;
+        // otherwise one weak term can drag an entire old PR/session into prompt.
         summary: entry.category === 'experience'
-          ? cleanMemoryPromptText(entry.summary)
+          ? filterRelatedSessionPromptText(entry.summary, userMsg)
           : filterMemoryPromptTextForPrompt(entry.summary, userMsg),
         ...(entry.category ? { category: entry.category } : {}),
       })),

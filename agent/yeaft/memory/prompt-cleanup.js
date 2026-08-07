@@ -22,6 +22,9 @@ const COMMON_INTENT_TOKENS = new Set([
   'dream', 'memory', 'session', 'topic', 'status', 'blocker', 'blocked',
   '当前', '状态', '任务', '工作', '工作项', '待办', '下一步', '完成', '已完成',
   '合并', '评审', '发布', '标签', '记忆', '主题', '阻塞', '正在',
+  '内容', '用户', '需求', '设计', '决策', '搜索', '发现', '需要', '应该',
+  '添加', '无关', '不相', '相干', '完全', '明细', '看看', '还有', '这个',
+  '比如', '每个', '如果',
 ]);
 
 /**
@@ -122,6 +125,33 @@ export function filterMemoryPromptTextForPrompt(text, userText) {
     if (!isTransientMemoryText(chunk) || isTransientMemoryRelevant(chunk, userText)) {
       kept.push(chunk);
     }
+  }
+  return joinMemoryPromptChunks(kept).trim();
+}
+
+/**
+ * Project sibling content is a broad historical source, not resident state for
+ * the active Session. Keep only chunks with concrete lexical support from the
+ * current user turn; if none match, the sibling contributes no prompt block.
+ *
+ * @param {string} text
+ * @param {string} userText
+ * @returns {string}
+ */
+export function filterRelatedSessionPromptText(text, userText) {
+  const cleaned = cleanMemoryPromptText(text);
+  if (!cleaned || !userText) return '';
+  const kept = [];
+  let pendingHeading = '';
+  for (const chunk of splitMemoryPromptChunks(cleaned)) {
+    if (/^#{1,6}\s+\S/.test(chunk)) {
+      pendingHeading = chunk;
+      continue;
+    }
+    if (!isMemoryPromptRelevant(chunk, userText)) continue;
+    if (pendingHeading) kept.push(pendingHeading);
+    pendingHeading = '';
+    kept.push(chunk);
   }
   return joinMemoryPromptChunks(kept).trim();
 }

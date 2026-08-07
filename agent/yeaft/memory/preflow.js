@@ -20,6 +20,7 @@ import { approxTokens } from './budget.js';
 import { isVpForeign } from './store.js';
 
 export const DEFAULT_PICK_LIMIT = 8;
+const STRICT_SCOPE_MIN_QUERY_TERMS = 2;
 
 /**
  * @typedef {object} PreflowOptions
@@ -32,6 +33,7 @@ export const DEFAULT_PICK_LIMIT = 8;
  * @property {number}       [pickLimit]          max picked segments (default 8)
  * @property {boolean}      [uniqueScopes]       pick at most one best hit per scope
  * @property {boolean}      [canonicalOnly]      search canonical content records only
+ * @property {string[]}     [strictScopes]       scopes that require multiple distinct query-term matches
  */
 
 /**
@@ -42,6 +44,7 @@ export const DEFAULT_PICK_LIMIT = 8;
  * @property {import('./segment.js').Segment[]}          picked
  * @property {number}                                     pickedTokens
  * @property {number}                                     droppedCount
+ * @property {number}                                     droppedByRelevance
  */
 
 /**
@@ -61,12 +64,13 @@ export function runPreflow(index, opts) {
     ? opts.budgetTokens : Infinity;
   const pickLimit = Number.isFinite(opts.pickLimit) && opts.pickLimit > 0
     ? Math.floor(opts.pickLimit) : DEFAULT_PICK_LIMIT;
+  const strictScopes = new Set(Array.isArray(opts.strictScopes) ? opts.strictScopes : []);
 
   const keywords = extractKeywords(userMsg);
   if (keywords.length === 0) {
     return {
       keywords: [], ftsQuery: '', hits: [],
-      picked: [], pickedTokens: 0, droppedCount: 0,
+      picked: [], pickedTokens: 0, droppedCount: 0, droppedByRelevance: 0,
     };
   }
 
@@ -75,7 +79,7 @@ export function runPreflow(index, opts) {
   if (scopeFilter.length === 0) {
     return {
       keywords, ftsQuery, hits: [],
-      picked: [], pickedTokens: 0, droppedCount: 0,
+      picked: [], pickedTokens: 0, droppedCount: 0, droppedByRelevance: 0,
     };
   }
 
@@ -91,7 +95,13 @@ export function runPreflow(index, opts) {
   const pickedScopes = new Set();
   let cost = 0;
   let dropped = 0;
+  let droppedByRelevance = 0;
   for (const h of reranked) {
+    if (strictScopes.has(h.scope) && matchedQueryTermCount(h, keywords) < STRICT_SCOPE_MIN_QUERY_TERMS) {
+      dropped += 1;
+      droppedByRelevance += 1;
+      continue;
+    }
     if (opts.uniqueScopes && pickedScopes.has(h.scope)) {
       dropped += 1;
       continue;
@@ -108,8 +118,18 @@ export function runPreflow(index, opts) {
 
   return {
     keywords, ftsQuery, hits: reranked,
-    picked, pickedTokens: cost, droppedCount: dropped,
+    picked, pickedTokens: cost, droppedCount: dropped, droppedByRelevance,
   };
+}
+
+function matchedQueryTermCount(hit, keywords) {
+  const haystack = `${hit?.body || ''}\n${Array.isArray(hit?.tags) ? hit.tags.join(' ') : ''}`.toLowerCase();
+  let matched = 0;
+  for (const keyword of keywords || []) {
+    const term = String(keyword || '').toLowerCase();
+    if (term && haystack.includes(term)) matched += 1;
+  }
+  return matched;
 }
 
 /**

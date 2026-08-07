@@ -15,7 +15,7 @@ import { ActiveMemorySet } from '../../../agent/yeaft/memory/ams.js';
 import { backfillCanonicalContent } from '../../../agent/yeaft/memory/content-backfill.js';
 import { openSegmentIndex } from '../../../agent/yeaft/memory/index-db.js';
 import { runPreflow } from '../../../agent/yeaft/memory/preflow.js';
-import { cleanMemoryPromptText, filterMemoryPromptTextForPrompt } from '../../../agent/yeaft/memory/prompt-cleanup.js';
+import { cleanMemoryPromptText, filterMemoryPromptTextForPrompt, filterRelatedSessionPromptText } from '../../../agent/yeaft/memory/prompt-cleanup.js';
 import { makeSegment, serializeSegments } from '../../../agent/yeaft/memory/segment.js';
 import { readScope } from '../../../agent/yeaft/memory/segment-store.js';
 import { syncAll } from '../../../agent/yeaft/memory/segment-sync.js';
@@ -30,6 +30,8 @@ import { NullTrace, DebugTrace, projectDebugDetailForWire } from '../../../agent
 import { consolidateSessionTopics } from '../../../agent/yeaft/dream/topic-consolidation.js';
 import { resolveTopicRedirect } from '../../../agent/yeaft/memory/topic-redirect.js';
 import { runDream } from '../../../agent/yeaft/dream/runner.js';
+import { classifySoft } from '../../../agent/yeaft/dream/triage.js';
+import { readSessionState } from '../../../agent/yeaft/dream/state.js';
 import { extractAndWriteMemorySegments } from '../../../agent/yeaft/dream/segment-extract.js';
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
 import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
@@ -856,6 +858,24 @@ describe('Engine memory prompt hygiene', () => {
     ]);
   });
 
+  it('drops unrelated sibling chunks even when the query repeats their generic headings', () => {
+    const sibling = [
+      '# Yeaft settings tabs',
+      '',
+      '## 需求与设计决策',
+      '',
+      '- 用户要求把 VP 库、搜索和 MCP 改为扁平下划线标签。',
+      '- PR #1542 已合并，dev tag 为 v1.0.364。',
+    ].join('\n');
+    const unrelatedQuery = '和当前 session 无关的内容不应该添加，比如每个 PR 明细和需求与设计决策。';
+
+    expect(filterRelatedSessionPromptText(sibling, unrelatedQuery)).toBe('');
+    expect(filterRelatedSessionPromptText(
+      sibling,
+      '设置页的 VP 库、MCP 下划线标签在窄屏应该怎么处理？',
+    )).toContain('VP 库、搜索和 MCP');
+  });
+
   it('deduplicates AMS layers without dropping needed on-demand memory', () => {
     const ams = new ActiveMemorySet({
       budget: { total: 1000, resident: 400, recent: 300, onDemand: 300 },
@@ -1107,6 +1127,88 @@ describe('Engine memory prompt hygiene', () => {
       expect(selectCanonicalMemoryScopes(recall.picked)).toEqual(new Set([topics[29]]));
       expect(selectResidentTopicScopes(topics, recall.picked)).toEqual([topics[29]]);
 
+      const broadUserScope = 'user';
+      index.upsert(makeSegment({
+        id: 'strict-user',
+        scope: broadUserScope,
+        kind: 'context',
+        tags: ['canonical-content'],
+        body: 'Server cleanup failures require explicit disk investigation and container-volume verification.',
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      }));
+      const weakUser = runPreflow(index, {
+        userMsg: 'Dream 为什么失败？',
+        relevantScopes: [broadUserScope],
+        strictScopes: [broadUserScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      });
+      expect(weakUser.picked).toEqual([]);
+
+      const strictScope = 'sessions/sibling-session';
+      index.upsert(makeSegment({
+        id: 'strict-sibling',
+        scope: strictScope,
+        kind: 'context',
+        tags: ['canonical-content'],
+        body: 'Timeout cleanup failures must return a tool result so Engine continuation stays reliable.',
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      }));
+      const weakSibling = runPreflow(index, {
+        userMsg: 'check timeout behavior',
+        relevantScopes: [strictScope],
+        strictScopes: [strictScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      });
+      expect(weakSibling.picked).toEqual([]);
+      expect(weakSibling.droppedByRelevance).toBe(1);
+      const strongSibling = runPreflow(index, {
+        userMsg: 'check timeout cleanup failure',
+        relevantScopes: [strictScope],
+        strictScopes: [strictScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      });
+      expect(strongSibling.picked).toEqual([
+        expect.objectContaining({ id: 'strict-sibling', scope: strictScope }),
+      ]);
+      expect(strongSibling.droppedByRelevance).toBe(0);
+
+      const uiSiblingScope = 'sessions/ui-sibling';
+      index.upsert(makeSegment({
+        id: 'ui-sibling',
+        scope: uiSiblingScope,
+        kind: 'context',
+        tags: ['canonical-content'],
+        body: 'Yeaft 设置页的 VP 库、搜索和 MCP 应使用扁平下划线标签，并在窄屏横向滚动。',
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      }));
+      const reportedUnrelatedQuery = runPreflow(index, {
+        userMsg: '和当前 session 无关的内容不应该添加，比如每个 PR 明细和需求与设计决策。',
+        relevantScopes: [uiSiblingScope],
+        strictScopes: [uiSiblingScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      });
+      expect(reportedUnrelatedQuery.picked).toEqual([]);
+      const relevantUiQuery = runPreflow(index, {
+        userMsg: '设置页的 VP 库、MCP 下划线标签在窄屏应该怎么处理？',
+        relevantScopes: [uiSiblingScope],
+        strictScopes: [uiSiblingScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      });
+      expect(relevantUiQuery.picked).toEqual([
+        expect.objectContaining({ id: 'ui-sibling', scope: uiSiblingScope }),
+      ]);
+
       const duplicateScope = 'sessions/s1/topic/catalog/topic-duplicate';
       mkdirSync(join(root, duplicateScope), { recursive: true });
       writeFileSync(join(root, duplicateScope, 'memory.md'), serializeSegments([
@@ -1227,6 +1329,72 @@ describe('Engine memory prompt hygiene', () => {
       ]);
       expect(readFileSync(join(root, target, 'memory.md'), 'utf8')).not.toContain('EMPTY_SOURCE_ACCEPTED');
       expect(readFileSync(join(root, target, 'memory.md'), 'utf8')).not.toContain('UNKNOWN_SOURCE_ACCEPTED');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves Dream soft-triage topic redirects without losing the memory root', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-triage-redirect-'));
+    const redirectDir = join(root, 'sessions', 's1', 'topic', 'old-topic');
+    mkdirSync(redirectDir, { recursive: true });
+    writeFileSync(join(redirectDir, 'redirect.json'), JSON.stringify({ version: 1, canonical: 'canonical-topic' }));
+    try {
+      const actions = await classifySoft({
+        root,
+        sessionId: 's1',
+        messages: [{ id: 'm1', role: 'user', body: 'Keep the canonical topic current.' }],
+        topicSummaries: [{ path: 'old-topic', summary: 'Historical alias.' }],
+        llm: async ({ pass }) => pass === 'triage-pass1'
+          ? JSON.stringify({ user_profile_signals: false, topics: ['Canonical topic update'] })
+          : JSON.stringify({ decision: 'match', path: 'old-topic' }),
+      });
+
+      expect(actions).toEqual([
+        { kind: 'update', scope: 'sessions/s1/topic/canonical-topic' },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('completes a Dream triage pass that produces a topic action', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-triage-runner-'));
+    const sessionId = 'triage-session';
+    const message = { id: 'm1', role: 'user', body: 'Dream topic routing must keep redirects valid.' };
+    try {
+      const report = await runDream({
+        root,
+        manual: true,
+        llm: async ({ pass }) => {
+          if (pass === 'triage-pass1') {
+            return JSON.stringify({ user_profile_signals: false, topics: ['Dream topic routing'] });
+          }
+          if (pass === 'triage-pass2') return JSON.stringify({ decision: 'new', path: 'dream-routing' });
+          if (pass === 'extract-segments') return '[]';
+          if (pass === 'topic-consolidation') return JSON.stringify({ groups: [] });
+          return JSON.stringify({ content_md: 'Dream topic routing remains valid.', summary_md: 'Dream routing.' });
+        },
+        listSessions: async () => [sessionId],
+        countMessages: async () => 1,
+        loadSessionDiff: async () => [message],
+        loadOverlapPreamble: async () => [],
+        listTopicSummaries: async () => [],
+        nowIso: () => '2026-08-07T08:00:00.000Z',
+      });
+
+      expect(report.sessions).toEqual([
+        expect.objectContaining({ sessionId, status: 'triaged', actions: 4 }),
+      ]);
+      expect(report.targets).toEqual(expect.arrayContaining([
+        expect.objectContaining({ target: `sessions/${sessionId}/topic/dream-routing`, status: 'done' }),
+      ]));
+      expect(await readSessionState(root, sessionId)).toEqual({
+        lastDreamMessageId: 'm1',
+        lastDreamAt: '2026-08-07T08:00:00.000Z',
+        messageCount: 1,
+      });
+      expect(existsSync(join(root, 'sessions', sessionId, '.dream-last-error.json'))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -3031,6 +3199,8 @@ describe('Engine', () => {
           [
             'Reusable release experience: verify origin/main and the remote tag target before publishing.',
             '',
+            'Timeout cleanup failures must return a tool result so the Engine can continue.',
+            '',
             'Recent session details from the latest Dream pass:',
             '- m174797 assistant/linus: closing report',
             '- m174798 tool: {"ok":true,"dispatched":["martin"]}',
@@ -3044,7 +3214,7 @@ describe('Engine', () => {
               id: 'timeout-memory',
               scope: 'sessions/sibling-session',
               kind: 'context',
-              tags: ['timeout'],
+              tags: ['timeout', 'cleanup', 'failure'],
               sourceMessages: [],
               body: 'Timeout cleanup failures must return a tool result so the Engine can continue.',
               rank: -1,
@@ -3089,14 +3259,13 @@ describe('Engine', () => {
         }
 
         const system = mockAdapter.callLog.at(-1).system;
-        expect(system).toContain('## 相关上下文');
         expect(system).toContain('### 过去 Session 的经验总结');
-        expect(system).toContain('**sibling-session**: Reusable release experience');
+        expect(system).toContain('Timeout cleanup failures must return a tool result');
+        expect(system).not.toContain('Reusable release experience');
         expect(system).not.toContain('Recent session details from the latest Dream pass');
         expect(system).not.toContain('m174797 assistant/linus');
         expect(system).not.toContain('m174798 tool:');
         expect(system).not.toContain('### 相关记忆');
-        expect(system).not.toContain('Timeout cleanup failures must return a tool result');
         expect(system).toContain('## 可能相关的任务');
         expect(system).toContain('- 子 Agent timeout-reviewer (子 Agent，运行中)');
         expect(system).not.toContain('Review timeout recovery and verify Engine continuation');
@@ -3104,7 +3273,11 @@ describe('Engine', () => {
         expect(system).not.toContain('/private/sub-agent/events.jsonl');
         expect(system).not.toContain('sub_agent_status');
         expect(events.find(event => event.type === 'memory_used')?.loaded).toEqual(expect.arrayContaining([
-          expect.objectContaining({ category: 'experience', scope: 'sessions/sibling-session' }),
+          expect.objectContaining({
+            category: 'experience',
+            scope: 'sessions/sibling-session',
+            body: expect.stringContaining('Timeout cleanup failures must return a tool result'),
+          }),
         ]));
         expect(mockAdapter.callLog).toHaveLength(1);
         expect(existsSync(join(yeaftDir, 'memory', 'sessions', 'current-session', 'ams.json'))).toBe(false);
