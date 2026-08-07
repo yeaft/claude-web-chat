@@ -755,7 +755,7 @@ function completionContract(action, workItem) {
   "outcome": "completed|waiting|retryable|failed",
   "summary": "short result",
   "evidence": ["test, PR, file, or other verifiable evidence"],
-  "outputs": [{ "kind": "file|link|pr|commit", "label": "user-facing output name", "ref": "relative path, URL, PR, or commit ref" }],
+  "outputs": [{ "kind": "file|link|pr|commit", "label": "user-facing output name", "ref": "safe relative path for file, safe HTTP(S) URL for link/pr, or commit hash/full refs/... name for commit; never relabel a URL as file/commit" }],
   "acceptanceChecks": ${JSON.stringify(acceptanceChecks)},
   "waitingReason": null,
   "error": null${reviewField}${triageField}${planField}

@@ -5,6 +5,8 @@ const MAX_ITEMS = 50;
 const MAX_LABEL_LENGTH = 500;
 const MAX_REF_LENGTH = 1_000;
 const MAX_URL_NAME_DECODE_STEPS = 3;
+const URL_SCHEME_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+const COMMIT_HASH_PATTERN = /^[0-9a-f]{7,64}$/i;
 const SENSITIVE_URL_NAMES = new Set([
   'apikey', 'xapikey', 'token', 'accesstoken', 'refreshtoken', 'idtoken',
   'clientsecret', 'secret', 'signature', 'sig', 'credential', 'password',
@@ -93,6 +95,58 @@ export function normalizeOutputUrl(value) {
   return url.toString();
 }
 
+function normalizeFileRef(value) {
+  const normalized = boundedString(value, MAX_REF_LENGTH).replaceAll('\\', '/');
+  if (!normalized || /[\u0000-\u001f\u007f]/.test(normalized)
+      || normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)
+      || URL_SCHEME_PATTERN.test(normalized) || /%[0-9a-f]{2}/i.test(normalized)) return '';
+  const relative = normalized.replace(/^\.\//, '');
+  const parts = relative.split('/');
+  if (!relative || parts.some(part => !part || part === '.' || part === '..')) return '';
+  return relative;
+}
+
+function validFullGitRef(value) {
+  const hasForbiddenCharacter = [...value].some(character => (
+    character.charCodeAt(0) <= 0x20 || character.charCodeAt(0) === 0x7f
+      || '~^:?*[\\'.includes(character)
+  ));
+  if (!value.startsWith('refs/') || value.endsWith('/') || value.endsWith('.')
+      || value.includes('..') || value.includes('@{') || value.includes('//')
+      || hasForbiddenCharacter) return false;
+  const parts = value.split('/');
+  return parts.length >= 3 && parts.every(part => (
+    part && !part.startsWith('.') && !part.endsWith('.lock')
+  ));
+}
+
+function normalizeCommitRef(value) {
+  const ref = boundedString(value, MAX_REF_LENGTH);
+  if (!ref || URL_SCHEME_PATTERN.test(ref) || /%[0-9a-f]{2}/i.test(ref)) return '';
+  return COMMIT_HASH_PATTERN.test(ref) || validFullGitRef(ref) ? ref : '';
+}
+
+function normalizePullRequestUrl(value) {
+  const ref = normalizeOutputUrl(value);
+  if (!ref) return '';
+  const { pathname } = new URL(ref);
+  const supportedPath = [
+    /\/(?:pull|pulls)\/[1-9]\d*(?:\/|$)/i,
+    /\/-\/merge_requests\/[1-9]\d*(?:\/|$)/i,
+    /\/pull-requests\/[1-9]\d*(?:\/|$)/i,
+    /\/_git\/[^/]+\/pullrequest\/[1-9]\d*(?:\/|$)/i,
+  ].some(pattern => pattern.test(pathname));
+  return supportedPath ? ref : '';
+}
+
+function normalizeTypedOutputRef(kind, value) {
+  if (kind === 'file') return normalizeFileRef(value);
+  if (kind === 'link') return normalizeOutputUrl(value);
+  if (kind === 'pr') return normalizePullRequestUrl(value);
+  if (kind === 'commit') return normalizeCommitRef(value);
+  return '';
+}
+
 function normalizeEvidenceItem(value) {
   if (typeof value === 'string') {
     const label = boundedString(value, MAX_LABEL_LENGTH);
@@ -138,17 +192,8 @@ export function normalizeOutputs(value) {
   for (const raw of value) {
     const item = normalizeEvidenceItem(raw);
     if (!item || !OUTPUT_KINDS.has(item.kind) || !item.ref) continue;
-    if (item.kind === 'file') {
-      const normalized = item.ref.replaceAll('\\', '/');
-      if (normalized.includes('\u0000') || normalized.startsWith('/')
-          || /^[A-Za-z]:\//.test(normalized)
-          || normalized.split('/').includes('..')) continue;
-      item.ref = normalized.replace(/^\.\//, '');
-      if (!item.ref) continue;
-    } else if (item.kind === 'link' || item.kind === 'pr') {
-      item.ref = normalizeOutputUrl(item.ref);
-      if (!item.ref) continue;
-    }
+    item.ref = normalizeTypedOutputRef(item.kind, item.ref);
+    if (!item.ref) continue;
     const key = `${item.kind}\u0000${item.ref}`;
     if (seen.has(key)) continue;
     seen.add(key);

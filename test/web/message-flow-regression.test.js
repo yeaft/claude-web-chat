@@ -558,6 +558,16 @@ describe('message flow regressions', () => {
     ])).toBe(17);
   });
 
+  it('links only typed Work Center URL outputs', () => {
+    const isExternalOutput = WorkCenterPage.methods.isExternalOutput;
+    expect(isExternalOutput({ kind: 'link', ref: 'https://example.test/artifact' })).toBe(true);
+    expect(isExternalOutput({ kind: 'pr', ref: 'https://github.com/example/repo/pull/1' })).toBe(true);
+    expect(isExternalOutput({ kind: 'link', ref: 'javascript:alert(1)' })).toBe(false);
+    expect(isExternalOutput({ kind: 'commit', ref: 'https://example.test/callback#access_token=secret' })).toBe(false);
+    expect(isExternalOutput({ kind: 'file', ref: 'https://example.test/callback#access_token=secret' })).toBe(false);
+    expect(isExternalOutput('https://example.test/untyped')).toBe(false);
+  });
+
   it('keeps Work Center inputs available and detail layouts responsive', async () => {
     const component = readFileSync(resolve(import.meta.dirname, '../../web/components/ChatInput.js'), 'utf8');
     const messageComposer = readFileSync(resolve(import.meta.dirname, '../../web/components/MessageComposer.js'), 'utf8');

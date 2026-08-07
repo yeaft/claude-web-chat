@@ -1136,8 +1136,9 @@ export default {
         if (requestIsCurrent()) this.previewingAttachmentId = null;
       }
     },
-    isExternalOutput(ref) {
-      return /^https?:\/\//i.test(String(ref || ''));
+    isExternalOutput(output) {
+      return ['link', 'pr'].includes(output?.kind)
+        && /^https?:\/\//i.test(String(output?.ref || ''));
     },
     formatAttachmentSize(value) {
       const size = Math.max(0, Number(value) || 0);
@@ -1549,7 +1550,7 @@ export default {
                               <ul class="work-center-output-list">
                                 <li v-for="output in selected.outputs" :key="output.kind + ':' + output.ref">
                                   <strong>{{ output.label }}</strong>
-                                  <a v-if="isExternalOutput(output.ref)" :href="output.ref" target="_blank" rel="noopener noreferrer">{{ output.ref }}</a>
+                                  <a v-if="isExternalOutput(output)" :href="output.ref" target="_blank" rel="noopener noreferrer">{{ output.ref }}</a>
                                   <code v-else>{{ output.ref }}</code>
                                 </li>
                               </ul>

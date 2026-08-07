@@ -16,7 +16,10 @@ import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkCenterService } from '../../../../agent/yeaft/work-center/service.js';
 import { projectWorkItemDetail } from '../../../../agent/yeaft/work-center/projection.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
-import { buildMainlineContextSnapshot } from '../../../../agent/yeaft/work-center/mainline-projection.js';
+import {
+  buildMainlineContextSnapshot,
+  buildMainlineProjection,
+} from '../../../../agent/yeaft/work-center/mainline-projection.js';
 import { WorkItemRunner, parseStructuredResult } from '../../../../agent/yeaft/work-center/runner.js';
 import createWorkItemTool from '../../../../agent/yeaft/tools/create-work-item.js';
 
@@ -1222,27 +1225,47 @@ describe('Work Center dynamic coordination contract', () => {
     }, detail, { automatic: true, availableVpIds: ['linus'] })).not.toThrow();
   });
 
-  it('rejects unsafe output references before persistence and strips them from projection', () => {
+  it('rejects unsafe and kind-swapped output references across persistence and projection', () => {
+    const userinfoUrl = 'https://user:pass@example.test/private';
     const signedUrl = 'https://downloads.example.test/artifact.zip?X-Amz-Credential=AKIASECRET&X-Amz-Signature=deadbeef';
     const fragmentTokenUrl = 'https://example.test/callback#access_token=secret-token';
+    const encodedFragmentUrl = 'https://example.test/callback#state=ok%26access_token%3Dsecret-token';
+    const nestedQueryUrl = 'https://example.test/callback?redirect=https%3A%2F%2Fnested.test%2Fcb%3Faccess_token%3Dsecret-token';
+    const nestedAssignmentUrl = 'https://example.test/callback?state=access_token%3Dsecret-token';
+    const kindSwappedUrls = [
+      ['Userinfo', userinfoUrl],
+      ['Signed', signedUrl],
+      ['Encoded fragment', encodedFragmentUrl],
+      ['Nested query', nestedQueryUrl],
+    ].flatMap(([label, ref]) => ['file', 'commit'].map(kind => ({
+      kind, label: `${label} disguised as ${kind}`, ref,
+    })));
     const parsed = parseStructuredResult(JSON.stringify({
       outcome: 'completed', summary: 'Mixed outputs', evidence: ['verified'],
       outputs: [
         { kind: 'file', label: 'Traversal', ref: '../secret.txt' },
         { kind: 'file', label: 'Absolute', ref: '/tmp/secret.txt' },
-        { kind: 'link', label: 'Credential URL', ref: 'https://user:pass@example.test/private' },
+        { kind: 'link', label: 'Credential URL', ref: userinfoUrl },
         { kind: 'link', label: 'Signed URL', ref: signedUrl },
         { kind: 'link', label: 'Fragment token', ref: fragmentTokenUrl },
         { kind: 'link', label: 'Bare fragment token', ref: 'https://example.test/callback#token' },
-        { kind: 'link', label: 'Encoded fragment token', ref: 'https://example.test/callback#state=ok%26access_token%3Dsecret-token' },
-        { kind: 'link', label: 'Nested query token', ref: 'https://example.test/callback?redirect=https%3A%2F%2Fnested.test%2Fcb%3Faccess_token%3Dsecret-token' },
-        { kind: 'link', label: 'Nested assignment token', ref: 'https://example.test/callback?state=access_token%3Dsecret-token' },
+        { kind: 'link', label: 'Encoded fragment token', ref: encodedFragmentUrl },
+        { kind: 'link', label: 'Nested query token', ref: nestedQueryUrl },
+        { kind: 'link', label: 'Nested assignment token', ref: nestedAssignmentUrl },
+        ...kindSwappedUrls,
+        { kind: 'commit', label: 'Commit', ref: '0123456789abcdef0123456789abcdef01234567' },
+        { kind: 'commit', label: 'Commit ref', ref: 'refs/tags/release-1' },
+        { kind: 'pr', label: 'Pull request', ref: 'https://github.com/example/repo/pull/1' },
+        { kind: 'pr', label: 'Ordinary page disguised as PR', ref: 'https://example.test/artifact' },
         { kind: 'link', label: 'Safe URL', ref: 'https://example.test/artifact?page=1#download' },
         { kind: 'file', label: 'Safe file', ref: './docs/design.md' },
       ],
       acceptanceChecks: [],
     }), 'write');
     expect(parsed.outputs).toEqual([
+      { kind: 'commit', label: 'Commit', ref: '0123456789abcdef0123456789abcdef01234567' },
+      { kind: 'commit', label: 'Commit ref', ref: 'refs/tags/release-1' },
+      { kind: 'pr', label: 'Pull request', ref: 'https://github.com/example/repo/pull/1' },
       { kind: 'link', label: 'Safe URL', ref: 'https://example.test/artifact?page=1#download' },
       { kind: 'file', label: 'Safe file', ref: 'docs/design.md' },
     ]);
@@ -1264,9 +1287,10 @@ describe('Work Center dynamic coordination contract', () => {
         outputs: [
           { kind: 'link', label: 'Signed URL', ref: signedUrl },
           { kind: 'link', label: 'Fragment token', ref: fragmentTokenUrl },
-          { kind: 'link', label: 'Encoded fragment token', ref: 'https://example.test/callback#state=ok%26access_token%3Dsecret-token' },
-          { kind: 'link', label: 'Nested query token', ref: 'https://example.test/callback?redirect=https%3A%2F%2Fnested.test%2Fcb%3Faccess_token%3Dsecret-token' },
-          { kind: 'link', label: 'Nested assignment token', ref: 'https://example.test/callback?state=access_token%3Dsecret-token' },
+          { kind: 'link', label: 'Encoded fragment token', ref: encodedFragmentUrl },
+          { kind: 'link', label: 'Nested query token', ref: nestedQueryUrl },
+          { kind: 'link', label: 'Nested assignment token', ref: nestedAssignmentUrl },
+          ...kindSwappedUrls,
         ],
       }],
       messages: [],
@@ -1275,9 +1299,10 @@ describe('Work Center dynamic coordination contract', () => {
         summary: 'Unsafe legacy result', acceptanceResults: [], evidenceRunIds: [],
         outputs: [
           { kind: 'link', label: 'Signed URL', ref: signedUrl, runId: 'unsafe-output-run' },
-          { kind: 'link', label: 'Encoded fragment token', ref: 'https://example.test/callback#state=ok%26access_token%3Dsecret-token', runId: 'unsafe-output-run' },
-          { kind: 'link', label: 'Nested query token', ref: 'https://example.test/callback?redirect=https%3A%2F%2Fnested.test%2Fcb%3Faccess_token%3Dsecret-token', runId: 'unsafe-output-run' },
-          { kind: 'link', label: 'Nested assignment token', ref: 'https://example.test/callback?state=access_token%3Dsecret-token', runId: 'unsafe-output-run' },
+          { kind: 'link', label: 'Encoded fragment token', ref: encodedFragmentUrl, runId: 'unsafe-output-run' },
+          { kind: 'link', label: 'Nested query token', ref: nestedQueryUrl, runId: 'unsafe-output-run' },
+          { kind: 'link', label: 'Nested assignment token', ref: nestedAssignmentUrl, runId: 'unsafe-output-run' },
+          ...kindSwappedUrls.map(output => ({ ...output, runId: 'unsafe-output-run' })),
           { kind: 'file', label: 'Safe legacy output', ref: 'docs/legacy.md', runId: 'safe-output-run' },
         ],
         residualRisks: [],
@@ -1312,9 +1337,10 @@ describe('Work Center dynamic coordination contract', () => {
     controller.submit(claim.run.id, 'unsafe-output-runner', claim.run.leaseEpoch, {
       outcome: 'completed', summary: 'Output normalization complete', evidence: ['verified'],
       outputs: [
-        { kind: 'link', label: 'Encoded fragment token', ref: 'https://example.test/callback#state=ok%26access_token%3Dsecret-token' },
-        { kind: 'link', label: 'Nested query token', ref: 'https://example.test/callback?redirect=https%3A%2F%2Fnested.test%2Fcb%3Faccess_token%3Dsecret-token' },
-        { kind: 'link', label: 'Nested assignment token', ref: 'https://example.test/callback?state=access_token%3Dsecret-token' },
+        { kind: 'link', label: 'Encoded fragment token', ref: encodedFragmentUrl },
+        { kind: 'link', label: 'Nested query token', ref: nestedQueryUrl },
+        { kind: 'link', label: 'Nested assignment token', ref: nestedAssignmentUrl },
+        ...kindSwappedUrls,
         { kind: 'link', label: 'Safe URL', ref: 'https://example.test/artifact?page=1#download' },
       ],
       acceptanceChecks: workItem().acceptanceCriteria.map(criterion => ({
@@ -1335,6 +1361,55 @@ describe('Work Center dynamic coordination contract', () => {
     expect(browser.outputs).toEqual([
       expect.objectContaining({ kind: 'link', ref: 'https://example.test/artifact?page=1#download' }),
     ]);
+
+    const mergeItem = controller.create({
+      ...workItem({ id: 'kind-swapped-merge-item', deliveryTarget: 'merge' }),
+      workDir: tempDir, workflowTemplate: 'coordinator-driven', start: true,
+    });
+    const mergeAction = store.createNextAction(mergeItem.id, {
+      type: 'custom', stageId: 'kind-swapped-merge-action', status: 'ready',
+      assignmentPolicy: null, modelPolicy: null, sourceActionIds: [], dependsOnStageIds: [],
+      workspaceMode: 'shared', changesRequestedStageId: null, requiredRole: '',
+      instruction: 'Report the merged commit.', brief: {
+        objective: 'Report the merged commit.', approach: 'Return the verified commit identifier.',
+        expectedOutcome: 'A canonical commit output identifies the merged revision.',
+      }, maxAttempts: 1,
+    });
+    store.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ? WHERE id = ?`)
+      .run(mergeAction.id, mergeItem.id);
+    const mergeClaim = store.claimReadyAction('kind-swapped-merge-runner', 5_000);
+    controller.submit(mergeClaim.run.id, 'kind-swapped-merge-runner', mergeClaim.run.leaseEpoch, {
+      outcome: 'completed', summary: 'Merge reported', evidence: ['merge verified'],
+      outputs: [{ kind: 'commit', label: 'Merged commit', ref: encodedFragmentUrl }],
+      acceptanceChecks: workItem().acceptanceCriteria.map(criterion => ({
+        criterion, status: 'passed', evidence: 'merge verified',
+      })),
+    });
+    const mergeWake = store.listPendingDynamicCoordinatorWakes()
+      .find(entry => entry.workItemId === mergeItem.id);
+    const mergeCoordinatorClaim = store.claimCoordinatorMailbox(mergeItem.id, 'merge-coordinator');
+    const mergeTurn = store.beginDynamicCoordinatorTurn(mergeWake.id, {
+      ownerBootId: 'merge-coordinator', claimEpoch: mergeCoordinatorClaim.claim_epoch,
+    });
+    expect(() => store.completeCoordinatorTurn(mergeTurn.turnId, {
+      reply: 'The merge is complete.',
+      decision: {
+        kind: 'complete', reason: 'The merged commit is reported.',
+        completion: {
+          summary: 'Merged',
+          acceptanceResults: workItem().acceptanceCriteria.map(criterion => ({
+            criterion, status: 'passed', evidenceRunIds: [mergeClaim.run.id],
+          })),
+          evidenceRunIds: [mergeClaim.run.id], residualRisks: [],
+        },
+      },
+    }, mergeTurn.fence)).toThrow(/canonical commit output/i);
+    expect(store.getRun(mergeClaim.run.id).outputs).toEqual([]);
+    const mergeDetail = store.getWorkItemDetail(mergeItem.id);
+    expect(mergeDetail.status).not.toBe('done');
+    expect(buildMainlineProjection(mergeDetail).canonicalActionResults[mergeAction.id].outputs).toEqual([]);
+    expect(projectWorkItemDetail(mergeDetail).outputs).toEqual([]);
+    expect(JSON.stringify(projectWorkItemDetail(mergeDetail))).not.toContain('secret-token');
   });
 
   it('requires a human decision when the delivery boundary is ambiguous', () => {
