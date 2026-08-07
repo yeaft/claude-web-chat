@@ -25,8 +25,6 @@
 
 import { readFile } from 'node:fs/promises';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { isProxy, reactive } from 'vue';
 
 // `conversationHandler.js` transitively imports `web/stores/auth.js`,
@@ -38,15 +36,6 @@ globalThis.Pinia = globalThis.Pinia || {
 
 const { handleYeaftHistoryChunk } = await import('../../../web/stores/helpers/handlers/conversationHandler.js');
 const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
-const {
-  bindYeaftHistoryBrowserOwner,
-  clearYeaftHistoryBrowserOwner,
-  chooseYeaftHistoryBrowserRows,
-  currentYeaftHistoryBrowserFence,
-  readYeaftHistoryBrowserCache,
-  writeYeaftHistoryBrowserCache,
-  YEAFT_HISTORY_BROWSER_CACHE_LIMITS,
-} = await import('../../../web/stores/helpers/yeaft-history-browser-cache.js');
 const {
   isDurableYeaftHistoryRow,
   pruneConversationMessageRetention,
@@ -149,10 +138,8 @@ function mkStore(overrides = {}) {
     yeaftSessionHistoryState: {},
     yeaftMessageWindowState: {},
     messagesMap: {},
-    persistYeaftHistoryBrowserCache: vi.fn(() => Promise.resolve(true)),
     continueYeaftHistoryDelta: vi.fn(() => true),
     clearYeaftHistoryMemory: vi.fn(),
-    removeYeaftHistoryBrowserCache: vi.fn(() => Promise.resolve(true)),
     sendWsMessage(msg) { sent.push(msg); },
     _sent: sent,
     ...overrides,
@@ -340,32 +327,6 @@ describe('Conversation Repository', () => {
 });
 
 describe('Yeaft conversation loading state', () => {
-  it('uses 500 complete turns as the only browser-cache retention limit', () => {
-    expect(YEAFT_HISTORY_BROWSER_CACHE_LIMITS).toEqual({ maxTurnsPerSession: 500 });
-
-    const rows = [];
-    for (let turn = 1; turn <= 501; turn += 1) {
-      rows.push(
-        {
-          id: `m${turn}-user`, messageId: `m${turn}-user`, stableKey: `turn-${turn}:user`,
-          seq: turn * 10, type: 'user', content: `question ${turn}`, sessionId: 'session-a', isHistory: true,
-        },
-        ...Array.from({ length: turn === 2 ? 700 : 1 }, (_, index) => ({
-          id: `m${turn}-assistant-${index}`, messageId: `m${turn}-assistant-${index}`,
-          stableKey: `turn-${turn}:assistant:${index}`, seq: turn * 10 + index + 1,
-          type: 'assistant', content: 'x'.repeat(8192), sessionId: 'session-a', isHistory: true,
-        })),
-      );
-    }
-
-    const retained = chooseYeaftHistoryBrowserRows(rows);
-    expect(retained.turns).toBe(500);
-    expect(retained.rows[0].content).toBe('question 2');
-    expect(retained.rows.filter(row => row.content === 'question 2')).toHaveLength(1);
-    expect(retained.rows.length).toBeGreaterThan(600);
-    expect(retained.bytes).toBeGreaterThan(4 * 1024 * 1024);
-  });
-
   it('keeps background prefetch off the visible older-history spinner', () => {
     const sessionKey = yeaftHistoryIdentityKey('agent-1', 'session-a');
     const store = mkStore({
@@ -382,132 +343,6 @@ describe('Yeaft conversation loading state', () => {
     expect(store.yeaftHasMoreHistory).toBe(true);
     expect(store.yeaftOldestLoadedSeq).toBe(10);
   });
-
-  async function verifyBrowserHistoryCache() {
-    class MemoryRequest {
-      constructor(run) {
-        queueMicrotask(() => {
-          try { this.result = run(); this.onsuccess?.(); }
-          catch (error) { this.error = error; this.onerror?.(); }
-        });
-      }
-    }
-    class MemoryTransaction {
-      constructor(stores) {
-        this.stores = stores;
-        this.completed = false;
-        this._oncomplete = null;
-      }
-      set oncomplete(handler) {
-        this._oncomplete = handler;
-        if (this.completed && handler) queueMicrotask(handler);
-      }
-      get oncomplete() { return this._oncomplete; }
-      objectStore(name) {
-        const records = this.stores[name];
-        const request = run => new MemoryRequest(() => {
-          const value = run();
-          queueMicrotask(() => { this.completed = true; this._oncomplete?.(); });
-          return value;
-        });
-        return {
-          get: key => request(() => records.get(key)),
-          getAll: () => request(() => Array.from(records.values())),
-          put: record => request(() => { records.set(record.key, structuredClone(record)); return record.key; }),
-          delete: key => request(() => records.delete(key)),
-          clear: () => request(() => records.clear()),
-        };
-      }
-    }
-    const records = new Map();
-    const metadata = new Map();
-    const stores = { sessions: records, metadata };
-    const previousIndexedDB = globalThis.indexedDB;
-    globalThis.indexedDB = {
-      open() {
-        const request = {};
-        queueMicrotask(() => {
-          request.result = {
-            objectStoreNames: { contains: name => name === 'sessions' || name === 'metadata' },
-            transaction: () => new MemoryTransaction(stores),
-          };
-          request.onsuccess?.();
-        });
-        return request;
-      },
-    };
-    clearYeaftHistoryBrowserOwner();
-    try {
-      const ownerA = bindYeaftHistoryBrowserOwner('owner-a');
-      const projectedRows = reactive([
-        {
-          id: 'm0000', messageId: 'm0000', historyEntryId: 'entry-0', stableKey: 'entry-0:user',
-          seq: 0, type: 'user', content: 'question', sessionId: 'session-a', isHistory: true,
-        },
-        {
-          id: 'm0001', messageId: 'm0001', historyEntryId: 'entry-1', stableKey: 'entry-1:assistant',
-          seq: 1, type: 'assistant', content: 'persisted', sessionId: 'session-a', isHistory: true,
-        },
-        {
-          id: 'm0001-todos', messageId: 'm0001', historyEntryId: 'entry-1', stableKey: 'entry-1:todos',
-          seq: 1, type: 'tool-use', toolName: 'TodoWrite', sessionId: 'session-a', isHistory: true,
-        },
-        {
-          id: 'm0001-tool', messageId: 'm0001', historyEntryId: 'entry-1', stableKey: 'entry-1:tool:read',
-          seq: 1, type: 'tool-use', toolName: 'FileRead', toolInput: { file_path: 'README.md' },
-          sessionId: 'session-a', isHistory: true, hasResult: true,
-        },
-        { id: 'live', type: 'assistant', content: 'streaming', sessionId: 'session-a', isStreaming: true },
-      ]);
-      expect(isProxy(projectedRows[0])).toBe(true);
-      expect(await writeYeaftHistoryBrowserCache({
-        fence: ownerA,
-        agentId: 'agent-a',
-        sessionId: 'session-a',
-        rows: projectedRows,
-        historyState: { latestSeq: 1, oldestSeq: 1, hasMore: true },
-      })).toBe(true);
-      await new Promise(resolve => setTimeout(resolve, 0));
-      expect(await readYeaftHistoryBrowserCache({
-        fence: ownerA, agentId: 'agent-a', sessionId: 'session-a',
-      })).toMatchObject({
-        ownerId: 'owner-a', agentId: 'agent-a', sessionId: 'session-a',
-        rowCount: 4, latestSeq: 1, oldestSeq: 1, hasMore: true,
-        rows: [
-          expect.objectContaining({ stableKey: 'entry-0:user' }),
-          expect.objectContaining({ stableKey: 'entry-1:assistant' }),
-          expect.objectContaining({ stableKey: 'entry-1:todos' }),
-          expect.objectContaining({ stableKey: 'entry-1:tool:read', type: 'tool-use', toolName: 'FileRead' }),
-        ],
-      });
-      expect(await readYeaftHistoryBrowserCache({
-        fence: ownerA, agentId: 'agent-b', sessionId: 'session-a',
-      })).toBeNull();
-      const persisted = records.get('owner-a\u001fagent-a\u001fsession-a');
-      expect(persisted.schemaVersion).toBe(4);
-      records.set(persisted.key, {
-        ...persisted,
-        lastAccessed: Date.now() - (365 * 24 * 60 * 60 * 1000),
-      });
-      expect(await readYeaftHistoryBrowserCache({
-        fence: ownerA, agentId: 'agent-a', sessionId: 'session-a',
-      })).toMatchObject({ sessionId: 'session-a', rowCount: 4 });
-      expect(records.has(persisted.key)).toBe(true);
-
-      const ownerB = bindYeaftHistoryBrowserOwner('owner-b');
-      expect(await readYeaftHistoryBrowserCache({
-        fence: ownerA, agentId: 'agent-a', sessionId: 'session-a',
-      })).toBeNull();
-      clearYeaftHistoryBrowserOwner();
-      await new Promise(resolve => setTimeout(resolve, 0));
-      expect(currentYeaftHistoryBrowserFence()).toBeNull();
-      expect(Array.from(records.values()).some(record => record.ownerId === ownerB.ownerId)).toBe(false);
-    } finally {
-      clearYeaftHistoryBrowserOwner();
-      if (previousIndexedDB === undefined) delete globalThis.indexedDB;
-      else globalThis.indexedDB = previousIndexedDB;
-    }
-  }
 
   async function verifyLoadingState() {
     const randomUUID = vi.spyOn(globalThis.crypto, 'randomUUID');
@@ -716,6 +551,7 @@ describe('Yeaft conversation loading state', () => {
     }
   }
 
+
   it('binds assistant history without VP attribution to the group default VP', async () => {
     await verifyLoadingState();
     const oldWindow = globalThis.window;
@@ -843,12 +679,8 @@ describe('Yeaft conversation loading state', () => {
     ]);
   });
 
-  it('does not mutate the visible transcript with automatic older-page prefetch', () => {
-    const scheduleYeaftHistoryPrefetch = vi.fn();
-    const store = mkStore({
-      scheduleYeaftHistoryPrefetch,
-      messagesMap: { 'yeaft-1': [] },
-    });
+  it('does not start automatic older-page prefetch after a recent page', () => {
+    const store = mkStore({ messagesMap: { 'yeaft-1': [] } });
 
     handleYeaftHistoryChunk(store, {
       conversationId: 'yeaft-1',
@@ -864,42 +696,9 @@ describe('Yeaft conversation loading state', () => {
       hasMore: true,
     });
 
-    expect(scheduleYeaftHistoryPrefetch).not.toHaveBeenCalled();
+    expect(store._sent).toEqual([]);
     expect(store.yeaftSessionHistoryState[yeaftHistoryIdentityKey('agent-1', 'g1')])
       .toMatchObject({ hasMore: true, oldestSeq: 100 });
-  });
-
-  it('stops background scheduling once 500 complete turns are resident', () => {
-    const scheduleYeaftHistoryPrefetch = vi.fn();
-    const rows = [];
-    for (let turn = 1; turn <= 499; turn += 1) {
-      rows.push(
-        { id: `m${turn * 2}`, messageId: `m${turn * 2}`, seq: turn * 2, type: 'user', content: `q${turn}`, sessionId: 'g1', isHistory: true },
-        { id: `m${turn * 2 + 1}`, messageId: `m${turn * 2 + 1}`, seq: turn * 2 + 1, type: 'assistant', content: `a${turn}`, sessionId: 'g1', isHistory: true },
-      );
-    }
-    const store = mkStore({
-      scheduleYeaftHistoryPrefetch,
-      messagesMap: { 'yeaft-1': rows },
-    });
-
-    handleYeaftHistoryChunk(store, {
-      conversationId: 'yeaft-1',
-      agentId: 'agent-1',
-      sessionId: 'g1',
-      messages: [
-        { id: 'm0000', role: 'user', content: 'oldest-q', sessionId: 'g1' },
-        { id: 'm0001', role: 'assistant', content: 'oldest-a', sessionId: 'g1' },
-      ],
-      oldestSeq: 0,
-      nextBeforeSeq: 0,
-      hasMore: true,
-    });
-
-    expect(scheduleYeaftHistoryPrefetch).not.toHaveBeenCalled();
-    expect(store.messagesMap['yeaft-1'].filter(row => row.type === 'user')).toHaveLength(500);
-    expect(store.yeaftSessionHistoryState[yeaftHistoryIdentityKey('agent-1', 'g1')])
-      .toMatchObject({ hasMore: false, retentionLimitReached: true });
   });
 
   it('prepends user + assistant rows at index 0 with isStreaming=false', () => {
@@ -1007,7 +806,6 @@ describe('Yeaft conversation loading state', () => {
       'm0001', 'm0002', 'm0100', 'm0101',
     ]);
     expect(store.messagesMap['yeaft-1'].find(row => row.id === 'm0100')?.content).toBe('fresh recent q');
-    expect(store.persistYeaftHistoryBrowserCache).toHaveBeenCalledWith('g1', null, 'yeaft-1');
   });
 
   it('continues a bounded delta after committing its new cursor', async () => {
@@ -1082,7 +880,6 @@ describe('Yeaft conversation loading state', () => {
     expect(store.clearYeaftHistoryMemory).toHaveBeenCalledWith({
       agentId: 'agent-1', sessionId: 'g1', preserveLiveRows: true, preserveSessionOwner: true,
     });
-    expect(store.removeYeaftHistoryBrowserCache).toHaveBeenCalledWith('agent-1', 'g1');
     expect(store.messagesMap['yeaft-1'].map(row => row.content)).toEqual([
       'new question', 'new answer', 'streaming',
     ]);
@@ -2408,9 +2205,6 @@ describe('Yeaft conversation loading state', () => {
 
   it('keeps chronological order and dedupes rows when older session history overlaps cached rows', async () => {
     await runConsolidatedHistoryScenarios();
-    await verifyBrowserHistoryCache();
-    const cacheSource = readFileSync(resolve(import.meta.dirname, '../../../web/stores/helpers/yeaft-history-browser-cache.js'), 'utf8');
-    expect(cacheSource).toContain("const DATABASE_NAME = 'yeaft-history-cache'");
     const store = mkStore({
       yeaftActiveSessionFilter: 'session-A',
       messagesMap: {
@@ -2998,5 +2792,29 @@ describe('Yeaft message render window', () => {
     store.yeaftActiveSessionFilter = 'session-A';
 
     expect(visibleMessages(store).map(m => m.id)).toEqual(makeTurns(8).map(m => m.id));
+  });
+});
+
+describe('retired Yeaft browser history cleanup', () => {
+  it('deletes the retired database once without blocking startup', async () => {
+    const {
+      __legacyYeaftHistoryCacheCleanupForTest,
+      removeLegacyYeaftHistoryDatabase,
+    } = await import('../../../web/stores/helpers/legacy-yeaft-history-cache-cleanup.js');
+    const request = {};
+    const deleteDatabase = vi.fn(() => request);
+    const setItem = vi.fn();
+    vi.stubGlobal('indexedDB', { deleteDatabase });
+    vi.stubGlobal('localStorage', { getItem: vi.fn(() => null), setItem });
+    __legacyYeaftHistoryCacheCleanupForTest.reset();
+
+    expect(removeLegacyYeaftHistoryDatabase()).toBe(true);
+    expect(deleteDatabase).toHaveBeenCalledWith('yeaft-history-cache');
+    expect(removeLegacyYeaftHistoryDatabase()).toBe(false);
+    request.onsuccess();
+    expect(setItem).toHaveBeenCalledWith('yeaft-history-cache-removed-v1', 'done');
+
+    __legacyYeaftHistoryCacheCleanupForTest.reset();
+    vi.unstubAllGlobals();
   });
 });

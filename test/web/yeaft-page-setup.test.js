@@ -200,93 +200,11 @@ describe('YeaftPage setup', () => {
     expect(chatStore.yeaftHistorySearchState.senderKey).toBe('user');
     expect(chatStore.searchYeaftHistory).toHaveBeenCalledWith('', { senderKey: 'user' });
 
-    page.onHistorySenderChange('vp:omni');
     page.toggleHistorySearch();
     page.toggleHistorySearch();
     await Vue.nextTick();
-    expect(chatStore.yeaftHistorySearchState.senderKey).toBe('vp:omni');
-    expect(chatStore.searchYeaftHistory).toHaveBeenLastCalledWith('', { senderKey: 'vp:omni' });
-  });
-
-  it('keeps the current query through sender changes and lifecycle resets', async () => {
-    vi.useFakeTimers();
-    chatStore.yeaftHistorySearchState = { query: 'old query', senderKey: '' };
-    const page = YeaftPage.setup();
-
-    page.onHistorySearchQuery('new query');
-    page.onHistorySenderChange('vp:omni');
-    vi.advanceTimersByTime(220);
-
-    expect(chatStore.searchYeaftHistory).toHaveBeenCalledTimes(1);
-    expect(chatStore.searchYeaftHistory).toHaveBeenCalledWith('new query', { senderKey: 'vp:omni' });
-
-    page.toggleHistorySearch();
-    page.toggleHistorySearch();
-    await Vue.nextTick();
-    expect(chatStore.yeaftHistorySearchState.senderKey).toBe('vp:omni');
-    expect(chatStore.searchYeaftHistory).toHaveBeenLastCalledWith('', { senderKey: 'vp:omni' });
-
-    saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-2', senderKey: 'user' });
-    chatStore.searchYeaftHistory.mockClear();
-    page.onHistorySenderInvalid();
-
-    expect(chatStore.searchYeaftHistory).toHaveBeenCalledWith('', { senderKey: 'user' });
-    expect(loadHistorySenderPreference({
-      agentId: 'agent-1', sessionId: 'session-1', validKeys: ['user'],
-    })).toBe('user');
-    expect(loadHistorySenderPreference({
-      agentId: 'agent-1', sessionId: 'session-2', validKeys: ['user'],
-    })).toBe('user');
-  });
-
-  it('keeps sender preferences isolated, valid, and storage-safe', () => {
-    vi.useFakeTimers();
-    chatStore.yeaftHistorySearchState = { query: 'old query', senderKey: '' };
-    const page = YeaftPage.setup();
-
-    page.onHistorySearchQuery('');
-    page.onHistorySenderChange('user');
-    vi.advanceTimersByTime(220);
-
-    expect(chatStore.searchYeaftHistory).toHaveBeenCalledTimes(1);
-    expect(chatStore.searchYeaftHistory).toHaveBeenCalledWith('', { senderKey: 'user' });
-    expect(saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1', senderKey: 'vp:omni' })).toBe(true);
-    expect(saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-2', senderKey: 'user' })).toBe(true);
-
-    expect(loadHistorySenderPreference({
-      agentId: 'agent-1', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
-    })).toBe('vp:omni');
-    expect(loadHistorySenderPreference({
-      agentId: 'agent-1', sessionId: 'session-2', validKeys: ['user', 'vp:omni'],
-    })).toBe('user');
-    expect(loadHistorySenderPreference({
-      agentId: 'agent-2', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
-    })).toBe('user');
-
-    expect(saveHistorySenderPreference({ agentId: 'agent-2', sessionId: 'session-1', senderKey: '' })).toBe(true);
-    expect(loadHistorySenderPreference({
-      agentId: 'agent-2', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
-    })).toBe('');
-
-    saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1', senderKey: 'vp:removed' });
-    expect(loadHistorySenderPreference({
-      agentId: 'agent-1', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
-    })).toBe('user');
-    expect(loadHistorySenderPreference({
-      agentId: 'agent-1', sessionId: 'session-2', validKeys: ['user'],
-    })).toBe('user');
-
-    const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-    Object.defineProperty(globalThis, 'localStorage', {
-      configurable: true,
-      get() { throw new DOMException('blocked', 'SecurityError'); },
-    });
-    try {
-      expect(loadHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1' })).toBe('user');
-      expect(saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1', senderKey: 'user' })).toBe(false);
-    } finally {
-      Object.defineProperty(globalThis, 'localStorage', originalDescriptor);
-    }
+    expect(chatStore.yeaftHistorySearchState.senderKey).toBe('user');
+    expect(chatStore.searchYeaftHistory).toHaveBeenLastCalledWith('', { senderKey: 'user' });
   });
 
   it('keeps debug scoped to finished AI messages and removes the header entry', () => {

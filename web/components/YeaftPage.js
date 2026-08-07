@@ -172,11 +172,8 @@ export default {
           ref="historySearchRef"
           :outline-state="historyOutlineState"
           :search-state="store.yeaftHistorySearchState"
-          :sender-options="historySenderOptions"
           :active-message-id="historySearchActiveMessageId"
           @query="onHistorySearchQuery"
-          @sender="onHistorySenderChange"
-          @sender-invalid="onHistorySenderInvalid"
           @move="historySearchActiveMessageId = $event"
           @preview="previewHistorySearchResult"
           @select="selectHistorySearchResult"
@@ -559,16 +556,6 @@ export default {
     const historySearchOpen = Vue.ref(false);
     const historySearchActiveMessageId = Vue.ref(null);
     const historyOutlineState = Vue.computed(() => store.getYeaftHistoryOutlineState());
-    const historySenderOptions = Vue.computed(() => {
-      const gs = sessionsStore();
-      const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || null;
-      const session = sessionId ? resolveTimelineSession(gs, sessionId, store.currentAgent || null) : null;
-      const roster = Array.isArray(session?.roster) ? session.roster : [];
-      return [
-        { key: 'user', label: $t('yeaft.outline.you') },
-        ...roster.map(vpId => ({ key: `vp:${vpId}`, label: vpStore.vpLabel(vpId) })),
-      ];
-    });
     const historySearchQuery = Vue.ref(store.yeaftHistorySearchState?.query || '');
     let historySearchTimer = null;
     const sessionsStore = () => {
@@ -583,10 +570,7 @@ export default {
         sessionId: store.yeaftActiveSessionFilter || gs?.activeSessionId || null,
       };
     };
-    const rememberedHistorySender = () => loadHistorySenderPreference({
-      ...historySearchIdentity(),
-      validKeys: historySenderOptions.value.map(option => option.key),
-    });
+    const rememberedHistorySender = () => DEFAULT_HISTORY_SENDER;
     const resetHistorySearchState = (senderKey = '') => {
       const { agentId, sessionId } = historySearchIdentity();
       store.yeaftHistorySearchState = {
@@ -845,8 +829,7 @@ export default {
       historySearchQuery.value = '';
       resetHistorySearchState(senderKey);
       historySearchOpen.value = true;
-      store.loadYeaftHistoryOutline();
-      if (senderKey) store.searchYeaftHistory('', { senderKey });
+      store.searchYeaftHistory('', { senderKey });
       Vue.nextTick(() => historySearchRef.value?.focus?.());
     };
     const toggleHistorySearch = () => {
@@ -865,20 +848,8 @@ export default {
         store.searchYeaftHistory(historySearchQuery.value, { senderKey: store.yeaftHistorySearchState.senderKey });
       }, 220);
     };
-    const onHistorySenderChange = (senderKey) => {
-      if (historySearchTimer) clearTimeout(historySearchTimer);
-      historySearchTimer = null;
-      historySearchActiveMessageId.value = null;
-      saveHistorySenderPreference({ ...historySearchIdentity(), senderKey });
-      store.searchYeaftHistory(historySearchQuery.value, { senderKey });
-    };
-    const onHistorySenderInvalid = () => {
-      saveHistorySenderPreference({ ...historySearchIdentity(), senderKey: DEFAULT_HISTORY_SENDER });
-      historySearchActiveMessageId.value = null;
-      store.searchYeaftHistory(historySearchQuery.value, { senderKey: DEFAULT_HISTORY_SENDER });
-    };
     const loadOlderHistoryOutline = (scrollSnapshot) => {
-      if (!store.loadYeaftHistoryOutline({ append: true })) return;
+      if (!store.searchYeaftHistory('', { append: true, senderKey: DEFAULT_HISTORY_SENDER })) return;
       const stop = Vue.watch(
         () => historyOutlineState.value.loading,
         loading => {
@@ -1625,12 +1596,9 @@ export default {
       historySearchOpen,
       historySearchActiveMessageId,
       historyOutlineState,
-      historySenderOptions,
       toggleHistorySearch,
       closeHistorySearch,
       onHistorySearchQuery,
-      onHistorySenderChange,
-      onHistorySenderInvalid,
       loadOlderHistoryOutline,
       loadMoreHistorySearchResults,
       previewHistorySearchResult,
