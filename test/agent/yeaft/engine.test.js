@@ -34,6 +34,7 @@ import { classifySoft } from '../../../agent/yeaft/dream/triage.js';
 import { readSessionState } from '../../../agent/yeaft/dream/state.js';
 import { extractAndWriteMemorySegments } from '../../../agent/yeaft/dream/segment-extract.js';
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
+import { defineTool } from '../../../agent/yeaft/tools/types.js';
 import { buildSystemPrompt } from '../../../agent/yeaft/prompts.js';
 import { loadConfig } from '../../../agent/yeaft/config.js';
 import {
@@ -7317,6 +7318,275 @@ describe('Engine', () => {
       const withoutToolsCall = withoutToolsAdapter.callLog[0];
       expect(withoutToolsCall.tools).toBeUndefined();
     });
+
+    it('filters plugin-disabled tools and MCP servers from adapter definitions and execution', async () => {
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'ok' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+
+      engine.registerTool({
+        name: 'calculator',
+        description: 'Calculate math',
+        parameters: { type: 'object', properties: { expr: { type: 'string' } } },
+        execute: async () => '42',
+      });
+
+      for await (const _event of engine.query({ prompt: 'test' })) {
+        // consume
+      }
+
+      const call = mockAdapter.callLog[0];
+      expect(call.tools).toHaveLength(1);
+      expect(call.tools[0].name).toBe('calculator');
+      expect(call.tools[0].description).toBe('Calculate math');
+
+      const registry = new ToolRegistry();
+      let disabledCalls = 0;
+      registry.register(defineTool({
+        name: 'EnabledTool',
+        description: 'Enabled',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => 'ok',
+      }));
+      registry.register(defineTool({
+        name: 'DisabledTool',
+        description: 'Disabled',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => { disabledCalls += 1; return 'must not run'; },
+      }));
+      registry.register(defineTool({
+        name: 'mcp__github__list_prs',
+        mcpServer: 'github',
+        description: 'GitHub',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => 'github',
+      }));
+      registry.register(defineTool({
+        name: 'mcp__slack__send_message',
+        mcpServer: 'slack',
+        description: 'Slack',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => 'slack',
+      }));
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'call-disabled', name: 'DisabledTool', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'handled' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const filteredEngine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          plugins: { tools: ['EnabledTool'], mcpServers: ['github'] },
+        },
+        toolRegistry: registry,
+      });
+      const events = [];
+      for await (const event of filteredEngine.query({ prompt: 'use MCP github and try disabled tool' })) events.push(event);
+      expect(mockAdapter.callLog.at(-2).tools.map(tool => tool.name)).toEqual([
+        'EnabledTool',
+        'mcp__github__list_prs',
+      ]);
+      expect(disabledCalls).toBe(0);
+      expect(events.find(event => event.type === 'tool_end')).toMatchObject({
+        name: 'DisabledTool',
+        isError: true,
+      });
+    });
+
+    it('fails closed for an invalid persisted policy across tools and skills', async () => {
+      const registry = new ToolRegistry();
+      let executions = 0;
+      registry.register(defineTool({
+        name: 'SensitiveTool',
+        description: 'Must not run under a deny-all policy',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => { executions += 1; return 'unexpected'; },
+      }));
+      const skillManager = {
+        has: () => true,
+        list: () => [{ name: 'sensitive-skill', description: 'Sensitive skill' }],
+        get: name => ({ name }),
+        resolve: name => ({ name }),
+        view: name => ({ name }),
+        findRelevant: () => [{ name: 'sensitive-skill', description: 'Sensitive skill' }],
+        getPromptContent: () => 'SENSITIVE SKILL CONTENT',
+      };
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'deny-all-tool', name: 'SensitiveTool', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'done' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          plugins: { tools: [], skills: [], mcpServers: [] },
+          pluginConfigError: 'plugins.tools must be an array',
+        },
+        toolRegistry: registry,
+        skillManager,
+      });
+      const events = [];
+      for await (const event of engine.query({ prompt: 'run sensitive capability' })) events.push(event);
+      expect(mockAdapter.callLog.at(-2).tools).toBeUndefined();
+      expect(mockAdapter.callLog.at(-2).system).not.toContain('SENSITIVE SKILL CONTENT');
+      expect(executions).toBe(0);
+      expect(events.find(event => event.type === 'tool_end')).toMatchObject({
+        name: 'SensitiveTool',
+        isError: true,
+      });
+    });
+
+    it('filters disabled skills from automatic and explicit prompt injection', async () => {
+      const skillManager = {
+        has: name => ['allowed-skill', 'blocked-skill'].includes(name),
+        list: () => [
+          { name: 'allowed-skill', description: 'Allowed skill' },
+          { name: 'blocked-skill', description: 'Blocked skill' },
+        ],
+        get: name => ({ name }),
+        resolve: name => ({ name }),
+        view: name => ({ name }),
+        findRelevant: () => [
+          { name: 'allowed-skill', description: 'Allowed skill' },
+          { name: 'blocked-skill', description: 'Blocked skill' },
+        ],
+        getPromptContent: name => name === 'allowed-skill'
+          ? 'ALLOWED SKILL CONTENT'
+          : 'BLOCKED SKILL CONTENT',
+      };
+
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'automatic complete' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const automaticEngine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024, plugins: { skills: ['allowed-skill'] } },
+        skillManager,
+      });
+      const automaticEvents = [];
+      for await (const event of automaticEngine.query({ prompt: 'use relevant skills' })) automaticEvents.push(event);
+      expect(mockAdapter.callLog.at(-1).system).toContain('ALLOWED SKILL CONTENT');
+      expect(mockAdapter.callLog.at(-1).system).not.toContain('BLOCKED SKILL CONTENT');
+      expect(automaticEvents.filter(event => event.type === 'skill_loaded').map(event => event.skill.name))
+        .toEqual(['allowed-skill']);
+
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'explicit complete' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const explicitEngine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024, plugins: { skills: ['allowed-skill'] } },
+        skillManager,
+      });
+      const explicitEvents = [];
+      for await (const event of explicitEngine.query({ prompt: '/skill:blocked-skill inspect this' })) {
+        explicitEvents.push(event);
+      }
+      expect(mockAdapter.callLog.at(-1).system).not.toContain('BLOCKED SKILL CONTENT');
+      expect(explicitEvents.find(event => event.type === 'skill_error')).toMatchObject({
+        skillName: 'blocked-skill',
+      });
+    });
+
+    it('revokes automatic and explicit Skill prompt content at the next tool-loop request', async () => {
+      const skillManager = {
+        has: name => ['automatic-skill', 'explicit-skill'].includes(name),
+        list: () => [
+          { name: 'automatic-skill', description: 'Automatic skill' },
+          { name: 'explicit-skill', description: 'Explicit skill' },
+        ],
+        get: name => ({ name }),
+        resolve: name => ({ name }),
+        view: name => ({ name }),
+        findRelevant: () => [{ name: 'automatic-skill', description: 'Automatic skill' }],
+        getPromptContent: name => name === 'automatic-skill'
+          ? 'SENSITIVE_AUTOMATIC_SKILL_CONTENT'
+          : 'SENSITIVE_EXPLICIT_SKILL_CONTENT',
+      };
+
+      for (const testCase of [
+        {
+          name: 'automatic',
+          prompt: 'use the automatic skill',
+          secret: 'SENSITIVE_AUTOMATIC_SKILL_CONTENT',
+        },
+        {
+          name: 'explicit',
+          prompt: '/skill:explicit-skill use the explicit skill',
+          secret: 'SENSITIVE_EXPLICIT_SKILL_CONTENT',
+        },
+      ]) {
+        const adapter = new MockAdapter();
+        adapter.pushResponse([
+          { type: 'tool_call', id: `refresh-${testCase.name}`, name: 'save_plugin_policy', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        adapter.pushResponse([
+          { type: 'text_delta', text: 'policy refreshed' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          skillManager,
+        });
+        engine.registerTool({
+          name: 'save_plugin_policy',
+          description: 'Disable all Skills for the active Agent',
+          parameters: { type: 'object', properties: {} },
+          execute: async () => {
+            engine.refreshConfig({
+              model: 'test-model',
+              maxOutputTokens: 1024,
+              plugins: { skills: [] },
+            });
+            return 'saved';
+          },
+        });
+
+        const events = [];
+        for await (const event of engine.query({ prompt: testCase.prompt })) events.push(event);
+
+        expect(adapter.callLog).toHaveLength(2);
+        expect(adapter.callLog[0].system).toContain(testCase.secret);
+        expect(adapter.callLog[1].system).not.toContain(testCase.secret);
+        if (testCase.name === 'explicit') {
+          expect(adapter.callLog[1].system).toContain('Skill command error');
+          expect(events.filter(event => event.type === 'skill_loaded' && event.skill.name === 'explicit-skill'))
+            .toHaveLength(1);
+          expect(events.filter(event => event.type === 'skill_error' && event.skillName === 'explicit-skill'))
+            .toHaveLength(1);
+        } else {
+          expect(events.filter(event => event.type === 'skill_loaded' && event.skill.name === 'automatic-skill'))
+            .toHaveLength(1);
+        }
+      }
+    });
+
   });
 
   describe('active scope in system prompt', () => {

@@ -1651,6 +1651,10 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         // router is the authoritative consumer of the payload shape.
         const { agentId: _discard, ...rest } = msg;
         rest.type = relayType;
+        // Direct catalog replies are request-scoped. Carry the browser client
+        // identity through the Agent so another owner tab cannot accidentally
+        // consume a response for this picker request.
+        if (relayType === 'yeaft_plugin_catalog') rest._requestClientId = clientId;
         if (rest.type === 'yeaft_session_send' || rest.type === 'yeaft_session_chat') {
           trackUserTurn(client.userId, Buffer.byteLength(JSON.stringify(msg)));
           const sessionId = typeof rest.sessionId === 'string' ? rest.sessionId.trim() : '';

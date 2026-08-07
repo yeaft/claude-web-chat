@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
+import { normalizePluginConfig } from './yeaft/plugins.js';
 import {
   discoverGitHubCopilotModels,
   discoverOpenAICompatibleModels,
@@ -21,17 +22,49 @@ export function getDefaultYeaftConfigPath() {
 export function readLocalLlmConfig(configPath = getDefaultYeaftConfigPath()) {
   if (!existsSync(configPath)) return {};
   const raw = readFileSync(configPath, 'utf8');
-  if (!raw.trim()) return {};
-  const parsed = JSON.parse(raw);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+  if (!raw.trim()) {
     throw new Error(`Invalid config file: expected JSON object at ${configPath}`);
+  }
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+    || Object.getPrototypeOf(parsed) !== Object.prototype) {
+    throw new Error(`Invalid config file: expected JSON object at ${configPath}`);
+  }
+  if (Object.prototype.hasOwnProperty.call(parsed, 'plugins')) {
+    try {
+      normalizePluginConfig(parsed.plugins);
+    } catch (err) {
+      throw new Error(`Invalid config file: ${err?.message || err}`);
+    }
   }
   return parsed;
 }
 
 export function writeLocalLlmConfig(config, configPath = getDefaultYeaftConfigPath()) {
+  // The CLI exposes this writer publicly, so do not rely on callers having
+  // already used readLocalLlmConfig(). An existing invalid Plugins policy must
+  // remain on disk and keep runtime fail-closed until the user repairs it.
+  const existing = existsSync(configPath) ? readLocalLlmConfig(configPath) : null;
+  if (!config || typeof config !== 'object' || Array.isArray(config)
+    || Object.getPrototypeOf(config) !== Object.prototype) {
+    throw new Error(`Invalid config file: expected JSON object at ${configPath}`);
+  }
+  const next = { ...config };
+  if (next.plugins === undefined
+    && Object.prototype.hasOwnProperty.call(existing || {}, 'plugins')) {
+    // LLM commands change provider/model fields. They must not remove a
+    // separately-managed Plugin allowlist merely because their payload omits it.
+    next.plugins = existing.plugins;
+  }
+  if (next.plugins !== undefined) {
+    try {
+      normalizePluginConfig(next.plugins);
+    } catch (err) {
+      throw new Error(`Invalid config file: ${err?.message || err}`);
+    }
+  }
   mkdirSync(dirname(configPath), { recursive: true });
-  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  writeFileSync(configPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
 }
 
 export function parseModelsCsv(value) {

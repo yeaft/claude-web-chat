@@ -1156,6 +1156,73 @@ describe('Work Center tool policy', () => {
 
 
 
+  it('keeps Work Center Engine config outside Agent Plugins and retains control-plane tools', async () => {
+    const runtimeConfig = {
+      model: 'provider/model',
+      maxOutputTokens: 1_024,
+      projectDocMaxBytes: 0,
+      plugins: { tools: [] },
+    };
+    const capturedRequests = [];
+    const runner = new WorkItemRunner({
+      runtimeProvider: async () => ({
+        defaultWorkDir: workDir,
+        config: runtimeConfig,
+        adapter: {
+          async *stream(request) {
+            capturedRequests.push(request);
+            yield { type: 'text_delta', text: JSON.stringify({
+              outcome: 'completed', summary: 'Plan submitted', evidence: ['planner evidence'],
+            }) };
+            yield { type: 'stop', stopReason: 'end_turn' };
+          },
+        },
+      }),
+      store: {
+        listCompletedRuns: () => [],
+        isActiveRun: () => true,
+        setRunExecutionSnapshots: vi.fn(() => true),
+        prepareEngineTurn: vi.fn(() => ({ id: 'plugin-isolation-provider-turn' })),
+        claimEngineTurn: vi.fn(() => true),
+        consumeEngineTurn: vi.fn(() => true),
+        failEngineTurn: vi.fn(() => ({ allowRetry: true })),
+        closeRunInput: () => true,
+        listPendingActionInputs: () => [],
+      },
+      registry: {
+        listVps: () => [{ id: 'omni', name: 'Omni', role: 'developer', persona: '' }],
+        getVp: () => ({ id: 'omni', name: 'Omni', role: 'developer', persona: '' }),
+      },
+    });
+    const workItem = {
+      id: 'plugin-isolation',
+      title: 'Plan despite an explicit empty tool allowlist',
+      goal: 'Keep Work Center control-plane planning outside the MVP policy boundary',
+      acceptanceCriteria: ['The plan tool remains available'],
+      planRevision: 0,
+      workflowSnapshot: { planningMode: 'ai', executionMode: 'graph', globalInstructions: '' },
+    };
+    const action = {
+      id: 'triage-action', stageId: 'triage', type: 'triage', requiredRole: 'omni',
+      instruction: 'Plan the WorkItem.', assignmentPolicy: { mode: 'fixed', fixedVpId: 'omni' },
+      modelPolicy: { mode: 'inherit' }, workspaceMode: 'read', context: [], maxAttempts: 2,
+    };
+    const run = { id: 'plugin-isolation-run', leaseEpoch: 1 };
+
+    const result = await runner.run({
+      workItem,
+      action,
+      run,
+      signal: new AbortController().signal,
+      ownerBootId: 'plugin-isolation-boot',
+    });
+
+    expect(runtimeConfig).toEqual(expect.objectContaining({ plugins: { tools: [] } }));
+    expect(capturedRequests).toHaveLength(1);
+    expect(capturedRequests[0].tools.map(tool => tool.name)).toContain('SubmitWorkItemPlan');
+    expect(result).toMatchObject({ outcome: 'completed', summary: 'Plan submitted' });
+  });
+
   it('fences execution after the Run loses its lease', async () => {
     const active = vi.fn().mockReturnValue(false);
     const registry = createWorkItemToolRegistry({ workDir, isRunActive: active });

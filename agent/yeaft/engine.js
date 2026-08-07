@@ -56,6 +56,7 @@ import { COLLAB_TOOL_POLICY, isToolErrorOutput, localizeVisibleText, normalizeTo
 import { CONDITIONAL_BUILTIN_TOOL_NAMES, resolveActiveToolNames } from './tools/activation.js';
 import { discoverToolCapabilities } from './tools/discover-tools.js';
 import { agentBelongsToScope, getAgentRegistry } from './tools/agent.js';
+import { createPluginSkillManager } from './plugins.js';
 import { extractDisplayImages, stripDisplayImageData } from './image-assets.js';
 import { acknowledgePendingNotifications, formatNotificationsForPrompt, peekPendingNotifications } from './sub-agent/notifications.js';
 import {
@@ -201,6 +202,39 @@ function stripLeadingSkillCommandFromPromptParts(promptParts, skillManager) {
     stripped = true;
     return { ...part, text: parsed.cleanedPrompt };
   });
+}
+
+function resolveSkillPromptState({ skillManager, prompt, explicitSkillName }) {
+  let resolvedSkillContent = '';
+  let resolvedSkills = [];
+  let skillResolutionError = null;
+  if (!skillManager) {
+    return { resolvedSkillContent, resolvedSkills, skillResolutionError };
+  }
+
+  if (explicitSkillName) {
+    resolvedSkillContent = skillManager.getPromptContent(explicitSkillName);
+    const skill = skillManager.list?.().find(item => item.name === explicitSkillName)
+      || (resolvedSkillContent ? { name: explicitSkillName } : null);
+    if (resolvedSkillContent && skill) {
+      resolvedSkills = [{ ...skill, explicit: true }];
+    } else {
+      skillResolutionError = `Requested skill "${explicitSkillName}" was not found.`;
+      resolvedSkillContent = `## Skill command error\n\n${skillResolutionError} Continue without that skill and tell the user it is unavailable.`;
+    }
+  } else if (prompt && typeof skillManager.findRelevant === 'function') {
+    resolvedSkills = skillManager.findRelevant(prompt).map(skill => ({
+      name: skill.name,
+      description: skill.description || '',
+      trigger: skill.trigger || '',
+      category: skill.category,
+      tier: skill._tier,
+      explicit: false,
+    }));
+    resolvedSkillContent = resolvedSkills.map(skill => skillManager.getPromptContent(skill.name)).join('\n\n');
+  }
+
+  return { resolvedSkillContent, resolvedSkills, skillResolutionError };
 }
 
 function resolveRetryPolicy(config) {
@@ -617,6 +651,9 @@ export class Engine {
   /** @type {import('./skills.js').SkillManager|null} */
   #skillManager;
 
+  /** @type {import('./skills.js').SkillManager|null} */
+  #baseSkillManager;
+
   /** @type {import('./mcp.js').MCPManager|null} */
   #mcpManager;
 
@@ -838,7 +875,10 @@ export class Engine {
     this.#amsRegistry = amsRegistry || null;
     this.#toolRegistry = toolRegistry || null;
     this.#taskManager = taskManager || null;
-    this.#skillManager = skillManager || null;
+    this.#baseSkillManager = skillManager || null;
+    this.#skillManager = this.#baseSkillManager && Array.isArray(config?.plugins?.skills)
+      ? createPluginSkillManager(this.#baseSkillManager, config.plugins)
+      : this.#baseSkillManager;
     this.#mcpManager = mcpManager || null;
     this.#yeaftDir = yeaftDir || null;
     this.#managedCliReady = managedCliReady || null;
@@ -939,6 +979,9 @@ export class Engine {
   refreshConfig(config) {
     if (!config || typeof config !== 'object') return;
     this.#config = config;
+    this.#skillManager = this.#baseSkillManager && Array.isArray(config.plugins?.skills)
+      ? createPluginSkillManager(this.#baseSkillManager, config.plugins)
+      : this.#baseSkillManager;
     const fastModelId = config.fastModelId || config.model;
     this.#fastConfig = fastModelId !== config.model
       ? { ...config, model: fastModelId }
@@ -954,7 +997,10 @@ export class Engine {
    */
   setRuntimeManagers(managers = {}) {
     if (Object.prototype.hasOwnProperty.call(managers, 'skillManager')) {
-      this.#skillManager = managers.skillManager || null;
+      this.#baseSkillManager = managers.skillManager || null;
+      this.#skillManager = this.#baseSkillManager && Array.isArray(this.#config?.plugins?.skills)
+        ? createPluginSkillManager(this.#baseSkillManager, this.#config.plugins)
+        : this.#baseSkillManager;
     }
     if (Object.prototype.hasOwnProperty.call(managers, 'mcpManager')) {
       this.#mcpManager = managers.mcpManager || null;
@@ -984,6 +1030,7 @@ export class Engine {
     if (this.#toolRegistry) {
       return this.#toolRegistry.getToolDefs(this.#config?.language || 'en', {
         collabToolPolicy,
+        plugins: this.#config?.plugins,
         activeToolNames,
       });
     }
@@ -1220,10 +1267,11 @@ export class Engine {
    * @param {string} [args.explicitSkillName] — leading /skill:<name> command, if present
    * @returns {string}
    */
-  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, projectInstruction, projectLabel, workCenterInstructions, projectDoc, taskCtx, activeTasks, activeToolNames = null, promptNotices = [], explicitSkillName, resolvedSkillContent = null } = {}) {
-    // Skill selection is normally resolved once by #runQuery so the prompt and
-    // emitted protocol events describe the exact same skills. Keep the local
-    // fallback for internal callers that do not need selection events.
+  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, projectInstruction, projectLabel, workCenterInstructions, projectDoc, taskCtx, activeTasks, collabToolPolicy = null, activeToolNames = null, promptNotices = [], explicitSkillName, resolvedSkillContent = null } = {}) {
+    // #runQuery resolves Skill selection at each provider-request boundary so
+    // a live Plugin policy change cannot leave stale content in the next prompt.
+    // Keep the local fallback for internal callers that do not need selection
+    // events.
     let skillContent = typeof resolvedSkillContent === 'string' ? resolvedSkillContent : '';
     if (resolvedSkillContent === null && this.#skillManager) {
       if (explicitSkillName) {
@@ -1234,11 +1282,13 @@ export class Engine {
       }
     }
 
-    // Use the same active set for the prompt and provider schema. The prompt
-    // only needs these names to select scoped guidance; it does not repeat the
-    // catalogue because the API tool definitions are already authoritative.
+    // Prompt guidance must describe the same canonical capability
+    // intersection that reaches provider schemas and execution.
     const registeredToolNames = this.#toolRegistry
-      ? this.#toolRegistry.getToolNames()
+      ? this.#toolRegistry.getToolNames({
+          plugins: this.#config?.plugins,
+          collabToolPolicy,
+        })
       : Array.from(this.#tools.keys());
     const toolNames = activeToolNames instanceof Set
       ? registeredToolNames.filter(name => activeToolNames.has(name))
@@ -2422,8 +2472,12 @@ export class Engine {
         })
       : '';
     const registeredToolNames = this.#toolRegistry
-      ? this.#toolRegistry.getToolNames()
+      ? this.#toolRegistry.getToolNames({
+          collabToolPolicy: effectiveCollabToolPolicy,
+          plugins: this.#config?.plugins,
+        })
       : Array.from(this.#tools.keys());
+    const registeredToolNameSet = new Set(registeredToolNames);
     const resolveCurrentActiveToolNames = () => this.#toolRegistry
       ? resolveActiveToolNames({
           toolNames: registeredToolNames,
@@ -2444,6 +2498,7 @@ export class Engine {
     const discoveryTraversals = new Map();
     const currentDiscoverableTools = () => this.#toolRegistry
       ? this.#toolRegistry.getAllTools()
+          .filter(tool => registeredToolNameSet.has(tool.name))
           .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name) || tool.name.startsWith('mcp__'))
       : [];
     const discoveryDirectorySnapshot = (tools, language) => tools
@@ -2469,32 +2524,11 @@ export class Engine {
       }
     };
     let activeToolNames = resolveCurrentActiveToolNames();
-    let resolvedSkillContent = '';
-    let resolvedSkills = [];
-    let skillResolutionError = null;
-    if (this.#skillManager) {
-      if (explicitSkillName) {
-        resolvedSkillContent = this.#skillManager.getPromptContent(explicitSkillName);
-        const skill = this.#skillManager.list?.().find(item => item.name === explicitSkillName)
-          || (resolvedSkillContent ? { name: explicitSkillName } : null);
-        if (resolvedSkillContent && skill) {
-          resolvedSkills = [{ ...skill, explicit: true }];
-        } else {
-          skillResolutionError = `Requested skill "${explicitSkillName}" was not found.`;
-          resolvedSkillContent = `## Skill command error\n\n${skillResolutionError} Continue without that skill and tell the user it is unavailable.`;
-        }
-      } else if (prompt && typeof this.#skillManager.findRelevant === 'function') {
-        resolvedSkills = this.#skillManager.findRelevant(prompt).map(skill => ({
-          name: skill.name,
-          description: skill.description || '',
-          trigger: skill.trigger || '',
-          category: skill.category,
-          tier: skill._tier,
-          explicit: false,
-        }));
-        resolvedSkillContent = resolvedSkills.map(skill => this.#skillManager.getPromptContent(skill.name)).join('\n\n');
-      }
-    }
+    let { resolvedSkillContent, resolvedSkills, skillResolutionError } = resolveSkillPromptState({
+      skillManager: this.#skillManager,
+      prompt,
+      explicitSkillName,
+    });
 
     let promptNotices = [];
     const buildCurrentSystemPrompt = () => this.#buildSystemPrompt({
@@ -2508,6 +2542,7 @@ export class Engine {
       workCenterInstructions,
       projectDoc: projectDocContext.text,
       activeTasks,
+      collabToolPolicy: effectiveCollabToolPolicy,
       activeToolNames,
       promptNotices,
       explicitSkillName,
@@ -2678,12 +2713,10 @@ export class Engine {
       sessionId: sessionId || null,
       at: queryStartedAt,
     };
-    for (const skill of resolvedSkills) {
-      yield { type: 'skill_loaded', turnId: queryTurnId, skill };
-    }
-    if (skillResolutionError) {
-      yield { type: 'skill_error', turnId: queryTurnId, skillName: explicitSkillName, message: skillResolutionError };
-    }
+    // Skill selection is emitted at the provider-request boundary below. A
+    // persisted Plugin update may replace the filtered SkillManager while this
+    // query is paused on a tool, so reporting it before that boundary could
+    // claim a Skill was loaded even though its content never reached a request.
 
     // Surface the exact memory that entered the prompt. This must be based on
     // the AMS snapshot, not raw FTS candidates, otherwise debug can claim memory
@@ -2729,6 +2762,11 @@ export class Engine {
     let cumulativeInputTokens = 0;
     let cumulativeOutputTokens = 0;
     let activeProviderRequest = null;
+    // Skill events describe the selection injected into each provider request.
+    // The first request must report its initial selection; later loops report
+    // only newly added Skills or a newly introduced explicit-command error.
+    let reportedSkillNames = new Set();
+    let reportedSkillError = null;
     // task-707: tool-callable end-turn signal. Tools (currently only
     // `route_forward`) can set this via toolCtx.requestEndTurn(reason)
     // to break out of the tool-loop after the current batch finishes
@@ -2936,6 +2974,22 @@ export class Engine {
         else discoveredToolNames.delete(name);
       }
       toolDefs = this.#getToolDefs(effectiveCollabToolPolicy, activeToolNames);
+      ({ resolvedSkillContent, resolvedSkills, skillResolutionError } = resolveSkillPromptState({
+        skillManager: this.#skillManager,
+        prompt,
+        explicitSkillName,
+      }));
+      const currentSkillNames = new Set(resolvedSkills.map(skill => skill.name));
+      for (const skill of resolvedSkills) {
+        if (!reportedSkillNames.has(skill.name)) {
+          yield { type: 'skill_loaded', turnId: queryTurnId, skill };
+        }
+      }
+      if (skillResolutionError && skillResolutionError !== reportedSkillError) {
+        yield { type: 'skill_error', turnId: queryTurnId, skillName: explicitSkillName, message: skillResolutionError };
+      }
+      reportedSkillNames = currentSkillNames;
+      reportedSkillError = skillResolutionError;
       systemPrompt = buildCurrentSystemPrompt();
 
       try {
@@ -4187,6 +4241,7 @@ export class Engine {
         const hasTool = this.#toolRegistry
           ? this.#toolRegistry.isAllowed(tc.name, {
               collabToolPolicy: effectiveCollabToolPolicy,
+              plugins: this.#config?.plugins,
               activeToolNames,
             })
           : this.#tools.has(tc.name);

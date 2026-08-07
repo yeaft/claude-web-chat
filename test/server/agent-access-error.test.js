@@ -572,6 +572,44 @@ describe('resolveAgentAccessError', () => {
     }
   });
 
+  it('preserves explicit falsy Plugin payloads for Agent-side validation', async () => {
+    CONFIG.skipAuth = false;
+    const forwarded = [];
+    agents.set('agent-plugins', {
+      ownerId: 'user-1',
+      encryptOutbound: false,
+      ws: { readyState: WS_OPEN, send(payload) { forwarded.push(JSON.parse(payload)); } },
+    });
+    const client = {
+      userId: 'user-1', role: 'user', currentAgent: 'agent-plugins', authenticated: true,
+      ws: { readyState: WS_OPEN, send() {}, close() {} },
+    };
+
+    for (const [index, payload] of [
+      { plugins: null },
+      { plugins: false },
+      { plugins: '' },
+      { config: null },
+      { config: false },
+      { config: '' },
+    ].entries()) {
+      await handleClientMisc(`plugin-client-${index}`, client, {
+        type: 'update_yeaft_plugins',
+        requestId: `plugin-${index}`,
+        ...payload,
+      }, async agentId => agentId === 'agent-plugins');
+    }
+
+    expect(forwarded).toEqual([
+      { type: 'update_yeaft_plugins', requestId: 'plugin-0', plugins: null },
+      { type: 'update_yeaft_plugins', requestId: 'plugin-1', plugins: false },
+      { type: 'update_yeaft_plugins', requestId: 'plugin-2', plugins: '' },
+      { type: 'update_yeaft_plugins', requestId: 'plugin-3', plugins: null },
+      { type: 'update_yeaft_plugins', requestId: 'plugin-4', plugins: false },
+      { type: 'update_yeaft_plugins', requestId: 'plugin-5', plugins: '' },
+    ]);
+  });
+
   it('fails closed when legacy Yeaft pin identity is ambiguous', () => {
     const result = routeSessionPin({
       getYeaftRows: () => [
