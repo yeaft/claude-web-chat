@@ -975,6 +975,48 @@ describe('Yeaft history outline state', () => {
     expect(sliceScopedYeaftMessagesByRecentTurns(resident, 'same', 50).map(row => row.id)).toEqual(originalIds);
   });
 
+  it('isolates overlapping history message IDs between Sessions sharing one conversation', async () => {
+    const store = primeStore();
+    store.messagesMap['conv-a'] = [{
+      id: 'm42',
+      messageId: 'm42',
+      type: 'assistant',
+      content: 'session B row',
+      sessionId: 'session-b',
+      timestamp: 42,
+    }];
+    const result = indexedHistoryResult({
+      entryId: 'entry-a-m42',
+      entryStartSeq: 42,
+      messageId: 'm42',
+      seq: 42,
+      sourceMessageIds: ['m42'],
+    });
+
+    const clicked = store.revealYeaftHistoryResult(result, {
+      sessionId: 'same',
+      agentId: 'agent-a',
+    });
+    const request = store._sent.at(-1);
+    const response = indexedHistoryResponse(request, {
+      sessionId: 'same',
+      messages: [{ id: 'm42', role: 'assistant', content: 'session A row', createdAt: 42 }],
+    });
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+    expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(true);
+    await expect(clicked).resolves.toBe(true);
+
+    expect(store.isYeaftMessageCached('same', 'm42')).toBe(true);
+    expect(store.messagesMap['conv-a']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ messageId: 'm42', sessionId: 'same', content: 'session A row' }),
+      expect.objectContaining({ messageId: 'm42', sessionId: 'session-b', content: 'session B row' }),
+    ]));
+    expect(store.messagesMap['conv-a'].find(row => row.sessionId === 'session-b')).not.toMatchObject({
+      _historyWindowDetached: true,
+      historyEntryId: 'entry-a-m42',
+    });
+  });
+
   it('does not expand or render after the active Session changes while a window is pending', async () => {
     const store = primeStore();
     store.messagesMap['conv-a'] = Array.from({ length: 12 }, (_, index) => ({

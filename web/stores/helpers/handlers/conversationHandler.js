@@ -694,6 +694,7 @@ export function handleYeaftHistoryWindow(store, msg) {
   const residentMessageIds = new Set();
   const randomAccessMessageIds = new Set();
   for (const row of store.messagesMap[conversationId]) {
+    if (rowSessionId(row) !== sessionId) continue;
     const persistedId = row?.persistedMessageId || row?.messageId || row?.id || null;
     if (persistedId) residentMessageIds.add(persistedId);
     if (persistedId && (row?._historyWindowPrefetched === true || row?._historyWindowDetached === true)) {
@@ -740,6 +741,7 @@ export function handleYeaftHistoryWindow(store, msg) {
   const promoted = [];
   if (msg.prefetch !== true) {
     for (const row of projection) {
+      if (rowSessionId(row) !== sessionId) continue;
       const persistedId = row?.persistedMessageId || row?.messageId || row?.id || null;
       if (!responseMessageIds.has(persistedId)) continue;
       // Validation may overlap the ordinary recent tail. Only promote a row
