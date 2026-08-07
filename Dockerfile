@@ -28,6 +28,8 @@ RUN npm run build
 # Stage 2: Production image
 FROM node:24-alpine
 
+RUN apk add --no-cache docker-cli
+
 ARG BUILD_VERSION=dev
 
 WORKDIR /app

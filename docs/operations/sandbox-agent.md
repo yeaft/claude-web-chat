@@ -10,10 +10,19 @@ Server Host 必须已安装 Docker，并允许 Server 进程执行 `docker`。�
 SANDBOX_ENABLED=true
 SANDBOX_SERVER_URL=wss://your-yeaft-server.example
 SANDBOX_AGENT_IMAGE=ghcr.io/yeaft/yeaft-web-code-agent-agent:dev
-SANDBOX_AGENT_SECRET_DIR=/var/lib/yeaft/container-agent-secrets
+SANDBOX_STATE_DIR=/var/lib/yeaft/container-agents
 ```
 
 `SANDBOX_SERVER_URL` 必须是容器能访问的 `ws://` 或 `wss://` 地址，不能使用仅在 Host 内有效的回环地址。生产环境应固定具体镜像 tag 或 digest，而不是长期跟随 `:dev`。
+
+官方 Server 镜像已经包含 Docker CLI，但默认 `docker-compose.yml` 不授予 Docker socket；Sandbox 因此保持关闭。确认宿主机安全边界后，使用显式 override 启动：
+
+```bash
+export SANDBOX_SERVER_URL=wss://your-yeaft-server.example
+docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d webchat
+```
+
+`docker-compose.sandbox.yml` 会把 `/var/run/docker.sock` 和 `SANDBOX_STATE_DIR` 挂进 Server 容器。Docker socket 等价于宿主机 root 权限，只能授予可信 Server；不要把它加入默认部署。状态目录必须在 Host 与 Server 容器内使用相同绝对路径，因为子容器的 bind source 由 Host Docker daemon 解析。
 
 每个用户只映射到一个固定名称的容器，Server 使用认证用户 ID 派生名称，用户不能指定或操作其他用户的容器。容器使用独立的 Yeaft 数据卷和 workspace 卷，并采用 `unless-stopped` restart policy。
 
@@ -21,7 +30,7 @@ SANDBOX_AGENT_SECRET_DIR=/var/lib/yeaft/container-agent-secrets
 
 Server 从现有用户 Agent secret 生成 Host 端 `0600` 文件。Docker 将其只读绑定到容器；root entrypoint 把内容复制为 UID 10001 可读的容器内 `0600` 临时文件，然后以非 root 用户运行 Agent。secret 不出现在 Docker argv、容器环境变量值或镜像层中。
 
-`SANDBOX_AGENT_SECRET_DIR` 应位于仅 Server 服务账号和 root 可访问的持久目录。不要把它放入仓库、共享 workspace 或备份公开目录。
+`SANDBOX_STATE_DIR` 应位于仅 Server 服务账号和 root 可访问的持久目录。不要把它放入仓库、共享 workspace 或备份公开目录。
 
 ## 手动运行
 
@@ -59,7 +68,7 @@ docker run --rm \
 
 ## 故障排查
 
-- `SANDBOX_DOCKER_UNAVAILABLE`：Docker 未安装、daemon 不可用或 Server 服务账号无权限。
-- `SANDBOX_CREATE_FAILED`：检查镜像是否可拉取、Server URL 是否能从容器访问，以及 secret 目录权限。
+- `SANDBOX_DOCKER_UNAVAILABLE`：Docker CLI、daemon、socket 或 Server 服务账号权限不可用。
+- `CONTAINER_AGENT_DOCKER_FAILED`：Docker 生命周期命令失败；检查 daemon 日志、镜像、Server URL 和状态目录权限。
 - 容器 restart loop：运行 `docker logs yeaft-agent-<name>`，重点检查 secret 文件读取和 Server 连接错误。
 - 删除失败：先解决 Docker daemon 或卷引用问题，再重试；不要直接删除用户数据库行。

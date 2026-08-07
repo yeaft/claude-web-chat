@@ -17,6 +17,7 @@ import DashboardTab from './DashboardTab.js';
 import VpCrudPanel from './VpCrudPanel.js';
 import SearchSettingsTab from './SearchSettingsTab.js';
 import McpTab from './McpTab.js';
+import { loadSandboxState } from '../utils/sandbox-api.js';
 
 export default {
   name: 'SettingsPanel',
@@ -315,8 +316,9 @@ export default {
             <div v-show="activeTab === 'sandbox'" class="settings-pane">
               <div class="sp-group">
                 <div v-if="sandboxLoading" class="sp-desc" role="status">{{ $t('common.loading') }}</div>
-                <div v-else-if="sandboxLoadError" class="sp-error" role="alert">
-                  {{ $t('settings.sandbox.error.SANDBOX_LOAD_FAILED') }}
+                <div v-else-if="sandboxLoadError" role="alert">
+                  <p class="sp-error">{{ $t('settings.sandbox.error.SANDBOX_LOAD_FAILED') }}</p>
+                  <button class="btn-secondary" @click="loadSandbox">{{ $t('settings.sandbox.retryLoad') }}</button>
                 </div>
                 <template v-else-if="sandboxSnapshot">
                   <div class="sp-row">
@@ -703,6 +705,7 @@ export default {
       const code = this.sandboxCapability.reasonCode || 'SANDBOX_CAPACITY_UNAVAILABLE';
       const keys = {
         SANDBOX_DISABLED: 'disabled',
+        SANDBOX_DOCKER_UNAVAILABLE: 'dockerUnavailable',
         SANDBOX_NOT_ENTITLED: 'notEntitled',
         SANDBOX_CAPACITY_UNAVAILABLE: 'capacityUnavailable'
       };
@@ -795,14 +798,9 @@ export default {
       if (!background) this.sandboxLoading = true;
       if (!background) this.sandboxLoadError = false;
       try {
-        const headers = this.getHeaders();
-        const [capabilityResponse, snapshotResponse] = await Promise.all([
-          fetch('/api/sandbox/capability', { headers }),
-          fetch('/api/sandbox', { headers })
-        ]);
-        if (!capabilityResponse.ok || !snapshotResponse.ok) throw new Error('SANDBOX_LOAD_FAILED');
-        this.sandboxCapability = await capabilityResponse.json();
-        this.sandboxSnapshot = (await snapshotResponse.json()).sandbox;
+        const state = await loadSandboxState({ headers: this.getHeaders() });
+        this.sandboxCapability = state.capability;
+        this.sandboxSnapshot = state.sandbox;
       } catch {
         this.sandboxLoadError = true;
         this.sandboxCapability = { available: false, reasonCode: 'SANDBOX_CAPACITY_UNAVAILABLE', catalog: [] };

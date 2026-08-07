@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildCreateArgs,
+  checkContainerAgentRuntime,
   containerNameForAgent,
   runDocker,
   writeAgentSecretFile,
@@ -50,5 +51,18 @@ describe('container Agent manager', () => {
   it('executes Docker without a shell and returns bounded process output', async () => {
     const result = await runDocker(['inspect', 'name'], { spawnImpl: spawnResult({ stdout: 'ok\n' }) });
     expect(result).toEqual({ code: 0, stdout: 'ok', stderr: '' });
+  });
+
+  it('checks both the Docker client and daemon before advertising availability', async () => {
+    const calls = [];
+    const result = await checkContainerAgentRuntime({
+      spawnImpl: (command, args) => {
+        calls.push([command, args]);
+        return spawnResult({ stdout: '28.5.1\n' })(command, args);
+      },
+    });
+
+    expect(calls).toEqual([['docker', ['version', '--format', '{{.Server.Version}}']]]);
+    expect(result).toEqual({ serverVersion: '28.5.1' });
   });
 });

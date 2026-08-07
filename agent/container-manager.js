@@ -91,6 +91,18 @@ export function buildCreateArgs({
   ];
 }
 
+/**
+ * Verify that the Docker client can reach a daemon before the Server advertises
+ * container Agent lifecycle support.
+ *
+ * @param {object} options runDocker overrides used by tests and alternate runtimes
+ * @returns {Promise<{serverVersion: string|null}>}
+ */
+export async function checkContainerAgentRuntime(options = {}) {
+  const result = await runDocker(['version', '--format', '{{.Server.Version}}'], options);
+  return { serverVersion: result.stdout || null };
+}
+
 export async function inspectContainerAgent(name, options = {}) {
   const result = await runDocker([
     'inspect', '--format', '{{json .State}}', containerNameForAgent(name),

@@ -1,21 +1,28 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { loadSandboxState } from '../../web/utils/sandbox-api.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const component = readFileSync(join(root, 'web/components/SettingsPanel.js'), 'utf8');
+const sandboxApi = readFileSync(join(root, 'web/utils/sandbox-api.js'), 'utf8');
 const en = readFileSync(join(root, 'web/i18n/en.js'), 'utf8');
 const zh = readFileSync(join(root, 'web/i18n/zh-CN.js'), 'utf8');
 const css = readFileSync(join(root, 'web/styles/settings.css'), 'utf8');
+
+function jsonResponse(body, ok = true) {
+  return { ok, json: vi.fn(async () => body) };
+}
 
 describe('Sandbox Settings contract', () => {
   it('keeps the entry visible and gates create from server capability', () => {
     expect(component).toContain("{ key: 'sandbox', label: this.$t('settings.tabs.sandbox') }");
     expect(component).toContain('v-if="!sandboxCapability.available"');
     expect(component).toContain('if (!this.sandboxCapability.available || this.sandboxSubmitting) return;');
-    expect(component).toContain("fetch('/api/sandbox/capability',");
-    expect(component).toContain("fetch('/api/sandbox',");
+    expect(component).toContain('loadSandboxState({ headers: this.getHeaders() })');
+    expect(sandboxApi).toContain("fetchImpl('/api/sandbox/capability'");
+    expect(sandboxApi).toContain("fetchImpl('/api/sandbox'");
     expect(component).toContain("requestSandboxAction('stop')");
     expect(component).toContain("requestSandboxAction('start')");
     expect(component).toContain("requestSandboxAction('retry')");
@@ -23,6 +30,40 @@ describe('Sandbox Settings contract', () => {
     expect(component).toContain('window.confirm');
     expect(component).toContain('<button class="btn-secondary" @click="confirmRemoveSandbox"');
     expect(component).not.toContain("sandboxSnapshot.observedState !== 'recovery_required'");
+  });
+
+  it('does not request the Docker-backed snapshot when capability is unavailable', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      available: false,
+      reasonCode: 'SANDBOX_DISABLED',
+      catalog: [],
+    }));
+
+    await expect(loadSandboxState({ headers: { Authorization: 'Bearer token' }, fetchImpl }))
+      .resolves.toEqual({
+        capability: { available: false, reasonCode: 'SANDBOX_DISABLED', catalog: [] },
+        sandbox: null,
+      });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl).toHaveBeenCalledWith('/api/sandbox/capability', {
+      headers: { Authorization: 'Bearer token' },
+    });
+  });
+
+  it('loads the owner snapshot only after the Server reports an available runtime', async () => {
+    const snapshot = { id: 'sandbox-user-1', observedState: 'running' };
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ available: true, reasonCode: null, catalog: [{ id: 'standard' }] }))
+      .mockResolvedValueOnce(jsonResponse({ sandbox: snapshot }));
+
+    await expect(loadSandboxState({ fetchImpl })).resolves.toEqual({
+      capability: { available: true, reasonCode: null, catalog: [{ id: 'standard' }] },
+      sandbox: snapshot,
+    });
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      '/api/sandbox/capability',
+      '/api/sandbox',
+    ]);
   });
 
   it('polls persisted operations while Settings remains on the Sandbox tab', () => {
@@ -56,6 +97,7 @@ describe('Sandbox Settings contract', () => {
   it('uses stable, non-sensitive unavailable messages in both locales', () => {
     for (const locale of [en, zh]) {
       expect(locale).toContain("'settings.sandbox.unavailable.disabled'");
+      expect(locale).toContain("'settings.sandbox.unavailable.dockerUnavailable'");
       expect(locale).toContain("'settings.sandbox.unavailable.notEntitled'");
       expect(locale).toContain("'settings.sandbox.unavailable.capacityUnavailable'");
     }
@@ -64,13 +106,14 @@ describe('Sandbox Settings contract', () => {
   });
 
   it('renders a dedicated Sandbox navigation icon like the other settings tabs', () => {
-    expect(component).toContain("v-else-if=\"tab.key === 'sandbox'\"");
+    expect(component).toContain('v-else-if="tab.key === \'sandbox\'"');
     expect(component).toContain('M7 2h10');
   });
 
-  it('covers loading, empty, disabled, error, and long-name states', () => {
+  it('covers loading, empty, disabled, retryable error, and long-name states', () => {
     expect(component).toContain('v-if="sandboxLoading"');
     expect(component).toContain('v-else-if="sandboxLoadError"');
+    expect(component).toContain('@click="loadSandbox"');
     expect(component).toContain('v-else-if="sandboxSnapshot"');
     expect(component).toContain('v-if="!sandboxCapability.available"');
     expect(component).toContain('sp-label sp-text-wrap');
@@ -78,6 +121,7 @@ describe('Sandbox Settings contract', () => {
     expect(css).toContain('overflow-wrap: anywhere');
     for (const locale of [en, zh]) {
       expect(locale).toContain("'settings.sandbox.error.SANDBOX_LOAD_FAILED'");
+      expect(locale).toContain("'settings.sandbox.retryLoad'");
       expect(locale).toContain("'settings.sandbox.state.recovery_required'");
       expect(locale).toContain("'settings.sandbox.state.waiting_for_agent'");
       expect(locale).toContain("'settings.sandbox.state.removed'");
