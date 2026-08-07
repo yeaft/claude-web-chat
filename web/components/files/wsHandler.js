@@ -10,7 +10,7 @@ export function createWsHandler({
   openFiles, activeFileIndex, activeFile, fileLoading, fileSaving,
   saveTabsState, createEditor, openFileInTab,
   // Tree
-  tree,
+  tree, setTreeVisible,
   // Folder picker
   fp,
   // Quick open
@@ -20,6 +20,23 @@ export function createWsHandler({
   // Preview
   mdPreviewMode, renderOfficeLocal, editorContainer, debugStatus
 }) {
+  const pendingRevealLines = new Map();
+
+  const revealLine = (file, line) => {
+    if (!file || !Number.isFinite(line) || line <= 0) return;
+    const targetLine = Math.max(0, Math.floor(line) - 1);
+    const run = () => {
+      const cm = file.cmInstance;
+      if (!cm) return false;
+      cm.setCursor({ line: targetLine, ch: 0 });
+      cm.scrollIntoView({ line: targetLine, ch: 0 }, 80);
+      cm.focus();
+      return true;
+    };
+    Vue.nextTick(() => {
+      if (!run()) setTimeout(run, 180);
+    });
+  };
 
   const handleWorkbenchMessage = (event) => {
     const msg = event.detail;
@@ -102,6 +119,9 @@ export function createWsHandler({
             } else {
               Vue.nextTick(() => { setTimeout(() => createEditor(file), 100); });
             }
+            const revealLineNumber = pendingRevealLines.get(nFilePath);
+            pendingRevealLines.delete(nFilePath);
+            revealLine(file, revealLineNumber);
           }
         }
         break;
@@ -156,9 +176,13 @@ export function createWsHandler({
   };
 
   const handleOpenFile = (event) => {
-    const { filePath: path } = event.detail;
+    const { filePath: path, hideTree = false, line = null } = event.detail || {};
     const nPath = normalizePath(path);
+    if (!nPath) return;
+    if (hideTree && typeof setTreeVisible === 'function') setTreeVisible(false);
+    if (Number.isFinite(line) && line > 0) pendingRevealLines.set(nPath, line);
     openFileInTab(nPath, nPath.split('/').pop());
+    revealLine(activeFile.value, line);
   };
 
   return {

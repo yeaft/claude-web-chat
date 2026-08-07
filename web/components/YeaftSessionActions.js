@@ -1,10 +1,12 @@
 export default {
   name: 'YeaftSessionActions',
-  emits: ['toggle-search', 'reload-messages', 'toggle-session-status', 'reload-page'],
+  emits: ['toggle-search', 'reload-messages', 'toggle-session-status', 'toggle-workbench', 'reload-page'],
   props: {
     searchOpen: { type: Boolean, default: false },
     loadingMoreHistory: { type: Boolean, default: false },
     sessionStatusVisible: { type: Boolean, default: true },
+    workbenchVisible: { type: Boolean, default: false },
+    canUseWorkbench: { type: Boolean, default: false },
     showPageReload: { type: Boolean, default: false },
   },
   template: `
@@ -49,6 +51,17 @@ export default {
           <path d="M8 9h8"/>
           <path d="M8 14h5"/>
         </svg>
+      </button>
+      <button
+        v-if="canUseWorkbench"
+        class="yeaft-topbar-vp-toggle"
+        :class="{ active: workbenchVisible }"
+        @click="$emit('toggle-workbench')"
+        :title="$t('chat.sidebar.workbench')"
+        :aria-label="$t('chat.sidebar.workbench')"
+        :aria-expanded="workbenchVisible ? 'true' : 'false'"
+      >
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M20 3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H4V5h16v14zM6 7h5v2H6V7zm0 4h5v2H6v-2zm0 4h5v2H6v-2zm7-8h5v10h-5V7z"/></svg>
       </button>
       <!-- Page refresh is a mobile-only escape hatch; desktop keeps the header focused on session actions. -->
       <button

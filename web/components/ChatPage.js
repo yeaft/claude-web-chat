@@ -38,9 +38,6 @@ export default {
           <button v-if="!store.isSplitMode" class="collapsed-icon-btn" @click="store.toggleSidebar()" :title="$t('chat.sidebar.expand')">
             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
           </button>
-          <button v-if="canUseWorkbench" class="collapsed-icon-btn" :class="{ active: store.workbenchExpanded }" @click="store.toggleWorkbench()" :title="$t('chat.sidebar.workbench')">
-            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M20 3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H4V5h16v14zM6 7h5v2H6V7zm0 4h5v2H6v-2zm0 4h5v2H6v-2zm7-8h5v10h-5V7z"/></svg>
-          </button>
           <button class="collapsed-icon-btn" @click="store.addPanel()" :title="$t('splitScreen.split')">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/>
@@ -81,10 +78,6 @@ export default {
               </button>
               <button class="sidebar-icon-btn" @click="onSidebarCollapse" :title="$t('chat.sidebar.collapse')">
                 <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 18h13v-2H3v2zm0-5h10v-2H3v2zm0-7v2h13V6H3zm18 9.59L17.42 12 21 8.41 19.59 7l-5 5 5 5L21 15.59z"/></svg>
-              </button>
-              <button v-if="canUseWorkbench" class="sidebar-icon-btn" :class="{ active: store.workbenchExpanded }" @click="store.toggleWorkbench()" :title="$t('chat.sidebar.workbench')">
-                <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M20 3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H4V5h16v14zM6 7h5v2H6V7zm0 4h5v2H6v-2zm0 4h5v2H6v-2zm7-8h5v10h-5V7z"/></svg>
-                <span class="action-badge" v-if="store.runningSubagentCount > 0">{{ store.runningSubagentCount }}</span>
               </button>
             </div>
           </div>
@@ -259,12 +252,6 @@ export default {
         </div>
       </SessionSidebarShell>
 
-      <!-- Sidebar / Workbench 分隔线 -->
-      <div class="sidebar-workbench-divider" v-if="canUseWorkbench && store.workbenchExpanded && !store.sidebarCollapsed && !store.isSplitMode"></div>
-
-      <!-- Workbench Panel (Middle) — only in single mode -->
-      <WorkbenchPanel v-if="canUseWorkbench && (!store.isSplitMode || store.workCenterOpen)" />
-
       <WorkCenterPage v-if="store.workCenterOpen" />
 
       <!-- Single-panel Main Chat Area -->
@@ -294,6 +281,7 @@ export default {
               @update:modelValue="store.expertSelections = $event"
               @close="store.activeRightPanel = null"
             />
+            <WorkbenchPanel v-if="canUseWorkbench && !store.isSplitMode" />
           </div>
       </main>
 

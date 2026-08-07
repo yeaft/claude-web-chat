@@ -7,6 +7,7 @@ import { getTodoDisplayState } from '../utils/todo-display-state.js';
 import { renderMermaidIn } from '../utils/markdown.js';
 import { openImagePreview } from '../utils/imagePreview.js';
 import { formatSessionMessageDateTime, quoteFromAssistantTurn } from '../utils/session-message-quote.js';
+import { resolveMessageFileReference } from '../utils/message-file-reference.js';
 
 export default {
   name: 'AssistantTurn',
@@ -98,7 +99,7 @@ export default {
                 :key="segment.key"
                 class="turn-response-segment turn-response-progress"
               >
-                <div class="turn-text markdown-body" v-html="renderSegment(segment.content)"></div>
+                <div class="turn-text markdown-body" v-html="renderSegment(segment.content)" @click="onMarkdownClick"></div>
                 <span v-if="segment.isStreaming" class="cursor-blink"></span>
               </div>
             </div>
@@ -108,7 +109,7 @@ export default {
             :key="segment.key"
             class="turn-response-segment turn-response-result"
           >
-            <div class="turn-text markdown-body" v-html="renderSegment(segment.content)"></div>
+            <div class="turn-text markdown-body" v-html="renderSegment(segment.content)" @click="onMarkdownClick"></div>
             <span v-if="segment.isStreaming" class="cursor-blink"></span>
           </div>
         </div>
@@ -374,6 +375,16 @@ export default {
       return simpleMarkdown(content);
     };
 
+    const onMarkdownClick = (event) => {
+      const anchor = event.target?.closest?.('a[href]');
+      if (!anchor || !event.currentTarget?.contains?.(anchor)) return;
+      const reference = resolveMessageFileReference(anchor.getAttribute('href'));
+      if (!reference) return;
+      event.preventDefault();
+      event.stopPropagation();
+      store.openFileInExplorer(reference.path, { hideTree: true, line: reference.line });
+    };
+
     const textSegments = Vue.computed(() => {
       if (Array.isArray(props.turn?.textSegments) && props.turn.textSegments.length > 0) {
         return props.turn.textSegments;
@@ -637,6 +648,7 @@ export default {
       progressSegments,
       resultSegments,
       renderSegment,
+      onMarkdownClick,
       copyContent,
       copyFullResponse,
       exportMarkdown,

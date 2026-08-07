@@ -62,7 +62,7 @@
   width: 0;
   min-width: 0;
   background: var(--bg-workbench);
-  border-right: 1px solid var(--border-color);
+  border-left: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -72,9 +72,8 @@
 }
 
 .workbench-panel.expanded {
-  /* Default: take ~75% of remaining space after sidebar */
-  width: calc(75% - 260px);
-  min-width: 300px;
+  width: clamp(360px, 42vw, 760px);
+  min-width: 320px;
   flex-shrink: 1;
 }
 
@@ -130,7 +129,7 @@
 .resize-handle {
   position: absolute;
   top: 0;
-  right: -3px;
+  left: -3px;
   width: 6px;
   height: 100%;
   cursor: col-resize;
@@ -148,7 +147,7 @@
 @media (pointer: coarse) {
   .resize-handle {
     width: 20px;
-    right: -10px;
+    left: -10px;
   }
 }
 
