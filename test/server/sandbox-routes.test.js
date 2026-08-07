@@ -102,6 +102,36 @@ describe('Sandbox status routes', () => {
     expect(runtime.check).toHaveBeenCalledOnce();
   });
 
+  it('keeps old concurrent clients loadable when the enabled Docker runtime is unavailable', async () => {
+    const runtime = createRuntime();
+    runtime.check.mockRejectedValue(new Error('docker socket unavailable'));
+    const sandboxService = new ContainerAgentService({ enabled: true }, runtime);
+    const sandboxUserDb = {
+      getByUsername: vi.fn(() => ({ id: 'user-1', username: 'owner' })),
+      getOrCreate: vi.fn(),
+      getAgentSecret: vi.fn(),
+      resetAgentSecret: vi.fn(),
+    };
+    const app = createFakeApp();
+    registerSandboxRoutes(app, {
+      requireAuth: (_req, _res, next) => next(),
+      sandboxService,
+      sandboxUserDb,
+    });
+
+    const [capability, snapshot] = await Promise.all([
+      runRoute(app, 'GET /api/sandbox/capability'),
+      runRoute(app, 'GET /api/sandbox'),
+    ]);
+
+    expect(capability).toMatchObject({
+      statusCode: 200,
+      body: { available: false, reasonCode: 'SANDBOX_DOCKER_UNAVAILABLE', catalog: [] },
+    });
+    expect(snapshot).toMatchObject({ statusCode: 200, body: { sandbox: null } });
+    expect(runtime.inspect).not.toHaveBeenCalled();
+  });
+
   it('serves the disabled capability and empty owner snapshot through the real routes', async () => {
     const runtime = createRuntime();
     const sandboxService = new ContainerAgentService({ enabled: false }, runtime);

@@ -33,6 +33,11 @@ export function registerSandboxRoutes(app, {
     const user = loadUser(req, sandboxUserDb);
     if (!user) return res.status(404).json({ code: 'USER_NOT_FOUND' });
     try {
+      // Older browsers request capability and snapshot concurrently. Keep their
+      // snapshot response successful when the Docker runtime is unavailable so
+      // the capability reason remains visible instead of a generic load error.
+      const capability = await sandboxService.capability();
+      if (!capability.available) return res.json({ sandbox: null });
       return res.json({ sandbox: await sandboxService.snapshot(user.id) });
     } catch (error) {
       return sendError(res, error);
