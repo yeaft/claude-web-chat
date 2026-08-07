@@ -270,18 +270,18 @@ function assertToolInput(toolName, input, workDir, attachmentFiles) {
   return next;
 }
 
-export function workItemToolPolicySnapshot(workDir, attachmentRefs = [], mcpToolNames = []) {
+export function workItemToolPolicySnapshot(workDir, attachmentRefs = [], extraToolNames = []) {
   const hasAttachments = attachmentRefs.length > 0;
   const builtInTools = WORK_ITEM_TOOL_NAMES.filter(name => !hasAttachments || name !== 'Bash');
   return {
     policyVersion: 1,
-    allowedToolNames: [...builtInTools, ...mcpToolNames],
+    allowedToolNames: [...builtInTools, ...extraToolNames],
     readRoots: [workDir],
     attachmentRefs,
     writeRoots: [workDir],
     shell: { enabled: !hasAttachments, fixedCwd: workDir, background: false, sandboxed: false },
     async: false,
-    mcpTools: [...mcpToolNames],
+    mcpTools: extraToolNames.filter(name => name.startsWith('mcp__')),
   };
 }
 

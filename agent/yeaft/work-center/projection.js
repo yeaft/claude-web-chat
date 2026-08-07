@@ -786,14 +786,17 @@ function sanitizeMainlineDiagnostic(value, maxBytes) {
     .replace(/(?<![:/])\/(?:[^/\s"'<>]+\/)*[^/\s"'<>]+/g, '[path redacted]');
 }
 
-function projectCanonicalEvidence(value) {
+function projectCanonicalEvidence(value, options = {}) {
   if (!Array.isArray(value)) return [];
   return value.slice(0, 20).map(item => {
     if (typeof item === 'string') return sanitizeMainlineDiagnostic(item, 1_000);
     if (!item || typeof item !== 'object') return null;
     const projected = {};
     for (const key of ['kind', 'label', 'ref', 'status']) {
-      if (typeof item[key] === 'string') projected[key] = sanitizeMainlineDiagnostic(item[key], 1_000);
+      if (typeof item[key] !== 'string') continue;
+      projected[key] = options.preserveRef === true && key === 'ref'
+        ? truncateUtf8(item[key], 1_000)
+        : sanitizeMainlineDiagnostic(item[key], 1_000);
     }
     return Object.keys(projected).length > 0 ? projected : null;
   }).filter(Boolean);
@@ -850,7 +853,7 @@ function projectMainlineBrowser(detail) {
           status: result.status,
           summary: sanitizeMainlineDiagnostic(result.summary, MAX_ACTION_DIAGNOSTIC_CHARS),
           evidence: projectCanonicalEvidence(result.evidence),
-          outputs: projectCanonicalEvidence(result.outputs),
+          outputs: projectCanonicalEvidence(result.outputs, { preserveRef: true }),
           waitingReason: sanitizeDiagnosticText(result.waitingReason, MAX_ACTION_DIAGNOSTIC_CHARS) || null,
           reviewDecision: typeof result.reviewDecision === 'string'
             ? truncateUtf8(result.reviewDecision, 256) : null,
@@ -900,6 +903,19 @@ export function projectWorkItemDetail(detail, options = {}) {
     : detail.events;
   const mainline = projectMainlineBrowser(detail);
   const mainlineActionById = new Map((mainline?.actions || []).map(action => [action.id, action]));
+  const canonicalOutputs = [];
+  const seenOutputs = new Set();
+  const runById = new Map((Array.isArray(detail.runs) ? detail.runs : []).map(run => [run.id, run]));
+  for (const action of Array.isArray(detail.actions) ? detail.actions : []) {
+    const run = action?.resultRunId ? runById.get(action.resultRunId) : null;
+    if (!run || run.status !== 'completed') continue;
+    for (const output of Array.isArray(run.outputs) ? run.outputs : []) {
+      const key = `${output.kind}\u0000${output.ref}`;
+      if (seenOutputs.has(key)) continue;
+      seenOutputs.add(key);
+      canonicalOutputs.push({ ...output, actionId: action.id, runId: run.id });
+    }
+  }
   const projected = {
     id: detail.id,
     revision: detail.revision,
@@ -907,6 +923,11 @@ export function projectWorkItemDetail(detail, options = {}) {
     ledgerRevision: count(detail.ledgerRevision),
     coordinatorRevision: count(detail.coordinatorRevision),
     coordinationMode: detail.coordinationMode || 'legacy',
+    outputs: canonicalOutputs.slice(0, 50).map(output => ({
+      ...projectCanonicalEvidence([output], { preserveRef: true })[0],
+      actionId: truncateUtf8(output.actionId || '', 256) || null,
+      runId: truncateUtf8(output.runId || '', 256) || null,
+    })).filter(output => output.kind && output.label && output.ref),
     finalResult: detail.finalResult && typeof detail.finalResult === 'object' ? {
       summary: truncateUtf8(detail.finalResult.summary || '', MAX_ACTION_MESSAGE_CHARS),
       acceptanceResults: Array.isArray(detail.finalResult.acceptanceResults)
@@ -920,7 +941,7 @@ export function projectWorkItemDetail(detail, options = {}) {
         ? detail.finalResult.evidenceRunIds.map(String).slice(0, 64) : [],
       outputs: Array.isArray(detail.finalResult.outputs)
         ? detail.finalResult.outputs.slice(0, 50).map(output => ({
-            ...projectCanonicalEvidence([output])[0],
+            ...projectCanonicalEvidence([output], { preserveRef: true })[0],
             runId: truncateUtf8(output?.runId || '', 256) || null,
           })).filter(output => output.kind && output.label && output.ref) : [],
       residualRisks: Array.isArray(detail.finalResult.residualRisks)

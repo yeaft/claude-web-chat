@@ -14,9 +14,10 @@ import { WorkItemCoordinator, normalizeCoordinatorResponse } from '../../../../a
 import { Registry } from '../../../../agent/yeaft/vp/registry.js';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkCenterService } from '../../../../agent/yeaft/work-center/service.js';
+import { projectWorkItemDetail } from '../../../../agent/yeaft/work-center/projection.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
 import { buildMainlineContextSnapshot } from '../../../../agent/yeaft/work-center/mainline-projection.js';
-import { WorkItemRunner } from '../../../../agent/yeaft/work-center/runner.js';
+import { WorkItemRunner, parseStructuredResult } from '../../../../agent/yeaft/work-center/runner.js';
 
 function workItem(overrides = {}) {
   return {
@@ -857,6 +858,8 @@ describe('Work Center dynamic coordination contract', () => {
       ...acquired, ownerBootId: 'runner-owner', signal: new AbortController().signal,
     });
     expect(result).toMatchObject({ outcome: 'completed', summary: 'Specialist VP created.' });
+    expect(store.getRun(acquired.run.id).toolPolicySnapshot.allowedToolNames)
+      .toContain('CreateWorkItemVp');
     expect(registry.getVp('accessibility-reviewer')).toMatchObject({
       id: 'accessibility-reviewer', role: 'Accessibility reviewer',
     });
@@ -930,6 +933,14 @@ describe('Work Center dynamic coordination contract', () => {
       { kind: 'file', label: 'Design document', ref: 'docs/design.md', runId: acquired.run.id },
       { kind: 'link', label: 'Pull request', ref: 'https://github.com/example/repo/pull/1', runId: acquired.run.id },
     ]);
+    expect(() => store.db.prepare('UPDATE runs SET outputs = ? WHERE id = ?')
+      .run('[{"kind":"file","label":"rewritten","ref":"late.md"}]', acquired.run.id))
+      .toThrow(/terminal Run result is immutable/);
+    const projected = projectWorkItemDetail(completed);
+    expect(projected.outputs).toEqual([
+      { kind: 'file', label: 'Design document', ref: 'docs/design.md', actionId: acquired.action.id, runId: acquired.run.id },
+      { kind: 'link', label: 'Pull request', ref: 'https://github.com/example/repo/pull/1', actionId: acquired.action.id, runId: acquired.run.id },
+    ]);
   });
 
   it('persists an explicit delivery target and lets it authorize mutating Actions', () => {
@@ -955,6 +966,20 @@ describe('Work Center dynamic coordination contract', () => {
         }],
       },
     }, detail, { automatic: true, availableVpIds: ['linus'] })).not.toThrow();
+  });
+
+  it('rejects unsafe output references before persistence', () => {
+    const parsed = parseStructuredResult(JSON.stringify({
+      outcome: 'completed', summary: 'Mixed outputs', evidence: ['verified'],
+      outputs: [
+        { kind: 'file', label: 'Traversal', ref: '../secret.txt' },
+        { kind: 'file', label: 'Absolute', ref: '/tmp/secret.txt' },
+        { kind: 'link', label: 'Credential URL', ref: 'https://user:pass@example.test/private' },
+        { kind: 'file', label: 'Safe file', ref: './docs/design.md' },
+      ],
+      acceptanceChecks: [],
+    }), 'write');
+    expect(parsed.outputs).toEqual([{ kind: 'file', label: 'Safe file', ref: 'docs/design.md' }]);
   });
 
   it('requires a human decision when the delivery boundary is ambiguous', () => {

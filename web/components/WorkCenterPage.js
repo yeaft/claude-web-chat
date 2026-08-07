@@ -1544,10 +1544,10 @@ export default {
                               <h3>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}</h3>
                               <ul><li v-for="criterion in selected.acceptanceCriteria" :key="criterion">{{ criterion }}</li></ul>
                             </section>
-                            <section v-if="selected.finalResult?.outputs?.length" class="work-center-section work-center-outputs">
+                            <section v-if="selected.outputs?.length" class="work-center-section work-center-outputs">
                               <h3>{{ tr('workCenter.outputs', 'Outputs') }}</h3>
                               <ul class="work-center-output-list">
-                                <li v-for="output in selected.finalResult.outputs" :key="output.kind + ':' + output.ref">
+                                <li v-for="output in selected.outputs" :key="output.kind + ':' + output.ref">
                                   <strong>{{ output.label }}</strong>
                                   <a v-if="isExternalOutput(output.ref)" :href="output.ref" target="_blank" rel="noopener noreferrer">{{ output.ref }}</a>
                                   <code v-else>{{ output.ref }}</code>

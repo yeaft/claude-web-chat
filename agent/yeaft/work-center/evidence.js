@@ -55,6 +55,19 @@ export function normalizeOutputs(value) {
   for (const raw of value) {
     const item = normalizeEvidenceItem(raw);
     if (!item || !OUTPUT_KINDS.has(item.kind) || !item.ref) continue;
+    if (item.kind === 'file') {
+      const normalized = item.ref.replaceAll('\\', '/');
+      if (normalized.includes('\u0000') || normalized.startsWith('/')
+          || /^[A-Za-z]:\//.test(normalized)
+          || normalized.split('/').includes('..')) continue;
+      item.ref = normalized.replace(/^\.\//, '');
+      if (!item.ref) continue;
+    } else if (item.kind === 'link' || item.kind === 'pr') {
+      let url;
+      try { url = new URL(item.ref); } catch { continue; }
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) continue;
+      item.ref = url.toString();
+    }
     const key = `${item.kind}\u0000${item.ref}`;
     if (seen.has(key)) continue;
     seen.add(key);
