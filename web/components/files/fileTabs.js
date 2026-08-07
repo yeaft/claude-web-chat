@@ -195,7 +195,7 @@ export function createFileTabs(store, {
 
   function saveFile() {
     const file = activeFile.value;
-    if (!file || !file.isDirty) return;
+    if (!file || !file.isDirty || file.pendingSaveRequestId) return;
     fileSaving.value = true;
     const requestId = `file-save-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     file.pendingSaveRequestId = requestId;

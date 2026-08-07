@@ -137,7 +137,7 @@ describe('Agent file terminal forwarding', () => {
       isDirty: true,
       pendingSaveRequestId: 'save-b',
     };
-    tabs.openFiles.value.unshift(wrongOwnerTab);
+    tabs.openFiles.value.push(wrongOwnerTab);
     const saveTabsState = vi.fn();
     const handle = createWsHandler({
       store,
@@ -170,22 +170,35 @@ describe('Agent file terminal forwarding', () => {
     expect(ownerTab.isDirty).toBe(true);
     expect(wrongOwnerTab.isDirty).toBe(true);
 
+    // Ctrl/Cmd+S calls saveFile directly. A second save must not overwrite
+    // the pending snapshot while an old Agent may return an ACK without id.
     ownerTab.content = 'edited while save was in flight';
-    ack({ agentId: 'agent-a', conversationId: 'conversation-a', requestId: writeRequest.requestId });
+    tabs.saveFile();
+    expect(sent.filter(msg => msg.type === 'write_file')).toHaveLength(1);
+    expect(ownerTab.pendingSaveRequestId).toBe(writeRequest.requestId);
+    expect(ownerTab.pendingSaveContent).toBe('updated');
+
+    ack({ agentId: 'agent-a', conversationId: 'conversation-a' });
     expect(ownerTab.originalContent).toBe('updated');
     expect(ownerTab.isDirty).toBe(true);
     expect(wrongOwnerTab.isDirty).toBe(true);
     expect(saveTabsState).toHaveBeenLastCalledWith('conversation-a');
 
-    // Rolling upgrade: old Agents omit requestId, but the Server still adds
-    // agentId and the legacy payload carries conversationId.
-    ownerTab.content = 'updated again';
-    ownerTab.isDirty = true;
-    ownerTab.pendingSaveRequestId = 'new-client-request';
-    ownerTab.pendingSaveContent = 'updated again';
-    ack({ agentId: 'agent-a', conversationId: 'conversation-a' });
-    expect(ownerTab.isDirty).toBe(false);
-    expect(wrongOwnerTab.isDirty).toBe(true);
+    tabs.saveFile();
+    const retryRequest = sent.filter(msg => msg.type === 'write_file').at(-1);
+    expect(retryRequest.content).toBe('edited while save was in flight');
+    ack({
+      agentId: 'agent-a',
+      conversationId: 'conversation-a',
+      requestId: retryRequest.requestId,
+      success: false,
+      error: 'disk full',
+    });
+    expect(ownerTab.isDirty).toBe(true);
+    expect(ownerTab.pendingSaveRequestId).toBeUndefined();
+
+    tabs.saveFile();
+    expect(sent.filter(msg => msg.type === 'write_file')).toHaveLength(3);
   });
 
   it('preserves save correlation metadata through the Agent write handler', async () => {
