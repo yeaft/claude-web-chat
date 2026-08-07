@@ -54,7 +54,11 @@ function ensureAgentSecret(user) {
 /**
  * Register user profile, agent secret, and admin user management routes.
  */
-export function registerUserRoutes(app, { requireAuth, requireAdmin }) {
+export function registerUserRoutes(app, {
+  requireAuth,
+  requireAdmin,
+  containerService = containerAgentService,
+}) {
   // Get my profile
   app.get('/api/user/profile', requireAuth, (req, res) => {
     try {
@@ -155,9 +159,10 @@ export function registerUserRoutes(app, { requireAuth, requireAdmin }) {
         }
       }
 
-      // Remove the Server-managed container before deleting the owner record.
-      // Manually launched remote container Agents remain outside Server lifecycle control.
-      await containerAgentService.action(user.id, 'remove');
+      // Account deletion uses an internal cleanup path, not the public Sandbox
+      // admission gate. It only probes Docker when durable Server-owned state
+      // proves that this user had a managed container.
+      await containerService.cleanupManagedContainer(user.id);
       const deletion = userDb.beginDeletion(user.id);
       if (!deletion) return res.status(404).json({ error: 'User not found or already deleted' });
 

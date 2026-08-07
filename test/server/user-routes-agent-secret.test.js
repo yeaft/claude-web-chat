@@ -35,6 +35,7 @@ async function runRoute(app, key, req = {}) {
 describe('user agent secret routes', () => {
   let userDb;
   let registerUserRoutes;
+  let containerService;
 
   beforeEach(async () => {
     vi.resetModules();
@@ -42,6 +43,7 @@ describe('user agent secret routes', () => {
       getByUsername: vi.fn(),
       getOrCreate: vi.fn(),
       resetAgentSecret: vi.fn(() => 'agent-secret-generated'),
+      beginDeletion: vi.fn(),
       getAll: vi.fn(() => []),
     };
 
@@ -56,8 +58,18 @@ describe('user agent secret routes', () => {
     }));
     vi.doMock('../../server/auth/session-store.js', () => ({
       activeSessions: new Map(),
+      pendingVerifications: new Map(),
+      pendingTotpVerifications: new Map(),
+      pendingTotpSetup: new Map(),
       revokedTokens: new Set(),
     }));
+    vi.doMock('../../server/auth/request-auth.js', () => ({ clearSessionCookie: vi.fn() }));
+    vi.doMock('../../server/context.js', () => ({
+      agents: new Map(),
+      webClients: new Map(),
+      userStatsDeltas: new Map(),
+    }));
+    containerService = { cleanupManagedContainer: vi.fn() };
 
     ({ registerUserRoutes } = await import('../../server/routes/user-routes.js'));
   });
@@ -67,6 +79,7 @@ describe('user agent secret routes', () => {
     registerUserRoutes(app, {
       requireAuth: (_req, _res, next) => next(),
       requireAdmin: (_req, _res, next) => next(),
+      containerService,
     });
     return app;
   }
@@ -119,5 +132,41 @@ describe('user agent secret routes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ agentSecret: 'agent-secret-new' });
     expect(userDb.resetAgentSecret).toHaveBeenCalledWith('u1');
+  });
+
+  it('does not tombstone the owner when internal managed cleanup fails', async () => {
+    userDb.getByUsername.mockReturnValue({
+      id: 'u1', username: 'dev-user', password_hash: null,
+    });
+    containerService.cleanupManagedContainer.mockRejectedValue(new Error('docker unavailable'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await runRoute(mountRoutes(), 'DELETE /api/user/me', {
+      body: { confirm: 'DELETE' },
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toEqual({ error: 'Failed to delete account' });
+    expect(userDb.beginDeletion).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('uses the internal cleanup path before deleting an account', async () => {
+    userDb.getByUsername.mockReturnValue({
+      id: 'u1', username: 'dev-user', password_hash: null,
+    });
+    userDb.beginDeletion.mockReturnValue({ deletionId: 'deletion-1', status: 'pending' });
+    containerService.cleanupManagedContainer.mockResolvedValue({ cleaned: false });
+
+    const res = await runRoute(mountRoutes(), 'DELETE /api/user/me', {
+      body: { confirm: 'DELETE' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(res.body).toEqual({ deletionId: 'deletion-1', status: 'pending' });
+    expect(containerService.cleanupManagedContainer).toHaveBeenCalledWith('u1');
+    expect(userDb.beginDeletion).toHaveBeenCalledWith('u1');
+    expect(containerService.cleanupManagedContainer.mock.invocationCallOrder[0])
+      .toBeLessThan(userDb.beginDeletion.mock.invocationCallOrder[0]);
   });
 });

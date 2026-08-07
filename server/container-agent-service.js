@@ -1,3 +1,4 @@
+import { access, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { CONFIG } from './config.js';
 import {
@@ -70,7 +71,7 @@ export class ContainerAgentService {
   }
 
   async create(user, { agentName } = {}) {
-    this.assertEnabled();
+    await this.assertAvailable();
     const name = this.nameForUser(user.id);
     const secretFile = join(this.config.stateDir, name, 'agent-secret');
     await this.runtime.writeSecret(secretFile, user.agent_secret);
@@ -83,7 +84,21 @@ export class ContainerAgentService {
     return { snapshot: await this.snapshot(user.id), replayed: false };
   }
 
+  async assertAvailable() {
+    this.assertEnabled();
+    try {
+      await this.runtime.check();
+    } catch {
+      throw Object.assign(new Error('SANDBOX_DOCKER_UNAVAILABLE'), {
+        code: 'SANDBOX_DOCKER_UNAVAILABLE',
+      });
+    }
+  }
+
+  // User-visible lifecycle operations are admitted on every request. The
+  // feature flag and Docker reachability can change while a browser is open.
   async action(userId, action) {
+    await this.assertAvailable();
     const name = this.nameForUser(userId);
     if (action === 'start') await this.runtime.start(name);
     else if (action === 'retry') {
@@ -92,9 +107,30 @@ export class ContainerAgentService {
       else throw Object.assign(new Error('SANDBOX_NOT_FOUND'), { code: 'SANDBOX_NOT_FOUND' });
     }
     else if (action === 'stop') await this.runtime.stop(name);
-    else if (action === 'remove') await this.runtime.remove(name);
+    else if (action === 'remove') {
+      await this.runtime.remove(name);
+      await rm(join(this.config.stateDir, name), { recursive: true, force: true });
+    }
     else throw Object.assign(new Error('SANDBOX_ACTION_NOT_ALLOWED'), { code: 'SANDBOX_ACTION_NOT_ALLOWED' });
     return { snapshot: await this.snapshot(userId), replayed: false };
+  }
+
+  // Account deletion bypasses public admission only for durable Server-owned
+  // resources. No marker means this owner never reached a managed create
+  // attempt, so a default deployment without Docker must not probe the daemon.
+  async cleanupManagedContainer(userId) {
+    const name = this.nameForUser(userId);
+    const ownerDir = join(this.config.stateDir, name);
+    const marker = join(ownerDir, 'agent-secret');
+    try {
+      await access(marker);
+    } catch (error) {
+      if (error?.code === 'ENOENT') return { cleaned: false };
+      throw error;
+    }
+    await this.runtime.remove(name);
+    await rm(ownerDir, { recursive: true, force: true });
+    return { cleaned: true };
   }
 }
 
