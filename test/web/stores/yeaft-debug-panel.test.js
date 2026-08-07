@@ -47,8 +47,13 @@ beforeEach(() => {
 
 describe('YeaftDebugPanel store actions', () => {
   it('opens turn-scoped panel with loading status and issues a detail fetch', () => {
+    store.workbenchExpanded = true;
+    store.workbenchMaximized = true;
+
     store.openYeaftTurnDebug({ sessionId: 'session-1', turnId: 'turn-abc' });
 
+    expect(store.workbenchExpanded).toBe(false);
+    expect(store.workbenchMaximized).toBe(false);
     expect(store.yeaftDebugPanel.open).toBe(true);
     expect(store.yeaftDebugPanel.status).toBe('loading');
     expect(store.yeaftDebugPanel.agentId).toBe('agent-1');
@@ -61,6 +66,23 @@ describe('YeaftDebugPanel store actions', () => {
       dreamLimit: 5,
       detailTurnId: 'turn-abc',
     });
+  });
+
+  it('closes debug when Workbench opens', () => {
+    store.yeaftDebugPanel = {
+      open: true,
+      status: 'idle',
+      requestId: null,
+      agentId: 'agent-1',
+      sessionId: 'session-1',
+      turnId: null,
+      error: null,
+    };
+
+    store.toggleWorkbench();
+
+    expect(store.workbenchExpanded).toBe(true);
+    expect(store.yeaftDebugPanel.open).toBe(false);
   });
 
   it('uses the Session owner rather than a stale page-level Agent pointer', () => {

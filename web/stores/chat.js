@@ -3117,6 +3117,8 @@ export const useChatStore = defineStore('chat', {
     openYeaftTurnDebug({ sessionId = null, turnId = null } = {}) {
       const targetAgentId = resolveAgentIdForSession(this, sessionId);
       if (!targetAgentId) return;
+      this.workbenchExpanded = false;
+      this.workbenchMaximized = false;
       const requestId = `dbgpanel_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
       // Turn-scoped entries flip to loading until the detail response arrives.
       const status = turnId ? 'loading' : 'idle';
@@ -8071,6 +8073,7 @@ export const useChatStore = defineStore('chat', {
       this.workbenchExpanded = !this.workbenchExpanded;
       if (this.workbenchExpanded) {
         this.activeRightPanel = null;
+        this.closeYeaftDebugPanel();
       } else {
         this.workbenchMaximized = false;
       }

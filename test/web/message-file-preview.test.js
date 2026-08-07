@@ -71,7 +71,9 @@ describe('message file preview', () => {
 
     expect(filesTab).toContain('treeInitiallyVisible');
     expect(filesTab).toContain("'tree-collapsed': !treeVisible");
-    expect(filesTab).toContain('@click="treeVisible = !treeVisible"');
+    expect(filesTab).toContain('class="vscode-action-btn file-tree-collapse-btn"');
+    expect(filesTab).toContain('class="file-tree-collapsed-rail"');
+    expect(filesTab).not.toContain('class="file-tree-toggle"');
     expect(readWeb('components/files/wsHandler.js')).toContain('pendingRevealLines.set(nPath, line)');
     expect(workbench).toContain('<FilesTab');
     expect(workbench).toContain(':tree-initially-visible="false"');
