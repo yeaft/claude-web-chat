@@ -185,6 +185,7 @@ describe('Sandbox Settings contract', () => {
     expect(component).toContain('this.sandboxIdempotencyKey(action)');
     expect(component).toContain("this.clearSandboxIdempotencyKey('create')");
     expect(component).toContain('this.clearSandboxIdempotencyKey(action)');
+    expect(component).toContain("body.code === 'SANDBOX_OWNER_INACTIVE'");
     expect(component).not.toContain("'Idempotency-Key': crypto.randomUUID()");
   });
 

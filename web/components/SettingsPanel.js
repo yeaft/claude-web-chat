@@ -853,7 +853,10 @@ export default {
         const body = await response.json();
         if (!response.ok) {
           this.clearSandboxIdempotencyKey('create');
-          throw new Error(body.code || 'SANDBOX_CREATE_FAILED');
+          const code = body.code === 'SANDBOX_OWNER_INACTIVE'
+            ? 'SANDBOX_ACTION_FAILED'
+            : (body.code || 'SANDBOX_CREATE_FAILED');
+          throw new Error(code);
         }
         this.clearSandboxIdempotencyKey('create');
         this.sandboxSnapshot = body.snapshot;
@@ -886,7 +889,10 @@ export default {
         const body = await response.json();
         if (!response.ok) {
           this.clearSandboxIdempotencyKey(action);
-          throw new Error(body.code || 'SANDBOX_ACTION_FAILED');
+          const code = body.code === 'SANDBOX_OWNER_INACTIVE'
+            ? 'SANDBOX_ACTION_FAILED'
+            : (body.code || 'SANDBOX_ACTION_FAILED');
+          throw new Error(code);
         }
         this.clearSandboxIdempotencyKey(action);
         this.sandboxSnapshot = body.snapshot;
