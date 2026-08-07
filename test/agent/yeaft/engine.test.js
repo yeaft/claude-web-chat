@@ -6868,6 +6868,82 @@ describe('Engine', () => {
       });
     });
 
+    it('revokes automatic and explicit Skill prompt content at the next tool-loop request', async () => {
+      const skillManager = {
+        has: name => ['automatic-skill', 'explicit-skill'].includes(name),
+        list: () => [
+          { name: 'automatic-skill', description: 'Automatic skill' },
+          { name: 'explicit-skill', description: 'Explicit skill' },
+        ],
+        get: name => ({ name }),
+        resolve: name => ({ name }),
+        view: name => ({ name }),
+        findRelevant: () => [{ name: 'automatic-skill', description: 'Automatic skill' }],
+        getPromptContent: name => name === 'automatic-skill'
+          ? 'SENSITIVE_AUTOMATIC_SKILL_CONTENT'
+          : 'SENSITIVE_EXPLICIT_SKILL_CONTENT',
+      };
+
+      for (const testCase of [
+        {
+          name: 'automatic',
+          prompt: 'use the automatic skill',
+          secret: 'SENSITIVE_AUTOMATIC_SKILL_CONTENT',
+        },
+        {
+          name: 'explicit',
+          prompt: '/skill:explicit-skill use the explicit skill',
+          secret: 'SENSITIVE_EXPLICIT_SKILL_CONTENT',
+        },
+      ]) {
+        const adapter = new MockAdapter();
+        adapter.pushResponse([
+          { type: 'tool_call', id: `refresh-${testCase.name}`, name: 'save_plugin_policy', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        adapter.pushResponse([
+          { type: 'text_delta', text: 'policy refreshed' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          skillManager,
+        });
+        engine.registerTool({
+          name: 'save_plugin_policy',
+          description: 'Disable all Skills for the active Agent',
+          parameters: { type: 'object', properties: {} },
+          execute: async () => {
+            engine.refreshConfig({
+              model: 'test-model',
+              maxOutputTokens: 1024,
+              plugins: { skills: [] },
+            });
+            return 'saved';
+          },
+        });
+
+        const events = [];
+        for await (const event of engine.query({ prompt: testCase.prompt })) events.push(event);
+
+        expect(adapter.callLog).toHaveLength(2);
+        expect(adapter.callLog[0].system).toContain(testCase.secret);
+        expect(adapter.callLog[1].system).not.toContain(testCase.secret);
+        if (testCase.name === 'explicit') {
+          expect(adapter.callLog[1].system).toContain('Skill command error');
+          expect(events.filter(event => event.type === 'skill_loaded' && event.skill.name === 'explicit-skill'))
+            .toHaveLength(1);
+          expect(events.filter(event => event.type === 'skill_error' && event.skillName === 'explicit-skill'))
+            .toHaveLength(1);
+        } else {
+          expect(events.filter(event => event.type === 'skill_loaded' && event.skill.name === 'automatic-skill'))
+            .toHaveLength(1);
+        }
+      }
+    });
+
   });
 
   describe('active scope in system prompt', () => {
