@@ -22,12 +22,15 @@ describe('message file preview', () => {
   it('decorates file links and standalone inline-code references without touching code blocks', () => {
     const html = decorateMessageFileReferences([
       '<a href="docs/design-doc.md#L119">design doc</a>',
+      '<a class="existing" href="docs/notes.md">notes</a>',
       '<a href="https://example.test">web</a>',
       '<code>web/components/WorkbenchPanel.js:1</code>',
       '<pre><code>web/components/FilesTab.js:17</code></pre>',
     ].join(' '));
 
     expect(html).toContain('href="docs/design-doc.md#L119" class="message-file-reference"');
+    expect(html).toContain('class="existing message-file-reference" href="docs/notes.md"');
+    expect(html).not.toMatch(/<a[^>]*\bclass=[^>]*\bclass=/);
     expect(html).toContain('<a href="web/components/WorkbenchPanel.js:1" class="message-file-reference"');
     expect(html).toContain('<a href="https://example.test">web</a>');
     expect(html).toContain('<pre><code>web/components/FilesTab.js:17</code></pre>');

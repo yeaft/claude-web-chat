@@ -69,6 +69,9 @@ export function decorateMessageFileReferences(html) {
   if (typeof html !== 'string' || !html) return html || '';
   const markedLinks = html.replace(/<a\s+([^>]*?href=(['"])(.*?)\2[^>]*)>/gi, (match, attrs, _quote, href) => {
     if (!resolveMessageFileReference(href) || /\bmessage-file-reference\b/.test(attrs)) return match;
+    if (/\bclass\s*=/.test(attrs)) {
+      return `<a ${attrs.replace(/\bclass=(['"])(.*?)\1/i, (_classMatch, quote, classes) => `class=${quote}${classes} message-file-reference${quote}`)}>`;
+    }
     return `<a ${attrs} class="message-file-reference">`;
   });
 
