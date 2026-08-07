@@ -1173,8 +1173,12 @@ export class WorkItemRunner {
       runTools,
       operationLifecycle,
     });
+    // Agent Plugins govern normal Session runtimes in this MVP. Work Center
+    // owns separate control-plane tools and lifecycle, so forwarding the Agent
+    // policy here could hide SubmitWorkItemPlan and other required run tools.
+    const { plugins: _plugins, ...workCenterBaseConfig } = runtime.config;
     const config = {
-      ...runtime.config,
+      ...workCenterBaseConfig,
       model: resolvedModel.model,
       // WorkItem model policy is part of the frozen execution contract. The
       // Agent-level fallback would silently execute a different model while
