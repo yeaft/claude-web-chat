@@ -36,7 +36,6 @@ const STOP_WORDS = new Set([
   '当前', '状态', '任务', '工作', '工作项', '待办', '下一步', '完成', '合并',
   '评审', '发布', '标签', '记忆', '主题', '阻塞', '正在', '上下文', '最新',
 ]);
-
 /**
  * Extract keywords from a prompt (pure rules, no LLM).
  *

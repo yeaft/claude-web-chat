@@ -262,6 +262,7 @@ export function formatPickedForInjection(picked) {
  * @property {number}         [pickLimit]          Max picked segments (default 8)
  * @property {boolean}        [uniqueScopes]       Pick only the best hit per scope
  * @property {boolean}        [canonicalOnly]      Search canonical content records only
+ * @property {string[]}       [strictScopes]       Additional scopes that require multiple distinct query-term matches
  * @property {boolean}        [fallbackOnEmpty]    Include bounded recent scoped segments when FTS has no hits
  * @property {number}         [fallbackPerScope]   Max fallback segments per scope
  */
@@ -359,6 +360,7 @@ export function runMemoryPreflow(index, opts) {
     pickLimit: opts.pickLimit,
     uniqueScopes: opts.uniqueScopes === true,
     canonicalOnly: opts.canonicalOnly === true,
+    strictScopes: opts.strictScopes,
   });
 
   let fallbackUsed = false;
@@ -396,6 +398,7 @@ export function runMemoryPreflow(index, opts) {
       ftsQuery: result.ftsQuery,
       pickedTokens: result.pickedTokens,
       droppedCount: result.droppedCount,
+      droppedByRelevance: result.droppedByRelevance || 0,
       hitCount: (result.hits || []).length,
       fallbackUsed,
     },

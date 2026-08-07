@@ -1486,7 +1486,7 @@ export class Engine {
    * without injection.
    *
    * @param {string} prompt
-   * @param {{ sessionId?: string, vpId?: string, extraScopes?: string[] }} [ctx]
+   * @param {{ sessionId?: string, vpId?: string, extraScopes?: string[], strictScopes?: string[] }} [ctx]
    * @returns {Promise<{ profile: string, entries: object[], formatted: string }|null>}
    */
   async #recallMemory(prompt, ctx = {}) {
@@ -1499,6 +1499,7 @@ export class Engine {
         chatId: ctx.chatId || this.#chatId,
         vpId: ctx.vpId,
         extraScopes: ctx.extraScopes,
+        strictScopes: ctx.strictScopes,
         pickLimit: resolveMemoryRecallLimit(this.#config),
         uniqueScopes: true,
         canonicalOnly: true,
@@ -2300,11 +2301,8 @@ export class Engine {
     const projectScopesForMemory = Array.isArray(projectSessionIds)
       ? projectSessionIds.flatMap(id => [
           `sessions/${id}`,
-          `sessions/${id}/user`,
           `session/${id}`,
-          `session/${id}/user`,
           `group/${id}`,
-          `group/${id}/user`,
         ])
       : [];
     const recallResult = await this.#recallMemory(prompt, {
@@ -2313,6 +2311,10 @@ export class Engine {
         ? vpPersona.vpId
         : (typeof senderVpId === 'string' ? senderVpId : undefined),
       extraScopes: [...topicScopesForMemory, ...projectScopesForMemory],
+      // Global user memory and Project siblings are much broader than the
+      // active Session. A single generic OR-FTS hit must not pull an entire
+      // historical content.md into the provider prompt.
+      strictScopes: ['user', ...projectScopesForMemory],
     });
     recallEntryCount = recallResult && Array.isArray(recallResult.entries)
       ? recallResult.entries.length
