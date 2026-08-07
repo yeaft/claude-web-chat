@@ -116,9 +116,6 @@ export default {
         @open-group-settings="openSessionSettings"
       />
 
-      <!-- Workbench Panel (between sidebar and main) -->
-      <WorkbenchPanel v-if="canUseWorkbench" />
-
       <WorkCenterPage v-if="store.workCenterOpen" />
 
       <!-- Center Conversation. The Session status pane is rendered as a
@@ -159,10 +156,13 @@ export default {
             :search-open="historySearchOpen"
             :loading-more-history="store.yeaftManualHistoryRefreshLoading"
             :session-status-visible="sessionStatusVisible"
+            :workbench-visible="store.workbenchExpanded"
+            :can-use-workbench="canUseWorkbench"
             :show-page-reload="isMobile"
             @toggle-search="toggleHistorySearch"
             @reload-messages="reloadMessages"
             @toggle-session-status="toggleSessionStatus"
+            @toggle-workbench="toggleWorkbench"
             @reload-page="reloadPage"
           />
         </div>
@@ -172,11 +172,8 @@ export default {
           ref="historySearchRef"
           :outline-state="historyOutlineState"
           :search-state="store.yeaftHistorySearchState"
-          :sender-options="historySenderOptions"
           :active-message-id="historySearchActiveMessageId"
           @query="onHistorySearchQuery"
-          @sender="onHistorySenderChange"
-          @sender-invalid="onHistorySenderInvalid"
           @move="historySearchActiveMessageId = $event"
           @preview="previewHistorySearchResult"
           @select="selectHistorySearchResult"
@@ -438,6 +435,8 @@ export default {
         </div><!-- /.yeaft-main-center -->
       </div>
 
+      <WorkbenchPanel v-if="canUseWorkbench" />
+
       <!-- Session status pane: announcement + VP roster + background tasks.
            It sits to the right of the conversation and to the left of debug. -->
       <VpTimelinePane
@@ -559,16 +558,6 @@ export default {
     const historySearchOpen = Vue.ref(false);
     const historySearchActiveMessageId = Vue.ref(null);
     const historyOutlineState = Vue.computed(() => store.getYeaftHistoryOutlineState());
-    const historySenderOptions = Vue.computed(() => {
-      const gs = sessionsStore();
-      const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || null;
-      const session = sessionId ? resolveTimelineSession(gs, sessionId, store.currentAgent || null) : null;
-      const roster = Array.isArray(session?.roster) ? session.roster : [];
-      return [
-        { key: 'user', label: $t('yeaft.outline.you') },
-        ...roster.map(vpId => ({ key: `vp:${vpId}`, label: vpStore.vpLabel(vpId) })),
-      ];
-    });
     const historySearchQuery = Vue.ref(store.yeaftHistorySearchState?.query || '');
     let historySearchTimer = null;
     const sessionsStore = () => {
@@ -583,10 +572,7 @@ export default {
         sessionId: store.yeaftActiveSessionFilter || gs?.activeSessionId || null,
       };
     };
-    const rememberedHistorySender = () => loadHistorySenderPreference({
-      ...historySearchIdentity(),
-      validKeys: historySenderOptions.value.map(option => option.key),
-    });
+    const rememberedHistorySender = () => DEFAULT_HISTORY_SENDER;
     const resetHistorySearchState = (senderKey = '') => {
       const { agentId, sessionId } = historySearchIdentity();
       store.yeaftHistorySearchState = {
@@ -755,8 +741,25 @@ export default {
         localStorage.setItem(SESSION_STATUS_VISIBLE_KEY, sessionStatusVisible.value ? '1' : '0');
       } catch (_) {}
     };
-    const toggleSessionStatus = () => setSessionStatusVisible(!sessionStatusVisible.value);
+    const toggleSessionStatus = () => {
+      const nextVisible = !sessionStatusVisible.value;
+      if (nextVisible) {
+        if (store.workbenchExpanded) store.toggleWorkbench();
+        store.closeYeaftDebugPanel();
+      }
+      setSessionStatusVisible(nextVisible);
+    };
     const closeSessionStatus = () => setSessionStatusVisible(false);
+    const toggleWorkbench = () => {
+      if (!store.workbenchExpanded) closeSessionStatus();
+      store.toggleWorkbench();
+    };
+    Vue.watch(debugMode, (open) => {
+      if (open) closeSessionStatus();
+    }, { flush: 'sync' });
+    Vue.watch(() => store.workbenchExpanded, (open) => {
+      if (open) closeSessionStatus();
+    }, { flush: 'sync' });
     const TIMELINE_MIN_WIDTH = 220;
     const TIMELINE_DEFAULT_WIDTH = 280;
     const savedTimelineWidth = (() => {
@@ -845,8 +848,7 @@ export default {
       historySearchQuery.value = '';
       resetHistorySearchState(senderKey);
       historySearchOpen.value = true;
-      store.loadYeaftHistoryOutline();
-      if (senderKey) store.searchYeaftHistory('', { senderKey });
+      store.searchYeaftHistory('', { senderKey });
       Vue.nextTick(() => historySearchRef.value?.focus?.());
     };
     const toggleHistorySearch = () => {
@@ -865,20 +867,8 @@ export default {
         store.searchYeaftHistory(historySearchQuery.value, { senderKey: store.yeaftHistorySearchState.senderKey });
       }, 220);
     };
-    const onHistorySenderChange = (senderKey) => {
-      if (historySearchTimer) clearTimeout(historySearchTimer);
-      historySearchTimer = null;
-      historySearchActiveMessageId.value = null;
-      saveHistorySenderPreference({ ...historySearchIdentity(), senderKey });
-      store.searchYeaftHistory(historySearchQuery.value, { senderKey });
-    };
-    const onHistorySenderInvalid = () => {
-      saveHistorySenderPreference({ ...historySearchIdentity(), senderKey: DEFAULT_HISTORY_SENDER });
-      historySearchActiveMessageId.value = null;
-      store.searchYeaftHistory(historySearchQuery.value, { senderKey: DEFAULT_HISTORY_SENDER });
-    };
     const loadOlderHistoryOutline = (scrollSnapshot) => {
-      if (!store.loadYeaftHistoryOutline({ append: true })) return;
+      if (!store.searchYeaftHistory('', { append: true, senderKey: DEFAULT_HISTORY_SENDER })) return;
       const stop = Vue.watch(
         () => historyOutlineState.value.loading,
         loading => {
@@ -1625,12 +1615,9 @@ export default {
       historySearchOpen,
       historySearchActiveMessageId,
       historyOutlineState,
-      historySenderOptions,
       toggleHistorySearch,
       closeHistorySearch,
       onHistorySearchQuery,
-      onHistorySenderChange,
-      onHistorySenderInvalid,
       loadOlderHistoryOutline,
       loadMoreHistorySearchResults,
       previewHistorySearchResult,
@@ -1715,6 +1702,7 @@ export default {
       sessionStatusVisible,
       toggleSessionStatus,
       closeSessionStatus,
+      toggleWorkbench,
       timelineWidthStyle,
       startTimelineResize,
       onEditVpFromTimeline,

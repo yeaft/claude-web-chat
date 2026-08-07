@@ -22,10 +22,8 @@ import {
   yeaftPersistedMessageIdentity,
 } from '../yeaft-history-identity.js';
 import {
-  countResidentYeaftHistoryTurns,
   isDurableYeaftHistoryRow,
   pruneYeaftHistoryCache,
-  YEAFT_HISTORY_MAX_TURNS,
 } from '../yeaft-history-cache.js';
 import { commitYeaftHistoryPage } from '../yeaft-history-pagination.js';
 import { conversationRepositoryFor } from '../conversation-repository.js';
@@ -918,6 +916,7 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           toolName: 'TodoWrite',
           toolInput: { todos },
           timestamp,
+          startTime: timestamp || 0,
           sessionId: rowSessionId,
           turnId,
           ...executionOriginMeta,
@@ -941,6 +940,7 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           toolName: toolCall.name || 'unknown',
           toolInput: toolCall.input || {},
           timestamp,
+          startTime: timestamp || 0,
           sessionId: rowSessionId,
           turnId,
           ...executionOriginMeta,
@@ -1056,9 +1056,6 @@ export function handleYeaftHistoryChunk(store, msg) {
         preserveLiveRows: true,
         preserveSessionOwner: true,
       });
-    }
-    if (typeof store.removeYeaftHistoryBrowserCache === 'function') {
-      void store.removeYeaftHistoryBrowserCache(identityAgentId, msgSessionId);
     }
   }
 
@@ -1205,16 +1202,6 @@ export function handleYeaftHistoryChunk(store, msg) {
           : nextLatest,
         syncingAfterSeq: null,
       };
-  const residentTurnCount = countResidentYeaftHistoryTurns(store, convId, msgSessionId);
-  if (residentTurnCount >= YEAFT_HISTORY_MAX_TURNS && nextState.hasMore) {
-    // 500 turns is the user-visible Session ceiling. Keep the server frontier in
-    // metadata for diagnostics, but expose no extra pagination work past it.
-    nextState = {
-      ...nextState,
-      hasMore: false,
-      retentionLimitReached: true,
-    };
-  }
   if (msg.requestId && typeof store.finishYeaftHistoryLoad === 'function') {
     store.finishYeaftHistoryLoad(msg, nextState, 'chunk');
   } else if (store.yeaftSessionHistoryState) {
@@ -1222,12 +1209,6 @@ export function handleYeaftHistoryChunk(store, msg) {
       ...store.yeaftSessionHistoryState,
       [sessionKey]: nextState,
     };
-  }
-  // Commit rows and their authoritative cursors as one browser snapshot. Taking
-  // this snapshot before finishYeaftHistoryLoad persisted the previous latest /
-  // oldest frontier beside the new rows and made cold reloads repeat pages.
-  if (typeof store.persistYeaftHistoryBrowserCache === 'function') {
-    void store.persistYeaftHistoryBrowserCache(msgSessionId, sessionAgentId, convId);
   }
   if (mode === 'delta' && msg.hasMoreAfter === true
       && Number.isFinite(nextState.latestSeq)

@@ -1,5 +1,3 @@
-import ModernSelect from './ModernSelect.js';
-
 function parseHistoryTime(value) {
   const timestamp = typeof value === 'number' ? value : Date.parse(value || '');
   return Number.isFinite(timestamp) ? timestamp : null;
@@ -41,22 +39,12 @@ export function sortHistoryResultsNewest(results) {
 
 export default {
   name: 'YeaftConversationOutline',
-  components: { ModernSelect },
   props: {
     outlineState: { type: Object, required: true },
     searchState: { type: Object, required: true },
-    senderOptions: { type: Array, default: () => [] },
     activeMessageId: { type: String, default: null },
   },
-  emits: ['query', 'sender', 'sender-invalid', 'select', 'move', 'preview', 'load-older', 'load-more-search', 'close'],
-  computed: {
-    senderSelectOptions() {
-      return [
-        { value: '', label: this.$t('yeaft.outline.allSenders') },
-        ...this.senderOptions.map(option => ({ value: option.key, label: option.label })),
-      ];
-    },
-  },
+  emits: ['query', 'select', 'move', 'preview', 'load-older', 'load-more-search', 'close'],
   template: `
     <section id="yeaft-conversation-outline" class="yeaft-conversation-outline" :aria-label="$t('yeaft.outline.label')">
       <div class="yeaft-conversation-outline-header">
@@ -80,15 +68,6 @@ export default {
           />
           <span v-if="searchState.loading" class="yeaft-conversation-outline-status">{{ $t('yeaft.outline.searching') }}</span>
         </div>
-        <ModernSelect
-          class="yeaft-conversation-outline-sender"
-          :model-value="searchState.senderKey || ''"
-          :options="senderSelectOptions"
-          :aria-label="$t('yeaft.outline.sender')"
-          :menu-min-width="180"
-          menu-class="yeaft-conversation-outline-sender-menu"
-          @change="$emit('sender', $event)"
-        />
       </div>
       <div
         ref="listRef"
@@ -140,14 +119,6 @@ export default {
       Array.from(String(props.searchState.query || '').trim()).length > 0
       || !!props.searchState.senderKey
     ));
-    Vue.watch(
-      () => props.senderOptions.map(option => option.key),
-      validKeys => {
-        const senderKey = props.searchState.senderKey || '';
-        if (senderKey && !validKeys.includes(senderKey)) emit('sender-invalid');
-      },
-      { flush: 'sync' },
-    );
     const visibleResults = Vue.computed(() => sortHistoryResultsNewest(
       isSearching.value ? props.searchState.results : props.outlineState.results,
     ));

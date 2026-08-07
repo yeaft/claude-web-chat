@@ -377,61 +377,6 @@ describe('message flow regressions', () => {
     expect(kept.some(row => row.id === 'user-1')).toBe(false);
   });
 
-  it('schedules one idle background page and de-duplicates the Session timer', async () => {
-    const store = useChatStore();
-    const sessionId = 'session-prefetch';
-    const agentId = 'agent-prefetch';
-    const conversationId = 'yeaft-prefetch';
-    const sessionKey = yeaftHistoryIdentityKey(agentId, sessionId);
-    store.currentView = 'yeaft';
-    store.currentAgent = agentId;
-    store.yeaftConversationId = conversationId;
-    store.yeaftConversationIdsByAgent = { [agentId]: conversationId };
-    store.yeaftSessionAgentById = { [sessionId]: agentId };
-    store.yeaftActiveSessionFilter = sessionId;
-    store.messagesMap = {
-      [conversationId]: [
-        { id: 'm0100', messageId: 'm0100', seq: 100, type: 'user', content: 'q', sessionId, isHistory: true },
-        { id: 'm0101', messageId: 'm0101', seq: 101, type: 'assistant', content: 'a', sessionId, isHistory: true },
-      ],
-    };
-    store.yeaftHistoryCacheState = {
-      [sessionKey]: { ranges: [{ startSeq: 100, endSeq: 101 }], rangeEpoch: 1 },
-    };
-    store.yeaftSessionHistoryState = {
-      [sessionKey]: {
-        loaded: true, loading: false, hasMore: true, serverHasMore: true,
-        oldestSeq: 100, serverOldestFetchedSeq: 100, latestSeq: 101,
-      },
-    };
-    const idleCallbacks = [];
-    vi.stubGlobal('requestIdleCallback', callback => {
-      idleCallbacks.push(callback);
-      return idleCallbacks.length;
-    });
-    const sent = [];
-    store.sendWsMessage = message => { sent.push(message); return true; };
-
-    expect(store.scheduleYeaftHistoryPrefetch(sessionId, agentId)).toBe(true);
-    expect(store.scheduleYeaftHistoryPrefetch(sessionId, agentId)).toBe(false);
-    expect(idleCallbacks).toHaveLength(1);
-    idleCallbacks[0]();
-
-    expect(sent).toEqual([expect.objectContaining({
-      type: 'yeaft_load_more_history',
-      agentId,
-      sessionId,
-      beforeSeq: 100,
-      turns: 50,
-    })]);
-    expect(store.yeaftSessionHistoryState[sessionKey]).toMatchObject({
-      loading: true,
-      mode: 'prefetch',
-      background: true,
-    });
-    vi.unstubAllGlobals();
-  });
-
   it('drops oversized live debug detail from legacy Agent events', async () => {
     const { useChatStore } = await import('../../web/stores/chat.js');
     const store = useChatStore();
@@ -3644,7 +3589,6 @@ describe('message flow regressions', () => {
         store.yeaftSessionHistoryState = { [deletedSessionKey]: { loaded: true } };
         store.yeaftHistoryCacheState = { [deletedSessionKey]: { ranges: [[1, 2]] } };
         store.yeaftMessageWindowState = { [deletedSessionKey]: { visibleTurns: 20 } };
-        store._yeaftHistoryBrowserHydrationBySession = { [deletedSessionKey]: 'stale-token' };
         store._yeaftHistoryLoad = null;
         store.yeaftSessionHydrateRequestId = null;
         store.sendWsMessage = vi.fn(() => true);
@@ -3693,7 +3637,6 @@ describe('message flow regressions', () => {
           expect(store.yeaftSessionHistoryState[deletedSessionKey]).toBeUndefined();
           expect(store.yeaftHistoryCacheState[deletedSessionKey]).toBeUndefined();
           expect(store.yeaftMessageWindowState[deletedSessionKey]).toBeUndefined();
-          expect(store._yeaftHistoryBrowserHydrationBySession[deletedSessionKey]).toBeUndefined();
         }
         store.pendingAgentSelection = null;
         store.agentSwitching = false;
@@ -4687,9 +4630,8 @@ describe('message flow regressions', () => {
       .filter(msg => msg.type === 'yeaft_load_history');
     expect(firstYeaftLoads).toHaveLength(1);
     expect(firstYeaftLoads[0]).toMatchObject({
-      agentId: 'agent-a', sessionId: 'session-a', afterSeq: 7,
+      agentId: 'agent-a', sessionId: 'session-a', limit: 5,
     });
-    expect(firstYeaftLoads[0]).not.toHaveProperty('limit');
     expect(store.isSessionHistorySyncing(yeaftDescriptor.routeRef)).toBe(true);
     expect(store.openCatalogSession(yeaftDescriptor)).toBe(true);
     expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_load_history')).toHaveLength(1);

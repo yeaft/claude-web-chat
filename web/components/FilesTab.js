@@ -11,8 +11,23 @@ import { createWsHandler } from './files/wsHandler.js';
 
 export default {
   name: 'FilesTab',
+  props: {
+    treeInitiallyVisible: { type: Boolean, default: true },
+  },
   template: `
-    <div class="files-tab file-two-col" :class="{ 'mobile-editor-view': isMobile && mobileView === 'editor' }" ref="rootEl">
+    <div class="files-tab file-two-col" :class="{ 'mobile-editor-view': isMobile && mobileView === 'editor', 'tree-collapsed': !treeVisible }" ref="rootEl">
+      <div class="file-tree-collapsed-rail" v-if="!treeVisible">
+        <button
+          type="button"
+          class="file-tree-expand-btn"
+          @click="treeVisible = true"
+          :title="$t('files.showTree')"
+          :aria-label="$t('files.showTree')"
+          aria-expanded="false"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2zm10 14H4V8h16v10z"/></svg>
+        </button>
+      </div>
       <!-- 左栏: 层级目录树 -->
       <div class="file-col-tree" :class="{ 'drop-active': externalDropActive }" :style="{ flex: '0 0 ' + treePanelWidth + 'px', transition: isTreeResizing ? 'none' : undefined, fontSize: fontSize + 'px' }" @wheel.ctrl.prevent="onWheel"
         @dragover.prevent="onTreeDragOver($event)"
@@ -30,6 +45,17 @@ export default {
             @blur="cancelTreePathEdit"
             class="tree-path-input"
           />
+          <button
+            type="button"
+            class="vscode-action-btn file-tree-collapse-btn"
+            @mousedown.prevent
+            @click.stop="treeVisible = false"
+            :title="$t('files.hideTree')"
+            :aria-label="$t('files.hideTree')"
+            aria-expanded="true"
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+          </button>
         </div>
         <!-- VS Code 风格 Header: 正常模式 -->
         <div class="file-tree-header vscode-header" v-else>
@@ -56,6 +82,16 @@ export default {
                 <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>
               </button>
             </div>
+            <button
+              type="button"
+              class="vscode-action-btn file-tree-collapse-btn"
+              @click.stop="treeVisible = false"
+              :title="$t('files.hideTree')"
+              :aria-label="$t('files.hideTree')"
+              aria-expanded="true"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+            </button>
           </div>
         </div>
         <!-- 文件选中操作 -->
@@ -439,9 +475,10 @@ export default {
       </div>
     </div>
   `,
-  setup() {
+  setup(props) {
     const store = Pinia.useChatStore();
     const t = Vue.inject('t');
+    const treeVisible = Vue.ref(props.treeInitiallyVisible);
 
     // --- Shared utilities ---
     const getEffectiveWorkDir = () => store.effectiveWorkDir || '';
@@ -599,6 +636,7 @@ export default {
       store, normalizePath, getEffectiveWorkDir,
       openFiles: tabs.openFiles,
       activeFileIndex: tabs.activeFileIndex,
+      setTreeVisible: visible => { treeVisible.value = !!visible; },
       activeFile: tabs.activeFile,
       fileLoading: tabs.fileLoading,
       fileSaving: tabs.fileSaving,
@@ -746,6 +784,7 @@ export default {
 
     return {
       store, debugStatus: editor.debugStatus, rootEl,
+      treeVisible,
       isMobile, mobileView, mobileGoBack,
       fontSize, zoomIn, zoomOut, onWheel,
       treePath: tree.treePath, treeRootPath: tree.treeRootPath,

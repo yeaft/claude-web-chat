@@ -96,6 +96,9 @@ describe('MessageList virtualization wiring', () => {
     expect(source).toContain('const continueLoadMoreIfStillNearTop = (beforeSnapshot) => {');
     expect(source).toContain('containerRef.value.clientHeight || 0,');
     expect(source).toContain('{ allowContinuation: true },');
+    expect(source).toContain('const finishLoadMore = () => {');
+    expect(source).not.toContain('const prevScrollHeight = containerRef.value.scrollHeight;');
+    expect(source).not.toContain('containerRef.value.scrollTop = newScrollHeight - prevScrollHeight + prevScrollTop;');
   });
 
 

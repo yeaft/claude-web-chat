@@ -1119,6 +1119,10 @@
   overflow: hidden;
 }
 
+.yeaft-main.workbench-maximized > .yeaft-main-center {
+  display: none;
+}
+
 /* task-345: align header padding + title/count sizes to Chat right-panel tokens
    (expert-panel-header / subagent-panel-header: padding 12px 16px; title 14/600; count 12px). */
 .yeaft-debug-header {

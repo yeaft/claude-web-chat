@@ -6,12 +6,6 @@ import {
   bindWorkCenterBrowserOwner,
   clearWorkCenterBrowserOwner,
 } from './helpers/work-center-browser-state.js';
-import {
-  bindYeaftHistoryBrowserOwner,
-  clearYeaftHistoryBrowserOwner,
-  currentYeaftHistoryBrowserFence,
-} from './helpers/yeaft-history-browser-cache.js';
-
 const { defineStore } = Pinia;
 
 function clearYeaftHistoryMemory() {
@@ -23,24 +17,17 @@ function clearYeaftHistoryMemory() {
   }
 }
 
-function normalizeOwnerId(value) {
-  const normalized = String(value || '').trim();
-  return normalized || null;
-}
-
-function transitionYeaftHistoryOwner(ownerId, transition) {
-  const previousOwnerId = normalizeOwnerId(currentYeaftHistoryBrowserFence()?.ownerId);
-  const nextOwnerId = normalizeOwnerId(ownerId);
-  if (previousOwnerId !== nextOwnerId) clearYeaftHistoryMemory();
-  return transition(nextOwnerId);
-}
+let activeYeaftHistoryOwnerId = null;
 
 function bindYeaftHistoryOwner(ownerId) {
-  return transitionYeaftHistoryOwner(ownerId, bindYeaftHistoryBrowserOwner);
+  const nextOwnerId = String(ownerId || '').trim() || null;
+  if (activeYeaftHistoryOwnerId !== nextOwnerId) clearYeaftHistoryMemory();
+  activeYeaftHistoryOwnerId = nextOwnerId;
 }
 
 function clearYeaftHistoryOwner() {
-  return transitionYeaftHistoryOwner(null, () => clearYeaftHistoryBrowserOwner());
+  clearYeaftHistoryMemory();
+  activeYeaftHistoryOwnerId = null;
 }
 
 const SESSION_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
@@ -797,9 +784,11 @@ export const useAuthStore = defineStore('auth', {
           localStorage.setItem('authToken', freshToken);
         }
         if (profile?.role) this.role = profile.role;
+        const previousUserId = this.userId;
         this.userId = profile?.userId || null;
         bindWorkCenterBrowserOwner(this.userId);
-        bindYeaftHistoryOwner(this.userId);
+        if (previousUserId !== this.userId) clearYeaftHistoryMemory();
+        activeYeaftHistoryOwnerId = this.userId;
         return true;
       } catch (err) {
         console.warn('[Auth] Session refresh failed:', err.message || err);
@@ -894,9 +883,7 @@ export const useAuthStore = defineStore('auth', {
       if (failedGeneration !== this.authGeneration) return false;
       const activeToken = this.token || localStorage.getItem('authToken') || null;
       if (failedToken !== activeToken) return false;
-      void this.clearStoredSession(error).catch((cleanupError) => {
-        console.error('Browser history cleanup failed:', cleanupError);
-      });
+      this.clearStoredSession(error);
       return false;
     },
 
@@ -1048,7 +1035,7 @@ export const useAuthStore = defineStore('auth', {
      */
     reset() {
       clearWorkCenterBrowserOwner();
-      const historyCleanup = clearYeaftHistoryOwner();
+      clearYeaftHistoryOwner();
       this.authGeneration += 1;
       this.stopSessionRefresh();
       this.isAuthenticated = false;
@@ -1064,7 +1051,6 @@ export const useAuthStore = defineStore('auth', {
       this.qrCode = null;
       this.error = null;
       this.loading = false;
-      return historyCleanup;
     }
   }
 });

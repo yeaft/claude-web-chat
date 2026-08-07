@@ -27,6 +27,9 @@ export default {
         <span class="compact-message">{{ statusBannerMessage }}</span>
       </div>
       <div class="header-right" v-if="effectiveConvId">
+        <button v-if="canWorkbench" class="header-action-btn" :class="{ active: store.workbenchExpanded }" @click="store.toggleWorkbench()" :title="$t('chat.sidebar.workbench')" :aria-label="$t('chat.sidebar.workbench')" :aria-expanded="store.workbenchExpanded ? 'true' : 'false'">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M20 3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H4V5h16v14zM6 7h5v2H6V7zm0 4h5v2H6v-2zm0 4h5v2H6v-2zm7-8h5v10h-5V7z"/></svg>
+        </button>
         <!-- Page reload — always visible top-right, full window.location.reload() -->
         <button class="header-action-btn" @click="reloadPage" :title="$t('chatHeader.reloadPage')">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -141,6 +144,7 @@ export default {
     const canCompact = Vue.computed(() => capOn('compact'));
     const canClear   = Vue.computed(() => capOn('clear'));
     const canExpert  = Vue.computed(() => capOn('expert'));
+    const canWorkbench = Vue.computed(() => capOn('file_editor') || capOn('terminal'));
     const canMcp     = Vue.computed(() => capOn('mcp'));
 
     const headerTitle = Vue.computed(() => {
@@ -343,6 +347,6 @@ export default {
       document.removeEventListener('click', closeMcpOnOutsideClick);
     });
 
-    return { store, effectiveConvId, effectiveRightPanel, isClaudeCode, canCompact, canClear, canExpert, canMcp, headerTitle, showStatusBanner, statusBannerClass, statusBannerSpinner, statusBannerMessage, contextUsage, contextColorClass, contextLabel, isRefreshing, isCompacting, isClearing, canRefresh, refreshSession, reloadPage, compactContext, clearMessages, mcpBtnRef, mcpDropdownStyle, mcpEnabledCount, currentConvNeedRestart, toggleMcpPanel, toggleMcpServer, toggleExpertPanel, toggleSubAgentPanel, runningSubagentCount };
+    return { store, effectiveConvId, effectiveRightPanel, isClaudeCode, canCompact, canClear, canExpert, canWorkbench, canMcp, headerTitle, showStatusBanner, statusBannerClass, statusBannerSpinner, statusBannerMessage, contextUsage, contextColorClass, contextLabel, isRefreshing, isCompacting, isClearing, canRefresh, refreshSession, reloadPage, compactContext, clearMessages, mcpBtnRef, mcpDropdownStyle, mcpEnabledCount, currentConvNeedRestart, toggleMcpPanel, toggleMcpServer, toggleExpertPanel, toggleSubAgentPanel, runningSubagentCount };
   }
 };

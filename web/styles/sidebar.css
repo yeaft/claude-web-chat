@@ -1300,8 +1300,12 @@
   min-width: 0;
 }
 
-/* When workbench is maximized, hide conversation area */
-.main-content.workbench-maximized {
+/* When the right-side workbench is maximized, hide only the conversation
+   column; the panel itself is now a child of main-content. */
+.main-content.workbench-maximized > .chat-header,
+.main-content.workbench-maximized > .chat-body > .chat-body-main,
+.main-content.workbench-maximized > .chat-body > .expert-panel,
+.main-content.workbench-maximized > .chat-body > .subagent-panel {
   display: none !important;
 }
 
