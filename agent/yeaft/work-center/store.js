@@ -3823,6 +3823,17 @@ export class WorkItemStore {
           finalResult.outputs.push({ ...output, runId });
         }
       }
+      const requiredOutputKind = {
+        workspace_files: 'file',
+        pull_request: 'pr',
+        merge: 'commit',
+      }[workItem.deliveryTarget];
+      if (!requiredOutputKind) {
+        throw new Error('WorkItem delivery target must be confirmed before completion');
+      }
+      if (!finalResult.outputs.some(output => output.kind === requiredOutputKind)) {
+        throw new Error(`WorkItem completion requires a canonical ${requiredOutputKind} output for delivery target ${workItem.deliveryTarget}`);
+      }
       for (const [index, acceptanceResult] of finalResult.acceptanceResults.entries()) {
         const provesCriterion = acceptanceResult.evidenceRunIds.some(runId => (
           canonicalRuns.get(runId)?.acceptanceChecks?.[index]?.criterion === criteria[index]

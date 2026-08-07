@@ -490,7 +490,7 @@ export function normalizeCoordinatorResponse(value, detail, options = {}) {
         kind,
         reason,
         question: cleanText(source.question, COORDINATOR_MAX_REPLY_CHARS, 'human question'),
-        contractPatch: dynamic ? normalizeContractPatch(source.contractPatch) : null,
+        contractPatch: dynamic && options.automatic !== true ? normalizeContractPatch(source.contractPatch) : null,
         guidance: [],
         actions: [],
       },

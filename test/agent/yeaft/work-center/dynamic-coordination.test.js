@@ -27,6 +27,7 @@ function workItem(overrides = {}) {
     title: 'Ship a durable dynamic loop',
     goal: 'Let the Coordinator create only currently justified Actions',
     acceptanceCriteria: ['Actions are dynamic', 'Completion is evidence-backed'],
+    deliveryTarget: 'workspace_files',
     workflowSnapshot: resolveDynamicActionPolicySnapshot({}, 'software-change'),
     ...overrides,
   };
@@ -269,6 +270,7 @@ describe('Work Center dynamic coordination contract', () => {
     controller.submit(claimedAction.run.id, 'runner-owner', claimedAction.run.leaseEpoch, {
       outcome: 'completed', summary: 'Dynamic loop implemented',
       evidence: [{ kind: 'text', label: 'focused tests passed' }],
+      outputs: [{ kind: 'file', label: 'Implementation', ref: 'src/dynamic-loop.js' }],
       acceptanceChecks: [
         { criterion: 'Actions are dynamic', status: 'passed', evidence: 'focused tests passed' },
         { criterion: 'Completion is evidence-backed', status: 'passed', evidence: 'focused tests passed' },
@@ -665,6 +667,7 @@ describe('Work Center dynamic coordination contract', () => {
     controller.submit(replacementClaim.run.id, 'runner-owner', replacementClaim.run.leaseEpoch, {
       outcome: 'completed', summary: 'Canonical result produced',
       evidence: [{ kind: 'file', label: 'Design', ref: 'docs/design.md' }],
+      outputs: [{ kind: 'file', label: 'Design', ref: 'docs/design.md' }],
       acceptanceChecks: workItem().acceptanceCriteria.map(criterion => ({
         criterion, status: 'passed', evidence: 'docs/design.md',
       })),
@@ -983,7 +986,7 @@ describe('Work Center dynamic coordination contract', () => {
   });
 
   it('requires a human decision when the delivery boundary is ambiguous', () => {
-    const detail = workItem({ actions: [], runs: [] });
+    const detail = workItem({ deliveryTarget: null, actions: [], runs: [] });
     expect(() => normalizeCoordinatorResponse({
       reply: 'I will start coding.',
       decision: {
@@ -1006,6 +1009,23 @@ describe('Work Center dynamic coordination contract', () => {
       },
     }, detail, { automatic: true, availableVpIds: ['linus'] });
     expect(question.decision.kind).toBe('request_human');
+    expect(normalizeCoordinatorResponse({
+      reply: 'I inferred a pull request.',
+      decision: {
+        kind: 'request_human', reason: 'Confirmation is required.',
+        question: 'Should I open a pull request?',
+        contractPatch: { deliveryTarget: 'pull_request' },
+      },
+    }, detail, { automatic: true, availableVpIds: ['linus'] }).decision.contractPatch).toBeNull();
+    expect(normalizeCoordinatorResponse({
+      reply: 'You selected a pull request.',
+      decision: {
+        kind: 'request_human', reason: 'Persist the user-confirmed boundary.',
+        question: 'Proceed with the confirmed pull request boundary?',
+        contractPatch: { deliveryTarget: 'pull_request' },
+      },
+    }, detail, { automatic: false, availableVpIds: ['linus'] }).decision.contractPatch)
+      .toEqual({ deliveryTarget: 'pull_request' });
   });
 
   it('requires canonical owned Run evidence for every completion criterion', () => {
