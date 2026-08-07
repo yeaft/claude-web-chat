@@ -39,9 +39,15 @@ export default {
             Files
           </button>
           <div class="wb-tab-spacer"></div>
-          <button class="wb-tab-action" @click="store.toggleWorkbenchMaximized()" :title="store.workbenchMaximized ? $t('workbench.restore') : $t('workbench.maximize')">
-            <svg v-if="!store.workbenchMaximized" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 8.41L6.58 12 3 15.59 4.41 17l5-5-5-5L3 8.41zM8 6h13v2H8V6zm3 5h10v2H11v-2zm-3 5h13v2H8v-2z"/></svg>
-            <svg v-else viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M21 15.59L17.42 12 21 8.41 19.59 7l-5 5 5 5L21 15.59zM3 6h13v2H3V6zm0 5h10v2H3v-2zm0 5h13v2H3v-2z"/></svg>
+          <button
+            type="button"
+            class="wb-tab-action workbench-maximize-btn"
+            @click="store.toggleWorkbenchMaximized()"
+            :title="store.workbenchMaximized ? $t('workbench.restore') : $t('workbench.maximize')"
+            :aria-label="store.workbenchMaximized ? $t('workbench.restore') : $t('workbench.maximize')"
+          >
+            <svg v-if="!store.workbenchMaximized" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zM5 10h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+            <svg v-else viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>
           </button>
           <button class="wb-tab-action" @click="store.toggleWorkbench()" :title="$t('workbench.collapse')">
             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>

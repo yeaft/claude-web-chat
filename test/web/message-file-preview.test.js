@@ -110,6 +110,8 @@ describe('message file preview', () => {
     expect(filesTab).toContain('treeInitiallyVisible');
     expect(filesTab).toContain("'tree-collapsed': !treeVisible");
     expect(filesTab.match(/class="vscode-action-btn file-tree-collapse-btn"/g)).toHaveLength(2);
+    expect(filesTab.match(/d="M8\.59 16\.59 13\.17 12 8\.59 7\.41 10 6l6 6-6 6z"/g)).toHaveLength(2);
+    expect(filesTab).not.toContain('d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"');
     expect(filesTab).toContain('class="file-tree-collapsed-rail"');
     expect(filesTab).not.toContain('class="file-tree-toggle"');
     const filesCss = readWeb('styles/files.css');
@@ -127,11 +129,18 @@ describe('message file preview', () => {
     expect(filesTab).toContain('startWidth - (clientX - startX)');
     expect(workbench).toContain('<FilesTab');
     expect(workbench).toContain(':tree-initially-visible="false"');
+    expect(workbench).toContain('class="wb-tab-action workbench-maximize-btn"');
+    expect(workbench).toContain(':aria-label="store.workbenchMaximized ? $t(\'workbench.restore\') : $t(\'workbench.maximize\')"');
+    expect(workbench).toContain('d="M7 14H5v5h5v-2H7v-3z');
+    expect(workbench).toContain('d="M5 16h3v3h2v-5H5v2z');
     expect(readWeb('stores/chat.js')).toContain('else Vue.nextTick(dispatchOpen);');
     expect(chatPage.indexOf('<WorkbenchPanel')).toBeGreaterThan(chatPage.indexOf('<div class="chat-body"'));
     expect(chatHeader).toContain("$t('chat.sidebar.workbench')");
     expect(yeaftActions).toContain("@click=\"$emit('toggle-workbench')\"");
     expect(yeaftPage.indexOf('<WorkbenchPanel')).toBeGreaterThan(yeaftPage.indexOf('<div class="yeaft-main"'));
+    const yeaftCss = readWeb('styles/yeaft.css');
+    expect(yeaftCss).toMatch(/\.yeaft-main\.workbench-maximized\s*\{[^}]*display:\s*none;/s);
+    expect(yeaftCss).not.toContain('.yeaft-main.workbench-maximized > .yeaft-main-center');
     expect(yeaftSidebar).not.toContain('@click="onToggleWorkbench"');
   });
 });
