@@ -406,7 +406,7 @@ function normalizeGuidance(value, detail) {
   }
   const dynamic = isDynamicWorkItem(detail);
   const active = (detail.actions || [])
-    .filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status));
+    .filter(action => !['completed', 'closed', 'superseded', 'cancelled'].includes(action.status));
   const activeByReference = new Map(active.map(action => [dynamic ? action.id : action.stageId, action]));
   const stageReferences = coordinatorStageReferences(detail);
   const seen = new Set();

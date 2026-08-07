@@ -3172,7 +3172,7 @@ export class WorkItemStore {
         coordinatorRevision: detail.coordinatorRevision,
         status: detail.status,
         actionFence: coordinatorActionFence(
-          (detail.actions || []).filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status)),
+          (detail.actions || []).filter(action => !['completed', 'closed', 'superseded', 'cancelled'].includes(action.status)),
         ),
         recovery: assistant.recovery ? { ...assistant.recovery } : null,
         automatic: assistant.automatic === true,
@@ -3237,7 +3237,7 @@ export class WorkItemStore {
           coordinatorRevision,
           status: workItem.status,
           actionFence: coordinatorActionFence(
-            (detail.actions || []).filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status)),
+            (detail.actions || []).filter(action => !['completed', 'closed', 'superseded', 'cancelled'].includes(action.status)),
           ),
           automatic: true,
           claim: {
@@ -3433,7 +3433,7 @@ export class WorkItemStore {
       const decision = result?.decision || {};
       const now = this.now();
       const activeActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
-        AND status NOT IN ('completed', 'superseded', 'cancelled') ORDER BY sequence`).all(workItem.id).map(mapAction);
+        AND status NOT IN ('completed', 'closed', 'superseded', 'cancelled') ORDER BY sequence`).all(workItem.id).map(mapAction);
       if (coordinatorActionFence(activeActions) !== expected.actionFence) {
         throw new Error('WorkItem Actions changed while the Coordinator was responding; send the message again');
       }
@@ -5196,7 +5196,7 @@ export class WorkItemStore {
         ...trigger,
         ledgerRevision: detail.ledgerRevision,
         actionIds: (detail.actions || [])
-          .filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status))
+          .filter(action => !['completed', 'closed', 'superseded', 'cancelled'].includes(action.status))
           .map(action => action.id),
       },
     }, `dynamic:reconcile:${workItemId}:${detail.ledgerRevision}`);
