@@ -81,12 +81,23 @@ export function sliceYeaftMessagesByRecentTurns(messages = [], visibleTurns = DE
 }
 
 function messageMatchesSession(msg, sessionId) {
-  if (!msg || msg._historyWindowPrefetched === true) return false;
+  if (!msg || msg._historyWindowPrefetched === true || msg._historyWindowDetached === true) return false;
   if (!sessionId) return true;
   return (msg.sessionId ?? msg.groupId) === sessionId;
 }
 
-export function sliceScopedYeaftMessagesByRecentTurns(messages = [], sessionId = null, visibleTurns = DEFAULT_VISIBLE_TURNS) {
+function messageMatchesFocusedWindow(msg, sessionId, focusWindowKey) {
+  if (!msg || !focusWindowKey || msg._historyWindowKey !== focusWindowKey) return false;
+  if (!sessionId) return true;
+  return (msg.sessionId ?? msg.groupId) === sessionId;
+}
+
+export function sliceScopedYeaftMessagesByRecentTurns(
+  messages = [],
+  sessionId = null,
+  visibleTurns = DEFAULT_VISIBLE_TURNS,
+  focusWindowKey = null,
+) {
   const safeTurns = Math.max(1, Number.isFinite(visibleTurns) ? Math.floor(visibleTurns) : DEFAULT_VISIBLE_TURNS);
   const scoped = [];
   const spans = [];
@@ -99,7 +110,9 @@ export function sliceScopedYeaftMessagesByRecentTurns(messages = [], sessionId =
   };
 
   for (const msg of messages) {
-    if (!messageMatchesSession(msg, sessionId)) continue;
+    if (focusWindowKey) {
+      if (!messageMatchesFocusedWindow(msg, sessionId, focusWindowKey)) continue;
+    } else if (!messageMatchesSession(msg, sessionId)) continue;
     const i = scoped.length;
     scoped.push(msg);
 

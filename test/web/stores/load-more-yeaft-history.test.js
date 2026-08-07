@@ -843,7 +843,7 @@ describe('Yeaft conversation loading state', () => {
     ]);
   });
 
-  it('schedules the next bounded background page after a committed recent chunk', () => {
+  it('does not mutate the visible transcript with automatic older-page prefetch', () => {
     const scheduleYeaftHistoryPrefetch = vi.fn();
     const store = mkStore({
       scheduleYeaftHistoryPrefetch,
@@ -864,7 +864,9 @@ describe('Yeaft conversation loading state', () => {
       hasMore: true,
     });
 
-    expect(scheduleYeaftHistoryPrefetch).toHaveBeenCalledWith('g1', 'agent-1');
+    expect(scheduleYeaftHistoryPrefetch).not.toHaveBeenCalled();
+    expect(store.yeaftSessionHistoryState[yeaftHistoryIdentityKey('agent-1', 'g1')])
+      .toMatchObject({ hasMore: true, oldestSeq: 100 });
   });
 
   it('stops background scheduling once 500 complete turns are resident', () => {
