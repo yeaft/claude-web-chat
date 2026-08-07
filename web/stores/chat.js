@@ -8113,7 +8113,15 @@ export const useChatStore = defineStore('chat', {
     },
 
     openFileInExplorer(filePath, { hideTree = false, line = null } = {}) {
-      if (!this.currentConversation || !this.hasCapability('file_editor')) return false;
+      const route = this.activeSessionRoute;
+      const agentId = route?.agentId || this.currentAgent || null;
+      const conversationId = route?.runtimeProvider === 'yeaft'
+        ? resolveYeaftConversationIdForSession(this, route.sessionId, agentId)
+        : this.currentConversation;
+      const canOpenFiles = agentId === this.currentAgent
+        ? this.hasCapability('file_editor')
+        : agentHasCapability(this, agentId, 'file_editor');
+      if (!agentId || !conversationId || !canOpenFiles) return false;
       const path = typeof filePath === 'string' ? filePath.trim() : '';
       if (!path) return false;
       const wasExpanded = this.workbenchExpanded;
@@ -8122,7 +8130,9 @@ export const useChatStore = defineStore('chat', {
       const dispatchOpen = () => window.dispatchEvent(new CustomEvent('open-file-in-explorer', {
         detail: {
           filePath: path,
-          conversationId: this.currentConversation,
+          agentId,
+          conversationId,
+          workDir: this.effectiveWorkDir || '',
           hideTree: !!hideTree,
           line: Number.isFinite(line) && line > 0 ? line : null,
         }

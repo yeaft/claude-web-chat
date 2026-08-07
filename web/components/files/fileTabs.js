@@ -45,7 +45,8 @@ export function createFileTabs(store, {
         files: openFiles.value.map(f => ({
           path: f.path, name: f.name, content: f.content,
           originalContent: f.originalContent, isDirty: f.isDirty,
-          fileType: f.fileType
+          fileType: f.fileType, agentId: f.agentId,
+          conversationId: f.conversationId, workDir: f.workDir
         })),
         activeIndex: activeFileIndex.value
       };
@@ -81,9 +82,14 @@ export function createFileTabs(store, {
     });
   };
 
-  function openFileInTab(fullPath, name) {
+  function openFileInTab(fullPath, name, route = {}) {
     const nPath = normalizePath(fullPath);
-    const existingIndex = openFiles.value.findIndex(f => f.path === nPath);
+    const agentId = route.agentId || store.currentAgent || null;
+    const conversationId = route.conversationId || store.currentConversation || '_explorer';
+    const workDir = route.workDir || getEffectiveWorkDir();
+    const existingIndex = openFiles.value.findIndex(f => f.path === nPath
+      && (!f.agentId || f.agentId === agentId)
+      && (!f.conversationId || f.conversationId === conversationId));
     if (existingIndex >= 0) {
       if (activeFileIndex.value !== existingIndex) {
         clearFindMarkers();
@@ -102,7 +108,8 @@ export function createFileTabs(store, {
     const displayName = name || nPath.split(/[/\\]/).pop();
     const fileType = getFileType(displayName);
     openFiles.value.push({
-      path: nPath, name: displayName, content: null, originalContent: null,
+      path: nPath, name: displayName, agentId, conversationId, workDir,
+      content: null, originalContent: null,
       isDirty: false, cmInstance: null, fileType,
       blobUrl: null, previewUrl: null,
       previewLoading: fileType !== 'text', localPreviewReady: false, previewError: null
@@ -113,12 +120,16 @@ export function createFileTabs(store, {
     saveTabsState(store.currentConversation);
 
     debugStatus.value = `Loading: ${fullPath}`;
+    const requestId = route.requestId || `file-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const openedFile = openFiles.value[activeFileIndex.value];
+    if (openedFile) openedFile.requestId = requestId;
     store.sendWsMessage({
       type: 'read_file',
-      conversationId: store.currentConversation || '_explorer',
-      agentId: store.currentAgent,
+      conversationId,
+      agentId,
+      requestId,
       filePath: fullPath,
-      workDir: getEffectiveWorkDir(),
+      workDir,
       _clientId: store.clientId
     });
   }
@@ -184,15 +195,19 @@ export function createFileTabs(store, {
 
   function saveFile() {
     const file = activeFile.value;
-    if (!file || !file.isDirty) return;
+    if (!file || !file.isDirty || file.pendingSaveRequestId) return;
     fileSaving.value = true;
+    const requestId = `file-save-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    file.pendingSaveRequestId = requestId;
+    file.pendingSaveContent = file.content;
     store.sendWsMessage({
       type: 'write_file',
-      conversationId: store.currentConversation || '_explorer',
-      agentId: store.currentAgent,
+      conversationId: file.conversationId || store.currentConversation || '_explorer',
+      agentId: file.agentId || store.currentAgent,
+      requestId,
       filePath: file.path,
       content: file.content,
-      workDir: getEffectiveWorkDir(),
+      workDir: file.workDir || getEffectiveWorkDir(),
       _clientId: store.clientId
     });
   }
