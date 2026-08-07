@@ -6,7 +6,7 @@ import ctx from '../context.js';
 import { resolveAndValidatePath, BINARY_EXTENSIONS } from './utils.js';
 
 export async function handleReadFile(msg) {
-  const { conversationId, filePath, _requestUserId } = msg;
+  const { conversationId, filePath, requestId, _requestUserId, _requestClientId } = msg;
   console.log('[Agent] handleReadFile received:', { filePath, conversationId, workDir: msg.workDir });
   const conv = ctx.conversations.get(conversationId);
   const workDir = msg.workDir || conv?.workDir || ctx.CONFIG.workDir;
@@ -23,7 +23,9 @@ export async function handleReadFile(msg) {
       ctx.sendToServer({
         type: 'file_content',
         conversationId,
+        requestId,
         _requestUserId,
+        _requestClientId,
         filePath: resolved,
         requestedFilePath: filePath,
         content: buffer.toString('base64'),
@@ -57,7 +59,9 @@ export async function handleReadFile(msg) {
       ctx.sendToServer({
         type: 'file_content',
         conversationId,
+        requestId,
         _requestUserId,
+        _requestClientId,
         filePath: resolved,
         requestedFilePath: filePath,
         content,
@@ -68,7 +72,9 @@ export async function handleReadFile(msg) {
     ctx.sendToServer({
       type: 'file_content',
       conversationId,
+      requestId,
       _requestUserId,
+      _requestClientId,
       filePath,
       requestedFilePath: filePath,
       content: '',

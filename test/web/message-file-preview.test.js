@@ -125,7 +125,7 @@ describe('message file preview', () => {
     expect(mobileCss).toMatch(/\.file-two-col\.tree-collapsed \.file-col-tree\s*\{[^}]*display:\s*flex;/s);
     const wsHandler = readWeb('components/files/wsHandler.js');
     expect(wsHandler).toContain('pendingRevealLines.set(nPath, line)');
-    expect(wsHandler.match(/msg\.requestedFilePath \|\| msg\.filePath/g)).toHaveLength(2);
+    expect(wsHandler).toContain('normalizePath(msg.requestedFilePath || msg.filePath)');
     expect(readWeb('../agent/workbench/file-ops.js').match(/requestedFilePath: filePath/g)).toHaveLength(3);
     expect(filesCss).toMatch(/\.file-tree-collapsed-rail\s*\{[^}]*order:\s*4;[^}]*border-left:/s);
     expect(filesCss).toMatch(/\.file-col-tree\s*\{[^}]*order:\s*3;/s);

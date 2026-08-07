@@ -52,16 +52,19 @@ export function createWsHandler({
         break;
       }
       case 'file_content': {
+        const nFilePath = normalizePath(msg.requestedFilePath || msg.filePath);
+        const responseTab = openFiles.value.find(f => f.path === nFilePath
+          && (!f.agentId || !msg.agentId || f.agentId === msg.agentId)
+          && (!f.conversationId || !msg.conversationId || f.conversationId === msg.conversationId));
+        if (!responseTab || (responseTab.requestId && msg.requestId && msg.requestId !== responseTab.requestId)) return;
         fileLoading.value = false;
         if (msg.error) {
           debugStatus.value = `Error: ${msg.error}`;
           ops.clearPendingDownload();
-          const errFilePath = normalizePath(msg.requestedFilePath || msg.filePath);
-          const errTab = openFiles.value.find(f => f.path === errFilePath);
-          if (errTab) { errTab.previewLoading = false; errTab.previewError = msg.error; }
+          responseTab.previewLoading = false;
+          responseTab.previewError = msg.error;
           return;
         }
-        const nFilePath = normalizePath(msg.requestedFilePath || msg.filePath);
 
         // Handle pending download
         if (ops.getPendingDownload() && normalizePath(ops.getPendingDownload()) === nFilePath) {
@@ -176,12 +179,19 @@ export function createWsHandler({
   };
 
   const handleOpenFile = (event) => {
-    const { filePath: path, hideTree = false, line = null } = event.detail || {};
+    const {
+      filePath: path,
+      agentId = store.currentAgent,
+      conversationId = store.currentConversation,
+      workDir = getEffectiveWorkDir(),
+      hideTree = false,
+      line = null,
+    } = event.detail || {};
     const nPath = normalizePath(path);
-    if (!nPath) return;
+    if (!nPath || !agentId || !conversationId) return;
     if (hideTree && typeof setTreeVisible === 'function') setTreeVisible(false);
     if (Number.isFinite(line) && line > 0) pendingRevealLines.set(nPath, line);
-    openFileInTab(nPath, nPath.split('/').pop());
+    openFileInTab(nPath, nPath.split('/').pop(), { agentId, conversationId, workDir });
     revealLine(activeFile.value, line);
   };
 

@@ -26,10 +26,51 @@ describe('Agent file terminal forwarding', () => {
     previewFiles.clear();
   });
 
+  it('routes an open event with its frozen Agent and conversation identity', () => {
+    globalThis.Vue = Vue;
+    const openFileInTab = vi.fn();
+    const handler = createWsHandler({
+      store: { currentConversation: 'new-conversation', currentAgent: 'agent-b' },
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/workspace',
+      openFiles: Vue.ref([]),
+      activeFileIndex: Vue.ref(-1),
+      activeFile: Vue.ref(null),
+      fileLoading: Vue.ref(false),
+      fileSaving: Vue.ref(false),
+      saveTabsState: vi.fn(),
+      createEditor: vi.fn(),
+      openFileInTab,
+      tree: { handleDirectoryListing: vi.fn() },
+      setTreeVisible: vi.fn(),
+      fp: { handleFolderPickerListing: vi.fn() },
+      qo: {},
+      ops: { getPendingDownload: () => null, clearPendingDownload: vi.fn() },
+      mdPreviewMode: Vue.ref(false),
+      renderOfficeLocal: vi.fn(),
+      editorContainer: Vue.ref(null),
+      debugStatus: Vue.ref(''),
+    }).handleOpenFile;
+
+    handler(new CustomEvent('open-file-in-explorer', { detail: {
+      filePath: 'docs/design.md',
+      agentId: 'agent-a',
+      conversationId: 'yeaft-agent-a',
+      workDir: '/agent-a/project',
+    } }));
+
+    expect(openFileInTab).toHaveBeenCalledWith('docs/design.md', 'design.md', {
+      agentId: 'agent-a',
+      conversationId: 'yeaft-agent-a',
+      workDir: '/agent-a/project',
+    });
+  });
+
   it('preserves the requested path when projecting a binary file response', async () => {
     await handleAgentFileTerminal('agent-1', {}, {
       type: 'file_content',
       conversationId: 'session-1',
+      requestId: 'file-request-1',
       filePath: '/workspace/docs/diagram.png',
       requestedFilePath: 'docs/diagram.png',
       content: Buffer.from('image').toString('base64'),
@@ -41,6 +82,8 @@ describe('Agent file terminal forwarding', () => {
     const [, , forwarded] = forwardToClients.mock.calls[0];
     expect(forwarded).toMatchObject({
       type: 'file_content',
+      agentId: 'agent-1',
+      requestId: 'file-request-1',
       filePath: '/workspace/docs/diagram.png',
       requestedFilePath: 'docs/diagram.png',
       binary: true,
@@ -55,6 +98,9 @@ describe('Agent file terminal forwarding', () => {
       path: 'docs/diagram.png',
       name: 'diagram.png',
       fileType: 'image',
+      agentId: 'agent-1',
+      conversationId: 'session-1',
+      requestId: 'file-request-1',
       previewLoading: true,
       previewError: null,
       blobUrl: null,
@@ -84,6 +130,12 @@ describe('Agent file terminal forwarding', () => {
     }).handleWorkbenchMessage;
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({ blob: async () => new Blob(['image']) });
     const createObjectUrl = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:preview');
+
+    handle(new CustomEvent('workbench-message', { detail: { ...forwarded, agentId: 'agent-2' } }));
+    handle(new CustomEvent('workbench-message', { detail: { ...forwarded, conversationId: 'session-2' } }));
+    handle(new CustomEvent('workbench-message', { detail: { ...forwarded, requestId: 'stale-request' } }));
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(relativeTab.previewLoading).toBe(true);
 
     handle(new CustomEvent('workbench-message', { detail: forwarded }));
     await vi.waitFor(() => expect(relativeTab.blobUrl).toBe('blob:preview'));

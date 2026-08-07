@@ -81,9 +81,13 @@ export function createFileTabs(store, {
     });
   };
 
-  function openFileInTab(fullPath, name) {
+  function openFileInTab(fullPath, name, route = {}) {
     const nPath = normalizePath(fullPath);
-    const existingIndex = openFiles.value.findIndex(f => f.path === nPath);
+    const agentId = route.agentId || store.currentAgent || null;
+    const conversationId = route.conversationId || store.currentConversation || '_explorer';
+    const existingIndex = openFiles.value.findIndex(f => f.path === nPath
+      && (!f.agentId || f.agentId === agentId)
+      && (!f.conversationId || f.conversationId === conversationId));
     if (existingIndex >= 0) {
       if (activeFileIndex.value !== existingIndex) {
         clearFindMarkers();
@@ -102,7 +106,8 @@ export function createFileTabs(store, {
     const displayName = name || nPath.split(/[/\\]/).pop();
     const fileType = getFileType(displayName);
     openFiles.value.push({
-      path: nPath, name: displayName, content: null, originalContent: null,
+      path: nPath, name: displayName, agentId, conversationId,
+      content: null, originalContent: null,
       isDirty: false, cmInstance: null, fileType,
       blobUrl: null, previewUrl: null,
       previewLoading: fileType !== 'text', localPreviewReady: false, previewError: null
@@ -113,12 +118,16 @@ export function createFileTabs(store, {
     saveTabsState(store.currentConversation);
 
     debugStatus.value = `Loading: ${fullPath}`;
+    const requestId = route.requestId || `file-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const openedFile = openFiles.value[activeFileIndex.value];
+    if (openedFile) openedFile.requestId = requestId;
     store.sendWsMessage({
       type: 'read_file',
-      conversationId: store.currentConversation || '_explorer',
-      agentId: store.currentAgent,
+      conversationId,
+      agentId,
+      requestId,
       filePath: fullPath,
-      workDir: getEffectiveWorkDir(),
+      workDir: route.workDir || getEffectiveWorkDir(),
       _clientId: store.clientId
     });
   }
