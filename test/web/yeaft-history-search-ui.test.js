@@ -30,9 +30,10 @@ describe('Yeaft conversation outline UI', () => {
     expect(actions).toContain(":aria-label=\"$t('yeaft.historySearch.button')\"");
     expect(actions).not.toContain('<path d="M4 6h2"/>');
     expect(page).toContain('<YeaftConversationOutline');
-    expect(page).toContain('store.loadYeaftHistoryOutline()');
-    expect(store).toContain("type: 'yeaft_load_history_outline'");
-    expect(store).toContain('limit: 50');
+    expect(page).toContain("store.searchYeaftHistory('', { senderKey })");
+    expect(page).toContain("const DEFAULT_HISTORY_SENDER = 'user'");
+    expect(store).toContain("type: 'yeaft_search_history'");
+    expect(store).toContain('limit: 20');
     expect(store).toContain('if (!append && previous.loaded && !force) return true');
     expect(page).toContain('historySearchQuery.value = query');
     expect(page).toContain('store.searchYeaftHistory(historySearchQuery.value, { senderKey: store.yeaftHistorySearchState.senderKey })');
@@ -61,12 +62,9 @@ describe('Yeaft conversation outline UI', () => {
     expect(panel).toContain('restoreOlderScroll');
     expect(panel).toContain("$t('yeaft.outline.placeholder')");
     expect(css).toMatch(/\.yeaft-conversation-outline-toolbar\s*\{[\s\S]*?display: flex;[\s\S]*?align-items: center;/);
-    expect(css).toMatch(/\.yeaft-conversation-outline-sender\s*\{[\s\S]*?min-width: 112px;[\s\S]*?max-width: 148px;/);
-    expect(panel).toContain(':menu-min-width="180"');
-    expect(css).toMatch(/\.yeaft-conversation-outline-sender-menu\s*\{[\s\S]*?font-size: 12px;/);
+    expect(panel).not.toContain('ModernSelect');
+    expect(panel).not.toContain('sender-options');
     expect(modalCss).toContain('select.modern-select {');
-    expect(modalCss).toContain('select.modern-select:focus {');
-    expect(modalCss).not.toMatch(/(^|\n)\.modern-select\s*\{/);
   });
 
   it('negotiates outline and search support and fails closed for old Agents', () => {

@@ -86,19 +86,10 @@ import {
   sliceScopedYeaftMessagesByRecentTurns,
 } from './helpers/yeaft-message-window.js';
 import {
-  countResidentYeaftHistoryTurns,
   isDurableYeaftHistoryRow,
   pruneConversationMessageRetention,
-  pruneYeaftHistoryCache,
   touchYeaftHistoryCache,
-  YEAFT_HISTORY_MAX_TURNS,
 } from './helpers/yeaft-history-cache.js';
-import {
-  currentYeaftHistoryBrowserFence,
-  readYeaftHistoryBrowserCache,
-  removeYeaftHistoryBrowserCache,
-  writeYeaftHistoryBrowserCache,
-} from './helpers/yeaft-history-browser-cache.js';
 import { planNextYeaftHistoryPage } from './helpers/yeaft-history-pagination.js';
 
 const { defineStore } = Pinia;
@@ -754,12 +745,9 @@ export const useChatStore = defineStore('chat', {
     // VirtualTranscript already limits DOM work; explicit history navigation may
     // still record a larger value here without hiding resident rows on switches.
     yeaftMessageWindowState: {},
-    // Durable Session ranges keyed by Agent + Session. Completed history keeps
-    // at most 500 full turns; optimistic/live rows are never split or dropped.
+    // Resident Session ranges keyed by Agent + Session. These describe only
+    // the small Agent-provided windows in this page; they are not persisted.
     yeaftHistoryCacheState: {},
-    // IndexedDB hydration is best-effort and fenced by user + Agent + Session.
-    // Request tokens prevent a late cache read from changing a newer selection.
-    _yeaftHistoryBrowserHydrationBySession: {},
     // De-dupe metadata-only Yeaft bootstrap requests while waiting for the
     // session_ready replay. Group history requests are de-duped separately by
     // yeaftSessionHistoryState[groupId].loading.
@@ -2926,21 +2914,13 @@ export const useChatStore = defineStore('chat', {
         && !!this.yeaftConversationId
         && Array.isArray(this.messagesMap?.[this.yeaftConversationId])
         && this.messagesMap[this.yeaftConversationId].some(row => row && (row.sessionId ?? row.groupId ?? null) === activeSessionId);
-      let historyHydrationPending = !!this._yeaftHistoryBrowserHydrationBySession?.[sessionKey];
-      if (activeSessionId && targetAgentId && !sessionState?.loaded && !sessionState?.loading
-          && !hasCachedSessionRows && !historyHydrationPending) {
-        historyHydrationPending = true;
-        void this.hydrateYeaftHistoryBrowserCache(activeSessionId, targetAgentId, { revalidate: true });
-      }
       const needHistoryReplay = !!activeSessionId
-        && !historyHydrationPending
         && msgHelpers.shouldReplayYeaftSessionHistory({
           sessionState,
           hasCachedSessionRows,
           force: !!forceHistoryReplay,
         });
       const needHistoryCatchUp = !!activeSessionId
-        && !historyHydrationPending
         && !needHistoryReplay
         && msgHelpers.shouldCatchUpLoadedYeaftSession(sessionState, catchUpHistory);
       if (!needSessionReady && !needHistoryReplay && !needHistoryCatchUp) return false;
@@ -3348,130 +3328,6 @@ export const useChatStore = defineStore('chat', {
       return true;
     },
 
-    hydrateYeaftHistoryBrowserCache(sessionId, agentId = null, { revalidate = false } = {}) {
-      const targetSessionId = sessionId || null;
-      const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
-      const fence = currentYeaftHistoryBrowserFence();
-      if (!fence || !targetAgentId || !targetSessionId) {
-        if (revalidate) this.revalidateYeaftHistoryBrowserCache(targetSessionId, targetAgentId);
-        return Promise.resolve(false);
-      }
-      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
-      const token = `${fence.epoch}:${crypto.randomUUID()}`;
-      this._yeaftHistoryBrowserHydrationBySession = {
-        ...(this._yeaftHistoryBrowserHydrationBySession || {}),
-        [sessionKey]: token,
-      };
-      return readYeaftHistoryBrowserCache({
-        fence,
-        agentId: targetAgentId,
-        sessionId: targetSessionId,
-      }).then((record) => {
-        if (!record || this._yeaftHistoryBrowserHydrationBySession?.[sessionKey] !== token) return false;
-        const conversationId = resolveYeaftConversationIdForSession(this, targetSessionId, targetAgentId);
-        if (!conversationId) return false;
-        msgHelpers.ensureMessageUiKeys(this, conversationId, record.rows);
-        conversationRepositoryFor(this).commitDurable({
-          conversationId,
-          agentId: targetAgentId,
-          sessionId: targetSessionId,
-          rows: record.rows,
-          mode: 'hydrate',
-        });
-        const previous = this.yeaftSessionHistoryState[sessionKey] || {};
-        const latestSeq = Math.max(
-          Number.isFinite(previous.latestSeq) ? previous.latestSeq : -1,
-          Number.isFinite(record.latestSeq) ? record.latestSeq : -1,
-        );
-        this.yeaftSessionHistoryState = {
-          ...this.yeaftSessionHistoryState,
-          [sessionKey]: {
-            ...previous,
-            loaded: true,
-            loading: !!previous.loading,
-            latestSeq: latestSeq >= 0 ? latestSeq : null,
-            streamId: record.streamId || null,
-            revision: Number.isFinite(record.revision) ? record.revision : null,
-            oldestSeq: Number.isFinite(previous.oldestSeq) ? previous.oldestSeq : record.oldestSeq,
-            hasMore: previous.loaded ? !!previous.hasMore : !!record.hasMore,
-            count: Math.max(Number(previous.count) || 0, Number(record.rowCount) || 0),
-            browserCached: true,
-          },
-        };
-        pruneYeaftHistoryCache(this, {
-          conversationId,
-          agentId: targetAgentId,
-          sessionId: targetSessionId,
-          incomingRows: record.rows,
-          activeAgentId: targetAgentId,
-          activeSessionId: targetSessionId,
-        });
-        this.syncActiveYeaftHistoryLoad();
-        if (revalidate) this.revalidateYeaftHistoryBrowserCache(targetSessionId, targetAgentId);
-        return true;
-      }).catch(() => {
-        if (revalidate) this.revalidateYeaftHistoryBrowserCache(targetSessionId, targetAgentId);
-        return false;
-      }).finally(() => {
-        if (this._yeaftHistoryBrowserHydrationBySession?.[sessionKey] !== token) return;
-        const { [sessionKey]: _finished, ...remaining } = this._yeaftHistoryBrowserHydrationBySession;
-        this._yeaftHistoryBrowserHydrationBySession = remaining;
-      });
-    },
-
-    revalidateYeaftHistoryBrowserCache(sessionId, agentId = null) {
-      const targetSessionId = sessionId || null;
-      const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
-      if (!targetAgentId || !targetSessionId || this.currentView !== 'yeaft') return false;
-      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
-      const state = this.yeaftSessionHistoryState?.[sessionKey] || null;
-      if (state?.loading) return false;
-      const latestSeq = Number.isFinite(state?.latestSeq) ? state.latestSeq : null;
-      const mode = latestSeq === null ? 'recent' : 'delta';
-      const historyRequest = this.beginYeaftHistoryLoad({
-        agentId: targetAgentId,
-        sessionId: targetSessionId,
-        mode,
-        preserveLoaded: latestSeq !== null,
-        latestSeq,
-      });
-      if (!historyRequest) return false;
-      const payload = {
-        type: 'yeaft_load_history',
-        agentId: targetAgentId,
-        sessionId: targetSessionId,
-        requestId: historyRequest.requestId,
-        ...(latestSeq === null
-          ? { limit: YEAFT_RECENT_TURNS }
-          : {
-              afterSeq: latestSeq,
-              maxRows: YEAFT_HISTORY_DELTA_ROWS,
-              maxBytes: YEAFT_HISTORY_DELTA_BYTES,
-              ...(typeof state?.streamId === 'string' ? { streamId: state.streamId } : {}),
-              ...(Number.isFinite(state?.revision) ? { revision: state.revision } : {}),
-            }),
-      };
-      if (latestSeq !== null) {
-        this.yeaftSessionHistoryState = {
-          ...this.yeaftSessionHistoryState,
-          [sessionKey]: {
-            ...this.yeaftSessionHistoryState[sessionKey],
-            syncingAfterSeq: latestSeq,
-          },
-        };
-      }
-      if (!this.sendWsMessage(payload)) {
-        failYeaftHistoryLoad(this, {
-          agentId: targetAgentId,
-          sessionId: targetSessionId,
-          requestId: historyRequest.requestId,
-          error: 'history_load_send_failed',
-        });
-        return false;
-      }
-      return true;
-    },
-
     continueYeaftHistoryDelta(sessionId, agentId = null, afterSeq = null) {
       const targetSessionId = sessionId || null;
       const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
@@ -3515,33 +3371,6 @@ export const useChatStore = defineStore('chat', {
         return false;
       }
       return true;
-    },
-
-    persistYeaftHistoryBrowserCache(sessionId, agentId = null, conversationId = null) {
-      const targetSessionId = sessionId || null;
-      const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
-      const fence = currentYeaftHistoryBrowserFence();
-      const targetConversationId = conversationId
-        || resolveYeaftConversationIdForSession(this, targetSessionId, targetAgentId);
-      if (!fence || !targetAgentId || !targetSessionId || !targetConversationId) return Promise.resolve(false);
-      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
-      const rows = conversationRepositoryFor(this).durableRows(
-        targetConversationId,
-        targetSessionId,
-      );
-      return writeYeaftHistoryBrowserCache({
-        fence,
-        agentId: targetAgentId,
-        sessionId: targetSessionId,
-        rows,
-        historyState: this.yeaftSessionHistoryState[sessionKey] || null,
-      });
-    },
-
-    removeYeaftHistoryBrowserCache(agentId, sessionId) {
-      const fence = currentYeaftHistoryBrowserFence();
-      if (!fence || !agentId || !sessionId) return Promise.resolve(true);
-      return removeYeaftHistoryBrowserCache({ fence, agentId, sessionId }).catch(() => false);
     },
 
     clearYeaftHistoryMemory({
@@ -3622,9 +3451,6 @@ export const useChatStore = defineStore('chat', {
       this.yeaftHistoryCacheState = clearMapKey(this.yeaftHistoryCacheState);
       this.yeaftMessageWindowState = clearMapKey(this.yeaftMessageWindowState);
       this.yeaftHistoryFocusWindowBySession = clearMapKey(this.yeaftHistoryFocusWindowBySession);
-      this._yeaftHistoryBrowserHydrationBySession = clearMapKey(
-        this._yeaftHistoryBrowserHydrationBySession,
-      );
       this.yeaftHistoryOutlineBySession = clearMapKey(this.yeaftHistoryOutlineBySession);
       if (sessionKey) {
         const outlineTimeout = this._yeaftHistoryOutlineTimeouts?.[sessionKey];
@@ -5685,39 +5511,15 @@ export const useChatStore = defineStore('chat', {
           // and have no envelope context. Keep these two channels in sync
           // if you change the wire-stamping rule.
           if (gs) gs.applyCrudResult(event, msg.agentId || null);
-          let cacheCleanup = Promise.resolve();
-          if (event.ok && event.op === 'delete' && event.sessionId) {
-            const fence = currentYeaftHistoryBrowserFence();
-            cacheCleanup = (async () => {
-              if (!msg.agentId) throw new Error('Session delete result is missing its Agent owner');
-              if (fence) {
-                const removed = await removeYeaftHistoryBrowserCache({
-                  fence,
-                  agentId: msg.agentId,
-                  sessionId: event.sessionId,
-                });
-                if (!removed) throw new Error('Browser history cache was not removed');
-              }
-              this.clearYeaftHistoryMemory({
-                agentId: msg.agentId,
-                sessionId: event.sessionId,
-              });
-            })();
-            // A timed-out or unsolicited result has no caller awaiting the
-            // Promise, but its physical cleanup must still run.
-            void cacheCleanup.catch((error) => {
-              console.error('Session browser history cleanup failed:', error);
+          if (event.ok && event.op === 'delete' && event.sessionId && msg.agentId) {
+            this.clearYeaftHistoryMemory({
+              agentId: msg.agentId,
+              sessionId: event.sessionId,
             });
           }
           const pending = this._sessionCrudPending && this._sessionCrudPending.get(event.requestId);
           if (pending) {
-            const finish = async () => {
-              let cleanupError = null;
-              try {
-                await cacheCleanup;
-              } catch (error) {
-                cleanupError = error;
-              }
+            const finish = () => {
               if (this._sessionCrudPending?.get(event.requestId) !== pending) return;
               this._sessionCrudPending.delete(event.requestId);
               // fix-yeaft-create-not-opened: the agent's session meta payload
@@ -5739,15 +5541,13 @@ export const useChatStore = defineStore('chat', {
               const resolvedSessionId = event.sessionId || null;
               const resolvedSessionList = event.sessions || null;
               pending.resolve({
-                ok: !!event.ok && !cleanupError,
+                ok: !!event.ok,
                 op: event.op,
                 session: sessionWithAgent,
                 sessionId: resolvedSessionId,
                 sessions: resolvedSessionList,
                 config: event.config || null,
-                error: cleanupError
-                  ? { code: 'browser_cache_cleanup_failed', message: cleanupError.message }
-                  : (event.error || null),
+                error: event.error || null,
               });
             };
             void finish();
@@ -6606,7 +6406,12 @@ export const useChatStore = defineStore('chat', {
         else localStorage.removeItem('lastViewedYeaftSession');
       } catch (_) {}
       this.syncActiveYeaftHistoryLoad();
-      void this.hydrateYeaftHistoryBrowserCache(next, targetAgentId, { revalidate: true });
+      if (next && targetAgentId && !repeatedSelection) {
+        this.requestYeaftSessionBootstrap({
+          forceSessionReady: true,
+          forceHistoryReplay: true,
+        });
+      }
 
     },
     // H2.f.6: setYeaftFeatureReplyThreadId / setYeaftJumpTarget /
@@ -7954,12 +7759,8 @@ export const useChatStore = defineStore('chat', {
       const sessionKey = yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
       const previousState = this.yeaftSessionHistoryState?.[sessionKey] || {};
       if (previousState.loading || !previousState.hasMore) return false;
-      const conversationId = resolveYeaftConversationIdForSession(this, targetSessionId, targetAgentId);
-      const residentTurns = countResidentYeaftHistoryTurns(this, conversationId, targetSessionId);
-      if (residentTurns >= YEAFT_HISTORY_MAX_TURNS) return false;
       const requestedTurns = Math.min(
         50,
-        YEAFT_HISTORY_MAX_TURNS - residentTurns,
         Math.max(1, Number.isFinite(turns) ? Math.floor(turns) : getYeaftWindowLoadStepTurns()),
       );
 
@@ -8022,36 +7823,6 @@ export const useChatStore = defineStore('chat', {
           error: 'history_load_send_failed',
         });
         return false;
-      }
-      return true;
-    },
-
-    scheduleYeaftHistoryPrefetch(sessionId, agentId = null) {
-      const targetSessionId = sessionId || null;
-      const targetAgentId = resolveAgentIdForSession(this, targetSessionId, agentId);
-      if (!targetAgentId || !targetSessionId) return false;
-      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, targetSessionId);
-      if (this._yeaftHistoryPrefetchBySession?.[sessionKey]) return false;
-      const run = () => {
-        const { [sessionKey]: pending, ...remaining } = this._yeaftHistoryPrefetchBySession || {};
-        this._yeaftHistoryPrefetchBySession = remaining;
-        if (pending?.cancelled) return;
-        this.loadMoreYeaftHistory(50, {
-          sessionId: targetSessionId,
-          agentId: targetAgentId,
-          background: true,
-        });
-      };
-      const token = { cancelled: false, handle: null, idle: false };
-      this._yeaftHistoryPrefetchBySession = {
-        ...(this._yeaftHistoryPrefetchBySession || {}),
-        [sessionKey]: token,
-      };
-      if (typeof globalThis.requestIdleCallback === 'function') {
-        token.idle = true;
-        token.handle = globalThis.requestIdleCallback(run, { timeout: 1000 });
-      } else {
-        token.handle = setTimeout(run, 50);
       }
       return true;
     },
