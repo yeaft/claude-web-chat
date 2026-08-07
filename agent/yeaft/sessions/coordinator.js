@@ -79,12 +79,14 @@ export function createCoordinator(group, options = {}) {
       ? input._routingIntent
       : null;
     const isRouteForwardInjection = inputMeta.injectedBy === 'route_forward';
+    const isRouteForwardResultInjection = inputMeta.injectedBy === 'route_forward_result';
     const isTaskResultInjection = inputMeta.injectedBy === 'task_result';
     const fromUser = input.from === 'user'
       || input.role === 'user'
       || isRouteForwardInjection
+      || isRouteForwardResultInjection
       || isTaskResultInjection;
-    const forcedRouteTarget = (isRouteForwardInjection || isTaskResultInjection)
+    const forcedRouteTarget = (isRouteForwardInjection || isRouteForwardResultInjection || isTaskResultInjection)
       && typeof inputMeta.routeTargetVpId === 'string'
       ? inputMeta.routeTargetVpId.trim()
       : (isRouteForwardInjection && typeof inputMeta.routeForwardTarget === 'string'
@@ -243,4 +245,3 @@ function makeEnvelope(msg, meta, trigger, ephemeral = {}) {
  * @property {boolean=}  truncatedAtFanOutCap
  * @property {string=}   skipped
  */
-

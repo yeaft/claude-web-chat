@@ -16,17 +16,18 @@ export default {
   },
   template: `
     <div class="files-tab file-two-col" :class="{ 'mobile-editor-view': isMobile && mobileView === 'editor', 'tree-collapsed': !treeVisible }" ref="rootEl">
-      <button
-        type="button"
-        class="file-tree-toggle"
-        :class="{ active: treeVisible }"
-        @click="treeVisible = !treeVisible"
-        :title="treeVisible ? $t('files.hideTree') : $t('files.showTree')"
-        :aria-label="treeVisible ? $t('files.hideTree') : $t('files.showTree')"
-        :aria-expanded="String(treeVisible)"
-      >
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2zm10 14H4V8h16v10z"/></svg>
-      </button>
+      <div class="file-tree-collapsed-rail" v-if="!treeVisible">
+        <button
+          type="button"
+          class="file-tree-expand-btn"
+          @click="treeVisible = true"
+          :title="$t('files.showTree')"
+          :aria-label="$t('files.showTree')"
+          aria-expanded="false"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2zm10 14H4V8h16v10z"/></svg>
+        </button>
+      </div>
       <!-- 左栏: 层级目录树 -->
       <div class="file-col-tree" :class="{ 'drop-active': externalDropActive }" :style="{ flex: '0 0 ' + treePanelWidth + 'px', transition: isTreeResizing ? 'none' : undefined, fontSize: fontSize + 'px' }" @wheel.ctrl.prevent="onWheel"
         @dragover.prevent="onTreeDragOver($event)"
@@ -44,6 +45,17 @@ export default {
             @blur="cancelTreePathEdit"
             class="tree-path-input"
           />
+          <button
+            type="button"
+            class="vscode-action-btn file-tree-collapse-btn"
+            @mousedown.prevent
+            @click.stop="treeVisible = false"
+            :title="$t('files.hideTree')"
+            :aria-label="$t('files.hideTree')"
+            aria-expanded="true"
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+          </button>
         </div>
         <!-- VS Code 风格 Header: 正常模式 -->
         <div class="file-tree-header vscode-header" v-else>
@@ -70,6 +82,16 @@ export default {
                 <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>
               </button>
             </div>
+            <button
+              type="button"
+              class="vscode-action-btn file-tree-collapse-btn"
+              @click.stop="treeVisible = false"
+              :title="$t('files.hideTree')"
+              :aria-label="$t('files.hideTree')"
+              aria-expanded="true"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+            </button>
           </div>
         </div>
         <!-- 文件选中操作 -->
@@ -158,9 +180,6 @@ export default {
           </template>
         </div>
       </div>
-
-      <!-- 拖拽分割线 -->
-      <div class="file-tree-splitter" @mousedown="startTreeResize" @touchstart.prevent="startTreeResize"></div>
 
       <!-- 右栏: 文件编辑器（带标签页） -->
       <div class="file-col-content" v-if="openFiles.length > 0 || fileLoading" @wheel.ctrl.prevent="onWheel">
@@ -294,6 +313,9 @@ export default {
       <div class="file-col-placeholder" v-if="openFiles.length === 0 && !fileLoading">
         <div class="placeholder-text">{{ $t('files.clickToView') }}</div>
       </div>
+
+      <!-- 拖拽分割线：文件树位于内容右侧 -->
+      <div class="file-tree-splitter" @mousedown="startTreeResize" @touchstart.prevent="startTreeResize"></div>
 
       <!-- 文件夹选择器对话框 -->
       <div class="folder-picker-overlay" v-if="folderPickerOpen" @click.self="folderPickerOpen = false">
@@ -509,7 +531,7 @@ export default {
       const maxWidth = container ? container.offsetWidth * 0.5 : 400;
       const onMove = (ev) => {
         const clientX = isTouch ? ev.touches[0].clientX : ev.clientX;
-        treePanelWidth.value = Math.max(120, Math.min(maxWidth, startWidth + (clientX - startX)));
+        treePanelWidth.value = Math.max(120, Math.min(maxWidth, startWidth - (clientX - startX)));
       };
       const onEnd = () => {
         isTreeResizing.value = false;

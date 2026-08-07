@@ -57,7 +57,12 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
       if (!await checkAgentAccess(fileAgentId)) return;
       const fileConvId = msg.conversationId || client.currentConversation || '_explorer';
       console.log(`[Server] Forwarding read_file to agent ${fileAgentId}, conv=${fileConvId}, path=${msg.filePath}`);
-      await forwardToAgent(fileAgentId, { ...msg, conversationId: fileConvId, _requestUserId: client.userId });
+      await forwardToAgent(fileAgentId, {
+        ...msg,
+        conversationId: fileConvId,
+        _requestUserId: client.userId,
+        _requestClientId: clientId,
+      });
       break;
     }
 
@@ -74,7 +79,12 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
           return;
         }
       }
-      await forwardToAgent(writeAgentId, { ...msg, conversationId: writeConvId, _requestUserId: client.userId });
+      await forwardToAgent(writeAgentId, {
+        ...msg,
+        conversationId: writeConvId,
+        _requestUserId: client.userId,
+        _requestClientId: clientId,
+      });
       break;
     }
 

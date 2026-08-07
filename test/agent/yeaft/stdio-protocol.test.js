@@ -21,6 +21,7 @@ import {
 } from '../../../agent/yeaft/tasks/result-delivery.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
 import { sessionsRoot } from '../../../agent/yeaft/sessions/session-crud.js';
+import routeForwardTool from '../../../agent/yeaft/tools/route-forward.js';
 
 const tempRoots = [];
 
@@ -867,8 +868,8 @@ describe('stream-json Session runtime protocol', () => {
     });
 
     expect(forwardResult).toMatchObject({ ok: true, dispatched: ['martin', 'steve'] });
-    expect(outcome.results.map(result => result.vpId).sort()).toEqual(['linus', 'martin', 'steve']);
-    expect(calls.filter(vpId => vpId === 'linus')).toHaveLength(1);
+    expect(outcome.results.map(result => result.vpId).sort()).toEqual(['linus', 'linus', 'martin', 'steve']);
+    expect(calls.filter(vpId => vpId === 'linus')).toHaveLength(2);
     expect(calls.filter(vpId => vpId === 'martin')).toHaveLength(1);
     expect(calls.filter(vpId => vpId === 'steve')).toHaveLength(1);
     expect(new Set(causalRoots.map(entry => entry.causalRootId)).size).toBe(1);
@@ -1133,30 +1134,65 @@ describe('stream-json Session runtime protocol', () => {
     }
   }, 40_000);
 
-  it('keeps RouteForward handoff-only: source once, target once, no source resume', async () => {
-    const root = tempRoot('stdio-handoff-only');
-    const sessionId = 'session_stdio_handoff_only';
+  it('re-enters the RouteForward source after a terminal review and emits one root aggregate', async () => {
+    const root = tempRoot('stdio-route-forward-reentry');
+    const sessionId = 'session_stdio_route_forward_reentry';
     createFormalSession(root, sessionId);
     const conversationStore = makeConversationStore();
     const calls = [];
-    const stopReasons = [];
+    const frames = [];
+    let routeHandoff = null;
     const runner = createCliSessionRunner({
       loaded: { yeaftDir: root, config: {}, conversationStore },
       sessionId,
       engineFactory: (_loaded, _sessionId, vpId) => ({
         async *query(options) {
-          calls.push(vpId);
+          calls.push({
+            vpId,
+            prompt: options.prompt,
+            injectedBy: options.inboundEnvelope?.msg?.meta?.injectedBy || null,
+          });
           yield { type: 'turn_open', turnId: `turn-${vpId}`, threadId: 'main', vpId };
-          if (vpId === 'linus') {
-            options.router.forward({
-              from: 'linus',
+          if (vpId === 'linus' && !routeHandoff) {
+            yield {
+              type: 'tool_call',
+              id: 'route-to-martin',
+              name: 'RouteForward',
+              input: { to: 'martin', text: 'review this implementation', reason: 'review' },
+              threadId: 'main',
+            };
+            const output = await routeForwardTool.execute({
               to: 'martin',
-              text: 'review this',
+              text: 'review this implementation',
+              reason: 'review',
+            }, {
+              router: options.router,
+              senderVpId: vpId,
               inboundEnvelope: options.inboundEnvelope,
-              sourceThreadId: 'main',
+              threadId: 'main',
+              requestEndTurn: detail => { routeHandoff = detail; },
             });
-            yield { type: 'turn_end', stopReason: 'tool_handoff', terminal: true, threadId: 'main' };
+            yield { type: 'tool_end', id: 'route-to-martin', name: 'RouteForward', output, threadId: 'main' };
+            yield {
+              type: 'turn_end',
+              stopReason: 'tool_handoff',
+              terminal: true,
+              threadId: 'main',
+              detail: routeHandoff,
+            };
+          } else if (vpId === 'martin') {
+            yield { type: 'text_delta', text: 'FAIL: the implementation needs a null guard.', threadId: 'main' };
+            yield { type: 'turn_end', stopReason: 'end_turn', terminal: true, threadId: 'main' };
           } else {
+            expect(options.inboundEnvelope?.msg?.meta).toMatchObject({
+              injectedBy: 'route_forward_result',
+              routeTargetVpId: 'linus',
+            });
+            expect(options.prompt).toContain('FAIL: the implementation needs a null guard.');
+            expect(options.messages).toEqual(expect.arrayContaining([
+              expect.objectContaining({ role: 'user', content: 'start with Linus' }),
+            ]));
+            yield { type: 'text_delta', text: 'Omni applied the null guard and is ready for another review.', threadId: 'main' };
             yield { type: 'turn_end', stopReason: 'end_turn', terminal: true, threadId: 'main' };
           }
           yield { type: 'turn_close', turnId: `turn-${vpId}`, threadId: 'main' };
@@ -1166,16 +1202,220 @@ describe('stream-json Session runtime protocol', () => {
       personaFactory: vpId => ({ vpId }),
     });
 
-    await runner.run('start with Linus', {
+    const result = await runStreamSessionTurn({
+      runner,
+      prompt: 'start with Linus',
+      sessionId,
+      write: frame => frames.push(frame),
       routingIntent: { targetVpIds: ['linus'], explicit: true },
-      onEvent: ({ vpId, event }) => {
-        if (event.type === 'turn_end') stopReasons.push({ vpId, stopReason: event.stopReason });
-      },
     });
 
+    expect(JSON.parse(frames.find(frame => frame.type === 'tool' && frame.name === 'RouteForward').content))
+      .toMatchObject({ ok: true, dispatched: ['martin'] });
+    expect(calls.map(call => call.vpId)).toEqual(['linus', 'martin', 'linus']);
+    expect(calls[2]).toMatchObject({ injectedBy: 'route_forward_result' });
+    const aggregateResults = frames.filter(frame => frame.type === 'result' && frame.vp_id === undefined);
+    expect(aggregateResults).toHaveLength(1);
+    expect(aggregateResults[0]).toBe(result);
+    expect(result).toMatchObject({
+      stop_reason: 'end_turn',
+      result: expect.stringContaining('Omni applied the null guard'),
+      vp_results: expect.arrayContaining([
+        expect.objectContaining({ vp_id: 'linus', stop_reason: 'end_turn' }),
+        expect.objectContaining({ vp_id: 'martin', result: 'FAIL: the implementation needs a null guard.' }),
+      ]),
+    });
+    await runner.close();
+  });
+
+  it('does not re-enter a RouteForward source after the root is cancelled', async () => {
+    const root = tempRoot('stdio-route-forward-cancel');
+    const sessionId = 'session_stdio_route_forward_cancel';
+    createFormalSession(root, sessionId, ['linus', 'martin']);
+    const targetStarted = Promise.withResolvers();
+    const releaseTarget = Promise.withResolvers();
+    const calls = [];
+    const runner = createCliSessionRunner({
+      loaded: { yeaftDir: root, config: {}, conversationStore: makeConversationStore() },
+      sessionId,
+      engineFactory: (_loaded, _sessionId, vpId) => ({
+        async *query(options) {
+          calls.push(vpId);
+          if (vpId === 'linus') {
+            options.router.forward({
+              from: 'linus',
+              to: 'martin',
+              text: 'review this',
+              inboundEnvelope: options.inboundEnvelope,
+            });
+            yield { type: 'turn_end', stopReason: 'tool_handoff', terminal: true };
+          } else {
+            targetStarted.resolve();
+            await releaseTarget.promise;
+            yield { type: 'turn_end', stopReason: 'aborted', terminal: true };
+          }
+        },
+        abort: () => true,
+      }),
+      personaFactory: vpId => ({ vpId }),
+    });
+
+    const turn = runner.run('start', {
+      routingIntent: { targetVpIds: ['linus'], explicit: true },
+    });
+    await targetStarted.promise;
+    expect(runner.abort('user')).toBeGreaterThan(0);
+    releaseTarget.resolve();
+    const outcome = await turn;
+
     expect(calls).toEqual(['linus', 'martin']);
-    expect(stopReasons).toContainEqual({ vpId: 'linus', stopReason: 'tool_handoff' });
-    expect(calls.filter(vpId => vpId === 'linus')).toHaveLength(1);
+    expect(outcome.results.map(row => row.stopReason)).toEqual(['tool_handoff', 'aborted']);
+    await runner.close();
+  });
+
+  it('scopes cancellation to the selected concurrent root', async () => {
+    const root = tempRoot('stdio-route-forward-scoped-cancel');
+    const sessionId = 'session_stdio_route_forward_scoped_cancel';
+    createFormalSession(root, sessionId, ['linus', 'martin']);
+    const gates = new Map([
+      ['linus', Promise.withResolvers()],
+      ['martin', Promise.withResolvers()],
+    ]);
+    const aborted = new Set();
+    const runner = createCliSessionRunner({
+      loaded: { yeaftDir: root, config: {}, conversationStore: makeConversationStore() },
+      sessionId,
+      engineFactory: (_loaded, _sessionId, vpId) => ({
+        async *query() {
+          await gates.get(vpId).promise;
+          yield {
+            type: 'turn_end',
+            stopReason: aborted.has(vpId) ? 'aborted' : 'end_turn',
+            terminal: true,
+          };
+        },
+        abort: () => {
+          aborted.add(vpId);
+          return true;
+        },
+      }),
+      personaFactory: vpId => ({ vpId }),
+    });
+
+    const first = runner.run('first', {
+      cancellationId: 'root-first',
+      routingIntent: { targetVpIds: ['linus'], explicit: true },
+    });
+    const second = runner.run('second', {
+      cancellationId: 'root-second',
+      routingIntent: { targetVpIds: ['martin'], explicit: true },
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(runner.abort('user', { cancellationId: 'root-first' })).toBe(1);
+    gates.get('linus').resolve();
+    gates.get('martin').resolve();
+    const [firstOutcome, secondOutcome] = await Promise.all([first, second]);
+
+    expect(firstOutcome.results[0].stopReason).toBe('aborted');
+    expect(secondOutcome.results[0].stopReason).toBe('end_turn');
+    expect(aborted).toEqual(new Set(['linus']));
+    await runner.close();
+  });
+
+  it('bubbles nested RouteForward results back through each source VP', async () => {
+    const root = tempRoot('stdio-route-forward-nested');
+    const sessionId = 'session_stdio_route_forward_nested';
+    createFormalSession(root, sessionId, ['linus', 'martin', 'steve']);
+    const calls = [];
+    const runner = createCliSessionRunner({
+      loaded: { yeaftDir: root, config: {}, conversationStore: makeConversationStore() },
+      sessionId,
+      engineFactory: (_loaded, _sessionId, vpId) => ({
+        async *query(options) {
+          const injectedBy = options.inboundEnvelope?.msg?.meta?.injectedBy || null;
+          calls.push({ vpId, injectedBy, prompt: options.prompt });
+          if (vpId === 'linus' && !injectedBy) {
+            options.router.forward({
+              from: 'linus',
+              to: 'martin',
+              text: 'review this',
+              inboundEnvelope: options.inboundEnvelope,
+            });
+            yield { type: 'turn_end', stopReason: 'tool_handoff', terminal: true };
+          } else if (vpId === 'martin' && injectedBy === 'route_forward') {
+            options.router.forward({
+              from: 'martin',
+              to: 'steve',
+              text: 'validate this review',
+              inboundEnvelope: options.inboundEnvelope,
+            });
+            yield { type: 'turn_end', stopReason: 'tool_handoff', terminal: true };
+          } else if (vpId === 'steve') {
+            yield { type: 'text_delta', text: 'FAIL: missing guard.' };
+            yield { type: 'turn_end', stopReason: 'end_turn', terminal: true };
+          } else if (vpId === 'martin') {
+            expect(options.prompt).toContain('FAIL: missing guard.');
+            yield { type: 'text_delta', text: 'Martin confirmed the missing guard.' };
+            yield { type: 'turn_end', stopReason: 'end_turn', terminal: true };
+          } else {
+            expect(options.prompt).toContain('Martin confirmed the missing guard.');
+            yield { type: 'text_delta', text: 'Linus fixed the guard.' };
+            yield { type: 'turn_end', stopReason: 'end_turn', terminal: true };
+          }
+        },
+        abort: () => true,
+      }),
+      personaFactory: vpId => ({ vpId }),
+    });
+
+    const outcome = await runner.run('start', {
+      routingIntent: { targetVpIds: ['linus'], explicit: true },
+    });
+
+    expect(calls.map(call => call.vpId)).toEqual(['linus', 'martin', 'steve', 'martin', 'linus']);
+    expect(outcome.results.at(-1)).toMatchObject({ vpId: 'linus', result: 'Linus fixed the guard.' });
+    await runner.close();
+  });
+
+  it('reports truncated RouteForward fan-out to the source VP', async () => {
+    const root = tempRoot('stdio-route-forward-partial');
+    const sessionId = 'session_stdio_route_forward_partial';
+    const roster = ['linus', ...Array.from({ length: 18 }, (_, index) => `reviewer-${index}`)];
+    createFormalSession(root, sessionId, roster);
+    let sourcePrompt = '';
+    let forwarded = false;
+    const runner = createCliSessionRunner({
+      loaded: { yeaftDir: root, config: {}, conversationStore: makeConversationStore() },
+      sessionId,
+      engineFactory: (_loaded, _sessionId, vpId) => ({
+        async *query(options) {
+          if (vpId === 'linus' && !forwarded) {
+            forwarded = true;
+            options.router.forward({
+              from: 'linus',
+              to: 'all',
+              text: 'review this',
+              inboundEnvelope: options.inboundEnvelope,
+            });
+            yield { type: 'turn_end', stopReason: 'tool_handoff', terminal: true };
+          } else if (vpId === 'linus') {
+            sourcePrompt = options.prompt;
+            yield { type: 'turn_end', stopReason: 'end_turn', terminal: true };
+          } else {
+            yield { type: 'text_delta', text: `${vpId} reviewed` };
+            yield { type: 'turn_end', stopReason: 'end_turn', terminal: true };
+          }
+        },
+        abort: () => true,
+      }),
+      personaFactory: vpId => ({ vpId }),
+    });
+
+    await runner.run('start', {
+      routingIntent: { targetVpIds: ['linus'], explicit: true },
+    });
+
+    expect(sourcePrompt).toContain('fan-out was truncated');
     await runner.close();
   });
 });

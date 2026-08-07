@@ -1,0 +1,13 @@
+services:
+  webchat:
+    environment:
+      SANDBOX_ENABLED: "true"
+      SANDBOX_SERVER_URL: ${SANDBOX_SERVER_URL:?Set SANDBOX_SERVER_URL to a ws:// or wss:// URL reachable by the Agent container}
+      SANDBOX_STATE_DIR: ${SANDBOX_STATE_DIR:-/var/lib/yeaft/container-agents}
+      SANDBOX_AGENT_IMAGE: ${SANDBOX_AGENT_IMAGE:-ghcr.io/yeaft/yeaft-web-code-agent-agent:dev}
+    volumes:
+      # Opt-in only: Docker socket access is equivalent to root on the Host.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The child Docker daemon resolves bind sources on the Host, so this path
+      # must be identical inside the Server container and on the Host.
+      - ${SANDBOX_STATE_DIR:-/var/lib/yeaft/container-agents}:${SANDBOX_STATE_DIR:-/var/lib/yeaft/container-agents}

@@ -81,6 +81,11 @@ beforeEach(() => {
   chatStore.searchYeaftHistory.mockReset();
   chatStore.openYeaftTurnDebug.mockReset();
   chatStore.closeYeaftDebugPanel.mockReset();
+  chatStore.toggleWorkbench = vi.fn(() => {
+    chatStore.workbenchExpanded = !chatStore.workbenchExpanded;
+  });
+  chatStore.workbenchExpanded = false;
+  chatStore.workbenchMaximized = false;
   chatStore.yeaftDebugPanel = {
     open: false,
     status: 'idle',
@@ -233,5 +238,18 @@ describe('YeaftPage setup', () => {
     expect(page.debugMode.value).toBe(true);
     page.closeDebug();
     expect(chatStore.closeYeaftDebugPanel).toHaveBeenCalled();
+
+    chatStore.yeaftDebugPanel.open = false;
+    chatStore.workbenchExpanded = true;
+    expect(page.sessionStatusVisible.value).toBe(false);
+
+    page.toggleSessionStatus();
+    expect(page.sessionStatusVisible.value).toBe(true);
+    expect(chatStore.toggleWorkbench).toHaveBeenCalledTimes(1);
+    expect(chatStore.closeYeaftDebugPanel).toHaveBeenCalledTimes(2);
+
+    page.toggleWorkbench();
+    expect(page.sessionStatusVisible.value).toBe(false);
+    expect(chatStore.toggleWorkbench).toHaveBeenCalledTimes(2);
   });
 });

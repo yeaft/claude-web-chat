@@ -31,6 +31,7 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/agent/yeaft/work-center/watcher.test.js',
   'test/server/agent-access-error.test.js',
   'test/server/agent-connection-fence.test.js',
+  'test/server/agent-file-terminal.test.js',
   'test/server/auth-token-uniqueness.test.js',
   'test/server/request-auth.test.js',
   'test/server/server-image-runtime.test.js',
@@ -64,6 +65,7 @@ export const CORE_TEST_FILES = Object.freeze([
 
 export const SANDBOX_TEST_FILES = Object.freeze([
   'test/agent/container-manager.test.js',
+  'test/server/sandbox-routes.test.js',
   'test/web/sandbox-settings.test.js',
 ]);
 

@@ -20,9 +20,15 @@ const COMMON_INTENT_TOKENS = new Set([
   'merge', 'merged', 'review', 'reviewed', 'release', 'tag', 'tags',
   'pr', 'pull', 'request', 'issue', 'fix', 'feat', 'test', 'tests',
   'dream', 'memory', 'session', 'topic', 'status', 'blocker', 'blocked',
-  '当前', '状态', '任务', '工作', '工作项', '待办', '下一步', '完成', '已完成',
-  '合并', '评审', '发布', '标签', '记忆', '主题', '阻塞', '正在',
+  'yeaft',
 ]);
+const COMMON_CJK_INTENT_PHRASES = [
+  '当前', '状态', '任务', '工作项', '工作', '待办', '下一步', '完成', '已完成',
+  '合并', '评审', '发布', '标签', '记忆', '主题', '阻塞', '正在',
+  '内容', '用户', '要求', '需求', '设计', '决策', '搜索', '发现', '需要', '应该',
+  '添加', '无关', '不相干', '完全', '明细', '看看', '还有', '这个',
+  '比如', '每个', '如果',
+].sort((a, b) => b.length - a.length);
 
 /**
  * Remove Dream scheduler metadata blocks from memory text.
@@ -126,6 +132,43 @@ export function filterMemoryPromptTextForPrompt(text, userText) {
   return joinMemoryPromptChunks(kept).trim();
 }
 
+/**
+ * Project sibling content is a broad historical source, not resident state for
+ * the active Session. Keep only chunks with concrete lexical support from the
+ * current user turn; if none match, the sibling contributes no prompt block.
+ *
+ * @param {string} text
+ * @param {string} userText
+ * @returns {string}
+ */
+export function filterRelatedSessionPromptText(text, userText) {
+  const cleaned = cleanMemoryPromptText(text);
+  if (!cleaned || !userText) return '';
+  const kept = [];
+  let governingHeading = '';
+  let emittedHeading = '';
+  for (const chunk of splitMemoryPromptChunks(cleaned)) {
+    if (/^#{1,6}\s+\S/.test(chunk)) {
+      governingHeading = chunk;
+      continue;
+    }
+    const headingRelevant = governingHeading && isMemoryPromptRelevant(governingHeading, userText);
+    const chunkRelevant = isMemoryPromptRelevant(chunk, userText);
+    const headingCarriesSpecificTerm = headingRelevant && hasSpecificPromptTerms(governingHeading);
+    if (!chunkRelevant && (
+      !headingCarriesSpecificTerm
+      || !hasConcretePromptTerms(chunk)
+      || hasOperationalMemoryMarker(chunk)
+    )) continue;
+    if (governingHeading && emittedHeading !== governingHeading) {
+      kept.push(governingHeading);
+      emittedHeading = governingHeading;
+    }
+    kept.push(chunk);
+  }
+  return joinMemoryPromptChunks(kept).trim();
+}
+
 function splitMemoryPromptChunks(text) {
   const chunks = [];
   for (const block of String(text || '').split(/\n{2,}/)) {
@@ -177,11 +220,39 @@ export function promptRelevanceTokens(text) {
     if (!COMMON_INTENT_TOKENS.has(token)) out.add(token);
   }
   for (const match of cleaned.matchAll(CJK_RUN_RE)) {
-    for (const token of cjkBigrams(match[0])) {
-      if (!COMMON_INTENT_TOKENS.has(token)) out.add(token);
+    for (const run of removeCommonCjkIntentPhrases(match[0])) {
+      for (const token of cjkBigrams(run)) out.add(token);
     }
   }
   return out;
+}
+
+function hasConcretePromptTerms(text) {
+  return promptRelevanceTokens(text).size > 0;
+}
+
+function hasOperationalMemoryMarker(text) {
+  return /\b(work\s*item|todo|next\s+step|blocker|blocked|pr\s*#?\d+|pull\s+request|review|merge\s+commit|release\s+tag|tag\s+v\d|v\d+\.\d+\.\d+)\b|(?:工作项|当前(?:状态|任务|工作)|正在|待办|下一步|阻塞|评审|合并|发布|已推|已合并|已完成)/i.test(String(text || ''));
+}
+
+function hasSpecificPromptTerms(text) {
+  const cleaned = cleanMemoryPromptText(text).toLowerCase();
+  for (const match of cleaned.matchAll(ASCII_WORD_RE)) {
+    const token = match[0];
+    if (!COMMON_INTENT_TOKENS.has(token) && token !== 'yeaft') return true;
+  }
+  for (const match of cleaned.matchAll(CJK_RUN_RE)) {
+    const run = match[0];
+    if (run.length === 2 && !COMMON_CJK_INTENT_PHRASES.includes(run)) return true;
+    if (removeCommonCjkIntentPhrases(run).some(part => part.length >= 2)) return true;
+  }
+  return false;
+}
+
+function removeCommonCjkIntentPhrases(text) {
+  let cleaned = text;
+  for (const phrase of COMMON_CJK_INTENT_PHRASES) cleaned = cleaned.split(phrase).join(' ');
+  return cleaned.match(CJK_RUN_RE) || [];
 }
 
 function cjkBigrams(text) {

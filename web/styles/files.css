@@ -611,16 +611,23 @@
   position: relative;
 }
 
-.file-tree-toggle {
-  position: absolute;
-  top: 7px;
-  left: 8px;
-  z-index: 12;
+.file-tree-collapsed-rail {
+  order: 4;
+  flex: 0 0 40px;
+  width: 40px;
+  border-left: 1px solid var(--border-color);
+  background: var(--bg-sidebar);
+  display: flex;
+  justify-content: center;
+  padding-top: 7px;
+}
+
+.file-tree-expand-btn {
   width: 30px;
   height: 30px;
   border: none;
   border-radius: 6px;
-  background: var(--bg-input);
+  background: transparent;
   color: var(--text-muted);
   display: inline-flex;
   align-items: center;
@@ -628,24 +635,9 @@
   cursor: pointer;
 }
 
-.file-tree-toggle:hover,
-.file-tree-toggle.active {
+.file-tree-expand-btn:hover {
   color: var(--text-primary);
   background: var(--sidebar-hover);
-}
-
-.file-two-col:not(.tree-collapsed) .file-tree-header,
-.file-two-col:not(.tree-collapsed) .file-ops-toolbar,
-.file-two-col:not(.tree-collapsed) .file-search-row,
-.file-two-col:not(.tree-collapsed) .file-tree-content {
-  padding-top: 44px;
-}
-
-.file-two-col:not(.tree-collapsed) .file-tree-header + .file-ops-toolbar,
-.file-two-col:not(.tree-collapsed) .file-tree-header + .file-search-row,
-.file-two-col:not(.tree-collapsed) .file-ops-toolbar + .file-search-row,
-.file-two-col:not(.tree-collapsed) .file-search-row + .file-tree-content {
-  padding-top: 0;
 }
 
 .file-two-col.tree-collapsed .file-col-tree,
@@ -653,11 +645,8 @@
   display: none;
 }
 
-.file-two-col.tree-collapsed .file-tabs-bar {
-  padding-left: 44px;
-}
-
 .file-col-tree {
+  order: 3;
   min-width: 120px;
   overflow-y: auto;
   display: flex;
@@ -668,6 +657,7 @@
 }
 
 .file-col-content {
+  order: 1;
   flex: 1;
   overflow: auto;
   min-width: 0;
@@ -950,6 +940,7 @@
 
 /* File tree splitter (drag to resize) */
 .file-tree-splitter {
+  order: 2;
   width: 4px;
   cursor: col-resize;
   background: transparent;
@@ -1462,6 +1453,14 @@
 @media (max-width: 768px) {
   .file-two-col {
     flex-direction: column !important;
+  }
+
+  .file-tree-collapsed-rail {
+    display: none;
+  }
+
+  .file-two-col.tree-collapsed .file-col-tree {
+    display: flex;
   }
 
   .file-col-tree {

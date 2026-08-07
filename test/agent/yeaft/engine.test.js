@@ -15,10 +15,10 @@ import { ActiveMemorySet } from '../../../agent/yeaft/memory/ams.js';
 import { backfillCanonicalContent } from '../../../agent/yeaft/memory/content-backfill.js';
 import { openSegmentIndex } from '../../../agent/yeaft/memory/index-db.js';
 import { runPreflow } from '../../../agent/yeaft/memory/preflow.js';
-import { cleanMemoryPromptText, filterMemoryPromptTextForPrompt } from '../../../agent/yeaft/memory/prompt-cleanup.js';
+import { cleanMemoryPromptText, filterMemoryPromptTextForPrompt, filterRelatedSessionPromptText } from '../../../agent/yeaft/memory/prompt-cleanup.js';
 import { makeSegment, serializeSegments } from '../../../agent/yeaft/memory/segment.js';
-import { readScope } from '../../../agent/yeaft/memory/segment-store.js';
-import { syncAll } from '../../../agent/yeaft/memory/segment-sync.js';
+import { readCanonicalContentRecord, readScope } from '../../../agent/yeaft/memory/segment-store.js';
+import { syncAll, syncScope } from '../../../agent/yeaft/memory/segment-sync.js';
 import { Engine, buildResidentEntries, selectCanonicalMemoryScopes, selectResidentTopicScopes, selectRelatedSessionIds } from '../../../agent/yeaft/engine.js';
 import { flushAgentPerfTrace } from '../../../agent/yeaft/perf-trace.js';
 import { AdapterRouter } from '../../../agent/yeaft/llm/router.js';
@@ -30,6 +30,8 @@ import { NullTrace, DebugTrace, projectDebugDetailForWire } from '../../../agent
 import { consolidateSessionTopics } from '../../../agent/yeaft/dream/topic-consolidation.js';
 import { resolveTopicRedirect } from '../../../agent/yeaft/memory/topic-redirect.js';
 import { runDream } from '../../../agent/yeaft/dream/runner.js';
+import { classifySoft } from '../../../agent/yeaft/dream/triage.js';
+import { readSessionState } from '../../../agent/yeaft/dream/state.js';
 import { extractAndWriteMemorySegments } from '../../../agent/yeaft/dream/segment-extract.js';
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
 import { defineTool } from '../../../agent/yeaft/tools/types.js';
@@ -857,6 +859,64 @@ describe('Engine memory prompt hygiene', () => {
     ]);
   });
 
+  it('drops unrelated sibling chunks even when the query repeats their generic headings', () => {
+    const sibling = [
+      '# Yeaft settings tabs',
+      '',
+      '## 需求与设计决策',
+      '',
+      '- 用户要求把 VP 库、搜索和 MCP 改为扁平下划线标签。',
+      '- PR #1542 已合并，dev tag 为 v1.0.364。',
+    ].join('\n');
+    const unrelatedQuery = '和当前 session 无关的内容不应该添加，比如每个 PR 明细和需求与设计决策。';
+
+    expect(filterRelatedSessionPromptText(sibling, unrelatedQuery)).toBe('');
+    expect(filterRelatedSessionPromptText(
+      sibling,
+      '设置页的 VP 库、MCP 下划线标签在窄屏应该怎么处理？',
+    )).toContain('VP 库、搜索和 MCP');
+    expect(filterRelatedSessionPromptText(
+      '# Yeaft 设置页\n\n- VP/MCP 下划线标签在窄屏使用横向滚动。\n\n- PR #1542 已合并。',
+      'Yeaft 设置页',
+    )).toBe('# Yeaft 设置页\n\n- VP/MCP 下划线标签在窄屏使用横向滚动。');
+  });
+
+  it('preserves compound CJK terms in current Session recall with a real FTS index', () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-current-session-cjk-recall-'));
+    const index = openSegmentIndex(join(root, 'index.db'));
+    try {
+      const fixtures = [
+        ['design-pattern', '设计模式', '设计模式用于组织可维护的领域代码。'],
+        ['user-auth', '用户认证', '用户认证必须检查会话所有权。'],
+        ['requirements-analysis', '需求分析', '需求分析应保留明确的验收条件。'],
+        ['content-safety', '内容安全', '内容安全规则不能泄露敏感工具载荷。'],
+      ];
+      for (const [id, query, body] of fixtures) {
+        index.upsert(makeSegment({
+          id,
+          scope: 'sessions/current-session',
+          kind: 'context',
+          tags: ['canonical-content'],
+          body,
+          sourceMessages: [],
+          createdAt: '2026-08-07T00:00:00.000Z',
+          updatedAt: '2026-08-07T00:00:00.000Z',
+        }));
+        const recall = runPreflow(index, {
+          userMsg: query,
+          relevantScopes: ['sessions/current-session'],
+          canonicalOnly: true,
+        });
+        expect(recall.picked, query).toEqual([
+          expect.objectContaining({ id, scope: 'sessions/current-session' }),
+        ]);
+      }
+    } finally {
+      index.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('deduplicates AMS layers without dropping needed on-demand memory', () => {
     const ams = new ActiveMemorySet({
       budget: { total: 1000, resident: 400, recent: 300, onDemand: 300 },
@@ -1108,6 +1168,278 @@ describe('Engine memory prompt hygiene', () => {
       expect(selectCanonicalMemoryScopes(recall.picked)).toEqual(new Set([topics[29]]));
       expect(selectResidentTopicScopes(topics, recall.picked)).toEqual([topics[29]]);
 
+      const broadUserScope = 'user';
+      index.upsert(makeSegment({
+        id: 'strict-user',
+        scope: broadUserScope,
+        kind: 'context',
+        tags: ['canonical-content'],
+        body: 'Server cleanup failures require explicit disk investigation and container verification.',
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      }));
+      const weakUser = runPreflow(index, {
+        userMsg: 'Dream failure',
+        relevantScopes: [broadUserScope],
+        strictScopes: [broadUserScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      });
+      expect(weakUser.picked).toEqual([]);
+      expect(weakUser.droppedByRelevance).toBe(1);
+      const strongUser = runPreflow(index, {
+        userMsg: 'server cleanup failure disk',
+        relevantScopes: [broadUserScope],
+        strictScopes: [broadUserScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      });
+      expect(strongUser.picked).toEqual([
+        expect.objectContaining({ id: 'strict-user', scope: broadUserScope }),
+      ]);
+
+      const strictScope = 'sessions/sibling-session';
+      index.upsert(makeSegment({
+        id: 'strict-sibling',
+        scope: strictScope,
+        kind: 'context',
+        tags: ['canonical-content', 'timeout'],
+        body: '# timeout\n\nTimeout cleanup failures must return a tool result so Engine continuation stays reliable.',
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      }));
+      const weakSibling = runPreflow(index, {
+        userMsg: 'check timeout behavior',
+        relevantScopes: [strictScope],
+        strictScopes: [strictScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      });
+      expect(weakSibling.picked).toEqual([]);
+      expect(weakSibling.droppedByRelevance).toBe(1);
+      const strongSibling = runPreflow(index, {
+        userMsg: 'check timeout cleanup failure',
+        relevantScopes: [strictScope],
+        strictScopes: [strictScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      });
+      expect(strongSibling.picked).toEqual([
+        expect.objectContaining({ id: 'strict-sibling', scope: strictScope }),
+      ]);
+      expect(strongSibling.droppedByRelevance).toBe(0);
+      const preciseTimeout = runPreflow(index, {
+        userMsg: 'timeout',
+        relevantScopes: [strictScope],
+        strictScopes: [strictScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      });
+      expect(preciseTimeout.picked).toEqual([
+        expect.objectContaining({ id: 'strict-sibling', scope: strictScope }),
+      ]);
+      expect(runPreflow(index, {
+        userMsg: 'check timeout behavior',
+        relevantScopes: [strictScope],
+        strictScopes: [strictScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      }).picked).toEqual([]);
+
+      const postgresUser = 'user-postgresql';
+      index.upsert(makeSegment({
+        id: postgresUser,
+        scope: broadUserScope,
+        kind: 'context',
+        tags: ['canonical-content', 'postgresql'],
+        body: '# PostgreSQL\n\nPostgreSQL stores the workspace metadata for this project.',
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      }));
+      expect(runPreflow(index, {
+        userMsg: 'PostgreSQL',
+        relevantScopes: [broadUserScope],
+        strictScopes: [broadUserScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      }).picked).toEqual([
+        expect.objectContaining({ id: postgresUser, scope: broadUserScope }),
+      ]);
+
+      const authSiblingScope = 'sessions/auth-sibling';
+      index.upsert(makeSegment({
+        id: 'auth-sibling',
+        scope: authSiblingScope,
+        kind: 'context',
+        tags: ['canonical-content', '用户认证'],
+        body: '# 用户认证\n\n认证流程必须检查 Agent 和 Session 所有权。',
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      }));
+      expect(runPreflow(index, {
+        userMsg: '用户认证',
+        relevantScopes: [authSiblingScope],
+        strictScopes: [authSiblingScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      }).picked).toEqual([
+        expect.objectContaining({ id: 'auth-sibling', scope: authSiblingScope }),
+      ]);
+
+      const mcpSiblingScope = 'sessions/mcp-sibling';
+      index.upsert(makeSegment({
+        id: 'mcp-sibling',
+        scope: mcpSiblingScope,
+        kind: 'context',
+        tags: ['canonical-content', 'mcp'],
+        body: '# MCP\n\nMCP tools must preserve project ownership boundaries.',
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      }));
+      expect(runPreflow(index, {
+        userMsg: 'MCP',
+        relevantScopes: [mcpSiblingScope],
+        strictScopes: [mcpSiblingScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      }).picked).toEqual([
+        expect.objectContaining({ id: 'mcp-sibling', scope: mcpSiblingScope }),
+      ]);
+
+      const bodyOnlyScope = 'sessions/body-only-sibling';
+      index.upsert(makeSegment({
+        id: 'body-only-postgresql',
+        scope: bodyOnlyScope,
+        kind: 'context',
+        tags: ['canonical-content', 'postgresql'],
+        body: 'The current deployment happens to use PostgreSQL for unrelated storage.',
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      }));
+      expect(runPreflow(index, {
+        userMsg: 'PostgreSQL',
+        relevantScopes: [bodyOnlyScope],
+        strictScopes: [bodyOnlyScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      }).picked).toEqual([]);
+
+      const codeHeadingCases = [
+        {
+          id: 'fenced-backtick-heading',
+          scope: 'sessions/fenced-backtick-sibling',
+          body: 'Historical shell example:\n\n````sh\n# MCP\necho disabled\n````',
+        },
+        {
+          id: 'fenced-tilde-heading',
+          scope: 'sessions/fenced-tilde-sibling',
+          body: 'Historical shell example:\n\n~~~~sh\n# MCP\necho disabled\n~~~~',
+        },
+        {
+          id: 'indented-code-heading',
+          scope: 'sessions/indented-code-sibling',
+          body: 'Historical shell example:\n\n    # MCP\n    echo disabled',
+        },
+      ];
+      for (const codeCase of codeHeadingCases) {
+        index.upsert(makeSegment({
+          ...codeCase,
+          kind: 'context',
+          tags: ['canonical-content', 'mcp'],
+          sourceMessages: [],
+          createdAt: '2026-08-04T00:00:00.000Z',
+          updatedAt: '2026-08-04T00:00:00.000Z',
+        }));
+        const codeResult = runPreflow(index, {
+          userMsg: 'MCP',
+          relevantScopes: [codeCase.scope],
+          strictScopes: [codeCase.scope],
+          uniqueScopes: true,
+          canonicalOnly: true,
+        });
+        expect(codeResult.picked, codeCase.id).toEqual([]);
+        expect(codeResult.droppedByRelevance, codeCase.id).toBe(1);
+      }
+
+      for (const [label, codeBody] of [
+        ['leading-spaces', '    # MCP\n    echo disabled'],
+        ['leading-tabs', '\t# MCP\n\techo disabled'],
+      ]) {
+        await writeContent(
+          { kind: 'session', id: `leading-code-${label}` },
+          codeBody,
+          { root, language: 'zh' },
+        );
+        const scope = `sessions/leading-code-${label}`;
+        const record = readCanonicalContentRecord(root, scope);
+        expect(record?.body, label).toBe(codeBody);
+        expect(syncScope(root, index, scope), label).toMatchObject({ upserted: 1 });
+        const codeResult = runPreflow(index, {
+          userMsg: 'MCP',
+          relevantScopes: [scope],
+          strictScopes: [scope],
+          uniqueScopes: true,
+          canonicalOnly: true,
+        });
+        expect(codeResult.picked, label).toEqual([]);
+        expect(codeResult.droppedByRelevance, label).toBe(1);
+      }
+
+      const operationalHeadingScope = 'sessions/operational-heading-sibling';
+      index.upsert(makeSegment({
+        id: 'operational-heading',
+        scope: operationalHeadingScope,
+        kind: 'context',
+        tags: ['canonical-content', 'dream', 'failure'],
+        body: '# Dream failure\n\nA historical provider attempt failed during unrelated cleanup.',
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      }));
+      expect(runPreflow(index, {
+        userMsg: 'Dream failure',
+        relevantScopes: [operationalHeadingScope],
+        strictScopes: [operationalHeadingScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      }).picked).toEqual([]);
+
+      const uiSiblingScope = 'sessions/ui-sibling';
+      index.upsert(makeSegment({
+        id: 'ui-sibling',
+        scope: uiSiblingScope,
+        kind: 'context',
+        tags: ['canonical-content'],
+        body: 'Yeaft 设置页的 VP 库、搜索和 MCP 应使用扁平下划线标签，并在窄屏横向滚动。',
+        sourceMessages: [],
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      }));
+      const reportedUnrelatedQuery = runPreflow(index, {
+        userMsg: '和当前 session 无关的内容不应该添加，比如每个 PR 明细和需求与设计决策。',
+        relevantScopes: [uiSiblingScope],
+        strictScopes: [uiSiblingScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      });
+      expect(reportedUnrelatedQuery.picked).toEqual([]);
+      const relevantUiQuery = runPreflow(index, {
+        userMsg: '设置页的 VP 库、MCP 下划线标签在窄屏应该怎么处理？',
+        relevantScopes: [uiSiblingScope],
+        strictScopes: [uiSiblingScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      });
+      expect(relevantUiQuery.picked).toEqual([
+        expect.objectContaining({ id: 'ui-sibling', scope: uiSiblingScope }),
+      ]);
+
       const duplicateScope = 'sessions/s1/topic/catalog/topic-duplicate';
       mkdirSync(join(root, duplicateScope), { recursive: true });
       writeFileSync(join(root, duplicateScope, 'memory.md'), serializeSegments([
@@ -1228,6 +1560,72 @@ describe('Engine memory prompt hygiene', () => {
       ]);
       expect(readFileSync(join(root, target, 'memory.md'), 'utf8')).not.toContain('EMPTY_SOURCE_ACCEPTED');
       expect(readFileSync(join(root, target, 'memory.md'), 'utf8')).not.toContain('UNKNOWN_SOURCE_ACCEPTED');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves Dream soft-triage topic redirects without losing the memory root', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-triage-redirect-'));
+    const redirectDir = join(root, 'sessions', 's1', 'topic', 'old-topic');
+    mkdirSync(redirectDir, { recursive: true });
+    writeFileSync(join(redirectDir, 'redirect.json'), JSON.stringify({ version: 1, canonical: 'canonical-topic' }));
+    try {
+      const actions = await classifySoft({
+        root,
+        sessionId: 's1',
+        messages: [{ id: 'm1', role: 'user', body: 'Keep the canonical topic current.' }],
+        topicSummaries: [{ path: 'old-topic', summary: 'Historical alias.' }],
+        llm: async ({ pass }) => pass === 'triage-pass1'
+          ? JSON.stringify({ user_profile_signals: false, topics: ['Canonical topic update'] })
+          : JSON.stringify({ decision: 'match', path: 'old-topic' }),
+      });
+
+      expect(actions).toEqual([
+        { kind: 'update', scope: 'sessions/s1/topic/canonical-topic' },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('completes a Dream triage pass that produces a topic action', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-triage-runner-'));
+    const sessionId = 'triage-session';
+    const message = { id: 'm1', role: 'user', body: 'Dream topic routing must keep redirects valid.' };
+    try {
+      const report = await runDream({
+        root,
+        manual: true,
+        llm: async ({ pass }) => {
+          if (pass === 'triage-pass1') {
+            return JSON.stringify({ user_profile_signals: false, topics: ['Dream topic routing'] });
+          }
+          if (pass === 'triage-pass2') return JSON.stringify({ decision: 'new', path: 'dream-routing' });
+          if (pass === 'extract-segments') return '[]';
+          if (pass === 'topic-consolidation') return JSON.stringify({ groups: [] });
+          return JSON.stringify({ content_md: 'Dream topic routing remains valid.', summary_md: 'Dream routing.' });
+        },
+        listSessions: async () => [sessionId],
+        countMessages: async () => 1,
+        loadSessionDiff: async () => [message],
+        loadOverlapPreamble: async () => [],
+        listTopicSummaries: async () => [],
+        nowIso: () => '2026-08-07T08:00:00.000Z',
+      });
+
+      expect(report.sessions).toEqual([
+        expect.objectContaining({ sessionId, status: 'triaged', actions: 4 }),
+      ]);
+      expect(report.targets).toEqual(expect.arrayContaining([
+        expect.objectContaining({ target: `sessions/${sessionId}/topic/dream-routing`, status: 'done' }),
+      ]));
+      expect(await readSessionState(root, sessionId)).toEqual({
+        lastDreamMessageId: 'm1',
+        lastDreamAt: '2026-08-07T08:00:00.000Z',
+        messageCount: 1,
+      });
+      expect(existsSync(join(root, 'sessions', sessionId, '.dream-last-error.json'))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -2811,7 +3209,7 @@ describe('Engine', () => {
             ].filter(scope => scopeFilter.includes(scope));
             return scopes.map((scope, index) => ({
               id: `content-${index}`, scope, kind: 'context', tags: ['canonical-content'],
-              sourceMessages: [], body: 'Dream recall canonical evidence selector.', rank: -1 - index,
+              sourceMessages: [], body: 'Dream recall test canonical evidence selector.', rank: -1 - index,
               createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z',
             }));
           },
@@ -2833,7 +3231,7 @@ describe('Engine', () => {
       expect(system).toContain('## Relevant Context');
       expect(system).toContain('### Relevant Memory');
       expect(system).toContain('Dream memory loaded into the prompt');
-      expect(system).toContain('User-level canonical content should enter the prompt');
+      expect(system).not.toContain('User-level canonical content should enter the prompt');
       expect(system).toContain('VP canonical content should enter the prompt');
       expect(system).toContain('**session**: The user prefers concrete execution notes and wants Dream memory loaded into the prompt.');
       expect(system).not.toContain('dream-state');
@@ -2842,7 +3240,7 @@ describe('Engine', () => {
       expect(system).not.toContain('**sessions/g1/topic/dream/recall**');
       expect(system).not.toContain('**sessions/g1**');
       expect(system).not.toContain('Catalog-only topic summary');
-      expect(system).not.toContain('Dream recall canonical evidence selector.');
+      expect(system).not.toContain('Dream recall test canonical evidence selector.');
 
       await writeContent(
         { kind: 'session-vp', sessionId: 'g1', id: 'vp2' },
@@ -3032,10 +3430,32 @@ describe('Engine', () => {
           [
             'Reusable release experience: verify origin/main and the remote tag target before publishing.',
             '',
+            'Timeout cleanup failures must return a tool result so the Engine can continue.',
+            '',
             'Recent session details from the latest Dream pass:',
             '- m174797 assistant/linus: closing report',
             '- m174798 tool: {"ok":true,"dispatched":["martin"]}',
           ].join('\n'),
+          { root: join(yeaftDir, 'memory'), language: 'zh' },
+        );
+        await writeContent(
+          { kind: 'session', id: 'ui-sibling-session' },
+          '# Yeaft 设置页\n\n- VP/MCP 下划线标签在窄屏使用横向滚动。',
+          { root: join(yeaftDir, 'memory'), language: 'zh' },
+        );
+        await writeContent(
+          { kind: 'session', id: 'mcp-sibling-session' },
+          '# MCP\n\nMCP tools must preserve project ownership boundaries.',
+          { root: join(yeaftDir, 'memory'), language: 'zh' },
+        );
+        await writeContent(
+          { kind: 'user' },
+          '# PostgreSQL\n\nPostgreSQL stores the workspace metadata for this project.',
+          { root: join(yeaftDir, 'memory'), language: 'zh' },
+        );
+        await writeContent(
+          { kind: 'session', id: 'fenced-mcp-sibling' },
+          'Historical shell example:\n\n````sh\n# MCP\necho disabled\n````',
           { root: join(yeaftDir, 'memory'), language: 'zh' },
         );
         const memoryIndex = {
@@ -3045,7 +3465,7 @@ describe('Engine', () => {
               id: 'timeout-memory',
               scope: 'sessions/sibling-session',
               kind: 'context',
-              tags: ['timeout'],
+              tags: ['timeout', 'cleanup', 'failure'],
               sourceMessages: [],
               body: 'Timeout cleanup failures must return a tool result so the Engine can continue.',
               rank: -1,
@@ -3090,14 +3510,13 @@ describe('Engine', () => {
         }
 
         const system = mockAdapter.callLog.at(-1).system;
-        expect(system).toContain('## 相关上下文');
         expect(system).toContain('### 过去 Session 的经验总结');
-        expect(system).toContain('**sibling-session**: Reusable release experience');
+        expect(system).toContain('Timeout cleanup failures must return a tool result');
+        expect(system).not.toContain('Reusable release experience');
         expect(system).not.toContain('Recent session details from the latest Dream pass');
         expect(system).not.toContain('m174797 assistant/linus');
         expect(system).not.toContain('m174798 tool:');
         expect(system).not.toContain('### 相关记忆');
-        expect(system).not.toContain('Timeout cleanup failures must return a tool result');
         expect(system).toContain('## 可能相关的任务');
         expect(system).toContain('- 子 Agent timeout-reviewer (子 Agent，运行中)');
         expect(system).not.toContain('Review timeout recovery and verify Engine continuation');
@@ -3105,10 +3524,234 @@ describe('Engine', () => {
         expect(system).not.toContain('/private/sub-agent/events.jsonl');
         expect(system).not.toContain('sub_agent_status');
         expect(events.find(event => event.type === 'memory_used')?.loaded).toEqual(expect.arrayContaining([
-          expect.objectContaining({ category: 'experience', scope: 'sessions/sibling-session' }),
+          expect.objectContaining({
+            category: 'experience',
+            scope: 'sessions/sibling-session',
+            body: expect.stringContaining('Timeout cleanup failures must return a tool result'),
+          }),
         ]));
         expect(mockAdapter.callLog).toHaveLength(1);
         expect(existsSync(join(yeaftDir, 'memory', 'sessions', 'current-session', 'ams.json'))).toBe(false);
+
+        memoryIndex.search = ({ scopeFilter, requiredTag }) => {
+          if (requiredTag !== 'canonical-content' || !scopeFilter.includes('sessions/ui-sibling-session')) return [];
+          return [{
+            id: 'ui-heading-memory',
+            scope: 'sessions/ui-sibling-session',
+            kind: 'context',
+            tags: ['yeaft', '设置页'],
+            sourceMessages: [],
+            body: '# Yeaft 设置页\n\n- VP/MCP 下划线标签在窄屏使用横向滚动。',
+            rank: -1,
+            createdAt: '2026-08-01T00:00:00.000Z',
+            updatedAt: '2026-08-01T00:00:00.000Z',
+          }];
+        };
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'ok' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        for await (const _event of engine.query({
+          prompt: 'Yeaft 设置页',
+          sessionId: 'current-session',
+          projectSessionIds: ['ui-sibling-session'],
+          vpPersona: { vpId: 'linus', name: 'Linus' },
+        })) { /* exhaust */ }
+        const headingSystem = mockAdapter.callLog.at(-1).system;
+        expect(headingSystem).toContain('### 过去 Session 的经验总结');
+        expect(headingSystem).toContain('# Yeaft 设置页');
+        expect(headingSystem).toContain('VP/MCP 下划线标签在窄屏使用横向滚动');
+
+        memoryIndex.search = ({ scopeFilter, requiredTag }) => {
+          if (requiredTag !== 'canonical-content') return [];
+          if (scopeFilter.includes('sessions/mcp-sibling-session')) {
+            return [{
+              id: 'mcp-entity-memory',
+              scope: 'sessions/mcp-sibling-session',
+              kind: 'context',
+              tags: ['canonical-content', 'mcp'],
+              sourceMessages: [],
+              body: '# MCP\n\nMCP tools must preserve project ownership boundaries.',
+              rank: -1,
+              createdAt: '2026-08-01T00:00:00.000Z',
+              updatedAt: '2026-08-01T00:00:00.000Z',
+            }];
+          }
+          if (scopeFilter.includes('user')) {
+            return [{
+              id: 'postgresql-entity-memory',
+              scope: 'user',
+              kind: 'context',
+              tags: ['canonical-content', 'postgresql'],
+              sourceMessages: [],
+              body: '# PostgreSQL\n\nPostgreSQL stores the workspace metadata for this project.',
+              rank: -1,
+              createdAt: '2026-08-01T00:00:00.000Z',
+              updatedAt: '2026-08-01T00:00:00.000Z',
+            }];
+          }
+          return [];
+        };
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'ok' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        for await (const _event of engine.query({
+          prompt: 'MCP',
+          sessionId: 'current-session',
+          projectSessionIds: ['mcp-sibling-session'],
+          vpPersona: { vpId: 'linus', name: 'Linus' },
+        })) { /* exhaust */ }
+        const mcpSystem = mockAdapter.callLog.at(-1).system;
+        expect(mcpSystem).toContain('### 过去 Session 的经验总结');
+        expect(mcpSystem).toContain('**mcp-sibling-session**: # MCP');
+        expect(mcpSystem).toContain('MCP tools must preserve project ownership boundaries');
+
+        memoryIndex.search = ({ scopeFilter, requiredTag }) => {
+          if (requiredTag !== 'canonical-content') return [];
+          if (scopeFilter.includes('sessions/fenced-mcp-sibling')) {
+            return [{
+              id: 'fenced-mcp-memory',
+              scope: 'sessions/fenced-mcp-sibling',
+              kind: 'context',
+              tags: ['canonical-content', 'mcp'],
+              sourceMessages: [],
+              body: 'Historical shell example:\n\n````sh\n# MCP\necho disabled\n````',
+              rank: -1,
+              createdAt: '2026-08-01T00:00:00.000Z',
+              updatedAt: '2026-08-01T00:00:00.000Z',
+            }];
+          }
+          if (scopeFilter.includes('user')) {
+            return [{
+              id: 'indented-user-mcp-memory',
+              scope: 'user',
+              kind: 'context',
+              tags: ['canonical-content', 'mcp'],
+              sourceMessages: [],
+              body: 'Historical shell example:\n\n    # MCP\n    echo disabled',
+              rank: -1,
+              createdAt: '2026-08-01T00:00:00.000Z',
+              updatedAt: '2026-08-01T00:00:00.000Z',
+            }];
+          }
+          return [];
+        };
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'ok' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const fencedEvents = [];
+        for await (const event of engine.query({
+          prompt: 'MCP',
+          sessionId: 'current-session',
+          projectSessionIds: ['fenced-mcp-sibling'],
+          vpPersona: { vpId: 'linus', name: 'Linus' },
+        })) {
+          fencedEvents.push(event);
+        }
+        const fencedSystem = mockAdapter.callLog.at(-1).system;
+        expect(fencedSystem).not.toContain('fenced-mcp-sibling');
+        expect(fencedSystem).not.toContain('echo disabled');
+        expect(fencedEvents.find(event => event.type === 'memory_used')).toBeUndefined();
+
+        await writeContent(
+          { kind: 'user' },
+          'Historical shell example:\n\n    # MCP\n    echo disabled',
+          { root: join(yeaftDir, 'memory'), language: 'zh' },
+        );
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'ok' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const indentedUserEvents = [];
+        for await (const event of engine.query({
+          prompt: 'MCP',
+          sessionId: 'current-session',
+          projectSessionIds: [],
+          vpPersona: { vpId: 'linus', name: 'Linus' },
+        })) {
+          indentedUserEvents.push(event);
+        }
+        const indentedUserSystem = mockAdapter.callLog.at(-1).system;
+        expect(indentedUserSystem).not.toContain('### 相关记忆');
+        expect(indentedUserSystem).not.toContain('echo disabled');
+        expect(indentedUserEvents.find(event => event.type === 'memory_used')).toBeUndefined();
+
+        const productionMemoryIndex = openSegmentIndex(join(yeaftDir, 'memory', 'index.db'));
+        try {
+          for (const [label, codeBody] of [
+            ['spaces', '    # MCP\n    echo disabled'],
+            ['tabs', '\t# MCP\n\techo disabled'],
+          ]) {
+            await writeContent(
+              { kind: 'user' },
+              codeBody,
+              { root: join(yeaftDir, 'memory'), language: 'zh' },
+            );
+            expect(syncScope(join(yeaftDir, 'memory'), productionMemoryIndex, 'user'), label)
+              .toMatchObject({ upserted: 1 });
+            mockAdapter.pushResponse([
+              { type: 'text_delta', text: 'ok' },
+              { type: 'stop', stopReason: 'end_turn' },
+            ]);
+            const productionCodeEvents = [];
+            const productionCodeEngine = new Engine({
+              adapter: mockAdapter,
+              trace,
+              yeaftDir,
+              sessionId: 'current-session',
+              config: { model: 'claude-test', maxOutputTokens: 2048, language: 'zh' },
+              memoryIndex: productionMemoryIndex,
+              taskManager,
+            });
+            for await (const event of productionCodeEngine.query({
+              prompt: 'MCP',
+              sessionId: 'current-session',
+              projectSessionIds: [],
+              vpPersona: { vpId: 'linus', name: 'Linus' },
+            })) {
+              productionCodeEvents.push(event);
+            }
+            const productionCodeSystem = mockAdapter.callLog.at(-1).system;
+            expect(productionCodeSystem, label).not.toContain('### 相关记忆');
+            expect(productionCodeSystem, label).not.toContain('echo disabled');
+            expect(productionCodeEvents.find(event => event.type === 'memory_used'), label).toBeUndefined();
+          }
+
+          await writeContent(
+            { kind: 'user' },
+            '# PostgreSQL\n\nPostgreSQL stores the workspace metadata for this project.',
+            { root: join(yeaftDir, 'memory'), language: 'zh' },
+          );
+          expect(syncScope(join(yeaftDir, 'memory'), productionMemoryIndex, 'user'))
+            .toMatchObject({ upserted: 1 });
+          mockAdapter.pushResponse([
+            { type: 'text_delta', text: 'ok' },
+            { type: 'stop', stopReason: 'end_turn' },
+          ]);
+          const productionPostgresEngine = new Engine({
+            adapter: mockAdapter,
+            trace,
+            yeaftDir,
+            sessionId: 'current-session',
+            config: { model: 'claude-test', maxOutputTokens: 2048, language: 'zh' },
+            memoryIndex: productionMemoryIndex,
+            taskManager,
+          });
+          for await (const _event of productionPostgresEngine.query({
+            prompt: 'PostgreSQL',
+            sessionId: 'current-session',
+            projectSessionIds: [],
+            vpPersona: { vpId: 'linus', name: 'Linus' },
+          })) { /* exhaust */ }
+        } finally {
+          productionMemoryIndex.close();
+        }
+        const postgresSystem = mockAdapter.callLog.at(-1).system;
+        expect(postgresSystem).toContain('### 相关记忆');
+        expect(postgresSystem).toContain('**user**: # PostgreSQL');
+        expect(postgresSystem).toContain('PostgreSQL stores the workspace metadata for this project');
       } finally {
         rmSync(yeaftDir, { recursive: true, force: true });
       }

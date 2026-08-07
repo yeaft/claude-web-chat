@@ -15,12 +15,20 @@ export class MockAgent {
   }
 
   async connect() {
+    const capabilities = [
+      'terminal',
+      'file_editor',
+      'work_center',
+      'work_center_message_v2',
+      'work_item_attachments',
+      'plaintext-ok',
+    ];
     const params = new URLSearchParams({
       type: 'agent',
       id: this.clientId,
       name: this.agentName,
       workDir: '/tmp/test',
-      capabilities: 'terminal,file_editor,work_center,work_center_message_v2,work_item_attachments,plaintext-ok',
+      capabilities: capabilities.join(','),
     });
     const wsUrl = `${this.serverUrl.replace('http', 'ws')}?${params}`;
     this.ws = new WebSocket(wsUrl);
@@ -28,6 +36,17 @@ export class MockAgent {
       const timeout = setTimeout(() => reject(new Error('MockAgent connect timeout')), 5000);
       this.ws.on('message', (data) => {
         const msg = JSON.parse(data);
+        if (msg.type === 'auth_required' && msg.tempId) {
+          this.send({
+            type: 'auth',
+            tempId: msg.tempId,
+            secret: '',
+            capabilities,
+            version: 'e2e',
+            platform: process.platform,
+          });
+          return;
+        }
         if (msg.type === 'registered') {
           this.agentId = msg.agentId;
           this.send({ type: 'agent_sync_complete' });
