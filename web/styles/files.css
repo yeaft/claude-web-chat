@@ -608,6 +608,53 @@
 /* File browser - Two column horizontal layout */
 .file-two-col {
   flex-direction: row !important;
+  position: relative;
+}
+
+.file-tree-toggle {
+  position: absolute;
+  top: 7px;
+  left: 8px;
+  z-index: 12;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.file-tree-toggle:hover,
+.file-tree-toggle.active {
+  color: var(--text-primary);
+  background: var(--sidebar-hover);
+}
+
+.file-two-col:not(.tree-collapsed) .file-tree-header,
+.file-two-col:not(.tree-collapsed) .file-ops-toolbar,
+.file-two-col:not(.tree-collapsed) .file-search-row,
+.file-two-col:not(.tree-collapsed) .file-tree-content {
+  padding-top: 44px;
+}
+
+.file-two-col:not(.tree-collapsed) .file-tree-header + .file-ops-toolbar,
+.file-two-col:not(.tree-collapsed) .file-tree-header + .file-search-row,
+.file-two-col:not(.tree-collapsed) .file-ops-toolbar + .file-search-row,
+.file-two-col:not(.tree-collapsed) .file-search-row + .file-tree-content {
+  padding-top: 0;
+}
+
+.file-two-col.tree-collapsed .file-col-tree,
+.file-two-col.tree-collapsed .file-tree-splitter {
+  display: none;
+}
+
+.file-two-col.tree-collapsed .file-tabs-bar {
+  padding-left: 44px;
 }
 
 .file-col-tree {

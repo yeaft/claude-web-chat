@@ -116,9 +116,6 @@ export default {
         @open-group-settings="openSessionSettings"
       />
 
-      <!-- Workbench Panel (between sidebar and main) -->
-      <WorkbenchPanel v-if="canUseWorkbench" />
-
       <WorkCenterPage v-if="store.workCenterOpen" />
 
       <!-- Center Conversation. The Session status pane is rendered as a
@@ -159,10 +156,13 @@ export default {
             :search-open="historySearchOpen"
             :loading-more-history="store.yeaftManualHistoryRefreshLoading"
             :session-status-visible="sessionStatusVisible"
+            :workbench-visible="store.workbenchExpanded"
+            :can-use-workbench="canUseWorkbench"
             :show-page-reload="isMobile"
             @toggle-search="toggleHistorySearch"
             @reload-messages="reloadMessages"
             @toggle-session-status="toggleSessionStatus"
+            @toggle-workbench="store.toggleWorkbench()"
             @reload-page="reloadPage"
           />
         </div>
@@ -434,6 +434,8 @@ export default {
         </ChatInput>
         </div><!-- /.yeaft-main-center -->
       </div>
+
+      <WorkbenchPanel v-if="canUseWorkbench" />
 
       <!-- Session status pane: announcement + VP roster + background tasks.
            It sits to the right of the conversation and to the left of debug. -->

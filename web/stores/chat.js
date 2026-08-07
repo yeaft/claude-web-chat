@@ -6749,6 +6749,10 @@ export const useChatStore = defineStore('chat', {
         if (pane) { pane.activeRightPanel = pane.activeRightPanel === panelType ? null : panelType; return; }
       }
       this.activeRightPanel = this.activeRightPanel === panelType ? null : panelType;
+      if (this.activeRightPanel) {
+        this.workbenchExpanded = false;
+        this.workbenchMaximized = false;
+      }
     },
     getPaneRightPanel(paneId) {
       if (paneId && this.isSplitMode) {
@@ -8065,7 +8069,9 @@ export const useChatStore = defineStore('chat', {
 
     toggleWorkbench() {
       this.workbenchExpanded = !this.workbenchExpanded;
-      if (!this.workbenchExpanded) {
+      if (this.workbenchExpanded) {
+        this.activeRightPanel = null;
+      } else {
         this.workbenchMaximized = false;
       }
     },
@@ -8098,12 +8104,25 @@ export const useChatStore = defineStore('chat', {
       });
     },
 
-    openFileInExplorer(filePath) {
-      if (!this.currentConversation) return;
+    openFileInExplorer(filePath, { hideTree = false, line = null } = {}) {
+      if (!this.currentConversation || !this.hasCapability('file_editor')) return false;
+      const path = typeof filePath === 'string' ? filePath.trim() : '';
+      if (!path) return false;
+      const wasExpanded = this.workbenchExpanded;
       this.workbenchExpanded = true;
-      window.dispatchEvent(new CustomEvent('open-file-in-explorer', {
-        detail: { filePath, conversationId: this.currentConversation }
+      this.workbenchMaximized = false;
+      this.activeRightPanel = null;
+      const dispatchOpen = () => window.dispatchEvent(new CustomEvent('open-file-in-explorer', {
+        detail: {
+          filePath: path,
+          conversationId: this.currentConversation,
+          hideTree: !!hideTree,
+          line: Number.isFinite(line) && line > 0 ? line : null,
+        }
       }));
+      if (wasExpanded) dispatchOpen();
+      else Vue.nextTick(dispatchOpen);
+      return true;
     },
 
     logout() {

@@ -11,8 +11,22 @@ import { createWsHandler } from './files/wsHandler.js';
 
 export default {
   name: 'FilesTab',
+  props: {
+    treeInitiallyVisible: { type: Boolean, default: true },
+  },
   template: `
-    <div class="files-tab file-two-col" :class="{ 'mobile-editor-view': isMobile && mobileView === 'editor' }" ref="rootEl">
+    <div class="files-tab file-two-col" :class="{ 'mobile-editor-view': isMobile && mobileView === 'editor', 'tree-collapsed': !treeVisible }" ref="rootEl">
+      <button
+        type="button"
+        class="file-tree-toggle"
+        :class="{ active: treeVisible }"
+        @click="treeVisible = !treeVisible"
+        :title="treeVisible ? $t('files.hideTree') : $t('files.showTree')"
+        :aria-label="treeVisible ? $t('files.hideTree') : $t('files.showTree')"
+        :aria-expanded="String(treeVisible)"
+      >
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2zm10 14H4V8h16v10z"/></svg>
+      </button>
       <!-- 左栏: 层级目录树 -->
       <div class="file-col-tree" :class="{ 'drop-active': externalDropActive }" :style="{ flex: '0 0 ' + treePanelWidth + 'px', transition: isTreeResizing ? 'none' : undefined, fontSize: fontSize + 'px' }" @wheel.ctrl.prevent="onWheel"
         @dragover.prevent="onTreeDragOver($event)"
@@ -439,9 +453,10 @@ export default {
       </div>
     </div>
   `,
-  setup() {
+  setup(props) {
     const store = Pinia.useChatStore();
     const t = Vue.inject('t');
+    const treeVisible = Vue.ref(props.treeInitiallyVisible);
 
     // --- Shared utilities ---
     const getEffectiveWorkDir = () => store.effectiveWorkDir || '';
@@ -599,6 +614,7 @@ export default {
       store, normalizePath, getEffectiveWorkDir,
       openFiles: tabs.openFiles,
       activeFileIndex: tabs.activeFileIndex,
+      setTreeVisible: visible => { treeVisible.value = !!visible; },
       activeFile: tabs.activeFile,
       fileLoading: tabs.fileLoading,
       fileSaving: tabs.fileSaving,
@@ -746,6 +762,7 @@ export default {
 
     return {
       store, debugStatus: editor.debugStatus, rootEl,
+      treeVisible,
       isMobile, mobileView, mobileGoBack,
       fontSize, zoomIn, zoomOut, onWheel,
       treePath: tree.treePath, treeRootPath: tree.treeRootPath,

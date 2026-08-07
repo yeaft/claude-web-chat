@@ -1066,6 +1066,8 @@ export default {
   'files.newFolder': 'New Folder',
   'files.collapseAll': 'Collapse All',
   'files.openFolder': 'Open Folder',
+  'files.showTree': 'Show folders',
+  'files.hideTree': 'Hide folders',
   'files.deleteSelected': 'Delete selected',
   'files.moveSelected': 'Move selected',
   'files.enterPath': 'Enter path...',
