@@ -170,6 +170,9 @@ export function prepareDynamicActionMutation({
     const workspaceMode = DYNAMIC_WORKSPACE_MODES.has(raw.workspaceMode)
       ? raw.workspaceMode
       : 'shared';
+    if (type === 'create_vp' && workspaceMode === 'read') {
+      throw new Error('Work Center create_vp Action cannot use read workspace mode because VP creation mutates Agent-global state');
+    }
     const sourceActionIds = normalizeSourceActionIds(raw.sourceActionIds, actions);
     if (workspaceMode === 'integrate' && sourceActionIds.length === 0) {
       throw new Error('Work Center integrate Action requires sourceActionIds');

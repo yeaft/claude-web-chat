@@ -2374,6 +2374,9 @@ export class WorkItemStore {
           || options.dynamicCoordinator !== true)) {
       throw new Error('create_vp Actions can only be persisted by the dynamic WorkItem Coordinator');
     }
+    if (input.type === 'create_vp' && input.workspaceMode === 'read') {
+      throw new Error('create_vp Actions cannot use read workspace mode because VP creation mutates Agent-global state');
+    }
     const action = {
       id: input.id || randomUUID(),
       workItemId,
@@ -3697,7 +3700,9 @@ export class WorkItemStore {
     const contractPatch = normalizeContractPatch(decision.contractPatch);
     if (decision.kind === 'create_actions'
         && !workItem.deliveryTarget
-        && (result?.mutation?.createdActions || []).some(action => action.workspaceMode !== 'read')) {
+        && (result?.mutation?.createdActions || []).some(action => (
+          action.type === 'create_vp' || action.workspaceMode !== 'read'
+        ))) {
       throw new Error('WorkItem delivery target must be confirmed before creating mutating or delivery Actions');
     }
     if (contractPatch) {

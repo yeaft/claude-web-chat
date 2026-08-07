@@ -259,7 +259,11 @@ export class WorkCenterService {
             coordinationMode: DYNAMIC_COORDINATION_MODE,
             executionSchemaVersion: DYNAMIC_EXECUTION_SCHEMA_VERSION,
             workDir,
-            deliveryTarget: ['workspace_files', 'pull_request', 'merge'].includes(payload.deliveryTarget)
+            // Creation-time delivery authority comes only from an explicit
+            // browser/user request. Trusted model producers may provide
+            // Session provenance, but cannot grant themselves delivery rights.
+            deliveryTarget: requestContext.userOriginated === true
+              && ['workspace_files', 'pull_request', 'merge'].includes(payload.deliveryTarget)
               ? payload.deliveryTarget : null,
             reuseMemory: payload.reuseMemory !== false,
             origin: payload.origin && typeof payload.origin === 'object'

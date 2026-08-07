@@ -374,6 +374,11 @@ export function createWorkItemVpTool({ yeaftDir, registry, isRunActive }) {
 
 function assertCreateVpActionAuthority(workItem, action, registry) {
   if (action?.type !== 'create_vp') return;
+  if (action.workspaceMode === 'read') {
+    const error = new Error('create_vp Action cannot use read workspace mode because VP creation mutates Agent-global state');
+    error.retryable = false;
+    throw error;
+  }
   const assignmentPolicy = action.assignmentPolicy;
   const assignedVpIds = assignmentPolicy?.mode === 'planned'
     ? assignmentPolicy.candidateVpIds || []

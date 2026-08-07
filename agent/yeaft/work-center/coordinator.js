@@ -283,7 +283,9 @@ function cleanText(value, limit, name) {
 
 function requiresDeliveryBoundaryDecision(detail, actions) {
   const requested = Array.isArray(actions) ? actions : [];
-  return !detail?.deliveryTarget && requested.some(action => action?.workspaceMode !== 'read');
+  return !detail?.deliveryTarget && requested.some(action => (
+    action?.type === 'create_vp' || action?.workspaceMode !== 'read'
+  ));
 }
 
 function permanentCoordinatorDiagnostic(cause, phase, language) {

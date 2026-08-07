@@ -42,15 +42,47 @@ function isSensitiveUrlName(value) {
     || decoded.includes('%');
 }
 
-function hasSensitiveUrlParameters(url) {
-  if ([...url.searchParams.keys()].some(isSensitiveUrlName)) return true;
-  const fragment = url.hash.startsWith('#') ? url.hash.slice(1) : url.hash;
-  if (!fragment) return false;
-  return fragment.split('&').some(part => {
+function containsSensitiveAssignment(value) {
+  const decoded = String(value || '');
+  const parts = decoded.split(/[?&#;]/);
+  if (parts.some(part => {
     const separator = part.indexOf('=');
     const name = separator === -1 ? part : part.slice(0, separator);
     return isSensitiveUrlName(name);
-  });
+  })) return true;
+
+  // Encoded nested values can decode to `outer=access_token=secret`
+  // without introducing another query delimiter. Inspect every token that
+  // immediately precedes an assignment, not only the outermost name.
+  const assignments = /(?:^|[?&#;=])([^?&#;=]+)(?==)/g;
+  return [...decoded.matchAll(assignments)].some(match => isSensitiveUrlName(match[1]));
+}
+
+function unsafeEncodedParameterPayload(value) {
+  let decoded = String(value || '');
+  if (!decoded) return false;
+  for (let step = 0; step <= MAX_URL_NAME_DECODE_STEPS; step += 1) {
+    if (containsSensitiveAssignment(decoded)) return true;
+    if (step === MAX_URL_NAME_DECODE_STEPS) {
+      // A payload still encoded after the bounded scan can hide another
+      // delimiter/name layer. Output URLs are untrusted, so fail closed.
+      return /%[0-9a-f]{2}/i.test(decoded);
+    }
+    let next;
+    try {
+      next = decodeURIComponent(decoded.replace(/\+/g, ' '));
+    } catch {
+      return true;
+    }
+    if (next === decoded) return false;
+    decoded = next;
+  }
+  return false;
+}
+
+function hasSensitiveUrlParameters(url) {
+  return unsafeEncodedParameterPayload(url.search.startsWith('?') ? url.search.slice(1) : url.search)
+    || unsafeEncodedParameterPayload(url.hash.startsWith('#') ? url.hash.slice(1) : url.hash);
 }
 
 export function normalizeOutputUrl(value) {

@@ -225,7 +225,7 @@ export async function handleWorkCenterRequest(msg) {
       const payload = Object.hasOwn(BROWSER_FILE_FIELDS, op)
         ? browserFilePayload(op, msg.payload)
         : (BROWSER_ACTION_DEBUG_OPS.has(op) ? browserFilePayload(op, msg.payload) : (msg.payload || {}));
-      data = await workCenter.handle(op, payload);
+      data = await workCenter.handle(op, payload, { userOriginated: true });
     }
     if (BROWSER_DETAIL_OPS.has(op) && data?.accepted !== true) {
       data = workCenter.projectBrowserDetail(data);

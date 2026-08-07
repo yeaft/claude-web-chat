@@ -18,6 +18,7 @@ import { projectWorkItemDetail } from '../../../../agent/yeaft/work-center/proje
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
 import { buildMainlineContextSnapshot } from '../../../../agent/yeaft/work-center/mainline-projection.js';
 import { WorkItemRunner, parseStructuredResult } from '../../../../agent/yeaft/work-center/runner.js';
+import createWorkItemTool from '../../../../agent/yeaft/tools/create-work-item.js';
 
 function workItem(overrides = {}) {
   return {
@@ -362,6 +363,31 @@ describe('Work Center dynamic coordination contract', () => {
     expect(store.listPendingDynamicCoordinatorWakes()).toEqual(expect.arrayContaining([
       expect.objectContaining({ workItemId: created.id, kind: 'work_item_resumed' }),
     ]));
+  });
+
+  it('persists creation-time delivery authority only for the browser path', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-delivery-authority-'));
+    const service = new WorkCenterService({
+      yeaftDir: tempDir,
+      settingsReader: () => ({ startImmediately: false }),
+      runtimeInfo: async () => ({ defaultWorkDir: tempDir }),
+    });
+    try {
+      const browser = await service.handle('create', {
+        title: 'Browser choice', goal: 'Create files', acceptanceCriteria: ['Files exist'],
+        workDir: tempDir, deliveryTarget: 'pull_request', start: false,
+      }, { userOriginated: true });
+      expect(browser.deliveryTarget).toBe('pull_request');
+
+      const producer = await service.handle('create', {
+        title: 'Model choice', goal: 'Create files', acceptanceCriteria: ['Files exist'],
+        workDir: tempDir, deliveryTarget: 'merge', start: false,
+      }, { trustedProducer: true });
+      expect(producer.deliveryTarget).toBeNull();
+      expect(createWorkItemTool.parameters.properties).not.toHaveProperty('deliveryTarget');
+    } finally {
+      await service.shutdown();
+    }
   });
 
   it('makes new service-created WorkItems Coordinator-driven while keeping the existing UX DTO', async () => {
@@ -822,6 +848,83 @@ describe('Work Center dynamic coordination contract', () => {
     })).toThrow(/create_vp.*available VP inventory/i);
   });
 
+  it('treats create_vp as mutating even when the model labels it read-only', async () => {
+    const readCreateVp = {
+      type: 'create_vp', objective: 'Create a specialist for accessibility review.',
+      approach: 'Persist a focused VP definition in the Agent-global VP library.',
+      expectedOutcome: 'The specialist VP is available for later Actions.',
+      capability: 'vp_authoring', candidateVpIds: ['linus'],
+      assignmentReason: 'Linus owns VP authoring.', sourceActionIds: [], workspaceMode: 'read',
+    };
+    expect(() => prepareDynamicActionMutation({
+      workItem: workItem(), actions: [], availableVpIds: ['linus'],
+      decision: { workItemType: 'software-change', actions: [readCreateVp] },
+    })).toThrow(/create_vp.*read/i);
+    expect(() => normalizeCoordinatorResponse({
+      reply: 'Creating a specialist.',
+      decision: {
+        kind: 'create_actions', reason: 'A specialist is missing.',
+        workItemType: 'software-change', actions: [readCreateVp],
+      },
+    }, workItem({ deliveryTarget: null, actions: [], runs: [] }), {
+      automatic: true, availableVpIds: ['linus'],
+    })).toThrow(/delivery boundary.*request_human/i);
+
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-read-create-vp-'));
+    store = new WorkItemStore(join(tempDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    const created = controller.create({
+      ...workItem(), workDir: tempDir, workflowTemplate: 'coordinator-driven', start: true,
+    });
+    const forgedSpec = {
+      type: 'create_vp', stageId: 'read-create-vp', status: 'ready',
+      assignmentPolicy: {
+        mode: 'planned', capability: 'vp_authoring', candidateVpIds: ['linus'],
+        fixedVpId: null, assignmentReason: 'Linus owns VP authoring.', separateFromStageTypes: [],
+      },
+      modelPolicy: null, sourceActionIds: [], dependsOnStageIds: [], workspaceMode: 'read',
+      changesRequestedStageId: null, requiredRole: '', instruction: 'Create a specialist.',
+      brief: {
+        objective: readCreateVp.objective, approach: readCreateVp.approach,
+        expectedOutcome: readCreateVp.expectedOutcome,
+      },
+      maxAttempts: 1,
+    };
+    const mailbox = store.enqueueCoordinatorMailbox(
+      created.id, 'work_item_created', {}, 'dynamic:create:read-create-vp',
+    );
+    const coordinatorClaim = store.claimCoordinatorMailbox(created.id, 'read-create-vp-coordinator');
+    const turn = store.beginDynamicCoordinatorTurn(mailbox.id, {
+      ownerBootId: 'read-create-vp-coordinator', claimEpoch: coordinatorClaim.claim_epoch,
+    });
+    expect(() => store.completeCoordinatorTurn(turn.turnId, {
+      reply: 'Creating the specialist.',
+      decision: { kind: 'create_actions', reason: 'A specialist is missing.', actions: [] },
+      mutation: {
+        workItemType: 'software-change', contractPatch: null, closeActions: [],
+        supersedeActionIds: [], createdActions: [{ ...forgedSpec, id: 'read-create-vp' }],
+      },
+    }, turn.fence)).toThrow(/create_vp.*read workspace mode/i);
+
+    const forged = store.createNextAction(created.id, { ...forgedSpec, type: 'custom' });
+    store.db.prepare(`UPDATE actions SET type = 'create_vp', creation_source = 'dynamic_coordinator',
+      workspace_mode = 'read' WHERE id = ?`).run(forged.id);
+    store.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ? WHERE id = ?`)
+      .run(forged.id, created.id);
+    const claim = store.claimReadyAction('read-create-vp-runner', 5_000);
+    const registry = new Registry();
+    registry.setVp({ id: 'linus', name: 'Linus', role: 'Engineer', traits: ['engineering'], persona: 'Build.' });
+    const runner = new WorkItemRunner({
+      store, yeaftDir: tempDir, registry,
+      runtimeProvider: vi.fn(async () => { throw new Error('provider dispatch must not occur'); }),
+    });
+    await expect(runner.run({
+      ...claim, ownerBootId: 'read-create-vp-runner', signal: new AbortController().signal,
+    })).rejects.toThrow(/create_vp.*read workspace mode/i);
+    expect(runner.runtimeProvider).not.toHaveBeenCalled();
+    expect(store.getRun(claim.run.id).toolPolicySnapshot).toBeNull();
+  });
+
   it('provisions a specialized VP through an assigned VP authoring Action', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'yeaft-dynamic-vp-provision-'));
     const registry = new Registry();
@@ -1132,6 +1235,9 @@ describe('Work Center dynamic coordination contract', () => {
         { kind: 'link', label: 'Signed URL', ref: signedUrl },
         { kind: 'link', label: 'Fragment token', ref: fragmentTokenUrl },
         { kind: 'link', label: 'Bare fragment token', ref: 'https://example.test/callback#token' },
+        { kind: 'link', label: 'Encoded fragment token', ref: 'https://example.test/callback#state=ok%26access_token%3Dsecret-token' },
+        { kind: 'link', label: 'Nested query token', ref: 'https://example.test/callback?redirect=https%3A%2F%2Fnested.test%2Fcb%3Faccess_token%3Dsecret-token' },
+        { kind: 'link', label: 'Nested assignment token', ref: 'https://example.test/callback?state=access_token%3Dsecret-token' },
         { kind: 'link', label: 'Safe URL', ref: 'https://example.test/artifact?page=1#download' },
         { kind: 'file', label: 'Safe file', ref: './docs/design.md' },
       ],
@@ -1159,6 +1265,9 @@ describe('Work Center dynamic coordination contract', () => {
         outputs: [
           { kind: 'link', label: 'Signed URL', ref: signedUrl },
           { kind: 'link', label: 'Fragment token', ref: fragmentTokenUrl },
+          { kind: 'link', label: 'Encoded fragment token', ref: 'https://example.test/callback#state=ok%26access_token%3Dsecret-token' },
+          { kind: 'link', label: 'Nested query token', ref: 'https://example.test/callback?redirect=https%3A%2F%2Fnested.test%2Fcb%3Faccess_token%3Dsecret-token' },
+          { kind: 'link', label: 'Nested assignment token', ref: 'https://example.test/callback?state=access_token%3Dsecret-token' },
         ],
       }],
       messages: [],
@@ -1167,6 +1276,9 @@ describe('Work Center dynamic coordination contract', () => {
         summary: 'Unsafe legacy result', acceptanceResults: [], evidenceRunIds: [],
         outputs: [
           { kind: 'link', label: 'Signed URL', ref: signedUrl, runId: 'unsafe-output-run' },
+          { kind: 'link', label: 'Encoded fragment token', ref: 'https://example.test/callback#state=ok%26access_token%3Dsecret-token', runId: 'unsafe-output-run' },
+          { kind: 'link', label: 'Nested query token', ref: 'https://example.test/callback?redirect=https%3A%2F%2Fnested.test%2Fcb%3Faccess_token%3Dsecret-token', runId: 'unsafe-output-run' },
+          { kind: 'link', label: 'Nested assignment token', ref: 'https://example.test/callback?state=access_token%3Dsecret-token', runId: 'unsafe-output-run' },
           { kind: 'file', label: 'Safe legacy output', ref: 'docs/legacy.md', runId: 'safe-output-run' },
         ],
         residualRisks: [],
@@ -1179,6 +1291,51 @@ describe('Work Center dynamic coordination contract', () => {
     expect(projected.mainline.actions[0].canonicalResult.outputs).toEqual([]);
     expect(JSON.stringify(projected)).not.toContain('AKIASECRET');
     expect(JSON.stringify(projected)).not.toContain('secret-token');
+
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-unsafe-output-persistence-'));
+    store = new WorkItemStore(join(tempDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    const created = controller.create({
+      ...workItem(), workDir: tempDir, workflowTemplate: 'coordinator-driven', start: true,
+    });
+    const action = store.createNextAction(created.id, {
+      type: 'custom', stageId: 'unsafe-output-action', status: 'ready',
+      assignmentPolicy: null, modelPolicy: null, sourceActionIds: [], dependsOnStageIds: [],
+      workspaceMode: 'shared', changesRequestedStageId: null, requiredRole: '',
+      instruction: 'Produce outputs.', brief: {
+        objective: 'Produce outputs.', approach: 'Return structured output references.',
+        expectedOutcome: 'Only safe output references persist.',
+      }, maxAttempts: 1,
+    });
+    store.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ? WHERE id = ?`)
+      .run(action.id, created.id);
+    const claim = store.claimReadyAction('unsafe-output-runner', 5_000);
+    controller.submit(claim.run.id, 'unsafe-output-runner', claim.run.leaseEpoch, {
+      outcome: 'completed', summary: 'Output normalization complete', evidence: ['verified'],
+      outputs: [
+        { kind: 'link', label: 'Encoded fragment token', ref: 'https://example.test/callback#state=ok%26access_token%3Dsecret-token' },
+        { kind: 'link', label: 'Nested query token', ref: 'https://example.test/callback?redirect=https%3A%2F%2Fnested.test%2Fcb%3Faccess_token%3Dsecret-token' },
+        { kind: 'link', label: 'Nested assignment token', ref: 'https://example.test/callback?state=access_token%3Dsecret-token' },
+        { kind: 'link', label: 'Safe URL', ref: 'https://example.test/artifact?page=1#download' },
+      ],
+      acceptanceChecks: workItem().acceptanceCriteria.map(criterion => ({
+        criterion, status: 'passed', evidence: 'verified',
+      })),
+    });
+    expect(store.getRun(claim.run.id).outputs).toEqual([
+      { kind: 'link', label: 'Safe URL', ref: 'https://example.test/artifact?page=1#download' },
+    ]);
+    const mainlineDetail = store.getWorkItemDetail(created.id);
+    const mainline = buildMainlineContextSnapshot(mainlineDetail, action).contextSnapshot;
+    expect(mainline.canonicalCompletedResultsIndex[action.id]).toMatchObject({ runId: claim.run.id });
+    expect(mainlineDetail.runs.find(run => run.id === claim.run.id).outputs).toEqual([
+      { kind: 'link', label: 'Safe URL', ref: 'https://example.test/artifact?page=1#download' },
+    ]);
+    const browser = projectWorkItemDetail(store.getWorkItemDetail(created.id));
+    expect(JSON.stringify(browser)).not.toContain('secret-token');
+    expect(browser.outputs).toEqual([
+      expect.objectContaining({ kind: 'link', ref: 'https://example.test/artifact?page=1#download' }),
+    ]);
   });
 
   it('requires a human decision when the delivery boundary is ambiguous', () => {
