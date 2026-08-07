@@ -15,10 +15,10 @@ Browser Runtime 的实时数据面采用 WebRTC，但系统不做成“只有 We
 - **Yeaft Engine 与 Chromium 同在 Agent**，AI 操作直接调用本地 Browser Runtime，不绕 WebRTC，也不经 Server 中转；
 - **Server 只做 owner-checked 控制面 relay**，不解码媒体、不持久化 SDP/ICE、不成为 SFU；
 - **TURN 是生产必需能力**，不能把“多数情况下能 P2P”当作可用性保证；
-- **一个 Browser Session 同时最多一个写控制者**。用户或一个 VP 持有 control lease，其他参与者只读；所有实际动作由 Agent 串行化；
-- 第一阶段只支持一个可见 page、无音频、无录屏持久化、无多人共同编辑。
+- **授权用户与 Yeaft 可以同时提交动作**，不做用户↔VP 的排他控制权转移；Agent 以 producer 身份、generation、序号和 page revision 做 fencing，并在唯一 action dispatcher 中串行执行；
+- 第一阶段只支持一个可见 page、无音频、无录屏持久化、无多个 Web 用户共同编辑。
 
-推荐的媒体源是**受控 Chromium 扩展的 `tabCapture` + offscreen WebRTC peer**。它能把 tab 直接变成 `MediaStreamTrack`，让 WebRTC 使用原生媒体编码、拥塞控制和解码。CDP `Page.startScreencast` 只作为受能力探测约束的 fallback：该接口是 experimental，输出 JPEG/PNG 帧，必须先解码/绘制再从 canvas 生成 track，成本和延迟都更差。
+主媒体/数据 endpoint 固定为**受控 Chromium 扩展的 offscreen document**：它拥有 `RTCPeerConnection`、DataChannels 和 video sender，Agent Node 只负责授权、信令协调、Chromium 生命周期、AI 工具与串行动作执行。首选媒体源是同一扩展中的 `tabCapture`，`MediaStreamTrack` 不跨进程传递。CDP `Page.startScreencast` 只作为受能力探测约束的 fallback：Agent 把有界的最新 JPEG/PNG 帧经本机 IPC 交给同一个 offscreen endpoint 解码、绘制并从 canvas 生成 track；该路径成本和延迟都更差。
 
 不接受以下实现：
 
@@ -50,7 +50,7 @@ Agent (workbench + CLI providers + Yeaft engine)
 - Agent 断线缓冲只允许白名单消息，实时媒体和输入不应进入 `agent/connection/buffer.js`；
 - 同名 `sessionId` 可由不同 Agent 拥有，跨 Agent 身份必须包含 `agentId`。
 
-当前仓库**没有 Browser Runtime、`browserSessionId` 或 WebRTC wire**，Agent production dependencies 也没有 Chromium automation 或 Node WebRTC endpoint。因此本文定义的是未来协议和组件边界，不描述已交付功能。
+当前仓库**没有 Browser Runtime、`browserSessionId` 或 WebRTC wire**，Agent production dependencies 也没有 Chromium automation 或 production browser peer runtime。因此本文定义的是未来协议和组件边界，不描述已交付功能。
 
 ## 3. 目标、非目标与成功指标
 
@@ -73,7 +73,7 @@ Agent (workbench + CLI providers + Yeaft engine)
 - 不保证 Browser Session 在 Agent/Chromium 进程重启后保持内存态；
 - 不自动持久化视频、网页正文、cookies、localStorage 或访问凭据到 Server；
 - 不把 Browser Runtime 作为绕过现有 WebSearch/WebFetch ownership 和数据投影规则的通道；
-- 不在本文选择具体 Node WebRTC、TURN 或 Chromium automation package；这些必须经过 spike 与供应链 review。
+- 不在本文选择具体 extension peer runtime、TURN 或 Chromium automation package；这些必须经过 spike 与供应链 review。
 
 ### 3.3 SLO 与容量基线
 
@@ -98,9 +98,10 @@ Agent (workbench + CLI providers + Yeaft engine)
 | `browserSessionId` | 一个 Agent-local 浏览器执行单元的随机、不透明 ID |
 | `peerId` | 一次 Web viewer attachment；每次 attach/reconnect 新建 |
 | `connectionGeneration` | 同一 peer 的 offer/answer/ICE fencing generation |
-| `controlLeaseEpoch` | 当前写控制权 fencing token；每次转移递增 |
+| `producerId` | Agent 授予一个输入生产者的短期不透明 ID；Web peer、VP turn 各自独立 |
+| `producerGeneration` | 该 producer 的授权 fencing generation；重连、turn 结束或撤权后递增 |
 | `pageRevision` | 顶层导航或 active page 变化后递增，用于丢弃旧坐标事件 |
-| `actionId` | 一次需要 ack 的用户或 AI 动作 ID |
+| `actionId` | 一次需要 ack 的用户或 AI 动作 ID，在 producer scope 内唯一 |
 
 权威身份是：
 
@@ -108,7 +109,7 @@ Agent (workbench + CLI providers + Yeaft engine)
 (ownerUserId, agentId, browserSessionId)
 ```
 
-`peerId`、`connectionGeneration`、`controlLeaseEpoch` 和 `pageRevision` 都是其下的临时 fencing 字段。不要将 Browser Session 复用为 Yeaft Session，也不要把 `conversationId` 当作 Browser Session owner。创建请求可以带来源引用：
+`peerId`、`connectionGeneration`、`producerId`、`producerGeneration` 和 `pageRevision` 都是其下的临时 fencing 字段。不要将 Browser Session 复用为 Yeaft Session，也不要把 `conversationId` 当作 Browser Session owner。创建请求可以带来源引用：
 
 ```js
 sourceRef?: {
@@ -135,17 +136,18 @@ Browser Web UI
        │
        │  ICE direct or TURN relay (DTLS-SRTP + SCTP)
        ▼
-Agent Browser Media Peer
-  RTCPeerConnection (offerer)
+Controlled Chromium extension offscreen document
+  RTCPeerConnection (offerer) + DataChannels
        │
-       ├── controlled Chromium extension offscreen document
-       │     └── tabCapture MediaStreamTrack
-       └── Browser Runtime
-             ├── Playwright/CDP page control
-             ├── input arbiter + control lease
-             ├── context/page lifecycle
-             ├── download/upload policy
-             └── bounded diagnostics
+       ├── tabCapture MediaStreamTrack (same extension process)
+       └── authenticated local runtime port
+             ▼
+Agent Browser Runtime
+  ├── Playwright/CDP page control
+  ├── producer authorization + bounded action dispatcher
+  ├── context/page lifecycle
+  ├── download/upload policy
+  └── bounded diagnostics
 
 Browser Web UI
        │ authenticated WSS / HTTPS (control + signaling only)
@@ -167,36 +169,39 @@ Agent Browser Control Adapter
 - 按 `agentId + browserSessionId` 保存 snapshot；
 - 管理 `RTCPeerConnection`、remote video、DataChannels 和 stats sampling；
 - 把 DOM pointer/keyboard/viewport 事件转换为 protocol message；
-- 只在持有 control lease 且连接 generation 匹配时发输入；
-- WebSocket reconnect 后重新取 authoritative snapshot，再 attach 新 peer；
-- 显示 direct/relay、延迟、只读、重连、Agent 离线和 Session 已销毁状态。
+- 只在 peer、connection generation 和 Web producer authorization 都匹配时发输入；
+- WebSocket reconnect 后重新取 authoritative snapshot，再 attach 新 peer；旧 peer 不恢复写权限；
+- 显示 direct/relay、延迟、输入已禁用、重连、Agent 离线和 Session 已销毁状态。
 
 #### Server
 
 - 验证 Web 用户身份、角色/entitlement 和目标 Agent ownership；
 - 为 lifecycle request 提供 request correlation 与 safe error；
 - 维护**易失**的 Browser Session route metadata，或从 Agent snapshot 重建；
+- 在转发 create/attach 时覆盖客户端自报身份，向 Agent stamp `ownerUserId`、`clientId`、`webConnectionId` 和 `webConnectionGeneration`；
 - 将 Web 发来的 signal 只转给 session owner Agent；
 - 将 Agent signal 只转给发起 attachment 的确切 `clientId`；
-- 签发/代理短期 TURN credential；
+- 在 attach/restart bootstrap 中先签发 endpoint-scoped 短期 TURN credential，再允许 Agent 创建 peer/offer；
 - 实施每 user、每 Agent 的创建/attach rate limit；
 - 不读取 SDP 内容做业务逻辑，不保存媒体，不缓存实时输入。
 
 #### Agent
 
-- 是 Browser Session、Chromium context、page、lease 和 action ledger 的权威 owner；
+- 是 Browser Session、Chromium context、page、producer authorization 和 action ledger 的权威 owner；
 - 启动固定版本、受控参数的 Chromium，不连接用户日常浏览器；
-- 生成 offer、处理 answer/trickle ICE、创建 DataChannels 和 VideoTrack；
-- 串行执行用户与 AI 动作，校验 generation/lease/page revision；
+- 通过受认证、只绑定当前 Browser Session 的本机 runtime port 驱动扩展 offscreen peer；offscreen endpoint 生成 offer、处理 answer/trickle ICE、创建 DataChannels 和 VideoTrack；
+- 接收 Server-stamped identity，不信任 Web payload 中的 owner/client 字段；
+- 串行执行用户与 AI 动作，校验 producer generation/seq/page revision，并应用队列配额；
 - 采集有界状态与指标并通过控制面上报；
-- Agent 重启时关闭内存态 Browser Sessions，并向重连客户端返回明确 terminal reason。
+- Agent 控制连接丢失时立即撤销 Web producer、释放按键/按钮并关闭 peer；Agent 重启时关闭内存态 Browser Sessions。
 
 #### TURN
 
 - 部署 UDP + TCP + TLS 入口，至少支持 `turn:` UDP 和 `turns:` TCP/443；
-- 使用 5–10 分钟 TTL 的临时 credential，用户名绑定 owner、Agent、Browser Session 和 expiry；
+- 使用 5–10 分钟 TTL 的临时 credential，username/签名 scope 绑定 `ownerUserId + agentId + browserSessionId + peerId + connectionGeneration + endpointRole(web|agent) + credentialId + expiry`；Web 与 Agent endpoint 使用不同 credential；TURN REST shared-secret credential 本身通常只能由 TURN 校验 username/expiry，因此 `credentialId` scope 还必须由 Server route ledger 强制，不能假称 TURN daemon 理解业务字段；
+- attach/restart request 以 `requestId + connectionGeneration` 幂等；重复请求返回同一未过期 credential，generation 结束、peer close、超时或失败时撤销 Server route/credentialId 并让既有 TURN allocation 在短 TTL 内自然过期；如果部署要求立即 cut-off，必须使用 TURN management API 主动删除 allocation，不能把删除 route 描述成已经撤销 TURN credential；
 - 有带宽、allocation、并发、日志脱敏和滥用限制；
-- credential 只在 authenticated create/attach/restart 流程中返回；
+- credential 只在 authenticated attach/restart bootstrap 中返回，并分别只投影给对应 endpoint；credential TTL 不能超过 peer route TTL，过期前需要 restart/new generation，禁止原 generation 静默续签；
 - Server 不持久化明文 TURN secret。
 
 ## 6. Chromium、媒体与 AI 控制
@@ -209,13 +214,13 @@ Agent Browser Control Adapter
 BrowserSession
   ├── BrowserContext (cookies/storage/cache isolated from other sessions)
   ├── active Page
-  ├── capture target
-  ├── one control lease
-  ├── one or more read-only peers (phase 1 default max: 2)
-  └── bounded action ledger
+  ├── capture target + logical peer record in the shared offscreen peer host
+  ├── authorized Web/VP producers
+  ├── bounded action queue + action ledger
+  └── one or more viewer peers (phase 1 default max: 2)
 ```
 
-默认使用临时 profile。若以后支持持久 profile，必须单独设计 owner、加密、删除和迁移语义；第一阶段不能偷偷写入普通 Session 数据目录。
+第一阶段固定使用一个 Browser Runtime 专用的临时 Chromium user-data-dir，并在 Runtime shutdown 后删除；其中每个 Browser Session 使用独立 incognito `BrowserContext`，Session close 时销毁该 context，不提供登录态跨 Browser Session 保留。一个 Chromium process 可以托管多个隔离 context；extension offscreen document 是该 profile 的共享 peer host，但其 peer/capture/action state 必须按 Browser Session 隔离。持久 context/profile 会改变磁盘 owner、扩展加载、cookie/storage、崩溃恢复、加密和删除语义，必须另做设计、单独 capability 和 migration；不能把临时 context 悄悄替换为 `launchPersistentContext()`，也不能写入普通 Session 数据目录。
 
 Chromium 启动约束：
 
@@ -227,15 +232,18 @@ Chromium 启动约束：
 - 下载进入 Browser Session 专用临时目录，必须经显式用户动作才能转入 workDir；
 - upload 只能引用当前 owner 已授权的 Agent-local 文件 handle，不能接收浏览器提供的任意绝对路径。
 
-### 6.2 首选捕获：`tabCapture`
+### 6.2 主 endpoint 与首选捕获：extension offscreen + `tabCapture`
+
+Browser media peer 不放在 Node 或独立 sidecar。它固定运行在受控 Chromium 扩展的 offscreen document；同一 JS context 创建 `RTCPeerConnection`、DataChannels，并消费 `tabCapture` 的 `MediaStreamTrack`。因此没有跨进程传递 DOM `MediaStreamTrack` 这条虚假边界。Agent Node 与扩展之间只传信令、动作、状态以及 fallback 的有界压缩帧，不传首选路径的 track object。
 
 受控扩展负责：
 
-1. 由 Browser Runtime 激活目标 tab；
-2. 通过 `chrome.tabCapture.getMediaStreamId({ targetTabId })` 获得一次性 stream ID；
-3. 在 extension offscreen document 中调用 `getUserMedia()` 消费 stream ID；
-4. 将 video track 添加到 Agent 的 `RTCPeerConnection`；
-5. tab 导航继续使用同一 capture，tab 关闭或 capture error 时上报 terminal/rebind 状态。
+1. Browser Runtime 通过 authenticated local runtime port 指定 Browser Session 与 target tab；
+2. 扩展校验 port secret、Browser Session、tab allowlist 和 generation；
+3. 通过 `chrome.tabCapture.getMediaStreamId({ targetTabId })` 获得一次性 stream ID；
+4. 在 extension offscreen document 中调用 `getUserMedia()` 消费 stream ID；
+5. 在同一 offscreen document 创建 peer，将 video track 加入本地 `RTCPeerConnection`；
+6. tab 导航继续使用同一 capture，tab 关闭或 capture error 时上报 terminal/rebind 状态。
 
 选择原因：
 
@@ -244,6 +252,8 @@ Chromium 启动约束：
 - extension offscreen document 明确支持 `WEB_RTC` reason；
 - 页面跨 origin 不影响 tab-level capture。
 
+Chrome 对一个 installed extension/profile 同时只允许一个 offscreen document，因此它是该 Chromium process 的 peer host，不是每 Session 任意创建的 document。Runtime 在该 document 内按 `browserSessionId + peerId` 复用多 peer，仍受全局 `maxSessions/maxPeers` 硬限制；若 platform/version 无法可靠复用，则该 process 的 Browser Session 并发上限降为 1。
+
 实现前必须做 Linux、macOS、Windows 与 headless/headful capability matrix。Chrome 文档要求 capture 由 extension invocation/active-tab 权限触发；如果受控启动环境不能可靠满足这一约束，该平台不能宣称支持首选路径。
 
 ### 6.3 Fallback：CDP screencast → canvas track
@@ -251,21 +261,21 @@ Chromium 启动约束：
 fallback pipeline：
 
 ```text
-CDP Page.startScreencast (JPEG, bounded dimensions/quality)
+Agent CDP Page.startScreencast (JPEG, bounded dimensions/quality)
   → immediately ack each screencastFrame
-  → decode latest frame only
-  → draw to canvas
-  → canvas.captureStream(0)
-  → requestFrame() when a new frame is drawn
-  → RTCPeerConnection.addTrack()
+  → keep latest frame only
+  → authenticated local IPC to extension offscreen endpoint
+  → decode/draw latest frame to canvas
+  → canvas.captureStream(0) + requestFrame()
+  → same offscreen RTCPeerConnection.addTrack()
 ```
 
 硬规则：
 
 - `Page.startScreencast` 是 experimental，只能在 startup probe 成功后 advertise；
-- frame queue 长度固定为 1，新帧覆盖未处理旧帧；
-- 收到 frame 后立即 `screencastFrameAck`，不能因 WebRTC backpressure 卡住 Chromium；
-- JPEG/base64 不进入 DataChannel、WebSocket 或 transcript；
+- Agent 与 offscreen endpoint 两端的 frame slot 长度都固定为 1，新帧覆盖未处理旧帧；本机 IPC 有 session/generation、字节和速率上限；
+- 收到 frame 后立即 `screencastFrameAck`，不能因本机 IPC 或 WebRTC backpressure 卡住 Chromium；
+- JPEG/base64 不进入 DataChannel、Server WebSocket 或 transcript；只允许在 Agent↔受控扩展的本机 fallback IPC 中短暂存在；
 - decode/draw/encode 的 CPU、p95 frame age 和丢帧率必须达标，否则该平台 capability 关闭；
 - fallback 不承诺 tab audio。
 
@@ -292,44 +302,84 @@ Yeaft Browser tool 与 Web viewer 操作同一 Browser Runtime API：
 ```js
 browserRuntime.performAction({
   browserSessionId,
-  actor: { kind: 'vp', sessionId, vpId, turnId },
-  controlLeaseEpoch,
+  producer: {
+    kind: 'vp', sessionId, vpId, turnId,
+    producerId, producerGeneration, seq
+  },
+  pageRevision,
   actionId,
   action: { type: 'click', locator: { role: 'button', name: 'Save' } }
 })
 ```
 
-AI 优先用 DOM/role/locator 操作，不用视频像素坐标。用户输入用 viewport 坐标。两者在 Agent 的单一 action queue 中提交，执行结果带 action revision。这样页面事实只有一个 owner，不会出现用户点击和 AI click 同时修改页面的竞态。
+AI 优先用 DOM/role/locator 操作，不用视频像素坐标。用户输入用 viewport 坐标。两者可同时提交，但都进入 Agent 的唯一有界 action dispatcher，经公平 dequeue 后逐个执行；执行结果带 action revision。这里的串行化是事实一致性边界，不是用户与 AI 的排他控制权。
 
-## 7. 控制权与并发
+### 6.6 AI `observe` 与结果投影
 
-### 7.1 单写者 lease
+Semantic locator 需要一个明确、受限的观察 API，不能把“可用 DOM”理解为把整页 DOM、可见文本或 secrets 塞进模型：
 
-一个 Browser Session 同时只有一个 controller：
-
-```text
-none → user(peerId) → vp(sessionId, vpId, turnId) → user(peerId) → none
+```js
+browserRuntime.observe({
+  browserSessionId,
+  producer: { kind: 'vp', sessionId, vpId, turnId, producerId, producerGeneration },
+  pageRevision,
+  query: { roles: ['button', 'textbox'], names?: ['Save'] },
+  limits: { maxNodes: 200, maxDepth: 8, maxTextChars: 12000, timeoutMs: 3000 }
+})
 ```
 
-Agent 是 lease authority。每次 grant/revoke/transfer 都递增 `controlLeaseEpoch`。所有写动作必须携带当前 epoch；旧 epoch 一律拒绝。
+观察投影只包含有界的 role/name/state/value metadata、稳定的 opaque locator handle、viewport bounds、safe URL origin/title 和 `truncated` 标记。默认排除：`input[type=password]` 值、hidden/aria-hidden subtree、cookie/storage、script/style、network body/header、token-like text、表单值和跨 origin iframe 内容。普通文本采用总字符预算和单节点预算；命中 secret/token redactor 的字段替换为 `[redacted]`。若任务确实需要读取表单值或页面正文，必须调用目的明确、字段受限的单独动作，并让 tool result 标记敏感级别。
 
-默认策略：
+Agent 保存完整页面事实仅限执行期间内存；进入模型上下文的是上述投影，进入 transcript/debug/memory 的副本还要经过现有 tool-output budget、folding、visibility 和敏感字段 redaction。默认持久审计只有 action type、opaque locator handle、结果码、耗时、revision 和 evidence digest，不保存 selector 原文、DOM、截图、页面正文或 form value。action result 形状固定为：
 
-- 用户 attach 后获得 control；
-- AI 请求 control 时，若用户最近 5 秒有输入，则等待或向用户请求；
-- 用户在 AI 控制期间点击“Take control”会撤销 AI lease；
-- AI tool 收到 `control_revoked`，在安全边界停止，不能继续重放剩余动作；
-- 只读 viewer 不接收 keyboard/pointer channel 的发送权限；
-- 导航、file chooser、permission prompt 和 JavaScript dialog 都经过 action queue。
+```js
+{
+  actionId,
+  status: 'completed' | 'rejected' | 'failed',
+  pageRevision,
+  actionRevision,
+  safeSummary,
+  evidence: [{ kind: 'page_state', digest, redacted: true }],
+  errorCode?
+}
+```
+
+`safeSummary` 有独立字符上限且不回显输入 text/clipboard/password；raw automation/CDP error 只留 Agent-local protected diagnostics。
+
+## 7. 并发、producer 授权与动作时序
+
+### 7.1 多 producer、单执行边界
+
+授权用户和一个或多个已获准的 VP turn 可以同时是 producer：
+
+```text
+Web peer producer ─┐
+VP turn producer ──┼─→ Agent bounded action dispatcher ─→ Chromium page
+VP turn producer ──┘
+```
+
+Agent 为每个 producer 签发 `producerId + producerGeneration`，并绑定不可变 actor scope：
+
+- Web producer：`ownerUserId + clientId + webConnectionId + webConnectionGeneration + peerId + connectionGeneration`；
+- VP producer：`ownerUserId + agentId + sessionId + vpId + turnId`；
+- viewer attachment 可以收视频，但没有 Web producer authorization，因此不能发输入；
+- Web reconnect/peer replacement、VP turn 结束/cancel、owner/access 变化会撤销对应 producer；同一个 producer record 若续期/重建则 generation 必须递增，旧 `(producerId, generation)` 永久失效；
+- 撤销一个 producer 不阻塞其他 producer；不存在“Take Control”、control lease 或用户↔AI 控制转移；
+- 导航、file chooser、permission prompt 和 JavaScript dialog 都经过同一 dispatcher。
+
+同时提交不等于同时执行。Dispatcher 用公平 dequeue 选择下一个 producer，并在接受该动作时分配全 Session 单调 `actionRevision`；该 revision 定义实际执行顺序。每次动作开始前重新校验 producer、page revision 和 Session state。用户或 AI 如果依赖特定页面事实，必须携带观察得到的 `pageRevision`；过期就重新 observe，而不是抢占另一方。
 
 ### 7.2 动作幂等与时序
 
-- reliable `control` channel 上每条消息有单调 `seq`；Agent 只接受 `seq = lastAccepted + 1`；
-- `pointer` channel 的 move/wheel 是瞬时状态，允许丢失和乱序，以最新 `seq` 为准；
+- 每个 producer 有独立的单调 `seq`；Agent 只接受 `seq = lastAccepted + 1`，其他 producer 的 seq 不互相阻塞；
+- reliable `control` channel 的 Web producer 还必须匹配 peer 和 connection generation；
+- `pointer` channel 的 move/wheel 是瞬时状态，允许丢失和乱序，以该 producer 的最新 `seq` 为准；
 - `pointerDown` / `pointerUp` / click 不走不可靠 channel，而走 reliable `control`；
+- `actionId` 在 `(browserSessionId, producerId, producerGeneration)` 内唯一；重复的相同 payload 返回 ledger 结果，不同 payload 返回 conflict；
 - ack 只表示 Agent 已接受或执行，不表示业务页面已达到预期；
-- Web 在超时后可查询 `actionId`，但不能自动重新发送非幂等动作；
-- page navigation 递增 `pageRevision`，旧 revision 的坐标输入直接拒绝并要求客户端重映射。
+- Web 或 AI 在超时后可查询 `actionId`，但不能自动重新发送非幂等动作；
+- page navigation 递增 `pageRevision`，旧 revision 的坐标或 semantic action 直接拒绝并要求重新映射/observe；
+- peer/generation/producer 结束时，Agent 在 Chromium 输入层合成释放该 producer 尚未释放的 key/button，清空 pointer/button state，并拒绝队列中尚未开始的动作；已经开始且副作用未知的动作只报告 `outcome_unknown`，不自动重跑。
 
 ## 8. 控制面与信令协议
 
@@ -366,6 +416,7 @@ Web → Server → Agent：
     locale: 'zh-CN',
     capturePreference: 'auto' // auto | tab | cdp
   }
+  // ownerUserId/clientId/webConnection* are not accepted from Web payload
 }
 ```
 
@@ -386,11 +437,32 @@ Agent → exact requesting Web client：
 }
 ```
 
-Create 必须支持 `requestId` 幂等：同一 Web connection generation 内相同 request 返回相同结果；不同 payload 返回 conflict。Server 不能用 client 提交的 `ownerUserId`。
+Create 必须支持 `requestId` 幂等：同一 Server-stamped Web connection generation 内相同 request 返回相同结果；不同 payload 返回 conflict。Server 丢弃客户端自报的 owner/client/connection 字段，向 Agent 转发时增加：
 
-### 8.3 Attach 与 offer/answer
+```js
+serverIdentity: {
+  ownerUserId,
+  clientId,
+  webConnectionId,
+  webConnectionGeneration
+}
+```
 
-Web → Server → Agent：
+Agent 把该 stamp 固化进 Browser Session owner record；缺失、变化或与 authenticated Agent route 不一致就拒绝。Server 还必须为每次 Web socket 建立随机 `webConnectionId` 和单调/随机不可复用的 `webConnectionGeneration`，不能拿前端 store 自己的 reconnect counter 代替；socket 关闭后该身份永久失效。
+
+### 8.3 Attach bootstrap 与 offer/answer
+
+Bootstrap 必须按以下顺序完成，不能让 offer/trickle 先于 route 或 TURN config：
+
+1. Web 发 `browser_peer_attach`；
+2. Server 校验 user→Agent 和 Browser Session owner，在单个同步临界区保留 provisional `peerId + connectionGeneration` route，绑定 exact `clientId/webConnectionId`；其他 signal 只能看到 `preparing` 并被拒绝；
+3. Server 为 Web endpoint 和 Agent extension endpoint 各签发 scope 不同的 TURN credential；mint 成功后在同一临界区提交 route，失败则删除 provisional route；
+4. Server 将带 `serverIdentity`、Agent-side `iceServers` 和 peer route expiry 的 `browser_peer_prepare` 转给 Agent；
+5. Agent 持久到内存 peer record，并把 Agent-side ICE config 交给 offscreen endpoint；只有 `setConfiguration()`/constructor 成功后才能 `createOffer()`；
+6. Agent 回复 `browser_peer_prepared`；Server 确认 route 仍有效后，把 Web-side ICE config 与后续 offer 投影给 exact Web client；
+7. 任一步失败都按 `requestId + generation` 幂等清理 peer、producer、route 和临时 credential scope。
+
+Web → Server：
 
 ```js
 {
@@ -399,7 +471,7 @@ Web → Server → Agent：
   browserSessionId,
   requestId,
   connectionGeneration,
-  role: 'controller' | 'viewer',
+  role: 'interactive' | 'viewer',
   clientCapabilities: {
     codecs: ['video/VP8', 'video/H264'],
     maxWidth: 1920,
@@ -409,7 +481,23 @@ Web → Server → Agent：
 }
 ```
 
-Agent 创建 peer 和 offer 后返回：
+Server → Agent（Server-only fields）：
+
+```js
+{
+  type: 'browser_peer_prepare',
+  agentId,
+  browserSessionId,
+  peerId,
+  requestId,
+  connectionGeneration,
+  serverIdentity: { ownerUserId, clientId, webConnectionId, webConnectionGeneration },
+  routeExpiresAt,
+  agentIceServers: [{ urls, username, credential, expiresAt, endpointRole: 'agent' }]
+}
+```
+
+Agent 创建 peer 和 offer 后，经 Server 返回 exact Web client（`role` 取自 Server route，不接受 Agent/Web 自报变化）：
 
 ```js
 {
@@ -420,12 +508,10 @@ Agent 创建 peer 和 offer 后返回：
   requestId,
   connectionGeneration,
   description: { type: 'offer', sdp },
-  iceServers: [{
-    urls: ['turn:turn.example.test:3478?transport=udp', 'turns:turn.example.test:443?transport=tcp'],
-    username,
-    credential,
-    expiresAt
-  }]
+  webIceServers: [{ urls, username, credential, expiresAt, endpointRole: 'web' }],
+  producerAuthorization: role === 'interactive'
+    ? { producerId, producerGeneration, expiresAt }
+    : null
 }
 ```
 
@@ -455,7 +541,7 @@ Web → Agent：
 }
 ```
 
-candidate 为 `null` 表示 gathering complete。任何 generation 不匹配的 answer/candidate 必须丢弃。SDP 和 candidate 设单消息大小上限、字段长度上限和消息速率上限。
+candidate 为 `null` 表示 gathering complete。任何 generation、peer route、endpoint role 或 Server-stamped client identity 不匹配的 answer/candidate 必须丢弃。Agent 在收到 `browser_peer_prepare` 且 offscreen peer record ready 前不得发 offer/candidate；Server 在 route 原子安装完成前不得转发。SDP 和 candidate 设单消息大小上限、字段长度上限、总 candidate 数和消息速率上限。
 
 ### 8.4 Lifecycle 和 snapshot
 
@@ -464,8 +550,7 @@ candidate 为 `null` 表示 gathering complete。任何 generation 不匹配的 
 { type: 'browser_session_get', agentId, browserSessionId, requestId }
 { type: 'browser_session_close', agentId, browserSessionId, requestId, expectedRevision }
 { type: 'browser_session_list', agentId, requestId }
-{ type: 'browser_control_request', agentId, browserSessionId, requestId, peerId }
-{ type: 'browser_control_release', agentId, browserSessionId, requestId, peerId, controlLeaseEpoch }
+{ type: 'browser_peer_detach', agentId, browserSessionId, requestId, peerId, connectionGeneration }
 { type: 'browser_peer_restart', agentId, browserSessionId, peerId, requestId, nextGeneration }
 
 // Agent → Web
@@ -480,8 +565,8 @@ candidate 为 `null` 表示 gathering complete。任何 generation 不匹配的 
   pageRevision,
   captureMode,
   viewerCount,
-  controller,
-  controlLeaseEpoch,
+  interactivePeerCount,
+  authorizedProducerCount,
   terminalReason,
   safeError
 }
@@ -507,7 +592,11 @@ browserPeers.set(peerId, {
   agentId,
   browserSessionId,
   clientId,
+  webConnectionId,
+  webConnectionGeneration,
   connectionGeneration,
+  role,
+  routeState: 'preparing' | 'offered' | 'connected' | 'closed',
   expiresAt
 })
 ```
@@ -515,22 +604,25 @@ browserPeers.set(peerId, {
 规则：
 
 - create 前验证 user → Agent access；
-- 后续每条消息同时验证 route owner、Agent id、Browser Session id；
-- Agent event 中的 `agentId` 由已认证 socket stamping，忽略 payload 自称值；
-- offer/ICE 只发给 `browserPeers[peerId].clientId`，不能广播给同 owner 所有 tabs；
-- snapshot/status 可发给同 owner、同 Agent 的 tabs，但不包含 SDP、candidate、TURN credential；
-- Server restart 后 route table 可由 Agent `browser_session_list` 重建；旧 peer 一律失效并重新 attach；
+- attach 时先在同步临界区保留不可转发 signal 的 `preparing` route，credential mint 成功后才提交/转发 prepare；同 request/generation 重试返回同一 record，payload 不同则 conflict；
+- 后续每条消息同时验证 route owner、Agent id、Browser Session id、exact client/Web connection 和 generation；
+- 发给 Agent 的 owner/client/Web connection identity 全由 Server stamp；Agent event 中的 `agentId` 由已认证 Agent socket stamp，忽略 payload 自称值；
+- offer/ICE 只发给 `browserPeers[peerId].clientId + webConnectionId`，不能广播给同 owner 所有 tabs；
+- Web 或 Agent endpoint 的 TURN credential 只发给对应 endpoint，不出现在 snapshot/broadcast；
+- attach/restart 失败、detach、Web connection close、Agent connection close、route TTL 到期或 Session terminal 都删除 peer route并触发 Agent cleanup；
+- snapshot/status 可发给同 owner、同 Agent 的 tabs，但不包含 SDP、candidate、producer secret 或 TURN credential；
+- Server restart 后 Browser Session route 可由 Agent `browser_session_list` 重建；peer/producer 和旧 credential scope 一律失效并重新 attach；
 - 不把 browser signal 放入通用 disconnected message buffer。
 
 ## 9. DataChannel 协议
 
-Agent 作为 offerer 创建三个 in-band channels。第一条 DataChannel 会触发协商，因此必须在 createOffer 前创建。
+Agent 驱动的 extension offscreen endpoint 作为 offerer 创建三个 in-band channels。第一条 DataChannel 会触发协商，因此必须在 createOffer 前创建并在 Agent 已取得 TURN config 之后协商。
 
 | label | 配置 | 用途 |
 | --- | --- | --- |
-| `browser.control.v1` | `{ ordered: true }` | keyboard、button、navigation、clipboard write、lease、ack |
+| `browser.control.v1` | `{ ordered: true }` | keyboard、button、navigation、clipboard write、action ack |
 | `browser.pointer.v1` | `{ ordered: false, maxRetransmits: 0 }` | pointer move、wheel、hover viewport position |
-| `browser.state.v1` | `{ ordered: true }` | Agent → Web page/lease/dialog/status 增量 |
+| `browser.state.v1` | `{ ordered: true }` | Agent → Web page/producer/dialog/status 增量 |
 
 DataChannel payload 使用有版本的 CBOR 或 MessagePack binary envelope；spike 阶段可用 JSON，但生产必须测量解析和 allocation。无论编码，逻辑 schema 保持：
 
@@ -540,7 +632,8 @@ DataChannel payload 使用有版本的 CBOR 或 MessagePack binary envelope；sp
   browserSessionId,
   peerId,
   connectionGeneration,
-  controlLeaseEpoch,
+  producerId,
+  producerGeneration,
   pageRevision,
   seq,
   type,
@@ -567,7 +660,7 @@ DataChannel payload 使用有版本的 CBOR 或 MessagePack binary envelope；sp
 
 - 默认发送 `KeyboardEvent.code + key + modifiers`，Agent 映射到 CDP/automation input；
 - IME/composition 结束后用 `text_insert`，不试图逐键重建中文输入法；
-- 浏览器保留快捷键必须在 Web 端明确 allowlist/denylist，避免 `Ctrl+W` 关闭 Yeaft 页；
+- 浏览器保留快捷键在 Web 端做 UX allowlist/denylist，避免 `Ctrl+W` 关闭 Yeaft 页；Agent 仍独立校验允许的 key/code/modifier 组合，不能把 Web 过滤当安全边界；
 - password field 仍可远程输入，但 text 不写日志、不进入 state event、不做 analytics。
 
 ### 9.2 Unreliable pointer messages
@@ -582,9 +675,9 @@ Web 端按 animation frame 合并 move，Agent 端只保留最新 seq。`buffere
 ### 9.3 State 与 ack
 
 ```js
-{ type: 'action_ack', payload: { actionId, status: 'accepted' | 'completed' | 'rejected', code?, pageRevision } }
+{ type: 'action_ack', payload: { actionId, status: 'accepted' | 'completed' | 'rejected', code?, pageRevision, actionRevision? } }
 { type: 'page_state', payload: { url, title, canGoBack, canGoForward, loading, pageRevision } }
-{ type: 'lease_state', payload: { controlLeaseEpoch, controller, expiresAt } }
+{ type: 'producer_state', payload: { producerId, producerGeneration, authorized, expiresAt, reason? } }
 { type: 'dialog_opened', payload: { dialogId, kind, message, hasDefaultPrompt } }
 { type: 'capture_state', payload: { width, height, fps, frozen, captureMode } }
 ```
@@ -629,18 +722,20 @@ failed | connected → closed
 4. 10 秒内未恢复，关闭 peer，Web 通过控制面重新 attach；
 5. Browser Session 不因单个 peer 失败立即销毁；无 viewer idle TTL 到期才回收。
 
-### 10.3 WebSocket 断开
+### 10.3 WebSocket / Agent 控制连接断开
 
-- WebSocket 是信令和授权生命线，不是媒体 transport；短暂断开时已建立的 WebRTC 可以继续展示；
-- 断线后立即冻结写控制：DataChannel 输入最多有 5 秒 grace，超过后 Agent revoke lease；
-- WebSocket 恢复后 Web 请求 snapshot；Server/Agent 校验 browser session 仍属于该 user；
-- 若同一 peer 仍健康，可显式 `browser_peer_reauthorize` 恢复 lease；否则创建新 peer；
-- auth failure、账号 disabled、Agent ownership 变化或 session close 立即关闭 peer，不等 grace；
+- WebSocket 是信令和授权生命线，不是媒体 transport；短暂断开时已建立的 WebRTC 最多继续**只读展示**；
+- Server 检测 Web connection close/heartbeat timeout 后立即把 exact `clientId + webConnectionId` 的 peer revoke 转给 Agent；Agent 同步撤销 Web producer、拒绝新输入、清掉未开始动作，并合成释放该 producer 的所有 pressed keys/buttons；
+- Agent 不依赖 revoke frame 必达：每个 Web producer 有短 TTL，需要现有 authenticated WebSocket 上的 Server-stamped heartbeat 连续续期；超过 TTL（目标 ≤ 5 秒）在 Agent 本地 fail closed；
+- Agent↔Server 控制连接 close/heartbeat timeout 时，Agent 不等待 Server 指令，立即撤销**全部 Web producers**、释放输入状态并关闭所有 WebRTC peers。AI producer 是否继续由其本地 Yeaft turn lifecycle 决定；Server 失联本身不授予或延长任何 AI 权限；
+- WebSocket 恢复后 Web 请求 snapshot，并创建新 `peerId + connectionGeneration + producerAuthorization`；旧 peer 即使媒体仍通也永远不能恢复写权限；
+- 本协议不定义 `browser_peer_reauthorize`，也不接受可重放 resume ticket。未来若要避免重建 peer，必须另行定义单次 Server-signed nonce、audience、expiry、used-at ledger 和 replay tests；
+- auth failure、账号 disabled、Agent ownership 变化或 Session close 立即关闭 peer；
 - WebSocket/Server restart 期间不缓存或重放输入。
 
 ### 10.4 Agent 或 Chromium 失败
 
-- Agent WSS 断开：Server 将 Browser Sessions 标记 `agent_offline`；Web UI 停止输入并显示只读/重连；
+- Agent WSS 断开：Agent 本地先 fail closed 撤销 Web producer并关闭 peers；Server 将 Browser Sessions 标记 `agent_offline`，Web UI 停止输入并显示重连；
 - Agent 进程重启：内存 Browser Sessions 视为 `closed: agent_restarted`，不伪装恢复；
 - Chromium crash：Agent 发 terminal snapshot，清理 context/peer；用户可以显式创建新 Session；
 - active tab 关闭：若 context 有唯一替代 page 则 rebind 并递增 `pageRevision`，否则关闭 Session；
@@ -655,9 +750,9 @@ failed | connected → closed
 
 1. 使用 Server 已认证的 `client.userId`；
 2. 通过 `resolveAgentAccessError(agentId, userId, role)`；
-3. 在 Agent 权威 snapshot 中确认 `browserSessionId` 属于该 owner；
-4. 对 peer-scoped signal 再校验 `peerId + clientId + generation`；
-5. 对输入再校验 `controlLeaseEpoch + pageRevision`。
+3. Server 向 Agent stamp `ownerUserId + clientId + webConnectionId + webConnectionGeneration`，Agent 在权威 Browser Session record 中确认 owner；
+4. 对 peer-scoped signal 再校验 `peerId + exact client/Web connection + connectionGeneration + endpointRole`；
+5. 对输入再校验 `producerId + producerGeneration + producer seq + pageRevision`；AI producer 还校验 `sessionId + vpId + turnId` 生命周期。
 
 管理员访问 ownerless global Agent 的既有规则不自动等于可以观看任意用户 Browser Session。Browser Session 必须始终有明确 `ownerUserId`；跨用户 support/viewer 是未来单独设计。
 
@@ -703,7 +798,7 @@ Debug bundle 如需包含敏感字段，必须显式用户确认、加密、限�
 - Browser Runtime state 中的 title/URL 当作不可信文本转义；
 - Browser Session 页面不能取得 Yeaft JWT、localStorage 或 DOM；
 - WebRTC feature 要求 HTTPS/WSS secure context，local development 只允许 loopback exception；
-- CSP 的 `connect-src` 需显式允许配置中的 STUN/TURN scheme/host，不使用 `*`；
+- Web CSP 的 `connect-src` 只显式允许 Yeaft signaling 的 HTTPS/WSS origin；它不是 STUN/TURN ICE endpoint allowlist。可用 ICE server、transport 与 `iceTransportPolicy` 只能来自 Server 下发的受信配置，Web 不接受任意 TURN/STUN URL；
 - file upload/download 必须复用 owner-scoped attachment/file transfer 边界并限制大小、路径和 MIME。
 
 ## 12. 资源治理与 backpressure
@@ -721,6 +816,12 @@ browserRuntime: {
   maxHeight: 1080,
   maxFps: 30,
   maxBitrate: 4_000_000,
+  maxQueuedActionsPerSession: 128,
+  maxQueuedActionsPerProducer: 32,
+  maxActionQueueBytes: 1024 * 1024,
+  maxActionRuntimeMs: 30_000,
+  producerCreditBurst: 16,
+  producerCreditRefillPerSecond: 8,
   noViewerIdleMs: 120_000,
   interactiveIdleMs: 2_100_000,
   maxDownloadsBytes: 512 * 1024 * 1024
@@ -737,13 +838,25 @@ browserRuntime: {
 - 多 viewer 第一阶段为每 viewer 一个 peer/encoder；超过 2 个拒绝，避免假装已有 SFU；
 - Server WebSocket payload budget 不应看到任何 video frame。
 
-### 12.3 Data backpressure
+### 12.3 DataChannel backpressure
 
 - reliable channel `bufferedAmount` 高水位 1 MiB，达到后暂停生成非必要 state；
 - pointer channel 高水位 64 KiB，直接丢瞬时 event；
 - control channel 超过 1 MiB 视为 unhealthy，关闭 peer，不无限缓存键盘/点击；
 - 单条 control payload 默认 ≤ 16 KiB，clipboard/write 和 text insert 有独立上限；
 - WebSocket signal 每 peer 限制 candidate 数量和每秒速率，防止滥用。
+
+### 12.4 Agent action queue 与 stuck input
+
+RTC `bufferedAmount` 只约束网络发送缓冲，不能保护 Agent/Chromium 执行队列。Dispatcher 另有硬边界：
+
+- 每 Browser Session 最多 128 个/1 MiB queued actions；每 producer 最多 32 个；超限返回 `queue_full`，不继续读入；
+- 每 producer 使用 token-bucket credit（burst 16、每秒补 8，pointer move 在入队前合并）；AI 与 Web producer 各自计费，dispatcher 采用 round-robin/weighted-fair dequeue，并为每类保留 minimum credit；单个持续有流量的 producer 不能永久饿死其他 producer；同一轮中按 Agent 接受顺序分配 `actionRevision`；
+- dispatcher 每次只启动一个动作；动作默认 30 秒 deadline，dialog/navigation/file action 可用具名上限，不能接受任意客户端 timeout；
+- timeout 后先取消可取消的 automation command；无法确认副作用停止时标记 `outcome_unknown`，阻塞依赖该结果的 AI sequence，但不盲重跑；
+- peer/generation/producer cancel、DataChannel close、WebSocket loss、Agent control loss、page navigation、Session close 都会清理该 producer 未开始动作，并合成 keyup/pointerup 释放 held state；
+- Agent 跟踪每 producer 的 pressed key/button set，并有 5 秒 stuck-input watchdog；没有续期/对应 release 时自动释放并记录 redacted reason；
+- 队列长度、等待时间、credit rejection、timeout、cleanup 和 held-input gauge 必须进入 metrics/alerts。
 
 ## 13. 可观测性与运维
 
@@ -762,7 +875,12 @@ browser_video_fps
 browser_video_frame_age_ms
 browser_video_frames_dropped_total{stage}
 browser_input_ack_seconds{action_type}
-browser_control_reject_total{reason}
+browser_action_queue_depth
+browser_action_queue_wait_seconds
+browser_action_reject_total{reason}
+browser_action_timeout_total{action_type}
+browser_held_inputs{kind}
+browser_input_cleanup_total{reason}
 browser_turn_allocations_active
 browser_runtime_cpu_seconds_total
 browser_runtime_rss_bytes
@@ -816,11 +934,13 @@ Web 和 Agent 每 5 秒采样 `getStats()`，本地 UI 可显示更细数据；�
 
 - identity key 必须包含 `agentId + browserSessionId`；
 - Server 拒绝跨 user、跨 Agent、未知 Browser Session 和 peer/client mismatch；
-- generation、lease epoch、page revision fencing；
-- control seq、pointer coalescing、bufferedAmount thresholds；
+- Server-stamped owner/client/Web connection identity，以及 peer/producer/page generation fencing；
+- per-producer seq、pointer coalescing、DataChannel bufferedAmount thresholds；
 - normalized coordinate mapping、letterbox、DPR 和 viewport resize；
-- action timeout 不自动重放；
-- TURN credential TTL/scope/signature；
+- action queue count/bytes/credit/deadline 与公平性；timeout/unknown outcome 不自动重放；
+- peer/generation/producer/control loss 时释放 pressed key/button 并清空未开始动作；
+- TURN endpoint-role credential TTL/scope/signature、attach idempotency 和 cleanup；
+- bounded/redacted observe、action result、transcript/debug/memory projection；
 - safe logging redaction；
 - Chromium flags、download path 和 permission defaults；
 - idle/resource cleanup exactly once。
@@ -829,16 +949,18 @@ Web 和 Agent 每 5 秒采样 `getStats()`，本地 UI 可显示更细数据；�
 
 使用真实 Agent Browser Runtime 和虚拟/loopback peer：
 
-1. create → offer → answer → candidate → first video frame；
+1. create → route installed → endpoint-scoped TURN config delivered → offer → answer → candidate → first video frame；并断言 prepare 前没有 offer/candidate；
 2. pointer/keyboard → page DOM change → video reflects change；
-3. AI locator action与用户 control transfer 串行；
-4. WebSocket disconnect，WebRTC 暂时继续，grace 后写 lease revoke；
-5. WebSocket reconnect → snapshot → reauthorize 或 reattach；
-6. forced ICE failure → one restart → TURN relay；
-7. stale answer/candidate/action 被 fencing；
-8. Chromium crash/capture track end 清理全部 resource；
-9. 两个同名 Browser Session ID（不同 Agent）不串路由；
-10. Server restart 后旧 peer 失效、Session snapshot 可重建。
+3. AI locator 与用户输入并发提交，Agent 按 action revision 串行且两方都不会被排他撤权；
+4. WebSocket disconnect 后视频可短暂只读，Agent 本地 TTL 到期撤销 Web producer、清队列并释放 held input；
+5. WebSocket reconnect → snapshot → 新 peer/generation/producer attach；旧 peer 不可恢复写权限；
+6. forced ICE failure → one restart → 两端新 scope TURN credential → relay；
+7. stale answer/candidate/action、伪造 owner/client/producer 和 replayed attach 被 fencing；
+8. queue/credit/timeout overload、peer close 与 Agent control loss 均有确定 cleanup；
+9. bounded observe 排除 password/form/secrets，action result 进入 transcript/debug/memory 前保持 redacted/budgeted；
+10. Chromium crash/capture track end 清理全部 resource；
+11. 两个同名 Browser Session ID（不同 Agent）不串路由；
+12. Server restart 后旧 peer/producer 失效、Browser Session snapshot 可重建。
 
 ### 14.3 Network matrix
 
@@ -871,12 +993,13 @@ Viewer：最新两个 stable 版本的 Chrome/Edge、Firefox、Safari；iOS Safa
 
 ### 14.6 安全验收
 
-- 未认证、disabled user、跨 owner、跨 Agent 访问全部 fail closed；
+- 未认证、disabled user、跨 owner、跨 Agent 访问全部 fail closed；客户端伪造 owner/client/Web connection stamp 无效；
 - candidate flood、oversized SDP、DataChannel oversized payload、seq abuse 被限流/断开；
 - Browser page 无法访问 Yeaft origin credentials；
 - CDP endpoint 不可从网络访问；
 - extension/capture package digest 被篡改时 capability 关闭；
 - private/metadata network policy 在托管 Sandbox 中有效；
+- observe/action-result fuzz fixture 证明 password、form value、token-like text、cross-origin content 不进入模型/transcript/debug/memory；
 - 日志与 metrics 扫描不含 password、key text、SDP、candidate IP、TURN credential。
 
 ## 15. 渐进交付计划
@@ -884,32 +1007,32 @@ Viewer：最新两个 stable 版本的 Chrome/Edge、Firefox、Safari；iOS Safa
 ### Phase 0：技术 spike（不对用户开放）
 
 - 在三平台验证 `tabCapture` 的受控 activation、offscreen WebRTC 与导航连续性；
-- 选择并审计 Node WebRTC endpoint、Chromium automation 和 TURN 方案；
+- 选择并审计 extension offscreen peer runtime、Chromium automation 和 TURN 方案；
 - 测量原生 track 与 CDP→canvas fallback 的 CPU/延迟；
 - 验证 H.264/VP8 capability；
 - 输出 go/no-go matrix。未达标的平台不进入 capability。
 
 ### Phase 1：控制面与只读视频
 
-- Agent Browser Runtime lifecycle；
-- Server owner-scoped wire、route/peer fencing 和 TURN credential；
+- Agent Browser Runtime lifecycle 与 extension offscreen primary peer endpoint；
+- Server-stamped identity、route-before-offer bootstrap、peer fencing 和 endpoint-scoped TURN credential；
 - Web browser store、video panel、状态与 stats；
 - 单 peer、单 page、VP8、无输入；
 - feature flag 默认关闭。
 
 ### Phase 2：用户输入
 
-- 三 DataChannels、输入映射、backpressure；
-- lease、action ack、navigation/dialog；
+- 三 DataChannels、输入映射、网络与 Agent action queue backpressure；
+- Web producer authorization、action ack、navigation/dialog 和 stuck-input cleanup；
 - keyboard/IME、viewport、移动端基础输入；
 - network matrix 与安全测试通过后小比例 rollout。
 
 ### Phase 3：Yeaft 共用 Browser Runtime
 
 - Browser tools 通过本地 API 操作同一 context；
-- user/VP control transfer；
-- audit metadata、AskUser 边界和 cancellation；
-- 不把 raw page/video/input 写入 transcript 或 memory。
+- Web/VP 独立 producer authorization，并发提交、Agent 单点串行；
+- bounded/redacted `observe`、action-result projection、AskUser 边界和 cancellation；
+- 不把 raw DOM/page/video/input 写入 model context、transcript、debug 或 memory。
 
 ### Phase 4：可靠性与规模
 
@@ -975,7 +1098,7 @@ Agent advertised capability
 
 以下内容不能在没有实测时拍脑袋：
 
-1. **Agent WebRTC endpoint**：原生 addon、独立 sidecar 还是受控 Chromium extension peer。要求 Node 24 支持、三平台预编译/供应链、DTLS/SRTP 安全维护和可取消资源生命周期。
+1. **Extension peer implementation**：主 endpoint 已固定为受控 Chromium extension offscreen document；spike 只选择其 signaling/runtime library 与 packaging，不再把 Node addon/sidecar 当成可互换 peer。要求浏览器版本矩阵、CSP、DTLS/SRTP 安全维护和可取消资源生命周期。
 2. **Chromium automation package**：复用测试用 Playwright 不等于适合 npm Agent production dependency。要评估 browser distribution、体积、升级和 licensing。
 3. **tabCapture 激活约束**：自动化环境能否在用户可接受路径满足 extension invocation；不能则该平台走 fallback。
 4. **TURN implementation/deployment**：coturn 或托管服务，需验证临时 credential、TLS 443、regional routing、egress cost 和 abuse controls。
@@ -987,8 +1110,8 @@ Phase 0 只有在以下条件全部满足后退出：
 
 - 至少 Linux 的首选 capture path 达到延迟/CPU gate；
 - UDP blocked 时 TURN TLS/443 可连接；
-- ownership、generation 和 lease prototype fail closed；
-- 选定依赖有维护、安全、Node 24 和发布方案；
+- Server-stamped identity、route-before-offer、endpoint credential、producer generation/seq/page fencing prototype fail closed；
+- 选定 extension peer/runtime 与 automation 依赖有维护、安全、浏览器/Node 24 和发布方案；
 - 资源 cleanup 在 100 次循环后无显著泄漏；
 - Martin 对精确 spike/design head 完成独立 review。
 
@@ -1001,8 +1124,9 @@ agent/browser-runtime/
   service.js              lifecycle and authoritative store
   chromium.js             executable/context/page ownership
   capture.js              tab capture + CDP fallback selection
-  peer.js                 RTCPeerConnection and channels
-  input.js                lease/fencing/action queue
+  extension-peer.js       authenticated offscreen signaling/runtime bridge
+  input.js                producer fencing + bounded action dispatcher
+  observe.js              bounded/redacted semantic projection
   protocol.js             validation and limits
 
 server/handlers/
