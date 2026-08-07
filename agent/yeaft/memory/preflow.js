@@ -157,8 +157,25 @@ function matchedStrictQueryTermCount(hit, queryTerms) {
 function hasExactCanonicalHeading(hit, userMsg) {
   const query = normalizeStrongEvidenceText(userMsg);
   if (!query) return false;
+
+  let fence = null;
   for (const line of String(hit?.body || '').split(/\r?\n/)) {
-    const match = /^\s*#{1,6}\s+(.+?)\s*$/.exec(line);
+    if (fence) {
+      const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (closing && closing[1][0] === fence.marker && closing[1].length >= fence.length) {
+        fence = null;
+      }
+      continue;
+    }
+
+    const opening = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (opening && !(opening[1][0] === '`' && opening[2].includes('`'))) {
+      fence = { marker: opening[1][0], length: opening[1].length };
+      continue;
+    }
+    if (/^(?: {4}| {0,3}\t)/.test(line)) continue;
+
+    const match = /^ {0,3}#{1,6}[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
     if (match && normalizeStrongEvidenceText(match[1]) === query) return true;
   }
   return false;

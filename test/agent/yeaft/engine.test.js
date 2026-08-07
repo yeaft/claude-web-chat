@@ -1329,6 +1329,43 @@ describe('Engine memory prompt hygiene', () => {
         canonicalOnly: true,
       }).picked).toEqual([]);
 
+      const codeHeadingCases = [
+        {
+          id: 'fenced-backtick-heading',
+          scope: 'sessions/fenced-backtick-sibling',
+          body: 'Historical shell example:\n\n````sh\n# MCP\necho disabled\n````',
+        },
+        {
+          id: 'fenced-tilde-heading',
+          scope: 'sessions/fenced-tilde-sibling',
+          body: 'Historical shell example:\n\n~~~~sh\n# MCP\necho disabled\n~~~~',
+        },
+        {
+          id: 'indented-code-heading',
+          scope: 'sessions/indented-code-sibling',
+          body: 'Historical shell example:\n\n    # MCP\n    echo disabled',
+        },
+      ];
+      for (const codeCase of codeHeadingCases) {
+        index.upsert(makeSegment({
+          ...codeCase,
+          kind: 'context',
+          tags: ['canonical-content', 'mcp'],
+          sourceMessages: [],
+          createdAt: '2026-08-04T00:00:00.000Z',
+          updatedAt: '2026-08-04T00:00:00.000Z',
+        }));
+        const codeResult = runPreflow(index, {
+          userMsg: 'MCP',
+          relevantScopes: [codeCase.scope],
+          strictScopes: [codeCase.scope],
+          uniqueScopes: true,
+          canonicalOnly: true,
+        });
+        expect(codeResult.picked, codeCase.id).toEqual([]);
+        expect(codeResult.droppedByRelevance, codeCase.id).toBe(1);
+      }
+
       const operationalHeadingScope = 'sessions/operational-heading-sibling';
       index.upsert(makeSegment({
         id: 'operational-heading',
@@ -3391,6 +3428,11 @@ describe('Engine', () => {
           '# PostgreSQL\n\nPostgreSQL stores the workspace metadata for this project.',
           { root: join(yeaftDir, 'memory'), language: 'zh' },
         );
+        await writeContent(
+          { kind: 'session', id: 'fenced-mcp-sibling' },
+          'Historical shell example:\n\n````sh\n# MCP\necho disabled\n````',
+          { root: join(yeaftDir, 'memory'), language: 'zh' },
+        );
         const memoryIndex = {
           search({ scopeFilter, requiredTag }) {
             if (requiredTag !== 'canonical-content' || !scopeFilter.includes('sessions/sibling-session')) return [];
@@ -3540,6 +3582,96 @@ describe('Engine', () => {
         expect(mcpSystem).toContain('**mcp-sibling-session**: # MCP');
         expect(mcpSystem).toContain('MCP tools must preserve project ownership boundaries');
 
+        memoryIndex.search = ({ scopeFilter, requiredTag }) => {
+          if (requiredTag !== 'canonical-content') return [];
+          if (scopeFilter.includes('sessions/fenced-mcp-sibling')) {
+            return [{
+              id: 'fenced-mcp-memory',
+              scope: 'sessions/fenced-mcp-sibling',
+              kind: 'context',
+              tags: ['canonical-content', 'mcp'],
+              sourceMessages: [],
+              body: 'Historical shell example:\n\n````sh\n# MCP\necho disabled\n````',
+              rank: -1,
+              createdAt: '2026-08-01T00:00:00.000Z',
+              updatedAt: '2026-08-01T00:00:00.000Z',
+            }];
+          }
+          if (scopeFilter.includes('user')) {
+            return [{
+              id: 'indented-user-mcp-memory',
+              scope: 'user',
+              kind: 'context',
+              tags: ['canonical-content', 'mcp'],
+              sourceMessages: [],
+              body: 'Historical shell example:\n\n    # MCP\n    echo disabled',
+              rank: -1,
+              createdAt: '2026-08-01T00:00:00.000Z',
+              updatedAt: '2026-08-01T00:00:00.000Z',
+            }];
+          }
+          return [];
+        };
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'ok' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const fencedEvents = [];
+        for await (const event of engine.query({
+          prompt: 'MCP',
+          sessionId: 'current-session',
+          projectSessionIds: ['fenced-mcp-sibling'],
+          vpPersona: { vpId: 'linus', name: 'Linus' },
+        })) {
+          fencedEvents.push(event);
+        }
+        const fencedSystem = mockAdapter.callLog.at(-1).system;
+        expect(fencedSystem).not.toContain('fenced-mcp-sibling');
+        expect(fencedSystem).not.toContain('echo disabled');
+        expect(fencedEvents.find(event => event.type === 'memory_used')).toBeUndefined();
+
+        await writeContent(
+          { kind: 'user' },
+          'Historical shell example:\n\n    # MCP\n    echo disabled',
+          { root: join(yeaftDir, 'memory'), language: 'zh' },
+        );
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'ok' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const indentedUserEvents = [];
+        for await (const event of engine.query({
+          prompt: 'MCP',
+          sessionId: 'current-session',
+          projectSessionIds: [],
+          vpPersona: { vpId: 'linus', name: 'Linus' },
+        })) {
+          indentedUserEvents.push(event);
+        }
+        const indentedUserSystem = mockAdapter.callLog.at(-1).system;
+        expect(indentedUserSystem).not.toContain('### 相关记忆');
+        expect(indentedUserSystem).not.toContain('echo disabled');
+        expect(indentedUserEvents.find(event => event.type === 'memory_used')).toBeUndefined();
+
+        memoryIndex.search = ({ scopeFilter, requiredTag }) => {
+          if (requiredTag !== 'canonical-content' || !scopeFilter.includes('user')) return [];
+          return [{
+            id: 'postgresql-entity-memory',
+            scope: 'user',
+            kind: 'context',
+            tags: ['canonical-content', 'postgresql'],
+            sourceMessages: [],
+            body: '# PostgreSQL\n\nPostgreSQL stores the workspace metadata for this project.',
+            rank: -1,
+            createdAt: '2026-08-01T00:00:00.000Z',
+            updatedAt: '2026-08-01T00:00:00.000Z',
+          }];
+        };
+        await writeContent(
+          { kind: 'user' },
+          '# PostgreSQL\n\nPostgreSQL stores the workspace metadata for this project.',
+          { root: join(yeaftDir, 'memory'), language: 'zh' },
+        );
         mockAdapter.pushResponse([
           { type: 'text_delta', text: 'ok' },
           { type: 'stop', stopReason: 'end_turn' },
