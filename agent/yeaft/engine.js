@@ -2219,7 +2219,7 @@ export class Engine {
     const runtimeThreadId = (typeof threadId === 'string' && threadId.trim())
       ? threadId.trim()
       : MAIN_THREAD_ID;
-    const executionOrigin = inboundEnvelope?.msg?.meta?.injectedBy === 'route_forward'
+    const executionOrigin = ['route_forward', 'route_forward_result'].includes(inboundEnvelope?.msg?.meta?.injectedBy)
       ? 'route_forward'
       : null;
     // The bridge-provided VP turn id is also persisted on assistant messages and
