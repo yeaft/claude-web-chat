@@ -27,7 +27,9 @@ describe('message file preview', () => {
     expect(resolveMessageFileReference('./v1.0.403')).toEqual({ path: './v1.0.403', line: null });
     expect(resolveMessageFileReference('/workspace/v1.0.403')).toEqual({ path: '/workspace/v1.0.403', line: null });
     expect(resolveMessageFileReference('file:///workspace/v1.0.403')).toEqual({ path: '/workspace/v1.0.403', line: null });
-    expect(resolveMessageFileReference('artifact.7z')).toEqual({ path: 'artifact.7z', line: null });
+    expect(resolveMessageFileReference('artifact.7z')).toBeNull();
+    expect(resolveMessageFileReference('./artifact.7z')).toBeNull();
+    expect(resolveMessageFileReference('/workspace/archive.tar.gz')).toBeNull();
     expect(resolveMessageFileReference('README')).toEqual({ path: 'README', line: null });
     expect(resolveMessageFileReference('Dockerfile')).toEqual({ path: 'Dockerfile', line: null });
     expect(resolveMessageFileReference('docs/README')).toEqual({ path: 'docs/README', line: null });
@@ -42,6 +44,7 @@ describe('message file preview', () => {
       '<code>web/components/WorkbenchPanel.js:1</code>',
       '<code>origin/main</code>',
       '<code>v1.0.403</code>',
+      '<code>artifact.7z</code>',
       '<pre><code>web/components/FilesTab.js:17</code></pre>',
     ].join(' '));
 
@@ -53,6 +56,8 @@ describe('message file preview', () => {
     expect(html).toContain('<code>v1.0.403</code>');
     expect(html).not.toContain('href="origin/main"');
     expect(html).not.toContain('href="v1.0.403"');
+    expect(html).toContain('<code>artifact.7z</code>');
+    expect(html).not.toContain('href="artifact.7z"');
     expect(html).toContain('<a href="https://example.test">web</a>');
     expect(html).toContain('<pre><code>web/components/FilesTab.js:17</code></pre>');
   });

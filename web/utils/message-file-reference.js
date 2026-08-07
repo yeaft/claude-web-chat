@@ -4,11 +4,12 @@ const API_PATH = /^\/api(?:\/|$)/;
 const LINE_HASH = /#L(\d+)(?:C\d+)?$/i;
 const LINE_SUFFIX = /:(\d+)(?::\d+)?$/;
 const VERSION_BASENAME = /^v?\d+(?:\.\d+){1,}(?:[-+][A-Za-z\d.-]+)?$/i;
+const ARCHIVE_EXTENSION = /\.(?:7z|bz2?|gz|rar|tar|tgz|xz|zip|zst)$/i;
 const KNOWN_EXTENSIONLESS_FILE = /^(?:README|LICENSE|CHANGELOG|CONTRIBUTING|Dockerfile|Makefile)(?:[-_.][A-Za-z\d-]+)?$/i;
 
 const isRecognizableFilePath = value => {
   const basename = value.split(/[\\/]/).pop() || '';
-  if (!basename) return false;
+  if (!basename || ARCHIVE_EXTENSION.test(basename)) return false;
   if (WINDOWS_ABSOLUTE_PATH.test(value) || /^(?:\/|\.\.?[\\/]|~[\\/])/.test(value)) return true;
   if (VERSION_BASENAME.test(basename)) return false;
   if (basename.startsWith('.') && basename.length > 1) return true;
