@@ -117,6 +117,7 @@ const { default: SessionCreateModal } = await import('../../web/components/Sessi
 const { default: ChatPage } = await import('../../web/components/ChatPage.js');
 const { default: YeaftSidebar } = await import('../../web/components/YeaftSidebar.js');
 const { default: WorkCenterPage } = await import('../../web/components/WorkCenterPage.js');
+const { default: PluginCenterPage } = await import('../../web/components/PluginCenterPage.js');
 const {
   __testSortYeaftRowsBySequence,
   handleConversationCreated,
@@ -147,6 +148,65 @@ function makeStore() {
 }
 
 describe('message flow regressions', () => {
+  it('preserves the configured MCP cache when an error broadcast omits servers', () => {
+    const store = useChatStore();
+    store.yeaftMcpServers = [{ name: 'github', command: 'node', args: [], env: {} }];
+    store.yeaftMcpRuntime = { connected: true, toolCount: 1, perServer: [{ name: 'github', ready: true, toolCount: 1 }] };
+    store.yeaftMcpError = null;
+
+    handleMessage(store, {
+      type: 'yeaft_mcp_updated',
+      reason: 'base-runtime-load',
+      runtime: { connected: true, toolCount: 1, perServer: [{ name: 'github', ready: true, toolCount: 1 }] },
+      error: 'Failed to read config.json: plugins.tools must be an array',
+    });
+
+    expect(store.yeaftMcpServers).toEqual([{ name: 'github', command: 'node', args: [], env: {} }]);
+    expect(store.yeaftMcpRuntime).toMatchObject({
+      connected: true,
+      perServer: [expect.objectContaining({ name: 'github', ready: true })],
+    });
+    expect(store.yeaftMcpError).toContain('Failed to read config.json');
+  });
+
+  it('applies the final serialized MCP mutation broadcast to the configured cache', () => {
+    const store = useChatStore();
+    const github = { name: 'github', command: 'node', args: [], env: {} };
+    const linear = { name: 'linear', command: 'node', args: [], env: {} };
+    store.yeaftMcpServers = [github];
+    store.yeaftMcpRuntime = { connected: true, toolCount: 1, perServer: [{ name: 'github', ready: true, toolCount: 1 }] };
+    store.yeaftMcpError = null;
+
+    handleMessage(store, {
+      type: 'yeaft_mcp_updated',
+      reason: 'add',
+      servers: [github, linear],
+      runtime: {
+        connected: true,
+        toolCount: 2,
+        perServer: [
+          { name: 'github', ready: true, toolCount: 1 },
+          { name: 'linear', ready: true, toolCount: 1 },
+        ],
+      },
+      error: null,
+    });
+    handleMessage(store, {
+      type: 'yeaft_mcp_updated',
+      reason: 'remove',
+      servers: [linear],
+      runtime: { connected: true, toolCount: 1, perServer: [{ name: 'linear', ready: true, toolCount: 1 }] },
+      error: null,
+    });
+
+    expect(store.yeaftMcpServers.map(server => server.name)).toEqual(['linear']);
+    expect(store.yeaftMcpRuntime).toMatchObject({
+      connected: true,
+      perServer: [expect.objectContaining({ name: 'linear', ready: true })],
+    });
+    expect(store.yeaftMcpError).toBeNull();
+  });
+
   it('keeps the manual upgrade bridge in stop-install-start order in both languages', () => {
     const installCommand = 'npm install -g @yeaft/webchat-agent@latest --registry=https://pkg.yeaft.com/';
     const guides = [
@@ -2112,6 +2172,81 @@ describe('message flow regressions', () => {
       },
     });
     expect(workCenterPage.get('.work-center-agent-picker .modern-select-label').text()).toBe('server');
+
+    const pluginConfigRequests = [];
+    const pluginStore = Vue.reactive({
+      agents: [{ id: 'agent-a', name: 'Agent A', online: true }],
+      currentAgent: 'agent-a',
+      pluginCenterAgentId: 'agent-a',
+      pluginConfigByAgent: {},
+      pluginCatalogByKey: {
+        'agent-a:': {
+          loading: false,
+          catalog: {
+            tools: [{ id: 'FileRead', label: 'FileRead' }],
+            skills: [{ id: 'skill-a', label: 'skill-a' }, { id: 'skill-b', label: 'skill-b' }],
+            mcpServers: [],
+          },
+        },
+      },
+      pluginCatalogKey: (agentId, workDir = '') => `${agentId}:${workDir}`,
+      loadPluginConfig: vi.fn(() => new Promise(resolve => {
+        pluginConfigRequests.push(resolve);
+      })),
+      loadPluginCatalog: vi.fn(() => Promise.resolve()),
+      savePluginConfig: vi.fn(plugins => Promise.resolve({ plugins })),
+    });
+    globalThis.Pinia.useChatStore = () => pluginStore;
+    const pluginCenter = mount(PluginCenterPage, {
+      global: { mocks: { $t: key => key } },
+    });
+    await Vue.nextTick();
+    expect(pluginCenter.findAll('input[type="checkbox"]').every(input => input.element.disabled)).toBe(true);
+    expect(pluginCenter.get('.btn-primary').attributes('disabled')).toBeDefined();
+    pluginCenter.vm.toggle('skills', 'skill-a', false);
+    await pluginCenter.vm.save();
+    expect(pluginStore.savePluginConfig).not.toHaveBeenCalled();
+
+    pluginConfigRequests[0]({ plugins: {}, error: 'Failed to read plugin config: malformed config' });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Vue.nextTick();
+    expect(pluginCenter.vm.configReady).toBe(false);
+    expect(pluginCenter.get('.btn-primary').attributes('disabled')).toBeDefined();
+    expect(pluginCenter.vm.selection).toBeNull();
+    pluginStore.pluginConfigByAgent['agent-a'] = {
+      plugins: {},
+      error: 'Failed to read plugin config: malformed config',
+      loaded: true,
+    };
+    pluginCenter.vm.loadConfig('agent-a');
+    await Vue.nextTick();
+    expect(pluginConfigRequests).toHaveLength(2);
+    expect(pluginCenter.vm.configReady).toBe(false);
+    expect(pluginCenter.get('.btn-primary').attributes('disabled')).toBeDefined();
+    await pluginCenter.vm.save();
+    expect(pluginStore.savePluginConfig).not.toHaveBeenCalled();
+
+    pluginConfigRequests[1]({ plugins: { tools: ['FileRead'] } });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Vue.nextTick();
+    expect(pluginCenter.vm.configReady).toBe(true);
+    expect(pluginCenter.vm.selection).toEqual({ tools: ['FileRead'] });
+    pluginCenter.vm.toggle('skills', 'skill-a', false);
+    expect(pluginCenter.vm.selection).toEqual({
+      tools: ['FileRead'],
+      skills: ['skill-b'],
+    });
+    await pluginCenter.vm.save();
+    expect(pluginStore.savePluginConfig).toHaveBeenCalledWith({
+      tools: ['FileRead'],
+      skills: ['skill-b'],
+    }, 'agent-a');
+    expect(pluginCenter.vm.enabledCount).toBe(2);
+    pluginCenter.unmount();
+
+    globalThis.Pinia.useChatStore = () => workCenterStore;
     await workCenterPage.get('.work-center-agent-picker .modern-select-trigger').trigger('click');
     await Vue.nextTick();
     const agentMenu = document.body.querySelector('.work-center-agent-menu');

@@ -73,6 +73,7 @@
  * @property {boolean | ((input?: object) => boolean)} [mayMutateWorkspaceAfterReturn] — may keep changing the workspace after execute() resolves; disables same-query read reuse
  * @property {(input?: object) => boolean} [isDestructive] — destructive operation?
  * @property {'json-error-envelope' | null} [errorOutput] — explicit returned-output error contract; null means only thrown errors fail
+ * @property {string} [mcpServer] — owning MCP server for flattened MCP tools
  * @property {'external' | 'run'} [sideEffectScope] — whether mutations escape the current Run collector
  */
 
@@ -90,6 +91,7 @@
  *   mayMutateWorkspaceAfterReturn?: boolean | ((input?: object) => boolean),
  *   isDestructive?: (input?: object) => boolean,
  *   errorOutput?: 'json-error-envelope' | null,
+ *   mcpServer?: string,
  *   sideEffectScope?: 'external' | 'run',
  *   timeoutMs?: number,
  * }} def
@@ -107,6 +109,7 @@ export function defineTool({
   mayMutateWorkspaceAfterReturn = false,
   isDestructive = () => false,
   errorOutput = 'json-error-envelope',
+  mcpServer,
   sideEffectScope = 'external',
   timeoutMs,
 }) {
@@ -131,6 +134,9 @@ export function defineTool({
   // but excluded from the LLM-visible catalogue.
   if (Array.isArray(aliases) && aliases.length > 0) {
     def.aliases = aliases.slice();
+  }
+  if (typeof mcpServer === 'string' && mcpServer.trim()) {
+    def.mcpServer = mcpServer.trim();
   }
   // Only attach `timeoutMs` when the tool author opts in. Leaving it
   // unset means ToolRegistry.execute uses DEFAULT_TOOL_TIMEOUT_MS — set

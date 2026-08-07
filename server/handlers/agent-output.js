@@ -865,6 +865,20 @@ export async function handleAgentOutput(agentId, agent, msg) {
       }
       break;
 
+    case 'yeaft_plugin_catalog_result': {
+      const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
+      if (targetClient?.authenticated && (CONFIG.skipAuth || targetClient.userId === agent.ownerId)) {
+        await sendToWebClient(targetClient, {
+          type: 'yeaft_plugin_catalog_result',
+          agentId,
+          requestId: msg.requestId || null,
+          catalog: msg.catalog || { tools: [], skills: [], mcpServers: [] },
+          error: msg.error || null,
+        });
+      }
+      break;
+    }
+
     case 'yeaft_tool_stats':
       // 2026-05-13: relay tool-call counters from the agent to the web
       // client that requested them. Whitelist `snapshot`/`registered`/

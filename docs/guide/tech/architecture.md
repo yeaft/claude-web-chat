@@ -159,4 +159,5 @@ This is not transcript merging. User, VP, Session, Project-related Session, Work
 - [H2-AMS memory](./yeaft-memory.md)
 - [Native LLM layer](./yeaft-llm.md)
 - [WebSocket protocol](./wire-protocol.md)
+- [WebRTC Browser Runtime design](../../notes/2026-08-07-webrtc-browser-runtime-design.md)
 - [Work Center user contract](../user/work-center.md)
