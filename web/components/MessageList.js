@@ -2077,16 +2077,18 @@ export default {
 
     Vue.watch(visibleTranscriptTailSignature, smartScrollToBottom);
     Vue.watch(previewShowTypingDots, (show) => { if (show) smartScrollToBottom(); });
-    Vue.watch(
-      () => [store.activeConversationId, activeYeaftSessionId.value],
-      () => {
-        for (const key of Object.keys(assistantTurnActionStates)) delete assistantTurnActionStates[key];
-        for (const key of Object.keys(toolExpandStates)) delete toolExpandStates[key];
-        for (const key of Object.keys(messageTurnCollapseStates)) delete messageTurnCollapseStates[key];
-        resumeAutoFollow();
-        Vue.nextTick(scrollToBottom);
-      }
-    );
+    // Reset local transcript state only when the user actually navigates to a
+    // different conversation. Yeaft history loading may replace the transport
+    // conversation id while retaining the same Agent + Session identity; using
+    // that transient id here would discard a user's paused-follow intent and
+    // jump them back to the latest message when loading completes.
+    Vue.watch(virtualTranscriptIdentity, () => {
+      for (const key of Object.keys(assistantTurnActionStates)) delete assistantTurnActionStates[key];
+      for (const key of Object.keys(toolExpandStates)) delete toolExpandStates[key];
+      for (const key of Object.keys(messageTurnCollapseStates)) delete messageTurnCollapseStates[key];
+      resumeAutoFollow();
+      Vue.nextTick(scrollToBottom);
+    });
 
     const flashMsgId = Vue.ref(null);
     let flashGeneration = 0;
