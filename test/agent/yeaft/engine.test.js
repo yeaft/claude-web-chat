@@ -1133,7 +1133,7 @@ describe('Engine memory prompt hygiene', () => {
         scope: broadUserScope,
         kind: 'context',
         tags: ['canonical-content'],
-        body: 'Server cleanup failures require explicit disk investigation and container-volume verification.',
+        body: '服务器清理失败需要明确调查磁盘，并核验容器和卷的状态。',
         sourceMessages: [],
         createdAt: '2026-08-04T00:00:00.000Z',
         updatedAt: '2026-08-04T00:00:00.000Z',
@@ -1146,6 +1146,17 @@ describe('Engine memory prompt hygiene', () => {
         canonicalOnly: true,
       });
       expect(weakUser.picked).toEqual([]);
+      expect(weakUser.droppedByRelevance).toBe(1);
+      const strongUser = runPreflow(index, {
+        userMsg: '服务器清理失败时怎么调查磁盘？',
+        relevantScopes: [broadUserScope],
+        strictScopes: [broadUserScope],
+        uniqueScopes: true,
+        canonicalOnly: true,
+      });
+      expect(strongUser.picked).toEqual([
+        expect.objectContaining({ id: 'strict-user', scope: broadUserScope }),
+      ]);
 
       const strictScope = 'sessions/sibling-session';
       index.upsert(makeSegment({
