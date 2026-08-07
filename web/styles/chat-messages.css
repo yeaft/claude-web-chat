@@ -1311,6 +1311,25 @@
   color: var(--accent-blue-hover);
 }
 
+.markdown-body a.message-file-reference {
+  color: var(--accent-blue);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.markdown-body a.message-file-reference::before {
+  content: '▣';
+  margin-right: 0.35em;
+  font-size: 0.8em;
+}
+
+.markdown-body a.message-file-reference:hover {
+  color: var(--accent-blue-hover);
+  text-decoration-style: solid;
+}
+
 .markdown-body img {
   max-width: 100%;
   height: auto;

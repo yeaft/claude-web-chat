@@ -181,9 +181,6 @@ export default {
         </div>
       </div>
 
-      <!-- 拖拽分割线 -->
-      <div class="file-tree-splitter" @mousedown="startTreeResize" @touchstart.prevent="startTreeResize"></div>
-
       <!-- 右栏: 文件编辑器（带标签页） -->
       <div class="file-col-content" v-if="openFiles.length > 0 || fileLoading" @wheel.ctrl.prevent="onWheel">
         <!-- Mobile back navigation bar -->
@@ -316,6 +313,9 @@ export default {
       <div class="file-col-placeholder" v-if="openFiles.length === 0 && !fileLoading">
         <div class="placeholder-text">{{ $t('files.clickToView') }}</div>
       </div>
+
+      <!-- 拖拽分割线：文件树位于内容右侧 -->
+      <div class="file-tree-splitter" @mousedown="startTreeResize" @touchstart.prevent="startTreeResize"></div>
 
       <!-- 文件夹选择器对话框 -->
       <div class="folder-picker-overlay" v-if="folderPickerOpen" @click.self="folderPickerOpen = false">
@@ -531,7 +531,7 @@ export default {
       const maxWidth = container ? container.offsetWidth * 0.5 : 400;
       const onMove = (ev) => {
         const clientX = isTouch ? ev.touches[0].clientX : ev.clientX;
-        treePanelWidth.value = Math.max(120, Math.min(maxWidth, startWidth + (clientX - startX)));
+        treePanelWidth.value = Math.max(120, Math.min(maxWidth, startWidth - (clientX - startX)));
       };
       const onEnd = () => {
         isTreeResizing.value = false;

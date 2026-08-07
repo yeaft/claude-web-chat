@@ -612,9 +612,10 @@
 }
 
 .file-tree-collapsed-rail {
+  order: 4;
   flex: 0 0 40px;
   width: 40px;
-  border-right: 1px solid var(--border-color);
+  border-left: 1px solid var(--border-color);
   background: var(--bg-sidebar);
   display: flex;
   justify-content: center;
@@ -645,6 +646,7 @@
 }
 
 .file-col-tree {
+  order: 3;
   min-width: 120px;
   overflow-y: auto;
   display: flex;
@@ -655,6 +657,7 @@
 }
 
 .file-col-content {
+  order: 1;
   flex: 1;
   overflow: auto;
   min-width: 0;
@@ -937,6 +940,7 @@
 
 /* File tree splitter (drag to resize) */
 .file-tree-splitter {
+  order: 2;
   width: 4px;
   cursor: col-resize;
   background: transparent;
