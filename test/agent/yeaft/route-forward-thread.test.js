@@ -834,9 +834,13 @@ describe('route_forward thread ownership', () => {
     firstGate.resolve();
     const [firstResult, secondResult] = await Promise.all([first, second]);
 
-    expect(firstEvents).toEqual(['linus:linus-first', 'martin:martin-forwarded']);
+    expect(firstEvents).toEqual([
+      'linus:linus-first',
+      'martin:martin-forwarded',
+      'linus:martin-forwarded',
+    ]);
     expect(secondEvents).toEqual(['martin:martin-second']);
-    expect(firstResult.results.map(item => item.vpId)).toEqual(['linus', 'martin']);
+    expect(firstResult.results.map(item => item.vpId)).toEqual(['linus', 'martin', 'linus']);
     expect(secondResult.results.map(item => item.vpId)).toEqual(['martin']);
     await runner.close();
   }

@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildCreateArgs,
+  checkContainerAgentRuntime,
   containerNameForAgent,
+  removeContainerAgent,
   runDocker,
   writeAgentSecretFile,
 } from '../../agent/container-manager.js';
@@ -50,5 +52,58 @@ describe('container Agent manager', () => {
   it('executes Docker without a shell and returns bounded process output', async () => {
     const result = await runDocker(['inspect', 'name'], { spawnImpl: spawnResult({ stdout: 'ok\n' }) });
     expect(result).toEqual({ code: 0, stdout: 'ok', stderr: '' });
+  });
+
+  it('checks both the Docker client and daemon before advertising availability', async () => {
+    const calls = [];
+    const result = await checkContainerAgentRuntime({
+      spawnImpl: (command, args) => {
+        calls.push([command, args]);
+        return spawnResult({ stdout: '28.5.1\n' })(command, args);
+      },
+    });
+
+    expect(calls).toEqual([['docker', ['version', '--format', '{{.Server.Version}}']]]);
+    expect(result).toEqual({ serverVersion: '28.5.1' });
+  });
+
+  it('treats missing volumes as idempotent removal success', async () => {
+    const calls = [];
+    const spawnImpl = (command, args) => {
+      calls.push([command, args]);
+      if (args[0] === 'inspect') {
+        return spawnResult({ code: 1, stderr: 'Error: No such object: yeaft-agent-worker' })(command, args);
+      }
+      return spawnResult({
+        code: 1,
+        stderr: `Error response from daemon: get ${args.at(-1)}: no such volume`,
+      })(command, args);
+    };
+
+    await expect(removeContainerAgent('worker', { spawnImpl })).resolves.toEqual({
+      exists: false,
+      status: 'absent',
+      running: false,
+    });
+    expect(calls.filter(([, args]) => args[0] === 'volume').map(([, args]) => args.at(-1))).toEqual([
+      'yeaft-agent-worker-data',
+      'yeaft-agent-worker-workspace',
+    ]);
+  });
+
+  it('propagates non-benign volume removal failures', async () => {
+    const spawnImpl = (command, args) => {
+      if (args[0] === 'inspect') {
+        return spawnResult({ code: 1, stderr: 'Error: No such object: yeaft-agent-worker' })(command, args);
+      }
+      return spawnResult({
+        code: 1,
+        stderr: 'Error response from daemon: remove yeaft-agent-worker-data: volume is in use',
+      })(command, args);
+    };
+
+    await expect(removeContainerAgent('worker', { spawnImpl })).rejects.toMatchObject({
+      code: 'CONTAINER_AGENT_DOCKER_FAILED',
+    });
   });
 });

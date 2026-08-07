@@ -72,8 +72,8 @@ export function writeScope(memoryRoot, scope, segments) {
 export function readCanonicalContentRecord(memoryRoot, scope) {
   const path = join(memoryRoot, scope, 'content.md');
   if (!existsSync(path)) return null;
-  const body = readFileSync(path, 'utf8').trim();
-  if (!body) return null;
+  const body = readFileSync(path, 'utf8');
+  if (!body.trim()) return null;
   const stat = statSync(path);
   const timestamp = stat.mtime.toISOString();
   const digest = createHash('sha256').update(scope).digest('hex').slice(0, 12);
