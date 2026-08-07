@@ -8069,14 +8069,19 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
+    openWorkbench() {
+      this.workbenchExpanded = true;
+      this.activeRightPanel = null;
+      this.closeYeaftDebugPanel();
+    },
+
     toggleWorkbench() {
-      this.workbenchExpanded = !this.workbenchExpanded;
       if (this.workbenchExpanded) {
-        this.activeRightPanel = null;
-        this.closeYeaftDebugPanel();
-      } else {
+        this.workbenchExpanded = false;
         this.workbenchMaximized = false;
+        return;
       }
+      this.openWorkbench();
     },
 
     toggleSidebar() {
@@ -8112,9 +8117,8 @@ export const useChatStore = defineStore('chat', {
       const path = typeof filePath === 'string' ? filePath.trim() : '';
       if (!path) return false;
       const wasExpanded = this.workbenchExpanded;
-      this.workbenchExpanded = true;
+      this.openWorkbench();
       this.workbenchMaximized = false;
-      this.activeRightPanel = null;
       const dispatchOpen = () => window.dispatchEvent(new CustomEvent('open-file-in-explorer', {
         detail: {
           filePath: path,

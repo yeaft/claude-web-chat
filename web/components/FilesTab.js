@@ -45,6 +45,17 @@ export default {
             @blur="cancelTreePathEdit"
             class="tree-path-input"
           />
+          <button
+            type="button"
+            class="vscode-action-btn file-tree-collapse-btn"
+            @mousedown.prevent
+            @click.stop="treeVisible = false"
+            :title="$t('files.hideTree')"
+            :aria-label="$t('files.hideTree')"
+            aria-expanded="true"
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+          </button>
         </div>
         <!-- VS Code 风格 Header: 正常模式 -->
         <div class="file-tree-header vscode-header" v-else>

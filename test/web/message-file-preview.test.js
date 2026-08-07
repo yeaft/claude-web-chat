@@ -71,9 +71,13 @@ describe('message file preview', () => {
 
     expect(filesTab).toContain('treeInitiallyVisible');
     expect(filesTab).toContain("'tree-collapsed': !treeVisible");
-    expect(filesTab).toContain('class="vscode-action-btn file-tree-collapse-btn"');
+    expect(filesTab.match(/class="vscode-action-btn file-tree-collapse-btn"/g)).toHaveLength(2);
     expect(filesTab).toContain('class="file-tree-collapsed-rail"');
     expect(filesTab).not.toContain('class="file-tree-toggle"');
+    const filesCss = readWeb('styles/files.css');
+    const mobileCss = filesCss.slice(filesCss.indexOf('@media (max-width: 768px)'));
+    expect(mobileCss).toMatch(/\.file-tree-collapsed-rail\s*\{[^}]*display:\s*none;/s);
+    expect(mobileCss).toMatch(/\.file-two-col\.tree-collapsed \.file-col-tree\s*\{[^}]*display:\s*flex;/s);
     expect(readWeb('components/files/wsHandler.js')).toContain('pendingRevealLines.set(nPath, line)');
     expect(workbench).toContain('<FilesTab');
     expect(workbench).toContain(':tree-initially-visible="false"');

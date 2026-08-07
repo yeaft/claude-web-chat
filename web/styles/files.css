@@ -1451,6 +1451,14 @@
     flex-direction: column !important;
   }
 
+  .file-tree-collapsed-rail {
+    display: none;
+  }
+
+  .file-two-col.tree-collapsed .file-col-tree {
+    display: flex;
+  }
+
   .file-col-tree {
     flex: 1 !important;
     width: 100% !important;
