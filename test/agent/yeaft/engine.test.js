@@ -874,6 +874,46 @@ describe('Engine memory prompt hygiene', () => {
       sibling,
       '设置页的 VP 库、MCP 下划线标签在窄屏应该怎么处理？',
     )).toContain('VP 库、搜索和 MCP');
+    expect(filterRelatedSessionPromptText(
+      '# Yeaft 设置页\n\n- VP/MCP 下划线标签在窄屏使用横向滚动。\n\n- PR #1542 已合并。',
+      'Yeaft 设置页',
+    )).toBe('# Yeaft 设置页\n\n- VP/MCP 下划线标签在窄屏使用横向滚动。');
+  });
+
+  it('preserves compound CJK terms in current Session recall with a real FTS index', () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-current-session-cjk-recall-'));
+    const index = openSegmentIndex(join(root, 'index.db'));
+    try {
+      const fixtures = [
+        ['design-pattern', '设计模式', '设计模式用于组织可维护的领域代码。'],
+        ['user-auth', '用户认证', '用户认证必须检查会话所有权。'],
+        ['requirements-analysis', '需求分析', '需求分析应保留明确的验收条件。'],
+        ['content-safety', '内容安全', '内容安全规则不能泄露敏感工具载荷。'],
+      ];
+      for (const [id, query, body] of fixtures) {
+        index.upsert(makeSegment({
+          id,
+          scope: 'sessions/current-session',
+          kind: 'context',
+          tags: ['canonical-content'],
+          body,
+          sourceMessages: [],
+          createdAt: '2026-08-07T00:00:00.000Z',
+          updatedAt: '2026-08-07T00:00:00.000Z',
+        }));
+        const recall = runPreflow(index, {
+          userMsg: query,
+          relevantScopes: ['sessions/current-session'],
+          canonicalOnly: true,
+        });
+        expect(recall.picked, query).toEqual([
+          expect.objectContaining({ id, scope: 'sessions/current-session' }),
+        ]);
+      }
+    } finally {
+      index.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('deduplicates AMS layers without dropping needed on-demand memory', () => {
@@ -3218,6 +3258,11 @@ describe('Engine', () => {
           ].join('\n'),
           { root: join(yeaftDir, 'memory'), language: 'zh' },
         );
+        await writeContent(
+          { kind: 'session', id: 'ui-sibling-session' },
+          '# Yeaft 设置页\n\n- VP/MCP 下划线标签在窄屏使用横向滚动。',
+          { root: join(yeaftDir, 'memory'), language: 'zh' },
+        );
         const memoryIndex = {
           search({ scopeFilter, requiredTag }) {
             if (requiredTag !== 'canonical-content' || !scopeFilter.includes('sessions/sibling-session')) return [];
@@ -3292,6 +3337,35 @@ describe('Engine', () => {
         ]));
         expect(mockAdapter.callLog).toHaveLength(1);
         expect(existsSync(join(yeaftDir, 'memory', 'sessions', 'current-session', 'ams.json'))).toBe(false);
+
+        memoryIndex.search = ({ scopeFilter, requiredTag }) => {
+          if (requiredTag !== 'canonical-content' || !scopeFilter.includes('sessions/ui-sibling-session')) return [];
+          return [{
+            id: 'ui-heading-memory',
+            scope: 'sessions/ui-sibling-session',
+            kind: 'context',
+            tags: ['yeaft', '设置页'],
+            sourceMessages: [],
+            body: '# Yeaft 设置页\n\n- VP/MCP 下划线标签在窄屏使用横向滚动。',
+            rank: -1,
+            createdAt: '2026-08-01T00:00:00.000Z',
+            updatedAt: '2026-08-01T00:00:00.000Z',
+          }];
+        };
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'ok' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        for await (const _event of engine.query({
+          prompt: 'Yeaft 设置页',
+          sessionId: 'current-session',
+          projectSessionIds: ['ui-sibling-session'],
+          vpPersona: { vpId: 'linus', name: 'Linus' },
+        })) { /* exhaust */ }
+        const headingSystem = mockAdapter.callLog.at(-1).system;
+        expect(headingSystem).toContain('### 过去 Session 的经验总结');
+        expect(headingSystem).toContain('# Yeaft 设置页');
+        expect(headingSystem).toContain('VP/MCP 下划线标签在窄屏使用横向滚动');
       } finally {
         rmSync(yeaftDir, { recursive: true, force: true });
       }

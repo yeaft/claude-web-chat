@@ -35,15 +35,7 @@ const STOP_WORDS = new Set([
   'blocker', 'blocked', 'context', 'latest',
   '当前', '状态', '任务', '工作', '工作项', '待办', '下一步', '完成', '合并',
   '评审', '发布', '标签', '记忆', '主题', '阻塞', '正在', '上下文', '最新',
-  // Generic feedback / request language is especially noisy after Chinese
-  // bigram tokenisation. It must not select persistent context on its own.
-  '内容', '用户', '需求', '设计', '决策', '搜索', '发现', '需要', '应该', '添加',
-  '无关', '不相干', '完全', '明细', '看看', '还有', '这个', '比如', '每个', '如果',
 ]);
-const CJK_STOP_PHRASES = [...STOP_WORDS]
-  .filter(word => word.length >= 2 && /^[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]+$/.test(word))
-  .sort((a, b) => b.length - a.length);
-
 /**
  * Extract keywords from a prompt (pure rules, no LLM).
  *
@@ -59,15 +51,13 @@ export function extractKeywords(prompt) {
     if (!STOP_WORDS.has(match[0])) tokens.push(match[0]);
   }
   for (const match of normalized.matchAll(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]{2,}/g)) {
-    const runs = removeCjkStopPhrases(match[0]).match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]{2,}/g) || [];
-    for (const run of runs) {
-      if (STOP_WORDS.has(run)) continue;
-      if (run.length === 2) tokens.push(run);
-      else {
-        for (let i = 0; i < run.length - 1; i += 1) {
-          const term = run.slice(i, i + 2);
-          if (!STOP_WORDS.has(term)) tokens.push(term);
-        }
+    const run = match[0];
+    if (STOP_WORDS.has(run)) continue;
+    if (run.length === 2) tokens.push(run);
+    else {
+      for (let i = 0; i < run.length - 1; i += 1) {
+        const term = run.slice(i, i + 2);
+        if (!STOP_WORDS.has(term)) tokens.push(term);
       }
     }
   }
@@ -80,10 +70,4 @@ export function extractKeywords(prompt) {
   return [...freq.entries()]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([word]) => word);
-}
-
-function removeCjkStopPhrases(run) {
-  let cleaned = run;
-  for (const phrase of CJK_STOP_PHRASES) cleaned = cleaned.split(phrase).join(' ');
-  return cleaned;
 }

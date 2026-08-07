@@ -18,6 +18,7 @@
 import { extractKeywords } from './keywords.js';
 import { approxTokens } from './budget.js';
 import { isVpForeign } from './store.js';
+import { promptRelevanceTokens } from './prompt-cleanup.js';
 
 export const DEFAULT_PICK_LIMIT = 8;
 const STRICT_SCOPE_MIN_QUERY_TERMS = 2;
@@ -97,7 +98,7 @@ export function runPreflow(index, opts) {
   let dropped = 0;
   let droppedByRelevance = 0;
   for (const h of reranked) {
-    if (strictScopes.has(h.scope) && matchedQueryTermCount(h, keywords) < STRICT_SCOPE_MIN_QUERY_TERMS) {
+    if (strictScopes.has(h.scope) && matchedStrictQueryTermCount(h, userMsg) < STRICT_SCOPE_MIN_QUERY_TERMS) {
       dropped += 1;
       droppedByRelevance += 1;
       continue;
@@ -122,12 +123,13 @@ export function runPreflow(index, opts) {
   };
 }
 
-function matchedQueryTermCount(hit, keywords) {
-  const haystack = `${hit?.body || ''}\n${Array.isArray(hit?.tags) ? hit.tags.join(' ') : ''}`.toLowerCase();
+function matchedStrictQueryTermCount(hit, userMsg) {
+  const haystack = promptRelevanceTokens(
+    `${hit?.body || ''}\n${Array.isArray(hit?.tags) ? hit.tags.join(' ') : ''}`,
+  );
   let matched = 0;
-  for (const keyword of keywords || []) {
-    const term = String(keyword || '').toLowerCase();
-    if (term && haystack.includes(term)) matched += 1;
+  for (const term of promptRelevanceTokens(userMsg)) {
+    if (haystack.has(term)) matched += 1;
   }
   return matched;
 }
