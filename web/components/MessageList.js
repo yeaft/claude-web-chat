@@ -13,7 +13,7 @@ import ReflectionCard from './ReflectionCard.js';
 import SubAgentCard from './SubAgentCard.js';
 import UserTurnBlock from './UserTurnBlock.js';
 import VirtualTranscript from './VirtualTranscript.js';
-import { applyRunningCatFrame, resolveRunningCatFrame } from '../utils/running-cat.js';
+import { applyRunningCatFrame, createRunningCatLoop, resolveRunningCatFrame } from '../utils/running-cat.js';
 import {
   orderYeaftVpTurnMessagesByExecution,
   shouldCloseYeaftVpTurn,
@@ -1457,7 +1457,6 @@ export default {
     const catWalkRef = Vue.ref(null);
     const catSpriteRef = Vue.ref(null);
     let typingTimer = null;
-    let catRafId = null;
 
     // Animation type: randomly chosen each time typing starts
     const animationType = Vue.ref('cat');
@@ -1488,8 +1487,8 @@ export default {
       // Deliberately keep animation state outside Vue reactivity. Updating refs
       // here at 60 Hz invalidated the entire MessageList render effect, so long
       // transcripts made both input and the cat itself visibly stall.
-      catRafId = requestAnimationFrame(updateCatWalk);
     }
+    const catLoop = createRunningCatLoop({ onFrame: updateCatWalk });
 
     function updateDogWalk() {
       if (!typingStartTime.value || animationType.value !== 'dog') return;
@@ -1665,7 +1664,7 @@ export default {
         dogPosL.value = 5; dogPosR.value = 95; dogPhase.value = 'bark-both';
         dogFlipL.value = 1; dogFlipR.value = -1;
         if (animationType.value === 'cat') {
-          catRafId = requestAnimationFrame(updateCatWalk);
+          catLoop.start();
         } else {
           dogRafId = requestAnimationFrame(updateDogWalk);
         }
@@ -1677,7 +1676,7 @@ export default {
           displayTypingDots.value = false;
           typingStartTime.value = 0;
           if (typingTimer) { clearInterval(typingTimer); typingTimer = null; }
-          if (catRafId) { cancelAnimationFrame(catRafId); catRafId = null; }
+          catLoop.stop();
           if (dogRafId) { cancelAnimationFrame(dogRafId); dogRafId = null; }
         };
         if (remaining === 0) {
@@ -1701,7 +1700,7 @@ export default {
         animationType.value = 'cat';
       }
       if (animationType.value === 'cat') {
-        catRafId = requestAnimationFrame(updateCatWalk);
+        catLoop.start();
       } else {
         dogPosL.value = 5; dogPosR.value = 95; dogPhase.value = 'bark-both';
         dogFlipL.value = 1; dogFlipR.value = -1;
@@ -2116,7 +2115,7 @@ export default {
       clearUserScrollInteraction();
       if (typingTimer) { clearInterval(typingTimer); typingTimer = null; }
       if (typingHideTimer) { clearTimeout(typingHideTimer); typingHideTimer = null; }
-      if (catRafId) { cancelAnimationFrame(catRafId); catRafId = null; }
+      catLoop.stop();
       if (dogRafId) { cancelAnimationFrame(dogRafId); dogRafId = null; }
     });
 

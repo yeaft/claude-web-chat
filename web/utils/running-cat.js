@@ -51,3 +51,38 @@ export function applyRunningCatFrame(walkElement, spriteElement, frame) {
   walkElement.style.transform = frame.transform;
   for (const className of CAT_PHASE_CLASSES) spriteElement.classList.toggle(className, className === frame.phase);
 }
+
+export function createRunningCatLoop({
+  onFrame,
+  requestFrame = requestAnimationFrame,
+  cancelFrame = cancelAnimationFrame,
+}) {
+  let running = false;
+  let frameId = null;
+
+  const tick = () => {
+    frameId = null;
+    if (!running) return;
+    onFrame?.();
+    if (running) frameId = requestFrame(tick);
+  };
+
+  return {
+    start() {
+      if (running) return false;
+      running = true;
+      frameId = requestFrame(tick);
+      return true;
+    },
+    stop() {
+      if (!running) return false;
+      running = false;
+      if (frameId !== null) cancelFrame(frameId);
+      frameId = null;
+      return true;
+    },
+    isRunning() {
+      return running;
+    },
+  };
+}

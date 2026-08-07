@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { applyRunningCatFrame, resolveRunningCatFrame } from '../../web/utils/running-cat.js';
+import { applyRunningCatFrame, createRunningCatLoop, resolveRunningCatFrame } from '../../web/utils/running-cat.js';
 
 const read = (path) => readFileSync(new URL(`../../web/${path}`, import.meta.url), 'utf8');
 
@@ -29,6 +29,39 @@ describe('MessageList virtualization wiring', () => {
     expect(classes.has('speed-napping')).toBe(false);
     expect(classes.has('unrelated')).toBe(true);
   });
+  it('owns at most one running cat animation frame chain', () => {
+    const callbacks = new Map();
+    const cancelled = [];
+    let nextId = 1;
+    let frames = 0;
+    const loop = createRunningCatLoop({
+      onFrame: () => { frames += 1; },
+      requestFrame: callback => {
+        const id = nextId++;
+        callbacks.set(id, callback);
+        return id;
+      },
+      cancelFrame: id => {
+        cancelled.push(id);
+        callbacks.delete(id);
+      },
+    });
+
+    expect(loop.start()).toBe(true);
+    expect(loop.start()).toBe(false);
+    expect(callbacks.size).toBe(1);
+    const [firstId, firstCallback] = callbacks.entries().next().value;
+    callbacks.delete(firstId);
+    firstCallback();
+    expect(frames).toBe(1);
+    expect(callbacks.size).toBe(1);
+    expect(loop.start()).toBe(false);
+    expect(loop.stop()).toBe(true);
+    expect(callbacks.size).toBe(0);
+    expect(cancelled).toHaveLength(1);
+    expect(loop.stop()).toBe(false);
+  });
+
   it('keeps the running cat animation outside MessageList reactivity', () => {
     const source = read('components/MessageList.js');
     const splitPane = read('components/SplitPane.js');
@@ -41,6 +74,8 @@ describe('MessageList virtualization wiring', () => {
     expect(source).not.toContain(':style="catStyle"');
     expect(source).not.toContain(':class="catSpeed"');
     expect(splitPane).toContain('applyRunningCatFrame(');
+    expect(splitPane).toContain('typingTimer = setInterval(() => {');
+    expect(splitPane).toContain('now.value = Date.now();');
     expect(splitPane).not.toContain(':style="catStyle"');
     expect(splitPane).not.toContain(':class="catSpeed"');
   });

@@ -13,7 +13,7 @@ import ChatInput from './ChatInput.js';
 import ExpertPanel from './ExpertPanel.js';
 import SubAgentPanel from './SubAgentPanel.js';
 import { appendTurnResponseSegment, finalizeTurnResponseSegments } from '../utils/turn-response.js';
-import { applyRunningCatFrame, resolveRunningCatFrame } from '../utils/running-cat.js';
+import { applyRunningCatFrame, createRunningCatLoop, resolveRunningCatFrame } from '../utils/running-cat.js';
 
 export default {
   name: 'SplitPane',
@@ -280,7 +280,7 @@ export default {
     const now = Vue.ref(Date.now());
     const catWalkRef = Vue.ref(null);
     const catSpriteRef = Vue.ref(null);
-    let catRafId = null;
+    let typingTimer = null;
 
     // Animation type: randomly chosen each time typing starts
     const animationType = Vue.ref('cat');
@@ -307,8 +307,8 @@ export default {
           resolveRunningCatFrame(Date.now() - typingStartTime.value, travelPx),
         );
       }
-      catRafId = requestAnimationFrame(updateCatWalk);
     }
+    const catLoop = createRunningCatLoop({ onFrame: updateCatWalk });
 
     function updateDogWalk() {
       if (!typingStartTime.value || animationType.value !== 'dog') return;
@@ -445,18 +445,24 @@ export default {
       if (show) {
         typingStartTime.value = Date.now();
         now.value = Date.now();
+        if (!typingTimer) {
+          typingTimer = setInterval(() => {
+            now.value = Date.now();
+          }, 1000);
+        }
         // Always use cat for now; dog animation needs more polish
         animationType.value = 'cat';
         dogPosL.value = 5; dogPosR.value = 95; dogPhase.value = 'bark-both';
         dogFlipL.value = 1; dogFlipR.value = -1;
         if (animationType.value === 'cat') {
-          catRafId = requestAnimationFrame(updateCatWalk);
+          catLoop.start();
         } else {
           dogRafId = requestAnimationFrame(updateDogWalk);
         }
       } else {
         typingStartTime.value = 0;
-        if (catRafId) { cancelAnimationFrame(catRafId); catRafId = null; }
+        if (typingTimer) { clearInterval(typingTimer); typingTimer = null; }
+        catLoop.stop();
         if (dogRafId) { cancelAnimationFrame(dogRafId); dogRafId = null; }
       }
     }, { immediate: true });
@@ -473,7 +479,7 @@ export default {
         animationType.value = 'cat';
       }
       if (animationType.value === 'cat') {
-        catRafId = requestAnimationFrame(updateCatWalk);
+        catLoop.start();
       } else {
         dogPosL.value = 5; dogPosR.value = 95; dogPhase.value = 'bark-both';
         dogFlipL.value = 1; dogFlipR.value = -1;
@@ -482,7 +488,8 @@ export default {
     }
 
     Vue.onUnmounted(() => {
-      if (catRafId) { cancelAnimationFrame(catRafId); catRafId = null; }
+      if (typingTimer) { clearInterval(typingTimer); typingTimer = null; }
+      catLoop.stop();
       if (dogRafId) { cancelAnimationFrame(dogRafId); dogRafId = null; }
     });
 
