@@ -13,6 +13,7 @@ import ChatInput from './ChatInput.js';
 import ExpertPanel from './ExpertPanel.js';
 import SubAgentPanel from './SubAgentPanel.js';
 import { appendTurnResponseSegment, finalizeTurnResponseSegments } from '../utils/turn-response.js';
+import { applyRunningCatFrame, resolveRunningCatFrame } from '../utils/running-cat.js';
 
 export default {
   name: 'SplitPane',
@@ -45,8 +46,8 @@ export default {
                   <div v-if="previewShowTypingDots" class="typing-indicator" :class="waitingStatus ? ('status-' + waitingStatus) : ''">
                     <span></span><span></span><span></span>
                     <template v-if="animationType === 'cat'">
-                    <span class="svg-cat-walk" :style="catStyle">
-                    <span class="svg-running-cat" :class="catSpeed" aria-hidden="true">
+                    <span class="svg-cat-walk" ref="catWalkRef">
+                    <span class="svg-running-cat speed-normal" ref="catSpriteRef" aria-hidden="true">
                       <svg viewBox="0 0 36 28" xmlns="http://www.w3.org/2000/svg">
                         <g class="svg-cat-silhouette">
                           <g class="svg-cat-tail-group">
@@ -277,14 +278,13 @@ export default {
     // Reactive timer for long-processing fallback status
     const typingStartTime = Vue.ref(0);
     const now = Vue.ref(Date.now());
+    const catWalkRef = Vue.ref(null);
+    const catSpriteRef = Vue.ref(null);
     let catRafId = null;
 
     // Animation type: randomly chosen each time typing starts
     const animationType = Vue.ref('cat');
     const urlPreview = new URLSearchParams(window.location.search).get('preview');
-
-    const catPosition = Vue.ref(0);
-    const catDirection = Vue.ref(1);
 
     // Dog walk state
     const dogPosL = Vue.ref(5);
@@ -296,29 +296,16 @@ export default {
 
     function updateCatWalk() {
       if (!typingStartTime.value) return;
-      now.value = Date.now();
-      const elapsed = (now.value - typingStartTime.value) % 19000;
-      if (elapsed < 4000) {
-        catPosition.value = 0;
-        catDirection.value = 1;
-      } else if (elapsed < 11500) {
-        const walkElapsed = elapsed - 4000;
-        let pos;
-        if (walkElapsed < 2500) {
-          pos = (walkElapsed / 2500) * 16;
-        } else if (walkElapsed < 5000) {
-          pos = 16 + ((walkElapsed - 2500) / 2500) * 29;
-        } else {
-          pos = 45 + ((walkElapsed - 5000) / 2500) * 55;
-        }
-        catPosition.value = pos;
-        catDirection.value = 1;
-      } else if (elapsed < 14000) {
-        catPosition.value = (1 - (elapsed - 11500) / 2500) * 100;
-        catDirection.value = -1;
-      } else {
-        catPosition.value = 0;
-        catDirection.value = 1;
+      const walkElement = catWalkRef.value;
+      const spriteElement = catSpriteRef.value;
+      if (walkElement && spriteElement) {
+        const indicator = walkElement.parentElement;
+        const travelPx = Math.max(0, (indicator?.clientWidth || 0) - 80);
+        applyRunningCatFrame(
+          walkElement,
+          spriteElement,
+          resolveRunningCatFrame(Date.now() - typingStartTime.value, travelPx),
+        );
       }
       catRafId = requestAnimationFrame(updateCatWalk);
     }
@@ -460,8 +447,6 @@ export default {
         now.value = Date.now();
         // Always use cat for now; dog animation needs more polish
         animationType.value = 'cat';
-        catPosition.value = 0;
-        catDirection.value = 1;
         dogPosL.value = 5; dogPosR.value = 95; dogPhase.value = 'bark-both';
         dogFlipL.value = 1; dogFlipR.value = -1;
         if (animationType.value === 'cat') {
@@ -471,8 +456,6 @@ export default {
         }
       } else {
         typingStartTime.value = 0;
-        catPosition.value = 0;
-        catDirection.value = 1;
         if (catRafId) { cancelAnimationFrame(catRafId); catRafId = null; }
         if (dogRafId) { cancelAnimationFrame(dogRafId); dogRafId = null; }
       }
@@ -513,28 +496,6 @@ export default {
       if (health) return health.status;
       if (typingStartTime.value && now.value - typingStartTime.value > 8000) return 'thinking';
       return null;
-    });
-
-    // Cat running speed based on waiting time (7 tiers, 19s cycle)
-    const catSpeed = Vue.computed(() => {
-      if (!typingStartTime.value) return 'speed-napping';
-      const elapsed = (now.value - typingStartTime.value) % 19000;
-      if (elapsed >= 16000) return 'speed-petted';
-      if (elapsed >= 14000) return 'speed-tired';
-      if (elapsed >= 11500) return 'speed-crazy';
-      if (elapsed >= 9000) return 'speed-turbo';
-      if (elapsed >= 6500) return 'speed-fast';
-      if (elapsed >= 4000) return 'speed-normal';
-      return 'speed-napping';
-    });
-
-    const catStyle = Vue.computed(() => {
-      const pos = catPosition.value;
-      const dir = catDirection.value;
-      const frac = pos / 100;
-      const style = { left: `calc(40px + (100% - 80px) * ${frac})` };
-      if (dir < 0) style.transform = 'scaleX(-1)';
-      return style;
     });
 
     function refreshSession() {
@@ -747,8 +708,8 @@ export default {
       previewShowTypingDots,
       waitingStatus,
       animationType,
-      catSpeed,
-      catStyle,
+      catWalkRef,
+      catSpriteRef,
       dogPhase,
       spikeTransform,
       teddyTransform,
