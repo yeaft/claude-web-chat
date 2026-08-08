@@ -245,6 +245,7 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
   const proxyPorts = (existingAgent?.proxyPorts || []).map(p => ({ ...p, enabled: false }));
   const slashCommands = existingAgent?.slashCommands || [];
   const slashCommandDescriptions = existingAgent?.slashCommandDescriptions || {};
+  const yeaftSessions = existingAgent?.yeaftSessions || new Map();
   if (existingAgent?._syncTimeout) clearTimeout(existingAgent._syncTimeout);
 
   // 兼容旧版 agent：未上报 capabilities 时默认全部开启
@@ -271,6 +272,7 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
     proxyPorts,
     slashCommands,
     slashCommandDescriptions,
+    yeaftSessions,
     status: 'syncing',
     ownerId,
     ownerUsername,

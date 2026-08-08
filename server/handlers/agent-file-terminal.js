@@ -4,6 +4,7 @@ import {
   sendToWebClient, forwardToClients,
   setCachedDir, invalidateParentDirCache, clearAgentDirCache
 } from '../ws-utils.js';
+import { workbenchRouteKeyFromConversationId } from '../workbench-route.js';
 
 /**
  * Handle file, terminal, and git messages from agent.
@@ -11,22 +12,33 @@ import {
  *        file_content, file_saved, directory_listing, file_op_result,
  *        git_status_result, git_diff_result, git_op_result, file_search_result
  */
+async function forwardWorkbenchResponse(agentId, msg) {
+  const outbound = { ...msg, agentId };
+  const targetClient = outbound._requestClientId
+    ? webClients.get(outbound._requestClientId)
+    : null;
+  const targetMatchesUser = !outbound._requestUserId
+    || targetClient?.userId === outbound._requestUserId;
+  if (targetClient?.authenticated && targetMatchesUser) {
+    const { _requestClientId, _requestUserId, ...cleanMsg } = outbound;
+    await sendToWebClient(targetClient, cleanMsg);
+    return;
+  }
+  const { _requestClientId, ...fallbackMsg } = outbound;
+  await forwardToClients(agentId, outbound.conversationId, fallbackMsg);
+}
+
 export async function handleAgentFileTerminal(agentId, agent, msg) {
+  const { workbenchRouteKey: _untrustedRouteKey, ...cleanInbound } = msg || {};
+  const routeKey = workbenchRouteKeyFromConversationId(cleanInbound.conversationId, agentId);
+  msg = routeKey ? { ...cleanInbound, workbenchRouteKey: routeKey } : cleanInbound;
   switch (msg.type) {
     // Terminal messages (forward to web clients)
     case 'terminal_created':
     case 'terminal_output':
     case 'terminal_closed':
     case 'terminal_error': {
-      const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
-      const targetMatchesUser = !msg._requestUserId || targetClient?.userId === msg._requestUserId;
-      if (targetClient?.authenticated && targetMatchesUser) {
-        const { _requestClientId, _requestUserId, ...cleanMsg } = msg;
-        await sendToWebClient(targetClient, cleanMsg);
-        break;
-      }
-      const { _requestClientId, ...fallbackMsg } = msg;
-      await forwardToClients(agentId, msg.conversationId, fallbackMsg);
+      await forwardWorkbenchResponse(agentId, msg);
       break;
     }
 
@@ -51,6 +63,7 @@ export async function handleAgentFileTerminal(agentId, agent, msg) {
           agentId,
           conversationId: msg.conversationId,
           requestId: msg.requestId,
+          workbenchRouteKey: msg.workbenchRouteKey,
           _requestUserId: msg._requestUserId,
           _requestClientId: msg._requestClientId,
           filePath: msg.filePath,
@@ -63,31 +76,14 @@ export async function handleAgentFileTerminal(agentId, agent, msg) {
       } else {
         console.log(`[Server] Forwarding file_content to clients, conv=${msg.conversationId}, path=${msg.filePath}`);
       }
-      const targetClient = fwdMsg._requestClientId ? webClients.get(fwdMsg._requestClientId) : null;
-      const targetMatchesUser = !fwdMsg._requestUserId || targetClient?.userId === fwdMsg._requestUserId;
-      if (targetClient?.authenticated && targetMatchesUser) {
-        const { _requestClientId, _requestUserId, ...cleanMsg } = fwdMsg;
-        await sendToWebClient(targetClient, cleanMsg);
-      } else {
-        const { _requestClientId, ...fallbackMsg } = fwdMsg;
-        await forwardToClients(agentId, msg.conversationId, fallbackMsg);
-      }
+      await forwardWorkbenchResponse(agentId, fwdMsg);
       break;
     }
 
     case 'file_saved': {
       // Phase 4: 文件保存后失效父目录缓存
       invalidateParentDirCache(agentId, msg.filePath);
-      const fwdMsg = { ...msg, agentId };
-      const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
-      const targetMatchesUser = !msg._requestUserId || targetClient?.userId === msg._requestUserId;
-      if (targetClient?.authenticated && targetMatchesUser) {
-        const { _requestClientId, _requestUserId, ...cleanMsg } = fwdMsg;
-        await sendToWebClient(targetClient, cleanMsg);
-      } else {
-        const { _requestClientId, ...fallbackMsg } = fwdMsg;
-        await forwardToClients(agentId, msg.conversationId, fallbackMsg);
-      }
+      await forwardWorkbenchResponse(agentId, msg);
       break;
     }
 
@@ -96,31 +92,21 @@ export async function handleAgentFileTerminal(agentId, agent, msg) {
       if (msg.dirPath && msg.entries && !msg.error) {
         setCachedDir(agentId, msg.dirPath, msg.entries);
       }
-      // 优先定向发送给请求者
-      const dirTargetClientId = msg._requestClientId;
-      if (dirTargetClientId) {
-        const targetClient = webClients.get(dirTargetClientId);
-        if (targetClient?.authenticated) {
-          const { _requestClientId, ...cleanMsg } = msg;
-          await sendToWebClient(targetClient, cleanMsg);
-          break;
-        }
-      }
-      await forwardToClients(agentId, msg.conversationId, msg);
+      await forwardWorkbenchResponse(agentId, msg);
       break;
     }
 
     case 'file_op_result':
       // Phase 4: 文件创建/删除/移动 — 清空该 agent 的所有目录缓存
       clearAgentDirCache(agentId);
-      await forwardToClients(agentId, msg.conversationId, msg);
+      await forwardWorkbenchResponse(agentId, msg);
       break;
 
     case 'git_status_result':
     case 'git_diff_result':
     case 'git_op_result':
     case 'file_search_result':
-      await forwardToClients(agentId, msg.conversationId, msg);
+      await forwardWorkbenchResponse(agentId, msg);
       break;
 
     default:

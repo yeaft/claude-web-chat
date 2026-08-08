@@ -1,16 +1,16 @@
-import TerminalTab from './TerminalTab.js';
-import GitStatusTab from './GitStatusTab.js';
-import FilesTab from './FilesTab.js';
+import WorkbenchCapabilityHost from './WorkbenchCapabilityHost.js';
+import { workbenchConversationId, workbenchRouteKey } from '../utils/workbench-route.js';
 
 export default {
   name: 'WorkbenchPanel',
-  components: { TerminalTab, GitStatusTab, FilesTab },
+  components: { WorkbenchCapabilityHost },
   template: `
-    <div class="workbench-panel" :class="{ expanded: store.workbenchExpanded, maximized: store.workbenchMaximized }" :style="panelStyle">
+    <div ref="panelRoot" class="workbench-panel" :class="{ expanded: store.workbenchExpanded, maximized: store.workbenchMaximized }" :style="panelStyle">
       <div class="workbench-content" v-if="store.workbenchExpanded">
         <header class="workbench-header">
           <button
             v-if="activeCapability"
+            ref="capabilityCloseButton"
             type="button"
             class="workbench-header-action workbench-view-close"
             @click="closeCapability"
@@ -51,7 +51,7 @@ export default {
             aria-labelledby="workbench-launcher-title"
           >
             <div class="workbench-launcher-intro">
-              <h2 id="workbench-launcher-title">{{ $t('workbench.chooseCapability') }}</h2>
+              <h2 ref="launcherTitle" id="workbench-launcher-title" tabindex="-1">{{ $t('workbench.chooseCapability') }}</h2>
               <p>{{ $t('workbench.chooseCapabilityHint') }}</p>
             </div>
             <div class="workbench-capability-grid">
@@ -82,9 +82,11 @@ export default {
             </div>
           </section>
 
-          <TerminalTab v-if="hasTerminal" v-show="activeCapability === 'terminal'" />
-          <GitStatusTab v-if="hasExplorer" v-show="activeCapability === 'git'" />
-          <FilesTab v-if="hasExplorer" v-show="activeCapability === 'files'" :tree-initially-visible="false" />
+          <WorkbenchCapabilityHost
+            :key="workbenchContextKey"
+            :active-capability="activeToolCapability"
+            :route-props="routeProps"
+          />
 
           <section
             v-if="activeCapability && activeCapability !== 'browser' && activeCapabilityUnavailable"
@@ -111,9 +113,26 @@ export default {
   `,
   setup() {
     const store = Pinia.useChatStore();
+    const panelRoot = Vue.ref(null);
+    const launcherTitle = Vue.ref(null);
+    const capabilityCloseButton = Vue.ref(null);
 
-    const hasTerminal = Vue.computed(() => store.hasCapability('terminal'));
-    const hasExplorer = Vue.computed(() => store.hasCapability('file_editor'));
+    const activeRoute = Vue.computed(() => store.activeSessionRoute || null);
+    const activeRouteKey = Vue.computed(() => workbenchRouteKey(activeRoute.value));
+    const activeWorkDir = Vue.computed(() => store.effectiveWorkDir || '');
+    const workbenchContextKey = Vue.computed(() => `${activeRouteKey.value}\u0000${activeWorkDir.value}`);
+    const routeProps = Vue.computed(() => ({
+      routeKey: activeRouteKey.value,
+      runtimeProvider: activeRoute.value?.runtimeProvider || '',
+      agentId: activeRoute.value?.agentId || '',
+      sessionId: activeRoute.value?.sessionId || '',
+      conversationId: workbenchConversationId(activeRouteKey.value),
+      workDir: activeWorkDir.value,
+    }));
+
+    const hasSessionRoutes = Vue.computed(() => store.hasCapability('workbench_session_routes'));
+    const hasTerminal = Vue.computed(() => hasSessionRoutes.value && store.hasCapability('terminal'));
+    const hasExplorer = Vue.computed(() => hasSessionRoutes.value && store.hasCapability('file_editor'));
     const hasBrowser = Vue.computed(() => (
       store.hasCapability('browser_runtime')
       && store.hasCapability('browser_webrtc')
@@ -121,33 +140,15 @@ export default {
     ));
 
     const capabilityCards = Vue.computed(() => [
-      {
-        id: 'terminal',
-        titleKey: 'workbench.terminal',
-        descriptionKey: 'workbench.terminalDescription',
-        available: hasTerminal.value,
-      },
-      {
-        id: 'git',
-        titleKey: 'workbench.git',
-        descriptionKey: 'workbench.gitDescription',
-        available: hasExplorer.value,
-      },
-      {
-        id: 'files',
-        titleKey: 'workbench.files',
-        descriptionKey: 'workbench.filesDescription',
-        available: hasExplorer.value,
-      },
-      {
-        id: 'browser',
-        titleKey: 'workbench.browser',
-        descriptionKey: 'workbench.browserDescription',
-        available: hasBrowser.value,
-      },
+      { id: 'terminal', titleKey: 'workbench.terminal', descriptionKey: 'workbench.terminalDescription', available: hasTerminal.value },
+      { id: 'git', titleKey: 'workbench.git', descriptionKey: 'workbench.gitDescription', available: hasExplorer.value },
+      { id: 'files', titleKey: 'workbench.files', descriptionKey: 'workbench.filesDescription', available: hasExplorer.value },
+      { id: 'browser', titleKey: 'workbench.browser', descriptionKey: 'workbench.browserDescription', available: hasBrowser.value },
     ]);
 
     const activeCapability = Vue.ref(null);
+    const activatedCapabilities = Vue.reactive(new Set());
+    const lastCapabilityTrigger = Vue.ref(null);
     const activeCapabilityDefinition = Vue.computed(() => (
       capabilityCards.value.find(capability => capability.id === activeCapability.value) || null
     ));
@@ -157,28 +158,65 @@ export default {
     const activeCapabilityUnavailable = Vue.computed(() => (
       activeCapabilityDefinition.value?.available === false
     ));
+    const activeToolCapability = Vue.computed(() => {
+      if (!activeCapabilityDefinition.value?.available) return null;
+      return ['terminal', 'git', 'files'].includes(activeCapability.value)
+        && isCapabilityActivated(activeCapability.value)
+        ? activeCapability.value
+        : null;
+    });
 
-    const openCapability = (capabilityId) => {
-      if (!capabilityCards.value.some(capability => capability.id === capabilityId)) return;
-      activeCapability.value = capabilityId;
+    const capabilityActivationKey = capabilityId => `${activeRouteKey.value}\u0000${capabilityId}`;
+    const isCapabilityActivated = capabilityId => activatedCapabilities.has(capabilityActivationKey(capabilityId));
+
+    const focusCapabilityClose = () => {
+      Vue.nextTick(() => capabilityCloseButton.value?.focus());
     };
 
-    const closeCapability = () => {
+    const openCapability = (capabilityId, options = {}) => {
+      const focus = typeof options === 'boolean'
+        ? options
+        : options?.focus !== false;
+      if (!capabilityCards.value.some(capability => capability.id === capabilityId)) return false;
+      if (['terminal', 'git', 'files'].includes(capabilityId) && !activeRouteKey.value) return false;
+      lastCapabilityTrigger.value = capabilityId;
+      activatedCapabilities.add(capabilityActivationKey(capabilityId));
+      activeCapability.value = capabilityId;
+      if (focus) focusCapabilityClose();
+      return true;
+    };
+
+    const closeCapability = (options = {}) => {
+      const restoreFocus = typeof options === 'boolean'
+        ? options
+        : options?.restoreFocus !== false;
+      const capabilityId = activeCapability.value || lastCapabilityTrigger.value;
       activeCapability.value = null;
+      if (!restoreFocus || !capabilityId) return;
+      Vue.nextTick(() => {
+        panelRoot.value
+          ?.querySelector(`[data-workbench-capability="${capabilityId}"]`)
+          ?.focus();
+      });
     };
 
     Vue.watch(
       () => store.workbenchExpanded,
       (expanded, wasExpanded) => {
-        if (expanded && !wasExpanded) closeCapability();
+        if (expanded && !wasExpanded) closeCapability({ restoreFocus: false });
       },
       { flush: 'sync' },
     );
 
     Vue.watch(
-      () => `${store.currentAgent || ''}:${store.currentConversation || ''}`,
-      (conversationIdentity, previousConversationIdentity) => {
-        if (conversationIdentity !== previousConversationIdentity) closeCapability();
+      workbenchContextKey,
+      (contextKey, previousContextKey) => {
+        if (contextKey === previousContextKey) return;
+        const focusWasInsideWorkbench = !!panelRoot.value?.contains(document.activeElement);
+        closeCapability({ restoreFocus: false });
+        activatedCapabilities.clear();
+        lastCapabilityTrigger.value = null;
+        if (focusWasInsideWorkbench) Vue.nextTick(() => launcherTitle.value?.focus());
       },
       { flush: 'sync' },
     );
@@ -214,8 +252,8 @@ export default {
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
 
-      const onMove = (e) => {
-        const clientX = isTouch ? e.touches[0].clientX : e.clientX;
+      const onMove = (moveEvent) => {
+        const clientX = isTouch ? moveEvent.touches[0].clientX : moveEvent.clientX;
         const delta = startX - clientX;
         const maxWidth = Math.max(900, window.innerWidth - 100);
         panelWidth.value = Math.max(280, Math.min(maxWidth, startWidth + delta));
@@ -235,8 +273,24 @@ export default {
       document.addEventListener(isTouch ? 'touchend' : 'mouseup', onEnd);
     };
 
-    const handleOpenFile = () => {
-      if (hasExplorer.value) activeCapability.value = 'files';
+    const handleOpenFile = (event) => {
+      if (!hasExplorer.value || !activeRouteKey.value) return;
+      const eventRouteKey = event.detail?.workbenchRoute
+        ? workbenchRouteKey(event.detail.workbenchRoute)
+        : activeRouteKey.value;
+      if (eventRouteKey !== activeRouteKey.value) return;
+      if (!openCapability('files')) return;
+      Vue.nextTick(() => {
+        window.dispatchEvent(new CustomEvent('workbench-open-file-in-active-view', {
+          detail: {
+            ...(event.detail || {}),
+            agentId: routeProps.value.agentId,
+            conversationId: routeProps.value.conversationId,
+            workDir: routeProps.value.workDir,
+            workbenchRouteKey: activeRouteKey.value,
+          },
+        }));
+      });
     };
 
     Vue.onMounted(() => {
@@ -249,12 +303,19 @@ export default {
 
     return {
       store,
+      panelRoot,
+      launcherTitle,
+      capabilityCloseButton,
       activeCapability,
       activeCapabilityTitleKey,
       activeCapabilityUnavailable,
+      activeToolCapability,
       capabilityCards,
+      routeProps,
+      workbenchContextKey,
       openCapability,
       closeCapability,
+      isCapabilityActivated,
       hasTerminal,
       hasExplorer,
       hasBrowser,

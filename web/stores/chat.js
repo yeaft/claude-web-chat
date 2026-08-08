@@ -8191,8 +8191,9 @@ export const useChatStore = defineStore('chat', {
         ? resolveYeaftConversationIdForSession(this, route.sessionId, agentId)
         : this.currentConversation;
       const canOpenFiles = agentId === this.currentAgent
-        ? this.hasCapability('file_editor')
-        : agentHasCapability(this, agentId, 'file_editor');
+        ? this.hasCapability('file_editor') && this.hasCapability('workbench_session_routes')
+        : agentHasCapability(this, agentId, 'file_editor')
+          && agentHasCapability(this, agentId, 'workbench_session_routes');
       if (!agentId || !conversationId || !canOpenFiles) return false;
       const path = typeof filePath === 'string' ? filePath.trim() : '';
       if (!path) return false;
@@ -8205,6 +8206,11 @@ export const useChatStore = defineStore('chat', {
           agentId,
           conversationId,
           workDir: this.effectiveWorkDir || '',
+          workbenchRoute: route ? {
+            runtimeProvider: route.runtimeProvider,
+            agentId: route.agentId,
+            sessionId: route.sessionId,
+          } : null,
           hideTree: !!hideTree,
           line: Number.isFinite(line) && line > 0 ? line : null,
         }

@@ -6,14 +6,28 @@ import * as Vue from 'vue';
 import { createWsHandler } from '../../web/components/files/wsHandler.js';
 import { createFileTabs } from '../../web/components/files/fileTabs.js';
 import ctx from '../../agent/context.js';
+import { CONFIG } from '../../server/config.js';
+import { userDb, yeaftSessionDb } from '../../server/database.js';
 import { handleWriteFile } from '../../agent/workbench/file-ops.js';
 
-const forwardToClients = vi.fn(async () => {});
-const sendToWebClient = vi.fn(async () => {});
-const previewFiles = new Map();
-const webClients = new Map();
+const {
+  forwardToClients,
+  forwardToAgent,
+  sendToWebClient,
+  agents,
+  previewFiles,
+  webClients,
+} = vi.hoisted(() => ({
+  forwardToClients: vi.fn(async () => {}),
+  forwardToAgent: vi.fn(async () => {}),
+  sendToWebClient: vi.fn(async () => {}),
+  agents: new Map(),
+  previewFiles: new Map(),
+  webClients: new Map(),
+}));
 
 vi.mock('../../server/context.js', () => ({
+  agents,
   previewFiles,
   webClients,
 }));
@@ -21,19 +35,192 @@ vi.mock('../../server/context.js', () => ({
 vi.mock('../../server/ws-utils.js', () => ({
   sendToWebClient,
   forwardToClients,
+  forwardToAgent,
+  verifyConversationOwnership: vi.fn(() => true),
+  getCachedDir: vi.fn(() => null),
   setCachedDir: vi.fn(),
   invalidateParentDirCache: vi.fn(),
   clearAgentDirCache: vi.fn(),
 }));
 
 const { handleAgentFileTerminal } = await import('../../server/handlers/agent-file-terminal.js');
+const { handleClientWorkbench } = await import('../../server/handlers/client-workbench.js');
+const { workbenchRouteKey } = await import('../../server/workbench-route.js');
 
 describe('Agent file terminal forwarding', () => {
   beforeEach(() => {
     forwardToClients.mockClear();
+    forwardToAgent.mockClear();
     sendToWebClient.mockClear();
+    agents.clear();
     previewFiles.clear();
     webClients.clear();
+  });
+
+  it('authorizes a Yeaft Workbench route and replaces browser cwd with canonical Session metadata', async () => {
+    const suffix = `${process.pid}-${Date.now()}`;
+    const user = userDb.getOrCreate(`workbench-user-${suffix}`);
+    const userId = user.id;
+    const agentId = `workbench-agent-${suffix}`;
+    const sessionId = `workbench-session-${suffix}`;
+    const route = { runtimeProvider: 'yeaft', agentId, sessionId };
+    const canonicalWorkDir = `/canonical/${sessionId}`;
+    const previousSkipAuth = CONFIG.skipAuth;
+    CONFIG.skipAuth = false;
+    yeaftSessionDb.upsertFromSnapshot(userId, agentId, {
+      id: sessionId,
+      name: 'Workbench route test',
+      workDir: canonicalWorkDir,
+    });
+    try {
+      agents.set(agentId, { capabilities: ['workbench_session_routes'] });
+      const handled = await handleClientWorkbench(
+        'client-route',
+        { userId, role: 'pro', currentAgent: agentId, currentConversation: 'shared-yeaft-conversation' },
+        {
+          type: 'terminal_create',
+          agentId,
+          conversationId: 'browser-forged-conversation',
+          workDir: '/browser/forged',
+          workbenchRoute: route,
+          workbenchRouteKey: workbenchRouteKey(route),
+          terminalId: 'term-route',
+          cols: 80,
+          rows: 24,
+        },
+        async requestedAgentId => requestedAgentId === agentId,
+      );
+
+      expect(handled).toBe(true);
+      expect(forwardToAgent).toHaveBeenCalledWith(agentId, expect.objectContaining({
+        type: 'terminal_create',
+        agentId,
+        workDir: canonicalWorkDir,
+        workbenchRouteKey: workbenchRouteKey(route),
+        conversationId: `_workbench:${workbenchRouteKey(route)}`,
+        _requestUserId: userId,
+        _requestClientId: 'client-route',
+      }));
+      expect(forwardToAgent.mock.calls[0][1].workDir).not.toBe('/browser/forged');
+
+      forwardToAgent.mockClear();
+      await handleClientWorkbench(
+        'client-route',
+        { userId, role: 'pro', currentAgent: agentId },
+        {
+          type: 'git_status',
+          agentId,
+          workDir: '/workspace/selected-repository',
+          workbenchRoute: route,
+          workbenchRouteKey: workbenchRouteKey(route),
+        },
+        async requestedAgentId => requestedAgentId === agentId,
+      );
+      expect(forwardToAgent).toHaveBeenCalledWith(agentId, expect.objectContaining({
+        type: 'git_status',
+        workDir: '/workspace/selected-repository',
+        workbenchRouteKey: workbenchRouteKey(route),
+      }));
+    } finally {
+      yeaftSessionDb.deleteForAgent(userId, agentId, sessionId);
+      userDb.deleteUser(userId);
+      CONFIG.skipAuth = previousSkipAuth;
+    }
+  });
+
+  it('rejects route-scoped requests when the Agent lacks protocol support', async () => {
+    const previousSkipAuth = CONFIG.skipAuth;
+    CONFIG.skipAuth = true;
+    const agentId = 'legacy-workbench-agent';
+    const route = { runtimeProvider: 'yeaft', agentId, sessionId: 'session-1' };
+    agents.set(agentId, {
+      capabilities: ['terminal', 'file_editor'],
+      yeaftSessions: new Map([['session-1', { id: 'session-1', workDir: '/legacy' }]]),
+    });
+    try {
+      expect(await handleClientWorkbench(
+        'legacy-client',
+        { userId: 'local-user', role: 'admin', currentAgent: agentId },
+        { type: 'terminal_create', agentId, workbenchRoute: route },
+        async () => true,
+      )).toBeUndefined();
+      expect(forwardToAgent).not.toHaveBeenCalled();
+      expect(sendToWebClient).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        type: 'error',
+        message: 'Invalid Workbench Session route',
+      }));
+    } finally {
+      CONFIG.skipAuth = previousSkipAuth;
+      agents.clear();
+    }
+  });
+
+  it('allows only terminal cleanup after Session metadata is removed', async () => {
+    const previousSkipAuth = CONFIG.skipAuth;
+    CONFIG.skipAuth = true;
+    const agentId = 'deleted-session-agent';
+    const route = { runtimeProvider: 'yeaft', agentId, sessionId: 'deleted-session' };
+    agents.set(agentId, { capabilities: ['workbench_session_routes'], yeaftSessions: new Map() });
+    try {
+      expect(await handleClientWorkbench(
+        'cleanup-client',
+        { userId: 'local-user', role: 'admin', currentAgent: agentId },
+        { type: 'terminal_close', agentId, terminalId: 'term-1', workbenchRoute: route },
+        async () => true,
+      )).toBe(true);
+      expect(forwardToAgent).toHaveBeenCalledWith(agentId, expect.objectContaining({
+        type: 'terminal_close',
+        terminalId: 'term-1',
+        workbenchRouteKey: workbenchRouteKey(route),
+      }));
+
+      forwardToAgent.mockClear();
+      expect(await handleClientWorkbench(
+        'cleanup-client',
+        { userId: 'local-user', role: 'admin', currentAgent: agentId },
+        { type: 'terminal_input', agentId, terminalId: 'term-1', data: 'pwd\n', workbenchRoute: route },
+        async () => true,
+      )).toBeUndefined();
+      expect(forwardToAgent).not.toHaveBeenCalled();
+    } finally {
+      CONFIG.skipAuth = previousSkipAuth;
+      agents.clear();
+    }
+  });
+
+  it('uses the live Agent Session snapshot only in local no-auth mode', async () => {
+    const previousSkipAuth = CONFIG.skipAuth;
+    CONFIG.skipAuth = true;
+    const agentId = 'local-workbench-agent';
+    const sessionId = 'local-workbench-session';
+    const route = { runtimeProvider: 'yeaft', agentId, sessionId };
+    agents.set(agentId, {
+      capabilities: ['workbench_session_routes'],
+      yeaftSessions: new Map([[sessionId, { id: sessionId, workDir: '/local/session' }]]),
+    });
+    try {
+      expect(await handleClientWorkbench(
+        'local-client',
+        { userId: 'local-user', role: 'admin', currentAgent: agentId },
+        {
+          type: 'git_status',
+          agentId,
+          workDir: '/forged',
+          workbenchRoute: route,
+          workbenchRouteKey: workbenchRouteKey(route),
+        },
+        async () => true,
+      )).toBe(true);
+      expect(forwardToAgent).toHaveBeenCalledWith(agentId, expect.objectContaining({
+        type: 'git_status',
+        workDir: '/forged',
+        workbenchRoute: route,
+        workbenchRouteKey: workbenchRouteKey(route),
+      }));
+    } finally {
+      CONFIG.skipAuth = previousSkipAuth;
+      agents.clear();
+    }
   });
 
   it('routes an open event with its frozen Agent and conversation identity', () => {
@@ -62,7 +249,7 @@ describe('Agent file terminal forwarding', () => {
       debugStatus: Vue.ref(''),
     }).handleOpenFile;
 
-    handler(new CustomEvent('open-file-in-explorer', { detail: {
+    handler(new CustomEvent('workbench-open-file-in-active-view', { detail: {
       filePath: 'docs/design.md',
       agentId: 'agent-a',
       conversationId: 'yeaft-agent-a',
@@ -284,6 +471,48 @@ describe('Agent file terminal forwarding', () => {
       ctx.sendToServer = previousSend;
       rmSync(workDir, { recursive: true, force: true });
     }
+  });
+
+  it('rejects Agent-forged route keys that do not match the connected Agent', async () => {
+    const client = { authenticated: true, userId: 'user-1' };
+    webClients.set('client-1', client);
+
+    await handleAgentFileTerminal('agent-1', {}, {
+      type: 'directory_listing',
+      conversationId: '_workbench:yeaft:agent-2:session-1',
+      workbenchRouteKey: 'yeaft:agent-1:session-1',
+      _requestUserId: 'user-1',
+      _requestClientId: 'client-1',
+      dirPath: '/workspace',
+      entries: [],
+    });
+
+    expect(sendToWebClient).toHaveBeenCalledWith(client, expect.not.objectContaining({
+      workbenchRouteKey: expect.anything(),
+    }));
+  });
+
+  it('projects the canonical route key from synthetic Agent responses', async () => {
+    const client = { authenticated: true, userId: 'user-1' };
+    webClients.set('client-1', client);
+    const routeKey = 'yeaft:agent-1:session-1';
+
+    await handleAgentFileTerminal('agent-1', {}, {
+      type: 'directory_listing',
+      conversationId: `_workbench:${routeKey}`,
+      requestId: 'dir-1',
+      _requestUserId: 'user-1',
+      _requestClientId: 'client-1',
+      dirPath: '/workspace',
+      entries: [],
+    });
+
+    expect(sendToWebClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      type: 'directory_listing',
+      conversationId: `_workbench:${routeKey}`,
+      workbenchRouteKey: routeKey,
+      requestId: 'dir-1',
+    }));
   });
 
   it('targets a save acknowledgement to its requesting browser with Agent identity', async () => {

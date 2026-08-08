@@ -8,12 +8,38 @@ import { decorateMessageFileReferences, resolveMessageFileReference } from '../.
 
 const readWeb = path => readFileSync(resolve(process.cwd(), 'web', path), 'utf8');
 
+const capabilityMounts = [];
+
+function capabilityStub(name, className) {
+  return {
+    props: {
+      routeKey: { type: String, default: '' },
+      runtimeProvider: { type: String, default: '' },
+      agentId: { type: String, default: '' },
+      sessionId: { type: String, default: '' },
+      conversationId: { type: String, default: '' },
+      workDir: { type: String, default: '' },
+    },
+    setup(props) {
+      Vue.onMounted(() => capabilityMounts.push({ name, ...props }));
+      return { props };
+    },
+    template: `<div :class="'${className}'" :data-route-key="props.routeKey" :data-session-id="props.sessionId" :data-work-dir="props.workDir">${name}</div>`,
+  };
+}
+
 const workbenchStore = Vue.reactive({
   workbenchExpanded: true,
   workbenchMaximized: false,
   currentAgent: 'agent-1',
-  currentConversation: 'conversation-1',
-  capabilities: ['terminal', 'file_editor'],
+  currentConversation: 'yeaft-agent-1',
+  activeSessionRoute: {
+    runtimeProvider: 'yeaft',
+    agentId: 'agent-1',
+    sessionId: 'session-a',
+  },
+  effectiveWorkDir: '/workspace/a',
+  capabilities: ['terminal', 'file_editor', 'workbench_session_routes'],
   hasCapability(capability) {
     return this.capabilities.includes(capability);
   },
@@ -34,12 +60,13 @@ const { default: ChatHeader } = await import('../../web/components/ChatHeader.js
 
 function mountWorkbench() {
   return mount(WorkbenchPanel, {
+    attachTo: document.body,
     global: {
       mocks: { $t: key => key },
       stubs: {
-        TerminalTab: { template: '<div class="terminal-tab-stub">terminal</div>' },
-        GitStatusTab: { template: '<div class="git-tab-stub">git</div>' },
-        FilesTab: { template: '<div class="files-tab-stub">files</div>' },
+        TerminalTab: capabilityStub('terminal', 'terminal-tab-stub'),
+        GitStatusTab: capabilityStub('git', 'git-tab-stub'),
+        FilesTab: capabilityStub('files', 'files-tab-stub'),
       },
     },
   });
@@ -50,8 +77,15 @@ describe('Workbench capability launcher', () => {
     workbenchStore.workbenchExpanded = true;
     workbenchStore.workbenchMaximized = false;
     workbenchStore.currentAgent = 'agent-1';
-    workbenchStore.currentConversation = 'conversation-1';
-    workbenchStore.capabilities = ['terminal', 'file_editor'];
+    workbenchStore.currentConversation = 'yeaft-agent-1';
+    workbenchStore.activeSessionRoute = {
+      runtimeProvider: 'yeaft',
+      agentId: 'agent-1',
+      sessionId: 'session-a',
+    };
+    workbenchStore.effectiveWorkDir = '/workspace/a';
+    workbenchStore.capabilities = ['terminal', 'file_editor', 'workbench_session_routes'];
+    capabilityMounts.length = 0;
     workbenchStore.toggleWorkbench.mockClear();
     workbenchStore.toggleWorkbenchMaximized.mockClear();
     globalThis.Pinia.useChatStore = () => workbenchStore;
@@ -74,23 +108,66 @@ describe('Workbench capability launcher', () => {
     expect(wrapper.get('[data-workbench-capability="terminal"] .workbench-capability-status').text()).toBe('workbench.available');
     expect(wrapper.get('[data-workbench-capability="browser"] .workbench-capability-status').text()).toBe('workbench.unavailable');
     expect(wrapper.get('[data-workbench-capability="browser"]').attributes('disabled')).toBeUndefined();
+    expect(capabilityMounts).toEqual([]);
     wrapper.unmount();
   });
 
-  it('opens one capability and closes it back to the launcher', async () => {
+  it('lazily opens one route-scoped capability and restores keyboard focus on close', async () => {
     const wrapper = mountWorkbench();
+    const terminalCard = wrapper.get('[data-workbench-capability="terminal"]');
+    terminalCard.element.focus();
 
-    await wrapper.get('[data-workbench-capability="terminal"]').trigger('click');
+    await terminalCard.trigger('click');
+    await Vue.nextTick();
     expect(wrapper.get('.terminal-tab-stub').isVisible()).toBe(true);
+    expect(wrapper.get('.terminal-tab-stub').attributes()).toMatchObject({
+      'data-route-key': 'yeaft:agent-1:session-a',
+      'data-session-id': 'session-a',
+      'data-work-dir': '/workspace/a',
+    });
+    expect(capabilityMounts.map(entry => entry.name)).toEqual(['terminal']);
     expect(wrapper.get('.workbench-header-title').text()).toBe('workbench.terminal');
     expect(wrapper.find('.workbench-launcher').exists()).toBe(false);
+    expect(document.activeElement).toBe(wrapper.get('.workbench-view-close').element);
 
     await wrapper.get('.workbench-view-close').trigger('click');
+    await Vue.nextTick();
     expect(wrapper.get('.workbench-launcher').isVisible()).toBe(true);
     expect(wrapper.get('.workbench-header-title').text()).toBe('workbench.title');
+    expect(document.activeElement).toBe(wrapper.get('[data-workbench-capability="terminal"]').element);
 
     await wrapper.get('.workbench-panel-close').trigger('click');
     expect(workbenchStore.toggleWorkbench).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it('resets and isolates activated capabilities across same-Agent Session routes', async () => {
+    const wrapper = mountWorkbench();
+    await wrapper.get('[data-workbench-capability="terminal"]').trigger('click');
+    await Vue.nextTick();
+    expect(wrapper.get('.terminal-tab-stub').attributes('data-route-key')).toBe('yeaft:agent-1:session-a');
+
+    workbenchStore.activeSessionRoute = {
+      runtimeProvider: 'yeaft',
+      agentId: 'agent-1',
+      sessionId: 'session-b',
+    };
+    workbenchStore.effectiveWorkDir = '/workspace/b';
+    await Vue.nextTick();
+    expect(wrapper.get('.workbench-launcher').isVisible()).toBe(true);
+    expect(wrapper.find('.terminal-tab-stub').exists()).toBe(false);
+
+    await wrapper.get('[data-workbench-capability="git"]').trigger('click');
+    await Vue.nextTick();
+    expect(wrapper.get('.git-tab-stub').attributes()).toMatchObject({
+      'data-route-key': 'yeaft:agent-1:session-b',
+      'data-session-id': 'session-b',
+      'data-work-dir': '/workspace/b',
+    });
+    expect(capabilityMounts.map(entry => `${entry.name}:${entry.routeKey}`)).toEqual([
+      'terminal:yeaft:agent-1:session-a',
+      'git:yeaft:agent-1:session-b',
+    ]);
     wrapper.unmount();
   });
 
@@ -107,9 +184,13 @@ describe('Workbench capability launcher', () => {
   it('routes a message file-open event directly to Files and resets on reopen', async () => {
     const wrapper = mountWorkbench();
 
-    window.dispatchEvent(new CustomEvent('open-file-in-explorer', { detail: { filePath: 'README.md' } }));
+    window.dispatchEvent(new CustomEvent('open-file-in-explorer', { detail: {
+      filePath: 'README.md',
+      workbenchRoute: workbenchStore.activeSessionRoute,
+    } }));
     await Vue.nextTick();
     expect(wrapper.get('.files-tab-stub').isVisible()).toBe(true);
+    expect(wrapper.get('.files-tab-stub').attributes('data-route-key')).toBe('yeaft:agent-1:session-a');
     expect(wrapper.get('.workbench-header-title').text()).toBe('workbench.files');
 
     workbenchStore.workbenchExpanded = false;
@@ -121,7 +202,7 @@ describe('Workbench capability launcher', () => {
   });
 
   it('shows unavailable detail for unsupported legacy capabilities', async () => {
-    workbenchStore.capabilities = [];
+    workbenchStore.capabilities = ['terminal', 'file_editor'];
     const wrapper = mountWorkbench();
 
     await wrapper.get('[data-workbench-capability="git"]').trigger('click');
@@ -271,6 +352,7 @@ describe('message file preview', () => {
   it('wires the right panel to the complete Files experience with a collapsed tree by default', () => {
     const filesTab = readWeb('components/FilesTab.js');
     const workbench = readWeb('components/WorkbenchPanel.js');
+    const capabilityHost = readWeb('components/WorkbenchCapabilityHost.js');
     const chatPage = readWeb('components/ChatPage.js');
     const chatHeader = readWeb('components/ChatHeader.js');
     const yeaftPage = readWeb('components/YeaftPage.js');
@@ -297,8 +379,9 @@ describe('message file preview', () => {
     expect(filesCss).toMatch(/\.file-col-content\s*\{[^}]*order:\s*1;/s);
     expect(filesCss).toMatch(/\.file-tree-splitter\s*\{[^}]*order:\s*2;/s);
     expect(filesTab).toContain('startWidth - (clientX - startX)');
-    expect(workbench).toContain('<FilesTab');
-    expect(workbench).toContain(':tree-initially-visible="false"');
+    expect(workbench).toContain('<WorkbenchCapabilityHost');
+    expect(capabilityHost).toContain("files: 'FilesTab'");
+    expect(capabilityHost).toContain(':tree-initially-visible="activeCapability === \'files\' ? false : undefined"');
     expect(workbench).toContain('class="workbench-header-action workbench-maximize-btn"');
     expect(workbench).toContain(':aria-label="store.workbenchMaximized ? $t(\'workbench.restore\') : $t(\'workbench.maximize\')"');
     expect(workbench).toContain('d="M7 14H5v5h5v-2H7v-3z');

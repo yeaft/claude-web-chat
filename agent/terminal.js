@@ -62,6 +62,7 @@ function terminalRoutingFields(source) {
   return {
     ...(source?._requestUserId ? { _requestUserId: source._requestUserId } : {}),
     ...(source?._requestClientId ? { _requestClientId: source._requestClientId } : {}),
+    ...(source?.workbenchRouteKey ? { workbenchRouteKey: source.workbenchRouteKey } : {}),
   };
 }
 
@@ -69,7 +70,7 @@ export async function handleTerminalCreate(msg) {
   const { conversationId, cols, rows } = msg;
   const terminalId = msg.terminalId || conversationId;
   const conv = ctx.conversations.get(conversationId);
-  const workDir = conv?.workDir || ctx.CONFIG.workDir;
+  const workDir = msg.workDir || conv?.workDir || ctx.CONFIG.workDir;
   const routingFields = terminalRoutingFields(msg);
 
   // 如果已存在终端，先关闭
@@ -172,6 +173,7 @@ export async function handleTerminalCreate(msg) {
       rows: rows || 24,
       buffer: '',
       timer: null,
+      ...(msg.workbenchRouteKey ? { workbenchRouteKey: msg.workbenchRouteKey } : {}),
       ...routingFields,
     });
 

@@ -12,7 +12,7 @@ async function openYeaftWorkbench(chatPage, mockAgent, { closeSessionStatus = fa
       name: 'Workbench agent',
       online: true,
       status: 'ready',
-      capabilities: ['terminal', 'file_editor', 'work_center'],
+      capabilities: ['terminal', 'file_editor', 'workbench_session_routes', 'work_center'],
     };
 
     sessionsStore.applySnapshot([{
@@ -20,6 +20,7 @@ async function openYeaftWorkbench(chatPage, mockAgent, { closeSessionStatus = fa
       name: 'Workbench session',
       roster: ['omni'],
       defaultVpId: 'omni',
+      workDir: '/tmp/test',
     }], agentId);
     sessionsStore.setActive(sessionId, agentId);
 
@@ -38,6 +39,17 @@ async function openYeaftWorkbench(chatPage, mockAgent, { closeSessionStatus = fa
     store.activeConversations = [conversationId];
     store.currentView = 'yeaft';
   }, { agentId: mockAgent.agentId });
+
+  mockAgent.send({
+    type: 'session_list_updated',
+    sessions: [{
+      id: 'workbench-session',
+      name: 'Workbench session',
+      roster: ['omni'],
+      defaultVpId: 'omni',
+      workDir: '/tmp/test',
+    }],
+  });
 
   await expect(chatPage.locator('.yeaft-main')).toBeVisible();
   if (closeSessionStatus) {
@@ -65,7 +77,7 @@ async function openChatWorkbench(chatPage, mockAgent) {
       name: 'Workbench agent',
       online: true,
       status: 'ready',
-      capabilities: ['terminal', 'file_editor', 'work_center'],
+      capabilities: ['terminal', 'file_editor', 'workbench_session_routes', 'work_center'],
     };
     store.agents = [agent];
     store.currentAgent = agentId;
@@ -112,20 +124,116 @@ test.describe('Workbench', () => {
     await expect(capability(panel, 'browser')).toBeVisible();
     await expect(panel.locator('.wb-tab')).toHaveCount(0);
     await expect(capability(panel, 'browser').locator('.workbench-capability-status')).toHaveText('Unavailable on this Agent');
+    await expect.poll(() => mockAgent.messages().filter(message => [
+      'terminal_create', 'git_status', 'list_directory', 'restore_file_tabs',
+    ].includes(message.type)).length).toBe(0);
   });
 
   test('opens Terminal and closes it back to the launcher', async ({ chatPage, mockAgent }) => {
     await openYeaftWorkbench(chatPage, mockAgent);
 
     const panel = chatPage.locator('.workbench-panel');
-    await capability(panel, 'terminal').click();
+    const terminalCard = capability(panel, 'terminal');
+    await terminalCard.focus();
+    await terminalCard.press('Enter');
     await expect(panel.locator('.terminal-tab')).toBeVisible();
     await expect(panel.locator('.workbench-header-title')).toHaveText('Terminal');
     await expect(panel.locator('.workbench-launcher')).toHaveCount(0);
+    await expect(panel.locator('.workbench-view-close')).toBeFocused();
 
-    await panel.locator('.workbench-view-close').click();
+    const terminalRequest = await mockAgent.waitForMessage('terminal_create');
+    expect(terminalRequest).toMatchObject({
+      agentId: mockAgent.agentId,
+      workDir: '/tmp/test',
+      workbenchRoute: {
+        runtimeProvider: 'yeaft',
+        agentId: mockAgent.agentId,
+        sessionId: 'workbench-session',
+      },
+    });
+    expect(terminalRequest.workbenchRouteKey).toBe(`yeaft:${encodeURIComponent(mockAgent.agentId)}:workbench-session`);
+    expect(terminalRequest.conversationId).toBe(`_workbench:${terminalRequest.workbenchRouteKey}`);
+
+    await panel.locator('.workbench-view-close').press('Enter');
     await expect(panel.locator('.workbench-launcher')).toBeVisible();
     await expect(panel.locator('.workbench-header-title')).toHaveText('Workbench');
+    await expect(capability(panel, 'terminal')).toBeFocused();
+
+    const createCount = mockAgent.messages('terminal_create').length;
+    await capability(panel, 'terminal').press('Enter');
+    await expect(panel.locator('.terminal-tab')).toBeVisible();
+    await expect.poll(() => mockAgent.messages('terminal_create').length).toBe(createCount);
+  });
+
+  test('resets route state when switching same-Agent Sessions and scopes Git and Files requests', async ({ chatPage, mockAgent }) => {
+    await openYeaftWorkbench(chatPage, mockAgent);
+
+    const panel = chatPage.locator('.workbench-panel');
+    await capability(panel, 'terminal').click();
+    await expect(panel.locator('.terminal-tab')).toBeVisible();
+    const terminalA = await mockAgent.waitForMessage('terminal_create');
+    expect(terminalA.workbenchRoute?.sessionId).toBe('workbench-session');
+    await panel.locator('.workbench-view-close').click();
+    await capability(panel, 'git').click();
+    await expect(panel.locator('.git-status-tab')).toBeVisible();
+    const gitRequest = await mockAgent.waitForMessage('git_status');
+    expect(gitRequest).toMatchObject({
+      workDir: '/tmp/test',
+      workbenchRoute: { runtimeProvider: 'yeaft', sessionId: 'workbench-session' },
+    });
+
+    const sessionB = {
+      id: 'workbench-session-b',
+      name: 'Workbench session B',
+      roster: ['omni'],
+      defaultVpId: 'omni',
+      workDir: '/tmp/session-b',
+    };
+    mockAgent.send({
+      type: 'session_list_updated',
+      sessions: [{
+        id: 'workbench-session', name: 'Workbench session', roster: ['omni'], defaultVpId: 'omni', workDir: '/tmp/test',
+      }, sessionB],
+    });
+    await chatPage.evaluate(({ agentId, session }) => {
+      const store = window.Pinia.useChatStore();
+      const sessionsStore = window.Pinia.useSessionsStore();
+      sessionsStore.applySnapshot([
+        { id: 'workbench-session', name: 'Workbench session', roster: ['omni'], defaultVpId: 'omni', workDir: '/tmp/test' },
+        session,
+      ], agentId);
+      sessionsStore.setActive(session.id, agentId);
+      store.yeaftSessionAgentById = { ...store.yeaftSessionAgentById, [session.id]: agentId };
+      store.yeaftActiveSessionFilter = session.id;
+    }, { agentId: mockAgent.agentId, session: sessionB });
+
+    await expect(panel.locator('.workbench-launcher')).toBeVisible();
+    await expect(panel.locator('.git-status-tab')).toHaveCount(0);
+    const terminalClose = await mockAgent.waitForMessage('terminal_close');
+    expect(terminalClose).toMatchObject({
+      terminalId: terminalA.terminalId,
+      workbenchRoute: { sessionId: 'workbench-session' },
+    });
+
+    await capability(panel, 'terminal').click();
+    const terminalB = await mockAgent.waitForMessage('terminal_create');
+    expect(terminalB).toMatchObject({
+      workDir: '/tmp/session-b',
+      workbenchRoute: { sessionId: 'workbench-session-b' },
+    });
+    await panel.locator('.workbench-view-close').click();
+    await capability(panel, 'files').click();
+    await expect(panel.locator('.files-tab')).toBeVisible();
+    const filesRequest = await mockAgent.waitForMessage('list_directory');
+    expect(filesRequest).toMatchObject({
+      workDir: '/tmp/session-b',
+      workbenchRoute: {
+        runtimeProvider: 'yeaft',
+        agentId: mockAgent.agentId,
+        sessionId: 'workbench-session-b',
+      },
+    });
+    expect(filesRequest.workbenchRouteKey).toBe(`yeaft:${encodeURIComponent(mockAgent.agentId)}:workbench-session-b`);
   });
 
   test('keeps Browser discoverable without exposing a fake viewer', async ({ chatPage, mockAgent }) => {
