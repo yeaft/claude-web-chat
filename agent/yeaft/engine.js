@@ -22,7 +22,7 @@ import { promises as fsp } from 'fs';
 import { join, resolve as resolvePath } from 'path';
 import { buildSystemPrompt, buildWorkerPrompt } from './prompts.js';
 import { getRuntimePlatformInfo } from './runtime-platform.js';
-import { LLMContextError, LLMAbortError, LLMAuthError, LLMRateLimitError, LLMServerError, LLMStreamIdleTimeoutError } from './llm/adapter.js';
+import { LLMContextError, LLMAbortError, LLMAuthError, LLMPolicyError, LLMRateLimitError, LLMServerError, LLMStreamIdleTimeoutError } from './llm/adapter.js';
 import { runMemoryPreflow, buildRelevantScopes, memoryScopeLabel } from './sessions/pre-flow.js';
 import {
   readProjectDoc,
@@ -155,6 +155,8 @@ const RETRY_DEFAULTS = Object.freeze({
 
 const RETRY_CONTINUATION_PROMPT =
   'Continue from the exact point where the previous response stopped. Do not repeat text already produced.';
+const POLICY_RECOVERY_PROMPT =
+  'Continue this authorized code review, but describe security findings abstractly. Do not repeat credential-like or exploit payloads, secrets, tokens, or step-by-step misuse instructions. Preserve the technical conclusion, evidence location, severity, and remediation.';
 
 // Accept legacy namespaced commands and Claude Code-style bare skill commands.
 // Project-tier skills are shown as /<skill-name>; /yeaft-skills:<name> and
@@ -2791,6 +2793,7 @@ export class Engine {
     let retryPolicy = resolveRetryPolicy(this.#config);
     let consecutiveRetryableErrors = 0;
     let consecutiveForbiddenErrors = 0;
+    let contentPolicyRecoveryAttempts = 0;
 
     while (true) {
       turnNumber++;
@@ -3442,17 +3445,42 @@ export class Engine {
             errorName: err?.name || null,
             statusCode: err?.statusCode ?? null,
             retryable: err instanceof LLMRateLimitError || err instanceof LLMServerError,
+            reasonCode: err?.reasonCode || null,
             message: String(err?.message || '').slice(0, 200),
           },
         });
 
         const earlyIsRateLimit = err instanceof LLMRateLimitError;
         const earlyIsTransient = err instanceof LLMServerError;
+        const earlyIsContentPolicy = err instanceof LLMPolicyError;
         // A completed tool_call has already crossed the streaming boundary to
         // the caller. Replaying that request would publish a duplicate call and
         // leave ambiguous execution ownership, so only pre-tool failures are
         // eligible for transparent retry or model fallback.
         const canReplayProviderRequest = toolCalls.length === 0;
+        if (earlyIsContentPolicy && canReplayProviderRequest && contentPolicyRecoveryAttempts === 0) {
+          contentPolicyRecoveryAttempts = 1;
+          endAttemptTrace('llm_retry');
+          if (responseText) prepareRetryContinuation();
+          retryLifecycle.pendingContinuation = {
+            role: 'user',
+            content: POLICY_RECOVERY_PROMPT,
+            userAuthored: false,
+          };
+          yield {
+            type: 'llm_retry',
+            attempt: 1,
+            maxRetries: 1,
+            delayMs: 0,
+            reason: 'content_policy_recovery',
+            recoveryMode: 'continue',
+            errorName: err.name,
+            statusCode: err.statusCode ?? 422,
+            message: 'Provider content-safety rejection; retrying once with sensitive examples abstracted.',
+          };
+          yield { type: 'turn_end', turnNumber, stopReason: 'llm_retry', threadId };
+          continue;
+        }
         const earlyIsTemporaryForbidden = err instanceof LLMAuthError
           && err.statusCode === 403
           && err.temporary === true;
@@ -3640,9 +3668,25 @@ export class Engine {
             && consecutiveRetryableErrors >= retryPolicy.maxRetries;
           errorEvent.retryAttempts = consecutiveRetryableErrors;
           errorEvent.maxRetries = retryPolicy.maxRetries;
+        } else if (err instanceof LLMPolicyError) {
+          errorEvent.reason = 'content_policy_denied';
+          errorEvent.retryExhausted = contentPolicyRecoveryAttempts >= 1;
+          errorEvent.retryAttempts = contentPolicyRecoveryAttempts;
+          errorEvent.maxRetries = 1;
         }
         yield errorEvent;
-        yield { type: 'turn_end', turnNumber, stopReason: 'error', threadId, terminal: true };
+        yield {
+          type: 'turn_end',
+          turnNumber,
+          stopReason: 'error',
+          threadId,
+          terminal: true,
+          detail: {
+            errorName: err?.name || 'Error',
+            statusCode: err?.statusCode ?? null,
+            reason: errorEvent.reason || err?.reasonCode || null,
+          },
+        };
         break;
       }
 
