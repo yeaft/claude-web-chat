@@ -4,6 +4,7 @@
 - 日期：2026-08-07
 - Owner：Linus
 - 范围：从 Web UI 低延迟观看和控制 Agent 本地 Chromium，并允许用户与 Yeaft 共用同一个浏览器上下文
+- Phase 0 实测结果：[`2026-08-08-browser-runtime-phase-0-results.md`](./2026-08-08-browser-runtime-phase-0-results.md)
 
 ## 1. 决策摘要
 
