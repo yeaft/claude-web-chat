@@ -140,6 +140,29 @@ export function classifyAuthError(statusCode, responseBody = '', details = {}) {
   });
 }
 
+/** Provider content-safety rejection (commonly 422) — eligible for one sanitized recovery. */
+export class LLMPolicyError extends Error {
+  constructor(_providerMessage, statusCode = 422, details = {}) {
+    super('The LLM provider blocked this request under its content-safety policy. Continue and avoid repeating sensitive payloads or credential-like examples.');
+    this.name = 'LLMPolicyError';
+    this.statusCode = statusCode;
+    this.reasonCode = 'content_policy_denied';
+    this.provider = details.provider || null;
+    this.model = details.model || null;
+  }
+}
+
+const CONTENT_POLICY_RE = /(?:content (?:was )?flagged|content[-_ ]?safety|cybersecurity risk|safety policy|safety system|content[_ -]?filter|policy[_ -]?violation)/i;
+
+export function classifyPolicyError(statusCode, responseBody = '', details = {}) {
+  const status = Number(statusCode) || 0;
+  const signals = providerErrorSignals(responseBody);
+  if (status !== 422 || (!CONTENT_POLICY_RE.test(signals.code) && !CONTENT_POLICY_RE.test(signals.message))) {
+    return null;
+  }
+  return new LLMPolicyError(signals.message, status, details);
+}
+
 /** Context too long error (413 or API-specific) — need compaction. */
 export class LLMContextError extends Error {
   constructor(message) {

@@ -14,6 +14,7 @@ import {
   LLMRateLimitError,
   LLMServerError,
   LLMAuthError,
+  LLMPolicyError,
   LLMContextError,
   LLMStreamIdleTimeoutError,
   createBoundedTextAccumulator,
@@ -224,6 +225,20 @@ describe('AnthropicAdapter error classification', () => {
     expect(caught.retryAfterMs).toBeNull();
   });
 
+  it('classifies a content-safety 422 without exposing the provider body', async () => {
+    global.fetch = async () => errorResponse({
+      status: 422,
+      body: JSON.stringify({ error: { message: 'This content was flagged for possible cybersecurity risk. SECRET_SAMPLE' } }),
+    });
+    const adapter = new AnthropicAdapter({ baseUrl: 'https://x', apiKey: 'k' });
+    let caught;
+    try { await consume(adapter.stream({ model: 'claude-3-5-sonnet', system: '', messages: [{ role: 'user', content: 'hi' }] })); }
+    catch (err) { caught = err; }
+    expect(caught).toBeInstanceOf(LLMPolicyError);
+    expect(caught).toMatchObject({ statusCode: 422, reasonCode: 'content_policy_denied' });
+    expect(caught.message).not.toContain('SECRET_SAMPLE');
+  });
+
   it('throws LLMContextError on prompt-too-long body', async () => {
     global.fetch = async () => errorResponse({ status: 400, body: 'prompt is too long' });
     const adapter = new AnthropicAdapter({ baseUrl: 'https://x', apiKey: 'k' });
@@ -304,6 +319,20 @@ describe('OpenAIResponsesAdapter error classification', () => {
     catch (err) { caught = err; }
     expect(caught).toBeInstanceOf(LLMRateLimitError);
     expect(caught.retryAfterMs).toBe(3_000);
+  });
+
+  it('classifies a content-safety 422 without exposing the provider body', async () => {
+    global.fetch = async () => errorResponse({
+      status: 422,
+      body: JSON.stringify({ error: { message: 'This content was flagged for possible cybersecurity risk. SECRET_SAMPLE' } }),
+    });
+    const adapter = new OpenAIResponsesAdapter({ baseUrl: 'https://x', apiKey: 'k' });
+    let caught;
+    try { await consume(adapter.stream({ model: 'gpt-5', system: '', messages: [{ role: 'user', content: 'hi' }] })); }
+    catch (err) { caught = err; }
+    expect(caught).toBeInstanceOf(LLMPolicyError);
+    expect(caught).toMatchObject({ statusCode: 422, reasonCode: 'content_policy_denied' });
+    expect(caught.message).not.toContain('SECRET_SAMPLE');
   });
 
   it('throws LLMContextError on 413', async () => {

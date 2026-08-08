@@ -172,6 +172,45 @@ describe('Yeaft load-history first paint', () => {
     }));
     sent.length = 0;
 
+    const policyError = Object.assign(new Error(
+      'The LLM provider blocked this request under its content-safety policy. Continue and avoid repeating sensitive payloads or credential-like examples.',
+    ), {
+      name: 'LLMPolicyError',
+      statusCode: 422,
+      reasonCode: 'content_policy_denied',
+    });
+    __testHandleEngineEvent({
+      type: 'error',
+      error: policyError,
+      retryable: false,
+      reason: 'content_policy_denied',
+      retryExhausted: true,
+      retryAttempts: 1,
+      maxRetries: 1,
+    }, hctx);
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'error',
+        statusCode: 422,
+        reasonCode: 'content_policy_denied',
+        retryable: false,
+        retryExhausted: true,
+        message: expect.stringContaining('avoid repeating sensitive payloads'),
+      }),
+    }));
+    expect(sent).toContainEqual(expect.objectContaining({
+      data: expect.objectContaining({
+        type: 'assistant',
+        message: expect.objectContaining({
+          content: [{
+            type: 'text',
+            text: expect.stringContaining('Provider blocked this request for content-safety reasons'),
+          }],
+        }),
+      }),
+    }));
+    sent.length = 0;
+
     const rows = [
       { id: 'm0001', role: 'user', content: 'visible q', sessionId: 'session-fast', threadId: 'main' },
       { id: 'm0002', role: 'user', content: '<task-result id="task_1" kind="shell" status="succeeded">\nPASS\n</task-result>', sessionId: 'session-fast', threadId: 'main' },
