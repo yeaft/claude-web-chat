@@ -9,8 +9,8 @@
  * the only debris; they are safe to delete on boot (see sweepTmp()).
  *
  * Implementation:
- *   1. Write bytes to `path.tmp.<pid>.<counter>` via writeFileSync.
- *   2. fsync the tmp file (force bytes to disk before rename).
+ *   1. Exclusively create `path.tmp.<pid>.<counter>` and write through its fd.
+ *   2. fsync the same fd (force bytes to disk before rename).
  *   3. rename(tmp, path) — POSIX-atomic on same filesystem.
  *   4. fsync the parent dir (persist the rename itself).
  *
@@ -31,35 +31,61 @@ import {
   existsSync,
   unlinkSync,
   readdirSync,
+  lstatSync,
+  constants,
 } from 'fs';
 import { dirname, basename, join } from 'path';
 
 let tmpCounter = 0;
 
+export function nextAtomicTmpPathForTest(path) {
+  return `${path}.tmp.${process.pid}.${tmpCounter + 1}`;
+}
+
+function targetMode(path, requestedMode) {
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isFile()) throw new Error(`Atomic write target is not a regular file: ${path}`);
+    const existingMode = stat.mode & 0o777;
+    return requestedMode == null ? existingMode : existingMode & requestedMode;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return requestedMode ?? 0o666;
+    throw error;
+  }
+}
+
 /**
  * Atomically write `data` (string | Buffer) to `path`.
  * Throws on failure; never leaves `path` in a half-written state.
+ *
+ * When supplied, `mode` is the maximum permission set for the replacement and
+ * is still restricted by umask. Existing files preserve any tighter permissions
+ * but never retain bits outside that explicit maximum. Omitted mode preserves
+ * the historical behavior: existing modes survive, new files default to 0666.
  */
-export function writeAtomic(path, data) {
+export function writeAtomic(path, data, { mode = null } = {}) {
   const dir = dirname(path);
   const tmpPath = `${path}.tmp.${process.pid}.${++tmpCounter}`;
-
-  writeFileSync(tmpPath, data);
-
-  // fsync the tmp file so the bytes hit disk before we swap.
+  const fileMode = targetMode(path, mode);
+  let fd = null;
   try {
-    const fd = openSync(tmpPath, 'r+');
-    try {
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
+    fd = openSync(
+      tmpPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+      fileMode,
+    );
+    writeFileSync(fd, data);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    renameSync(tmpPath, path);
+  } catch (error) {
+    if (fd !== null) {
+      try { closeSync(fd); } catch {}
+      try { unlinkSync(tmpPath); } catch {}
     }
-  } catch {
-    // Best-effort; some filesystems / platforms don't support fsync on a file
-    // opened r+. The rename below is still the atomic boundary.
+    throw error;
   }
-
-  renameSync(tmpPath, path);
 
   // fsync the parent directory so the rename is durable.
   // Windows: cannot fsync a directory; skip.

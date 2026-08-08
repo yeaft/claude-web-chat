@@ -113,7 +113,7 @@ export function resolveServiceInstanceId(args = [], env = process.env, options =
 }
 
 /** Resolve the CLI/env/default Yeaft data root for one Agent instance. */
-export function resolveYeaftDir(args = [], env = process.env, instanceId = DEFAULT_INSTANCE_ID) {
+function explicitYeaftDirFromArgs(args = []) {
   let explicitYeaftDir = null;
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] !== '--yeaft-dir') continue;
@@ -122,7 +122,28 @@ export function resolveYeaftDir(args = [], env = process.env, instanceId = DEFAU
     explicitYeaftDir = value;
     index += 1;
   }
-  return explicitYeaftDir || env.YEAFT_DIR || getDefaultYeaftDir(instanceId);
+  return explicitYeaftDir;
+}
+
+export function resolveYeaftDir(args = [], env = process.env, instanceId = DEFAULT_INSTANCE_ID) {
+  return explicitYeaftDirFromArgs(args) || env.YEAFT_DIR || getDefaultYeaftDir(instanceId);
+}
+
+/** Resolve the persisted data root for an explicitly selected management target. */
+export function resolveManagedYeaftDir(
+  args = [],
+  env = process.env,
+  instanceId = DEFAULT_INSTANCE_ID,
+  dependencies = {},
+) {
+  const explicitYeaftDir = explicitYeaftDirFromArgs(args);
+  if (explicitYeaftDir) return explicitYeaftDir;
+  const hasExplicitIdentity = args.includes('--name') || args.includes('--instance');
+  if (!hasExplicitIdentity && env.YEAFT_DIR) return env.YEAFT_DIR;
+  const readServiceConfig = dependencies.loadServiceConfig || loadServiceConfig;
+  const defaultYeaftDir = dependencies.getDefaultYeaftDir || getDefaultYeaftDir;
+  const persisted = readServiceConfig(instanceId)?.yeaftDir;
+  return persisted || defaultYeaftDir(instanceId);
 }
 
 /** Legacy alias for resolveServiceInstanceId(). */

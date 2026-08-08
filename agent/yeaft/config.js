@@ -27,6 +27,7 @@ import { getModelEffortOptions, getThinkingCapability, modelSupportsEffort, reso
 import { inferProtocolFromModelId } from './llm/router.js';
 import { normalizeKnownProviderForRuntime } from './llm/known-providers.js';
 import { createDenyAllPluginConfig, normalizePluginConfig } from './plugins.js';
+import { normaliseBrowserRuntimeSection } from '../browser-runtime/config.js';
 import { readWorkspaceFile } from './workspace-file.js';
 
 /** Default configuration values. */
@@ -368,6 +369,7 @@ function loadLegacyConfig(dir, overrides) {
     // task-318: legacy path never had the `yeaft` section — defaults.
     yeaft: normaliseYeaftSection(null),
     telemetry: normaliseTelemetrySection(null),
+    browserRuntime: normaliseBrowserRuntimeSection(null),
     plugins: {},
     providers: null,
     primaryModel: null,
@@ -524,6 +526,7 @@ export function loadConfig(overrides = {}) {
     // don't pollute the flat config namespace used by chat code.
     yeaft: normaliseYeaftSection(jsonConfig.yeaft),
     telemetry: normaliseTelemetrySection(jsonConfig.telemetry),
+    browserRuntime: normaliseBrowserRuntimeSection(jsonConfig.browserRuntime),
 
     // Agent-level tools / skills / MCP server allowlists. Missing fields mean
     // all currently discovered capabilities remain enabled. A persisted schema
