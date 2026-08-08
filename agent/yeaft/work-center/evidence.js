@@ -129,14 +129,19 @@ function normalizeCommitRef(value) {
 function normalizePullRequestUrl(value) {
   const ref = normalizeOutputUrl(value);
   if (!ref) return '';
-  const { pathname } = new URL(ref);
+  const url = new URL(ref);
+  if (url.search || url.hash) return '';
   const supportedPath = [
-    /\/(?:pull|pulls)\/[1-9]\d*(?:\/|$)/i,
-    /\/-\/merge_requests\/[1-9]\d*(?:\/|$)/i,
-    /\/pull-requests\/[1-9]\d*(?:\/|$)/i,
-    /\/_git\/[^/]+\/pullrequest\/[1-9]\d*(?:\/|$)/i,
-  ].some(pattern => pattern.test(pathname));
-  return supportedPath ? ref : '';
+    /^\/[^/]+\/[^/]+\/(?:pull|pulls)\/[1-9]\d*\/?$/i,
+    /^\/(?:[^/]+\/)+-\/merge_requests\/[1-9]\d*\/?$/i,
+    /^\/(?:[^/]+\/)+pull-requests\/[1-9]\d*\/?$/i,
+    /^\/(?:[^/]+\/)*_git\/[^/]+\/pullrequest\/[1-9]\d*\/?$/i,
+  ].some(pattern => pattern.test(url.pathname));
+  if (!supportedPath) return '';
+  url.search = '';
+  url.hash = '';
+  url.pathname = url.pathname.replace(/\/$/, '');
+  return url.toString();
 }
 
 function normalizeTypedOutputRef(kind, value) {

@@ -1412,6 +1412,154 @@ describe('Work Center dynamic coordination contract', () => {
     expect(JSON.stringify(projectWorkItemDetail(mergeDetail))).not.toContain('secret-token');
   });
 
+  it('rejects opaque pull-request URL suffixes across parsing, persistence, projection, and completion', () => {
+    const canonicalPr = 'https://github.com/example/repo/pull/1';
+    const unsafePrUrls = [
+      `${canonicalPr}?redirect=https://user:pass@nested.example/private`,
+      `${canonicalPr}?redirect=https%3A%2F%2Fuser%3Apass%40nested.example%2Fprivate`,
+      `${canonicalPr}?redirect=https%253A%252F%252Fuser%253Apass%2540nested.example%252Fprivate`,
+      `${canonicalPr}?payload=%7B%22access_token%22%3A%22secret-token%22%7D`,
+      `${canonicalPr}?payload=%7B%22password%22%3A%22secret-password%22%7D`,
+      `${canonicalPr}#discussion`,
+    ];
+    const unsafeOutputs = unsafePrUrls.map((ref, index) => ({
+      kind: 'pr', label: `Unsafe pull request ${index + 1}`, ref,
+    }));
+    const parsed = parseStructuredResult(JSON.stringify({
+      outcome: 'completed', summary: 'Pull request reported', evidence: ['verified'],
+      outputs: [
+        ...unsafeOutputs,
+        { kind: 'pr', label: 'Canonical pull request', ref: canonicalPr },
+        { kind: 'pr', label: 'Canonicalized pull request', ref: `${canonicalPr}/?` },
+      ],
+      acceptanceChecks: [],
+    }), 'write');
+    expect(parsed.outputs).toEqual([
+      { kind: 'pr', label: 'Canonical pull request', ref: canonicalPr },
+    ]);
+
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-canonical-pr-output-'));
+    store = new WorkItemStore(join(tempDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    const criteria = workItem().acceptanceCriteria;
+    const createAction = (itemId, stageId) => {
+      const action = store.createNextAction(itemId, {
+        type: 'custom', stageId, status: 'ready', assignmentPolicy: null, modelPolicy: null,
+        sourceActionIds: [], dependsOnStageIds: [], workspaceMode: 'shared',
+        changesRequestedStageId: null, requiredRole: '', instruction: 'Report the pull request.',
+        brief: {
+          objective: 'Report the pull request.',
+          approach: 'Return its canonical delivery identifier.',
+          expectedOutcome: 'A canonical pull request URL identifies the delivered change.',
+        },
+        maxAttempts: 1,
+      });
+      store.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ? WHERE id = ?`)
+        .run(action.id, itemId);
+      return action;
+    };
+    const completion = runId => ({
+      summary: 'Pull request delivered',
+      acceptanceResults: criteria.map(criterion => ({
+        criterion, status: 'passed', evidenceRunIds: [runId],
+      })),
+      evidenceRunIds: [runId], residualRisks: [],
+    });
+
+    const unsafeItem = controller.create({
+      ...workItem({ id: 'unsafe-pr-item', deliveryTarget: 'pull_request' }),
+      workDir: tempDir, workflowTemplate: 'coordinator-driven', start: true,
+    });
+    const unsafeAction = createAction(unsafeItem.id, 'unsafe-pr-action');
+    const unsafeClaim = store.claimReadyAction('unsafe-pr-runner', 5_000);
+    controller.submit(unsafeClaim.run.id, 'unsafe-pr-runner', unsafeClaim.run.leaseEpoch, {
+      outcome: 'completed', summary: 'Opaque pull request reported', evidence: ['verified'],
+      outputs: unsafeOutputs,
+      acceptanceChecks: criteria.map(criterion => ({
+        criterion, status: 'passed', evidence: 'verified',
+      })),
+    });
+    expect(JSON.parse(store.db.prepare('SELECT outputs FROM runs WHERE id = ?')
+      .get(unsafeClaim.run.id).outputs)).toEqual([]);
+    expect(store.getRun(unsafeClaim.run.id).outputs).toEqual([]);
+    const unsafeDetail = store.getWorkItemDetail(unsafeItem.id);
+    expect(buildMainlineProjection(unsafeDetail).canonicalActionResults[unsafeAction.id].outputs).toEqual([]);
+    const unsafeSnapshot = buildMainlineContextSnapshot(unsafeDetail, unsafeAction).contextSnapshot;
+    expect(unsafeSnapshot.canonicalCompletedResultsIndex[unsafeAction.id]).toMatchObject({
+      runId: unsafeClaim.run.id, status: 'completed',
+    });
+    const unsafeBrowser = projectWorkItemDetail({
+      ...unsafeDetail,
+      finalResult: {
+        summary: 'Legacy unsafe result', acceptanceResults: [], evidenceRunIds: [unsafeClaim.run.id],
+        outputs: unsafeOutputs.map(output => ({ ...output, runId: unsafeClaim.run.id })),
+        residualRisks: [],
+      },
+    });
+    expect(unsafeBrowser.outputs).toEqual([]);
+    expect(unsafeBrowser.finalResult.outputs).toEqual([]);
+    for (const ref of unsafePrUrls) expect(JSON.stringify(unsafeBrowser)).not.toContain(ref);
+
+    const unsafeWake = store.listPendingDynamicCoordinatorWakes()
+      .find(entry => entry.workItemId === unsafeItem.id);
+    const unsafeCoordinatorClaim = store.claimCoordinatorMailbox(unsafeItem.id, 'unsafe-pr-coordinator');
+    const unsafeTurn = store.beginDynamicCoordinatorTurn(unsafeWake.id, {
+      ownerBootId: 'unsafe-pr-coordinator', claimEpoch: unsafeCoordinatorClaim.claim_epoch,
+    });
+    expect(() => store.completeCoordinatorTurn(unsafeTurn.turnId, {
+      reply: 'The pull request is complete.',
+      decision: {
+        kind: 'complete', reason: 'The reported pull request is delivery evidence.',
+        completion: completion(unsafeClaim.run.id),
+      },
+    }, unsafeTurn.fence)).toThrow(/canonical pr output/i);
+    expect(store.getWorkItemDetail(unsafeItem.id)).toMatchObject({ status: 'running', finalResult: null });
+
+    const canonicalItem = controller.create({
+      ...workItem({ id: 'canonical-pr-item', deliveryTarget: 'pull_request' }),
+      workDir: tempDir, workflowTemplate: 'coordinator-driven', start: true,
+    });
+    const canonicalAction = createAction(canonicalItem.id, 'canonical-pr-action');
+    const canonicalClaim = store.claimReadyAction('canonical-pr-runner', 5_000);
+    controller.submit(canonicalClaim.run.id, 'canonical-pr-runner', canonicalClaim.run.leaseEpoch, {
+      outcome: 'completed', summary: 'Canonical pull request reported', evidence: ['verified'],
+      outputs: [{ kind: 'pr', label: 'Pull request', ref: canonicalPr }],
+      acceptanceChecks: criteria.map(criterion => ({
+        criterion, status: 'passed', evidence: 'verified',
+      })),
+    });
+    expect(store.getRun(canonicalClaim.run.id).outputs).toEqual([
+      { kind: 'pr', label: 'Pull request', ref: canonicalPr },
+    ]);
+    expect(buildMainlineProjection(store.getWorkItemDetail(canonicalItem.id))
+      .canonicalActionResults[canonicalAction.id].outputs).toEqual([
+      { kind: 'pr', label: 'Pull request', ref: canonicalPr },
+    ]);
+    expect(projectWorkItemDetail(store.getWorkItemDetail(canonicalItem.id)).outputs).toEqual([
+      expect.objectContaining({ kind: 'pr', ref: canonicalPr }),
+    ]);
+    const canonicalWake = store.listPendingDynamicCoordinatorWakes()
+      .find(entry => entry.workItemId === canonicalItem.id);
+    const canonicalCoordinatorClaim = store.claimCoordinatorMailbox(canonicalItem.id, 'canonical-pr-coordinator');
+    const canonicalTurn = store.beginDynamicCoordinatorTurn(canonicalWake.id, {
+      ownerBootId: 'canonical-pr-coordinator', claimEpoch: canonicalCoordinatorClaim.claim_epoch,
+    });
+    const completed = store.completeCoordinatorTurn(canonicalTurn.turnId, {
+      reply: 'The pull request is complete.',
+      decision: {
+        kind: 'complete', reason: 'The canonical pull request is delivery evidence.',
+        completion: completion(canonicalClaim.run.id),
+      },
+    }, canonicalTurn.fence);
+    expect(completed).toMatchObject({ status: 'done' });
+    expect(completed.finalResult.outputs).toEqual([
+      { kind: 'pr', label: 'Pull request', ref: canonicalPr, runId: canonicalClaim.run.id },
+    ]);
+    expect(projectWorkItemDetail(completed).finalResult.outputs).toEqual([
+      expect.objectContaining({ kind: 'pr', ref: canonicalPr, runId: canonicalClaim.run.id }),
+    ]);
+  });
+
   it('requires a human decision when the delivery boundary is ambiguous', () => {
     const detail = workItem({ deliveryTarget: null, actions: [], runs: [] });
     expect(() => normalizeCoordinatorResponse({
