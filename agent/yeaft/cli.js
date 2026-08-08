@@ -25,6 +25,7 @@
 
 import { createInterface } from 'readline';
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { join } from 'path';
@@ -38,6 +39,7 @@ import { ConversationStore } from './conversation/persist.js';
 import { sessionsRoot, snapshotSessions } from './sessions/session-crud.js';
 import { loadSessionConfig, resolveSessionConfig } from './sessions/session-config.js';
 import { createSession } from './sessions/session-store.js';
+import { addOrUpdateManifestSession } from './sessions/session-manifest.js';
 import { validateSessionId } from './sessions/ids.js';
 import {
   createJsonlWriter,
@@ -902,7 +904,7 @@ async function runStreamJson(config, args) {
   let taskEventIntakeOpen = true;
   let hadError = false;
   let singleEngineTail = Promise.resolve();
-  let streamSessionBootstrapOpen = !sessionRunner;
+  let streamSessionBootstrapOpen = false;
 
   const loadStreamHistory = () => conversationStore.loadRecentBySession(sessionId, 20).map(message => ({
     role: message.role,
@@ -1036,6 +1038,16 @@ async function runStreamJson(config, args) {
 
   configureStreamEngine(engine, null);
   sessionRunner = createCliSessionRunner({ loaded, sessionId, workDir, configureEngine: configureStreamEngine });
+  if (sessionRunner) {
+    snapshotSessions(loaded.yeaftDir);
+    const meta = sessionRunner.meta;
+    if (meta) addOrUpdateManifestSession(
+      loaded.yeaftDir,
+      meta,
+      join(sessionsRoot(loaded.yeaftDir), sessionId),
+    );
+  }
+  streamSessionBootstrapOpen = !sessionRunner;
 
   write({
     type: 'system',
@@ -1098,13 +1110,18 @@ async function runStreamJson(config, args) {
       streamSessionBootstrapOpen = false;
       const bootstrap = normalizeStreamSessionBootstrap(message);
       if (bootstrap) {
+        let workspaceKey = '';
+        try { workspaceKey = realpathSync(resolve(workDir)); } catch { /* leave empty */ }
         const handle = createSession(sessionsRoot(loaded.yeaftDir), {
           id: sessionId,
           name: sessionId,
           roster: bootstrap.roster,
           defaultVpId: bootstrap.defaultVpId,
           workDir,
+          workspaceKey,
         });
+        const meta = handle.getMeta();
+        if (meta) addOrUpdateManifestSession(loaded.yeaftDir, meta, handle.dir);
         handle.close();
         sessionRunner = createCliSessionRunner({ loaded, sessionId, workDir, configureEngine: configureStreamEngine });
         if (!sessionRunner) throw new Error(`Failed to initialize formal stream-json Session ${sessionId}`);

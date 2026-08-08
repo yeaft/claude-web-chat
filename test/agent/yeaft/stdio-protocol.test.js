@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -1005,7 +1006,14 @@ describe('stream-json Session runtime protocol', () => {
       }));
       writeFileSync(join(root, 'models_dev_cache.json'), '{}');
       const input = [
-        JSON.stringify({ type: 'prompt', prompt: 'must reject before provider', targetVpId: 'missing' }),
+        JSON.stringify({
+          type: 'prompt',
+          prompt: 'must reject before provider',
+          targetVpId: 'missing',
+          roster: ['linus', 'martin'],
+          vps: ['linus', 'martin'],
+          defaultVpId: 'linus',
+        }),
         JSON.stringify({ type: 'prompt', prompt: 'second prompt', targetVpId: 'martin' }),
         '',
       ].join('\n');
@@ -1042,6 +1050,7 @@ describe('stream-json Session runtime protocol', () => {
     const root = tempRoot('stdio-agentlink-bootstrap');
     const sessionId = 'session_agentlink_stream_bootstrap';
     const sessionDir = join(root, 'sessions', sessionId);
+    createFormalSession(root, 'session_existing_sibling', ['omni']);
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({
       workDir: root,
@@ -1050,6 +1059,7 @@ describe('stream-json Session runtime protocol', () => {
       roster: ['omni', 'margaret'],
       defaultVpId: 'omni',
     }, null, 2));
+    writeFileSync(join(root, 'sessions-manifest.json'), '{broken');
 
     const provider = writeRouteForwardProviderServer(root);
     try {
@@ -1088,6 +1098,7 @@ describe('stream-json Session runtime protocol', () => {
       const frames = outcome.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
       const results = frames.filter(frame => frame.type === 'result');
       const sessionMeta = JSON.parse(readFileSync(join(sessionDir, 'session.json'), 'utf8'));
+      const manifest = JSON.parse(readFileSync(join(root, 'sessions-manifest.json'), 'utf8'));
       const routeForward = frames.find(frame => (
         frame.type === 'tool' && frame.subtype === 'result' && frame.name === 'RouteForward'
       ));
@@ -1100,7 +1111,17 @@ describe('stream-json Session runtime protocol', () => {
         roster: ['omni', 'margaret'],
         defaultVpId: 'omni',
         workDir: root,
+        workspaceKey: realpathSync(root),
       });
+      expect(manifest.sessions).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: sessionId,
+          path: sessionDir,
+          workDir: root,
+          workspaceKey: realpathSync(root),
+        }),
+        expect.objectContaining({ id: 'session_existing_sibling' }),
+      ]));
       expect(results).toHaveLength(2);
       expect(results.every(result => (
         Array.isArray(result.dispatched_vp_ids)
