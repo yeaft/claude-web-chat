@@ -2,11 +2,176 @@
 import { mount } from '@vue/test-utils';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Vue from 'vue';
 import { decorateMessageFileReferences, resolveMessageFileReference } from '../../web/utils/message-file-reference.js';
 
 const readWeb = path => readFileSync(resolve(process.cwd(), 'web', path), 'utf8');
+
+const workbenchStore = Vue.reactive({
+  workbenchExpanded: true,
+  workbenchMaximized: false,
+  currentAgent: 'agent-1',
+  currentConversation: 'conversation-1',
+  capabilities: ['terminal', 'file_editor'],
+  hasCapability(capability) {
+    return this.capabilities.includes(capability);
+  },
+  toggleWorkbench: vi.fn(),
+  toggleWorkbenchMaximized: vi.fn(),
+});
+
+globalThis.Vue = Vue;
+globalThis.Pinia = {
+  ...(globalThis.Pinia || {}),
+  defineStore: globalThis.Pinia?.defineStore || (() => () => ({})),
+  useChatStore: () => workbenchStore,
+};
+window.Pinia = globalThis.Pinia;
+
+const { default: WorkbenchPanel } = await import('../../web/components/WorkbenchPanel.js');
+const { default: ChatHeader } = await import('../../web/components/ChatHeader.js');
+
+function mountWorkbench() {
+  return mount(WorkbenchPanel, {
+    global: {
+      mocks: { $t: key => key },
+      stubs: {
+        TerminalTab: { template: '<div class="terminal-tab-stub">terminal</div>' },
+        GitStatusTab: { template: '<div class="git-tab-stub">git</div>' },
+        FilesTab: { template: '<div class="files-tab-stub">files</div>' },
+      },
+    },
+  });
+}
+
+describe('Workbench capability launcher', () => {
+  beforeEach(() => {
+    workbenchStore.workbenchExpanded = true;
+    workbenchStore.workbenchMaximized = false;
+    workbenchStore.currentAgent = 'agent-1';
+    workbenchStore.currentConversation = 'conversation-1';
+    workbenchStore.capabilities = ['terminal', 'file_editor'];
+    workbenchStore.toggleWorkbench.mockClear();
+    workbenchStore.toggleWorkbenchMaximized.mockClear();
+    globalThis.Pinia.useChatStore = () => workbenchStore;
+    window.Pinia = globalThis.Pinia;
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('opens on a four-capability launcher instead of persistent tabs', () => {
+    const wrapper = mountWorkbench();
+
+    const cards = wrapper.findAll('.workbench-capability-card');
+    expect(cards.map(card => card.attributes('data-workbench-capability')))
+      .toEqual(['terminal', 'git', 'files', 'browser']);
+    expect(wrapper.find('.workbench-tabs').exists()).toBe(false);
+    expect(wrapper.find('.wb-tab').exists()).toBe(false);
+    expect(wrapper.get('.workbench-header-title').text()).toBe('workbench.title');
+    expect(wrapper.get('[data-workbench-capability="terminal"] .workbench-capability-status').text()).toBe('workbench.available');
+    expect(wrapper.get('[data-workbench-capability="browser"] .workbench-capability-status').text()).toBe('workbench.unavailable');
+    expect(wrapper.get('[data-workbench-capability="browser"]').attributes('disabled')).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it('opens one capability and closes it back to the launcher', async () => {
+    const wrapper = mountWorkbench();
+
+    await wrapper.get('[data-workbench-capability="terminal"]').trigger('click');
+    expect(wrapper.get('.terminal-tab-stub').isVisible()).toBe(true);
+    expect(wrapper.get('.workbench-header-title').text()).toBe('workbench.terminal');
+    expect(wrapper.find('.workbench-launcher').exists()).toBe(false);
+
+    await wrapper.get('.workbench-view-close').trigger('click');
+    expect(wrapper.get('.workbench-launcher').isVisible()).toBe(true);
+    expect(wrapper.get('.workbench-header-title').text()).toBe('workbench.title');
+
+    await wrapper.get('.workbench-panel-close').trigger('click');
+    expect(workbenchStore.toggleWorkbench).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it('keeps Browser discoverable without pretending Phase 0 has a viewer', async () => {
+    const wrapper = mountWorkbench();
+
+    await wrapper.get('[data-workbench-capability="browser"]').trigger('click');
+    expect(wrapper.get('.workbench-browser-view').text()).toContain('workbench.browserUnavailable');
+    expect(wrapper.find('video').exists()).toBe(false);
+    expect(wrapper.find('iframe').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('routes a message file-open event directly to Files and resets on reopen', async () => {
+    const wrapper = mountWorkbench();
+
+    window.dispatchEvent(new CustomEvent('open-file-in-explorer', { detail: { filePath: 'README.md' } }));
+    await Vue.nextTick();
+    expect(wrapper.get('.files-tab-stub').isVisible()).toBe(true);
+    expect(wrapper.get('.workbench-header-title').text()).toBe('workbench.files');
+
+    workbenchStore.workbenchExpanded = false;
+    await Vue.nextTick();
+    workbenchStore.workbenchExpanded = true;
+    await Vue.nextTick();
+    expect(wrapper.get('.workbench-launcher').isVisible()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('shows unavailable detail for unsupported legacy capabilities', async () => {
+    workbenchStore.capabilities = [];
+    const wrapper = mountWorkbench();
+
+    await wrapper.get('[data-workbench-capability="git"]').trigger('click');
+    expect(wrapper.get('.workbench-capability-empty').text()).toContain('workbench.capabilityUnavailable');
+    expect(wrapper.find('.git-tab-stub').exists()).toBe(false);
+    wrapper.unmount();
+  });
+});
+
+describe('Workbench entry', () => {
+  it('shows the Chat entry from the page gate instead of unrelated provider capabilities', () => {
+    const toggleWorkbench = vi.fn();
+    const headerStore = {
+      currentConversation: 'conversation-1',
+      conversations: [{
+        id: 'conversation-1',
+        provider: 'copilot',
+        capabilities: { clear: true, mcp: true },
+      }],
+      agents: [],
+      currentWorkDir: '/workspace',
+      workbenchExpanded: false,
+      compactStatus: null,
+      clearStatus: null,
+      contextUsage: null,
+      currentMcpServers: [],
+      mcpPanelOpen: false,
+      runningSubagentCount: 0,
+      expertSelections: [],
+      getConversationTitle: () => 'Conversation',
+      isRefreshingSession: () => false,
+      getPaneRightPanel: () => null,
+      toggleWorkbench,
+    };
+    globalThis.Pinia.useChatStore = () => headerStore;
+
+    const visible = mount(ChatHeader, {
+      props: { canUseWorkbench: true },
+      global: { mocks: { $t: key => key }, provide: { t: key => key } },
+    });
+    expect(visible.find('[aria-label="chat.sidebar.workbench"]').exists()).toBe(true);
+    visible.unmount();
+
+    const hidden = mount(ChatHeader, {
+      global: { mocks: { $t: key => key }, provide: { t: key => key } },
+    });
+    expect(hidden.find('[aria-label="chat.sidebar.workbench"]').exists()).toBe(false);
+    hidden.unmount();
+  });
+});
 
 describe('message file preview', () => {
   it('accepts local code and document references while leaving web links alone', () => {
@@ -134,13 +299,16 @@ describe('message file preview', () => {
     expect(filesTab).toContain('startWidth - (clientX - startX)');
     expect(workbench).toContain('<FilesTab');
     expect(workbench).toContain(':tree-initially-visible="false"');
-    expect(workbench).toContain('class="wb-tab-action workbench-maximize-btn"');
+    expect(workbench).toContain('class="workbench-header-action workbench-maximize-btn"');
     expect(workbench).toContain(':aria-label="store.workbenchMaximized ? $t(\'workbench.restore\') : $t(\'workbench.maximize\')"');
     expect(workbench).toContain('d="M7 14H5v5h5v-2H7v-3z');
     expect(workbench).toContain('d="M5 16h3v3h2v-5H5v2z');
     expect(readWeb('stores/chat.js')).toContain('else Vue.nextTick(dispatchOpen);');
     expect(chatPage.indexOf('<WorkbenchPanel')).toBeGreaterThan(chatPage.indexOf('<div class="chat-body"'));
     expect(chatHeader).toContain("$t('chat.sidebar.workbench')");
+    expect(chatHeader).toContain('canUseWorkbench: { type: Boolean, default: false }');
+    expect(chatHeader).not.toContain("capOn('file_editor')");
+    expect(chatPage).toContain('<ChatHeader :can-use-workbench="canUseWorkbench"');
     expect(yeaftActions).toContain("@click=\"$emit('toggle-workbench')\"");
     expect(yeaftPage.indexOf('<WorkbenchPanel')).toBeGreaterThan(yeaftPage.indexOf('<div class="yeaft-main"'));
     const yeaftCss = readWeb('styles/yeaft.css');
