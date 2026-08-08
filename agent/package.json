@@ -41,6 +41,7 @@
     "docker-entrypoint.sh",
     "yeaft/templates/**/*.md",
     "yeaft/dream/prompts/**/*.md",
+    "browser-runtime/extension/**/*",
     "local-runtime/**/*"
   ],
   "license": "MIT",
@@ -49,12 +50,20 @@
     "nodemon": "^3.1.14"
   },
   "nodemonConfig": {
-    "watch": ["*.js", "sdk/*.js"],
-    "ignore": ["node_modules", "package-lock.json", ".claude-agent.json"],
+    "watch": [
+      "*.js",
+      "sdk/*.js"
+    ],
+    "ignore": [
+      "node_modules",
+      "package-lock.json",
+      ".claude-agent.json"
+    ],
     "ext": "js"
   },
   "dependencies": {
     "@homebridge/node-pty-prebuilt-multiarch": "^0.13.1",
+    "@puppeteer/browsers": "2.13.0",
     "bcrypt": "^6.0.0",
     "compression": "^1.8.1",
     "dotenv": "^16.3.1",
@@ -62,6 +71,7 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.2.0",
     "nodemailer": "^9.0.3",
+    "puppeteer-core": "24.41.0",
     "qrcode": "^1.5.4",
     "speakeasy": "^2.0.0",
     "tweetnacl": "^1.0.3",

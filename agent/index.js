@@ -23,6 +23,7 @@ import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
 import { SAFE_REMOTE_UPGRADE_CAPABILITY } from './upgrade-command.js';
 import { loadConfig as loadYeaftConfig } from './yeaft/config.js';
+import { bootBrowserRuntime, shutdownBrowserRuntime } from './browser-runtime/index.js';
 import {
   ensureManagedCliTools,
   prepareManagedCliToolEnvironment,
@@ -356,6 +357,7 @@ function cleanup() {
       const { shutdownWorkCenter } = await import('./yeaft/work-center/bridge.js');
       await shutdownWorkCenter();
     } catch {}
+    try { await shutdownBrowserRuntime(); } catch {}
     if (ctx.ws) ctx.ws.close();
   });
 }
@@ -395,6 +397,21 @@ process.on('SIGTERM', async () => {
     }
   } catch (error) {
     console.warn(`[Startup] managed rg environment setup failed; using built-in fallback: ${error?.message || error}`);
+  }
+  try {
+    const runtimeConfig = loadYeaftConfig({ dir: YEAFT_DIR }).browserRuntime;
+    ctx.browserRuntime = await bootBrowserRuntime({
+      yeaftDir: YEAFT_DIR,
+      config: runtimeConfig,
+    });
+    const probe = ctx.browserRuntime.snapshot().probe;
+    if (probe?.ok) {
+      console.log(`[BrowserRuntime] ready: capture=${probe.captureMode} build=${probe.buildId}`);
+    } else if (runtimeConfig?.enabled) {
+      console.warn(`[BrowserRuntime] unavailable: ${probe?.code || 'probe_failed'}`);
+    }
+  } catch (err) {
+    console.warn(`[BrowserRuntime] startup probe failed: ${err?.message || err}`);
   }
   ctx.agentCapabilities = await detectCapabilities();
   // Prime the models.dev community catalog so the Yeaft engine's *synchronous*

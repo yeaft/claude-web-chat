@@ -8,12 +8,14 @@
  * like maxContinueTurns or debug that don't belong in the UI.
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { DEFAULT_YEAFT_DIR } from './init.js';
 import { normalizeProviderModels, parseModelRef, serializeModelForPersistence } from './models.js';
 import { normaliseTelemetrySection, normaliseYeaftSection } from './config.js';
+import { normaliseBrowserRuntimeSection, validateBrowserRuntimeUpdate } from '../browser-runtime/config.js';
 import { normalizePluginConfig } from './plugins.js';
+import { writeAtomic } from './storage/atomic.js';
 import { isGitHubCopilotProvider, serializeKnownProviderForPersistence } from './llm/known-providers.js';
 
 /**
@@ -376,6 +378,44 @@ export function updateTelemetrySettings(update, dir) {
     return { error: `Failed to write config.json: ${e.message}` };
   }
   return merged;
+}
+
+// ─── Browser Runtime settings ───────────────────────────────────────
+
+export function getBrowserRuntimeSettings(dir) {
+  const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
+  const configPath = join(root, 'config.json');
+  if (!existsSync(configPath)) return normaliseBrowserRuntimeSection(null);
+  try {
+    const json = JSON.parse(readFileSync(configPath, 'utf8'));
+    return normaliseBrowserRuntimeSection(json.browserRuntime);
+  } catch (error) {
+    return { error: `Failed to read config.json: ${error.message}` };
+  }
+}
+
+export function updateBrowserRuntimeSettings(update, dir) {
+  const validationError = validateBrowserRuntimeUpdate(update);
+  if (validationError) return { error: validationError };
+  const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
+  const configPath = join(root, 'config.json');
+  let existing;
+  try {
+    existing = readConfigForWrite(configPath);
+  } catch (error) {
+    return { error: `Failed to read config.json: ${error?.message || error}` };
+  }
+  const previous = existing.browserRuntime && typeof existing.browserRuntime === 'object'
+    ? existing.browserRuntime
+    : {};
+  existing.browserRuntime = normaliseBrowserRuntimeSection({ ...previous, ...update });
+  try {
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    writeAtomic(configPath, `${JSON.stringify(existing, null, 2)}\n`);
+  } catch (error) {
+    return { error: `Failed to write config.json: ${error.message}` };
+  }
+  return existing.browserRuntime;
 }
 
 // ─── Search settings (web-search backend selection + Tavily key) ────

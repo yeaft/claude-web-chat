@@ -61,6 +61,14 @@ const SERVICE_COMMANDS = ['install', 'uninstall', 'start', 'stop', 'restart', 's
 
 if (command === 'doctor') {
   await handleDoctorCommand(subArgs);
+} else if (command === 'browser') {
+  try {
+    const { handleBrowserCommand } = await import('./browser-runtime/cli.js');
+    await handleBrowserCommand(subArgs);
+  } catch (error) {
+    console.error(`Browser Runtime command failed: ${error.code || error.message}`);
+    process.exitCode = 1;
+  }
 } else if (command === 'llm') {
   await handleLlmCommand(subArgs);
 } else if (command === 'local') {
@@ -137,6 +145,10 @@ function printHelp() {
     yeaft-agent status [options]       Show service status
     yeaft-agent logs [options]         View service logs (follow mode)
     yeaft-agent doctor                 Diagnose service configuration
+    yeaft-agent browser install        Install the pinned Chrome for Testing build
+    yeaft-agent browser probe          Validate tabCapture → offscreen → WebRTC
+    yeaft-agent browser enable|disable Change the Browser Runtime feature flag
+    yeaft-agent browser status         Show config and managed browser install status
     yeaft-agent llm <command>          Configure local Yeaft LLM providers/models
     yeaft-agent container <command>    Manage a Dockerized yeaft-agent
     yeaft-agent upgrade [--name <id>]  Upgrade and restart the selected service
@@ -152,6 +164,11 @@ function printHelp() {
     --work-dir <dir>    Default working directory (default: cwd)
     --yeaft-dir <dir>   Yeaft data directory for this instance
     --auto-upgrade      Check for updates on startup
+
+  Browser options:
+    --executable <path> Explicit compatible Chrome for Testing executable
+    --headful           Run the Browser Runtime probe with a visible browser
+    --name <id>         Select the named Agent instance
 
   Environment variables (alternative to flags):
     YEAFT_AGENT_INSTANCE Deprecated local service instance id override
@@ -174,7 +191,7 @@ function printHelp() {
 `);
 }
 
-function printLlmHelp() {
+export function printLlmHelp() {
   console.log(`
   Configure local Yeaft LLM providers/models in ~/.yeaft/config.json.
 

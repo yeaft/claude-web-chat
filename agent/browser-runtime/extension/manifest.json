@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Yeaft Browser Runtime",
+  "version": "1.0.0",
+  "minimum_chrome_version": "151",
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "Yeaft Browser Runtime",
+    "default_popup": "popup.html"
+  },
+  "permissions": [
+    "offscreen",
+    "storage",
+    "tabCapture",
+    "tabs"
+  ]
+}
