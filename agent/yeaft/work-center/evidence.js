@@ -126,21 +126,86 @@ function normalizeCommitRef(value) {
   return COMMIT_HASH_PATTERN.test(ref) || validFullGitRef(ref) ? ref : '';
 }
 
+function normalizeRepositorySegment(value) {
+  let decoded = String(value || '');
+  if (!decoded || decoded.length > MAX_REF_LENGTH) return '';
+  for (let step = 0; step < MAX_URL_NAME_DECODE_STEPS; step += 1) {
+    let next;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      return '';
+    }
+    if (next === decoded) break;
+    decoded = next;
+  }
+  if (!decoded || decoded !== decoded.trim() || decoded === '.' || decoded === '..'
+      || decoded.includes('%')
+      || /[\u0000-\u001f\u007f/\\?#:@=&;{}\[\]"'<>]/.test(decoded)) return '';
+  return decoded;
+}
+
+function normalizeRepositorySegments(values, minimum = 1) {
+  if (!Array.isArray(values) || values.length < minimum) return null;
+  const normalized = values.map(normalizeRepositorySegment);
+  return normalized.every(Boolean) ? normalized : null;
+}
+
+function normalizePullRequestPath(pathname) {
+  const withoutTrailingSlash = pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+  if (!withoutTrailingSlash.startsWith('/') || withoutTrailingSlash.includes('//')) return '';
+  const segments = withoutTrailingSlash.slice(1).split('/');
+  const requestId = segments.at(-1);
+  if (!/^[1-9]\d*$/.test(requestId || '')) return '';
+  const lower = segments.map(segment => segment.toLowerCase());
+
+  if (segments.length === 4 && ['pull', 'pulls'].includes(lower[2])) {
+    const repository = normalizeRepositorySegments(segments.slice(0, 2), 2);
+    return repository ? `/${repository.join('/')}/${lower[2]}/${requestId}` : '';
+  }
+
+  if (segments.length >= 5 && segments.at(-3) === '-' && lower.at(-2) === 'merge_requests') {
+    const repository = normalizeRepositorySegments(segments.slice(0, -3), 2);
+    return repository ? `/${repository.join('/')}/-/merge_requests/${requestId}` : '';
+  }
+
+  if (segments.length === 4 && lower[2] === 'pull-requests') {
+    const repository = normalizeRepositorySegments(segments.slice(0, 2), 2);
+    return repository ? `/${repository.join('/')}/pull-requests/${requestId}` : '';
+  }
+
+  if (segments.length === 6 && ['projects', 'users'].includes(lower[0])
+      && lower[2] === 'repos' && lower[4] === 'pull-requests') {
+    const repository = normalizeRepositorySegments([segments[1], segments[3]], 2);
+    return repository
+      ? `/${lower[0]}/${repository[0]}/repos/${repository[1]}/pull-requests/${requestId}`
+      : '';
+  }
+
+  const gitIndex = segments.length - 4;
+  if (gitIndex >= 1 && lower[gitIndex] === '_git' && lower.at(-2) === 'pullrequest') {
+    const repository = normalizeRepositorySegments([
+      ...segments.slice(0, gitIndex),
+      segments[gitIndex + 1],
+    ], 2);
+    if (!repository) return '';
+    const prefix = repository.slice(0, -1);
+    return `/${prefix.join('/')}/_git/${repository.at(-1)}/pullrequest/${requestId}`;
+  }
+
+  return '';
+}
+
 function normalizePullRequestUrl(value) {
   const ref = normalizeOutputUrl(value);
   if (!ref) return '';
   const url = new URL(ref);
   if (url.search || url.hash) return '';
-  const supportedPath = [
-    /^\/[^/]+\/[^/]+\/(?:pull|pulls)\/[1-9]\d*\/?$/i,
-    /^\/(?:[^/]+\/)+-\/merge_requests\/[1-9]\d*\/?$/i,
-    /^\/(?:[^/]+\/)+pull-requests\/[1-9]\d*\/?$/i,
-    /^\/(?:[^/]+\/)*_git\/[^/]+\/pullrequest\/[1-9]\d*\/?$/i,
-  ].some(pattern => pattern.test(url.pathname));
-  if (!supportedPath) return '';
+  const pathname = normalizePullRequestPath(url.pathname);
+  if (!pathname) return '';
   url.search = '';
   url.hash = '';
-  url.pathname = url.pathname.replace(/\/$/, '');
+  url.pathname = pathname;
   return url.toString();
 }
 

@@ -1412,8 +1412,23 @@ describe('Work Center dynamic coordination contract', () => {
     expect(JSON.stringify(projectWorkItemDetail(mergeDetail))).not.toContain('secret-token');
   });
 
-  it('rejects opaque pull-request URL suffixes across parsing, persistence, projection, and completion', () => {
+  it('rejects opaque pull-request URL suffixes and repository segments across every output boundary', () => {
     const canonicalPr = 'https://github.com/example/repo/pull/1';
+    const canonicalPrOutputs = [
+      { kind: 'pr', label: 'GitHub pull request', ref: canonicalPr },
+      {
+        kind: 'pr', label: 'GitLab merge request',
+        ref: 'https://gitlab.example.test/group/subgroup/repo/-/merge_requests/2',
+      },
+      {
+        kind: 'pr', label: 'Bitbucket pull request',
+        ref: 'https://bitbucket.org/workspace/repo/pull-requests/3',
+      },
+      {
+        kind: 'pr', label: 'Azure pull request',
+        ref: 'https://dev.azure.com/org/project/_git/repo/pullrequest/4',
+      },
+    ];
     const unsafePrUrls = [
       `${canonicalPr}?redirect=https://user:pass@nested.example/private`,
       `${canonicalPr}?redirect=https%3A%2F%2Fuser%3Apass%40nested.example%2Fprivate`,
@@ -1421,6 +1436,12 @@ describe('Work Center dynamic coordination contract', () => {
       `${canonicalPr}?payload=%7B%22access_token%22%3A%22secret-token%22%7D`,
       `${canonicalPr}?payload=%7B%22password%22%3A%22secret-password%22%7D`,
       `${canonicalPr}#discussion`,
+      'https://github.com/user:pass@nested.example/repo/pull/5',
+      'https://github.com/access_token=secret-token/repo/pull/6',
+      'https://github.com/user%3Apass%40nested.example/repo/pull/7',
+      'https://github.com/user%253Apass%2540nested.example/repo/pull/8',
+      'https://github.com/%7B%22access_token%22%3A%22secret-token%22%7D/repo/pull/9',
+      'https://gitlab.example.test/group/password=secret/repo/-/merge_requests/10',
     ];
     const unsafeOutputs = unsafePrUrls.map((ref, index) => ({
       kind: 'pr', label: `Unsafe pull request ${index + 1}`, ref,
@@ -1429,14 +1450,12 @@ describe('Work Center dynamic coordination contract', () => {
       outcome: 'completed', summary: 'Pull request reported', evidence: ['verified'],
       outputs: [
         ...unsafeOutputs,
-        { kind: 'pr', label: 'Canonical pull request', ref: canonicalPr },
+        ...canonicalPrOutputs,
         { kind: 'pr', label: 'Canonicalized pull request', ref: `${canonicalPr}/?` },
       ],
       acceptanceChecks: [],
     }), 'write');
-    expect(parsed.outputs).toEqual([
-      { kind: 'pr', label: 'Canonical pull request', ref: canonicalPr },
-    ]);
+    expect(parsed.outputs).toEqual(canonicalPrOutputs);
 
     tempDir = mkdtempSync(join(tmpdir(), 'yeaft-canonical-pr-output-'));
     store = new WorkItemStore(join(tempDir, 'work-center.db'));

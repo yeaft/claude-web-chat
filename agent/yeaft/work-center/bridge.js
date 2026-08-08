@@ -27,7 +27,8 @@ const BROWSER_ACTION_DEBUG_OPS = new Set(['get_action_messages', 'get_action_req
 // client-supplied value and only emits files resolved from owned upload ids.
 const BROWSER_FILE_FIELDS = Object.freeze({
   create: [
-    'title', 'goal', 'acceptanceCriteria', 'workItemType', 'workDir', 'reuseMemory', 'files', 'start',
+    'title', 'goal', 'acceptanceCriteria', 'workItemType', 'workDir', 'deliveryTarget',
+    'reuseMemory', 'files', 'start',
   ],
   post_work_item_message: [
     'id', 'clientMessageId', 'text', 'target', 'revision', 'planRevision', 'ledgerRevision',

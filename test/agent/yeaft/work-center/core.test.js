@@ -21,6 +21,7 @@ import {
 import { WorkCenterService } from '../../../../agent/yeaft/work-center/service.js';
 import {
   __testSetWorkCenterService,
+  createWorkItemFromProducer,
   handleWorkCenterRequest,
 } from '../../../../agent/yeaft/work-center/bridge.js';
 import ctx from '../../../../agent/context.js';
@@ -128,6 +129,57 @@ describe('Work Center core', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+
+  it('preserves browser delivery targets through the bridge without granting producer authority', async () => {
+    const bridgeService = new WorkCenterService({
+      yeaftDir: dir,
+      store,
+      controller,
+      runner: null,
+      coordinator: null,
+      settingsReader: () => ({ startImmediately: false }),
+    });
+    __testSetWorkCenterService(bridgeService);
+    const bridgeFrames = [];
+    ctx.ws = { readyState: 1, send: vi.fn(value => bridgeFrames.push(JSON.parse(value))) };
+    globalThis.WebSocket = { OPEN: 1 };
+
+    for (const deliveryTarget of ['workspace_files', 'pull_request', 'merge']) {
+      const requestId = `create-${deliveryTarget}`;
+      await handleWorkCenterRequest({
+        requestId,
+        op: 'create',
+        payload: {
+          title: `Browser ${deliveryTarget}`,
+          goal: 'Preserve the browser-selected delivery boundary.',
+          acceptanceCriteria: ['The selected delivery target persists'],
+          workItemType: 'software-change',
+          workDir: dir,
+          reuseMemory: false,
+          start: false,
+          deliveryTarget,
+        },
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(bridgeFrames.find(frame => frame.requestId === requestId)).toMatchObject({
+        type: 'work_center_response',
+        ok: true,
+        data: { deliveryTarget },
+      });
+    }
+
+    const producerItem = await createWorkItemFromProducer({
+      title: 'Producer cannot choose delivery',
+      goal: 'Keep model producer provenance separate from delivery authority.',
+      acceptanceCriteria: ['The producer-selected target is ignored'],
+      workItemType: 'software-change',
+      workDir: dir,
+      reuseMemory: false,
+      start: false,
+      deliveryTarget: 'merge',
+    });
+    expect(producerItem.deliveryTarget).toBeNull();
+  });
 
   it('persists Run identity and projects one continuous Action conversation', async () => {
     const bridgeDetail = { id: 'wi', actions: [] };
