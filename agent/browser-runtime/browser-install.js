@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
-import { spawn } from 'node:child_process';
 import {
   access,
   chmod,
@@ -17,6 +16,7 @@ import {
 
 import { constants } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { runProcess } from '../yeaft/tools/process-runner.js';
 
 // Chrome 151 is the first pinned Chrome for Testing build in this project that
 // exposes the Extensions CDP domain required for safe action activation.
@@ -338,30 +338,28 @@ async function downloadVerifiedArchive(asset, destination, { fetchFn, onProgress
 export async function readBrowserExecutableVersion(executablePath, {
   versionCheck = null,
   signal = null,
+  gracefulTerminationDeadline = null,
+  terminationDeadline = null,
+  processOptions = null,
 } = {}) {
   if (typeof versionCheck === 'function') return versionCheck(executablePath, { signal });
-  return new Promise((resolve, reject) => {
-    const child = spawn(executablePath, ['--version'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-      ...(signal ? { signal } : {}),
-    });
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    const finish = (callback, value) => {
-      if (settled) return;
-      settled = true;
-      callback(value);
-    };
-    child.stdout.on('data', chunk => { stdout += chunk; });
-    child.stderr.on('data', chunk => { stderr += chunk; });
-    child.once('error', error => finish(reject, error));
-    child.once('exit', code => {
-      if (code === 0) finish(resolve, stdout.trim());
-      else finish(reject, new Error(`Managed Chrome version check failed (${code}): ${stderr.slice(0, 200)}`));
-    });
+  const result = await runProcess(executablePath, ['--version'], {
+    signal,
+    maxBytes: 64 * 1024,
+    killGraceMs: 100,
+    gracefulTerminationDeadline,
+    terminationDeadline,
+    forceSettleMs: 500,
+    treeKillTimeoutMs: 500,
+    requireExitConfirmation: true,
+    requireProcessGroupExit: true,
+    ...(processOptions || {}),
   });
+  if (result.code !== 0) {
+    const termination = result.terminationError ? ` ${result.terminationError}` : '';
+    throw new Error(`Managed Chrome version check failed (${result.code}): ${result.stderr.slice(0, 200)}${termination}`);
+  }
+  return result.stdout.trim();
 }
 
 async function executableVersion(executablePath, dependencies = {}) {

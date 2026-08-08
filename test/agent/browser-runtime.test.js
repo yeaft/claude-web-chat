@@ -61,6 +61,15 @@ function waitForExit(child) {
   });
 }
 
+function processExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
 async function waitForFiles(paths, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (paths.some(path => !existsSync(path))) {
@@ -439,6 +448,104 @@ describe('Managed Browser installation', () => {
     if (process.platform !== 'win32') chmodSync(executablePath, 0o755);
     const { readBrowserExecutableVersion } = await import('../../agent/browser-runtime/browser-install.js');
     await expect(readBrowserExecutableVersion(executablePath)).resolves.toContain(BROWSER_RUNTIME_CHROME_BUILD);
+  });
+
+  it('force-settles a real version-check process tree before the probe returns', async () => {
+    if (process.platform === 'win32') return;
+    const root = tempRoot();
+    const pidPath = join(root, 'version-check-pids.json');
+    const helperPath = new URL('../helpers/browser-version-hang.mjs', import.meta.url).pathname;
+    const executablePath = join(root, 'fake-chrome');
+    writeFileSync(executablePath, [
+      '#!/bin/sh',
+      'trap "" TERM',
+      'sh -c \'trap "" TERM; while :; do sleep 1; done\' &',
+      'printf \'{"parentPid":%s,"descendantPid":%s}\\n\' "$$" "$!" > "$YEAFT_TEST_PID_PATH"',
+      'exec "$YEAFT_TEST_NODE" "$YEAFT_TEST_HELPER"',
+      '',
+    ].join('\n'), {
+      mode: 0o755,
+    });
+    chmodSync(executablePath, 0o755);
+
+    const originalEnv = {
+      YEAFT_TEST_NODE: process.env.YEAFT_TEST_NODE,
+      YEAFT_TEST_HELPER: process.env.YEAFT_TEST_HELPER,
+      YEAFT_TEST_PID_PATH: process.env.YEAFT_TEST_PID_PATH,
+    };
+    process.env.YEAFT_TEST_NODE = process.execPath;
+    process.env.YEAFT_TEST_HELPER = helperPath;
+    process.env.YEAFT_TEST_PID_PATH = pidPath;
+    let pids = null;
+    try {
+      const startedAt = Date.now();
+      const result = await probeBrowserRuntime({
+        executablePath,
+        cacheDir: root,
+        timeoutMs: 250,
+        launch: vi.fn(),
+      });
+      const elapsedMs = Date.now() - startedAt;
+      pids = JSON.parse(readFileSync(pidPath, 'utf8'));
+
+      expect(result.ok).toBe(false);
+      expect(result.code).toMatch(/^browser_(?:probe|version)_timeout$/);
+      expect(elapsedMs).toBeLessThan(1_500);
+      expect(processExists(pids.parentPid)).toBe(false);
+      expect(processExists(pids.descendantPid)).toBe(false);
+    } finally {
+      for (const [name, value] of Object.entries(originalEnv)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      for (const pid of [pids?.descendantPid, pids?.parentPid]) {
+        if (processExists(pid)) process.kill(pid, 'SIGKILL');
+      }
+    }
+  }, 5_000);
+
+  it('requires Windows tree-kill success before an aborted version check settles', async () => {
+    const { readBrowserExecutableVersion } = await import('../../agent/browser-runtime/browser-install.js');
+    for (const taskkillResult of [{ status: 0 }, { status: 1 }]) {
+      const child = new EventEmitter();
+      child.pid = 4242;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = vi.fn(signal => {
+        if (taskkillResult.status !== 0 && signal === 'SIGKILL') {
+          queueMicrotask(() => child.emit('close', null));
+          return true;
+        }
+        return false;
+      });
+      child.off = child.removeListener.bind(child);
+      child.stdout.off = child.stdout.removeListener.bind(child.stdout);
+      child.stderr.off = child.stderr.removeListener.bind(child.stderr);
+      const controller = new AbortController();
+      const spawnProcessSync = vi.fn(() => taskkillResult);
+      const startedAt = Date.now();
+      const pending = readBrowserExecutableVersion('chrome.exe', {
+        signal: controller.signal,
+        gracefulTerminationDeadline: Date.now(),
+        terminationDeadline: Date.now() + 20,
+        processOptions: {
+          platform: 'win32',
+          spawnProcess: () => child,
+          spawnProcessSync,
+        },
+      });
+      controller.abort();
+      if (taskkillResult.status === 0) child.emit('close', null);
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      const elapsedMs = Date.now() - startedAt;
+      expect(elapsedMs).toBeLessThan(250);
+      if (taskkillResult.status !== 0) expect(elapsedMs).toBeGreaterThanOrEqual(10);
+      expect(spawnProcessSync).toHaveBeenCalledWith(
+        'taskkill',
+        ['/pid', '4242', '/t', '/f'],
+        expect.objectContaining({ timeout: expect.any(Number) }),
+      );
+    }
   });
 
   it('rejects a managed archive whose pinned digest does not match', async () => {

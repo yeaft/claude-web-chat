@@ -17,6 +17,7 @@ import { BrowserRuntimeError } from './errors.js';
 const PROBE_PAGE = 'data:text/html,<style>body{margin:0;background:%2309637d;color:white;font:48px sans-serif}</style><main>Yeaft Browser Runtime</main>';
 const PROFILE_STALE_MS = 30 * 60_000;
 const CLEANUP_GRACE_MS = 250;
+const VERSION_PROCESS_FORCE_MS = 500;
 
 function abortError(signal) {
   const reason = signal?.reason;
@@ -226,13 +227,29 @@ export async function probeBrowserRuntime({
     }
 
     let version;
+    const versionTerminationDeadline = deadline + VERSION_PROCESS_FORCE_MS;
+    const versionPromise = Promise.resolve().then(() => versionCheck(resolvedExecutable, {
+      signal: boundarySignal,
+      gracefulTerminationDeadline: deadline,
+      terminationDeadline: versionTerminationDeadline,
+    }));
     try {
       version = await raceBoundary(
-        versionCheck(resolvedExecutable, { signal: boundarySignal }),
+        versionPromise,
         { deadline, signal: boundarySignal, code: 'browser_version_timeout' },
       );
+    } catch (error) {
+      if (!boundarySignal.aborted) abortProbe(error);
+      await Promise.race([
+        versionPromise.catch(() => {}),
+        new Promise(resolve => setTimeout(
+          resolve,
+          Math.max(0, versionTerminationDeadline - Date.now()),
+        )),
+      ]);
+      throw error;
     } finally {
-      if (Date.now() >= deadline) abortProbe(deadlineError());
+      if (Date.now() >= deadline && !boundarySignal.aborted) abortProbe(deadlineError());
     }
     actualBuildId = actualChromeBuild(version);
     if (actualBuildId !== BROWSER_RUNTIME_CHROME_BUILD) {

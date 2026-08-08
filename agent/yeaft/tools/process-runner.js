@@ -71,18 +71,26 @@ function isSystemdScopeInactive(scope, spawnProcessSync) {
   }
 }
 
-function killProcessTree(proc, signalName, platform, spawnProcessSync, systemdScope) {
+function killProcessTree(
+  proc,
+  signalName,
+  platform,
+  spawnProcessSync,
+  systemdScope,
+  commandTimeoutMs = 5000,
+) {
   if (!proc.pid) return false;
   if (platform === 'win32') {
     try {
       const result = spawnProcessSync('taskkill', ['/pid', String(proc.pid), '/t', '/f'], {
         stdio: 'ignore',
         windowsHide: true,
-        timeout: 5000,
+        timeout: Math.max(1, commandTimeoutMs),
       });
       if (!result.error && result.status === 0) return true;
     } catch {}
-    try { return proc.kill(signalName) !== false; } catch { return false; }
+    try { proc.kill(signalName); } catch {}
+    return false;
   }
 
   let signalled = signalSystemdScope(systemdScope, signalName, spawnProcessSync);
@@ -96,12 +104,22 @@ function killProcessTree(proc, signalName, platform, spawnProcessSync, systemdSc
   return signalled;
 }
 
+function processGroupIsInactive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return true;
+  try {
+    process.kill(-pid, 0);
+    return false;
+  } catch (error) {
+    return error?.code === 'ESRCH';
+  }
+}
+
 /**
  * Execute a binary directly without a shell and keep captured output bounded.
  *
  * @param {string} command
  * @param {string[]} args
- * @param {{ cwd?: string, signal?: AbortSignal, timeoutMs?: number, maxBytes?: number, env?: NodeJS.ProcessEnv, preserveCarriageReturns?: boolean, killGraceMs?: number, forceSettleMs?: number, requireExitConfirmation?: boolean, systemdScope?: { unit: string, systemctlPath: string, env?: NodeJS.ProcessEnv } | null, onSettled?: (() => void) | null, platform?: NodeJS.Platform, spawnProcess?: typeof spawn, spawnProcessSync?: typeof spawnSync }} [options]
+ * @param {{ cwd?: string, signal?: AbortSignal, timeoutMs?: number, maxBytes?: number, env?: NodeJS.ProcessEnv, preserveCarriageReturns?: boolean, killGraceMs?: number, gracefulTerminationDeadline?: number, terminationDeadline?: number, forceSettleMs?: number, treeKillTimeoutMs?: number, requireExitConfirmation?: boolean, requireProcessGroupExit?: boolean, systemdScope?: { unit: string, systemctlPath: string, env?: NodeJS.ProcessEnv } | null, onSettled?: (() => void) | null, platform?: NodeJS.Platform, spawnProcess?: typeof spawn, spawnProcessSync?: typeof spawnSync }} [options]
  * @returns {Promise<{ code: number, stdout: string, stderr: string, truncated: boolean, timedOut: boolean, terminationError?: string }>}
  */
 export function runProcess(command, args, options = {}) {
@@ -123,6 +141,17 @@ export function runProcess(command, args, options = {}) {
     const forceSettleMs = Number.isFinite(options.forceSettleMs)
       ? Math.max(1, options.forceSettleMs)
       : DEFAULT_FORCE_SETTLE_MS;
+    const treeKillTimeoutMs = Number.isFinite(options.treeKillTimeoutMs)
+      ? Math.max(1, options.treeKillTimeoutMs)
+      : 5000;
+    const deadlineBudget = (maximum, deadline) => {
+      if (!Number.isFinite(deadline)) return maximum;
+      return Math.max(0, Math.min(maximum, deadline - Date.now()));
+    };
+    const terminationBudget = maximum => deadlineBudget(maximum, options.terminationDeadline);
+    const treeKillBudget = () => Number.isFinite(options.terminationDeadline)
+      ? terminationBudget(treeKillTimeoutMs)
+      : treeKillTimeoutMs;
     let proc;
     try {
       proc = spawnProcess(command, args, {
@@ -149,6 +178,8 @@ export function runProcess(command, args, options = {}) {
     let aborted = false;
     let stopRequested = false;
     let forceRequested = false;
+    let processTreeKillConfirmed = platform !== 'win32';
+    let treeKillFailed = false;
     let directClosed = false;
     let directCode = null;
     let timer = null;
@@ -217,7 +248,14 @@ export function runProcess(command, args, options = {}) {
     const terminationConfirmed = () => {
       if (!options.requireExitConfirmation) return directClosed;
       const scopeInactive = isSystemdScopeInactive(options.systemdScope, spawnProcessSync);
-      return directClosed && scopeInactive;
+      const processTreeInactive = !options.requireProcessGroupExit
+        || (platform === 'win32'
+          ? processTreeKillConfirmed
+          : processGroupIsInactive(proc.pid));
+      const treeKillSucceeded = platform !== 'win32'
+        || !options.requireProcessGroupExit
+        || !treeKillFailed;
+      return directClosed && scopeInactive && processTreeInactive && treeKillSucceeded;
     };
     const maybeFinishStopped = () => {
       if (settled || !stopRequested || !terminationConfirmed()) return false;
@@ -227,18 +265,30 @@ export function runProcess(command, args, options = {}) {
     const startConfirmationPolling = () => {
       if (!options.requireExitConfirmation || confirmationTimer) return;
       confirmationTimer = setInterval(maybeFinishStopped, CONFIRMATION_POLL_MS);
+      confirmationTimer.unref?.();
     };
     const forceStop = () => {
       if (settled || forceRequested) return;
       forceRequested = true;
+      const settleBudget = terminationBudget(forceSettleMs);
       killProcessTree(
         proc,
         'SIGKILL',
         platform,
         spawnProcessSync,
         options.systemdScope,
+        Math.max(1, treeKillBudget() || 1),
       );
       if (maybeFinishStopped()) return;
+      if (settleBudget <= 0) {
+        finish(
+          null,
+          options.requireExitConfirmation
+            ? new ProcessTerminationError(command, forceSettleMs)
+            : null,
+        );
+        return;
+      }
       forceSettleTimer = setTimeout(() => {
         if (maybeFinishStopped()) return;
         finish(
@@ -247,7 +297,7 @@ export function runProcess(command, args, options = {}) {
             ? new ProcessTerminationError(command, forceSettleMs)
             : null,
         );
-      }, forceSettleMs);
+      }, settleBudget);
     };
     const stop = () => {
       if (settled || stopRequested) return;
@@ -256,16 +306,30 @@ export function runProcess(command, args, options = {}) {
         // taskkill must run while the parent PID still identifies the tree.
         // It is already forceful, so do not wait for the direct child to exit.
         forceRequested = true;
-        killProcessTree(proc, 'SIGKILL', platform, spawnProcessSync, null);
+        const settleBudget = terminationBudget(forceSettleMs);
+        processTreeKillConfirmed = killProcessTree(
+          proc,
+          'SIGKILL',
+          platform,
+          spawnProcessSync,
+          null,
+          Math.max(1, treeKillBudget() || 1),
+        );
+        treeKillFailed = !processTreeKillConfirmed;
+        if (maybeFinishStopped()) return;
         if (!settled) {
-          forceSettleTimer = setTimeout(() => {
+          const finishAfterForce = () => {
+            if (maybeFinishStopped()) return;
             finish(
               null,
               options.requireExitConfirmation
                 ? new ProcessTerminationError(command, forceSettleMs)
                 : null,
             );
-          }, forceSettleMs);
+          };
+          const remainingSettleBudget = terminationBudget(forceSettleMs);
+          if (remainingSettleBudget <= 0) finishAfterForce();
+          else forceSettleTimer = setTimeout(finishAfterForce, remainingSettleBudget);
         }
         return;
       }
@@ -277,8 +341,12 @@ export function runProcess(command, args, options = {}) {
         spawnProcessSync,
         options.systemdScope,
       );
-      forceTimer = setTimeout(forceStop, killGraceMs);
-      forceTimer.unref?.();
+      const graceBudget = deadlineBudget(killGraceMs, options.gracefulTerminationDeadline);
+      if (graceBudget <= 0) forceStop();
+      else {
+        forceTimer = setTimeout(forceStop, graceBudget);
+        forceTimer.unref?.();
+      }
     };
     const onAbort = () => {
       aborted = true;
@@ -321,7 +389,7 @@ export function runProcess(command, args, options = {}) {
       if (settled) return;
       if (stopRequested) {
         directClosed = true;
-        finishStoppedChild();
+        if (platform !== 'win32' || !treeKillFailed || !options.requireProcessGroupExit) finishStoppedChild();
         return;
       }
       settled = true;
@@ -332,7 +400,7 @@ export function runProcess(command, args, options = {}) {
       directClosed = true;
       directCode = code;
       if (stopRequested) {
-        finishStoppedChild();
+        if (platform !== 'win32' || !treeKillFailed || !options.requireProcessGroupExit) finishStoppedChild();
         return;
       }
       finish(code);
