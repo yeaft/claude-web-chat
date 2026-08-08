@@ -143,7 +143,15 @@ printf '%s\n' '{"type":"user","message":{"role":"user","content":"列出这个�
 
 Stdout 是 JSONL。Event 包含 Session/turn identity，并可能包含 text/thinking delta、skill load、tool start/result、todo update、usage、turn stop、result 或 error。如果工具需要人工输入，必须使用 stream-json input，让调用方可以返回 answer。Engine event 是权威状态，不要根据展示文本重建状态。
 
-如果 ID 指向已有正式 Session（存在持久 `session.json` 与 roster），transport-neutral runner 会执行该 Session，并在 stream event 中增加 VP identity。`targetVpId`、`targetVps`、`targets` 和 `broadcast` 等逐 turn VP selector 只允许用于正式 Session，并会在 provider dispatch 前按持久 roster 校验。Stream-json 接受的新 ID 只隔离 ad-hoc CLI message history，不创建 `session.json`、roster 或 Web 产品 Session，因此任何 VP selector 都会让该输入行返回 terminal error，但后续 JSONL prompt 仍可继续。ID validation 当前只在 stream-json path 强制执行；text mode 则在所请求正式 Session 不存在时失败。
+如果 ID 指向已有正式 Session（存在持久 `session.json` 与 roster），transport-neutral runner 会执行该 Session，并在 stream event 中增加 VP identity。`targetVpId`、`targetVps`、`targets` 和 `broadcast` 等逐 turn VP selector 只允许用于正式 Session，并会在 provider dispatch 前按持久 roster 校验。
+
+新的 ID 默认仍只隔离 ad-hoc CLI conversation。集成方可仅在第一条 JSONL user prompt 中加入 `roster`（或内容完全相同的 `vps` 别名）以及可选的 `defaultVpId` 来选择正式 Session，例如：
+
+```json
+{"type":"user","prompt":"你好","roster":["omni","margaret"],"defaultVpId":"omni"}
+```
+
+CLI 会在分派首个 turn 前写入规范的 `session.json`，并为每个正式 Session turn 输出包含 `dispatched_vp_ids` 和 `vp_results` 的单个 aggregate result。roster id 必须唯一且为有效 VP id；同时提供 `vps` 和 `roster` 时二者必须一致，`defaultVpId` 必须属于 roster。后续输入不能修改已持久化的 roster。未在首个 prompt 中提供 roster 时，VP selector 仍会让该输入行返回 terminal error，但后续 JSONL prompt 仍可继续。ID validation 当前只在 stream-json path 强制执行；text mode 则在所请求正式 Session 不存在时失败。
 
 ## 诊断
 

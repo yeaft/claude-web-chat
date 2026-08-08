@@ -35,13 +35,15 @@ import { listModels, resolveModel, parseModelRef, resolveContextWindow, resolveM
 import { buildSystemPrompt } from './prompts.js';
 import { searchMessages } from './conversation/search.js';
 import { ConversationStore } from './conversation/persist.js';
-import { snapshotSessions } from './sessions/session-crud.js';
+import { sessionsRoot, snapshotSessions } from './sessions/session-crud.js';
 import { loadSessionConfig, resolveSessionConfig } from './sessions/session-config.js';
+import { createSession } from './sessions/session-store.js';
 import { validateSessionId } from './sessions/ids.js';
 import {
   createJsonlWriter,
   JsonlInput,
   normalizeStreamRoutingIntent,
+  normalizeStreamSessionBootstrap,
   runStreamTurn,
   runStreamSessionTurn,
 } from './stdio-protocol.js';
@@ -900,6 +902,7 @@ async function runStreamJson(config, args) {
   let taskEventIntakeOpen = true;
   let hadError = false;
   let singleEngineTail = Promise.resolve();
+  let streamSessionBootstrapOpen = !sessionRunner;
 
   const loadStreamHistory = () => conversationStore.loadRecentBySession(sessionId, 20).map(message => ({
     role: message.role,
@@ -1091,6 +1094,22 @@ async function runStreamJson(config, args) {
   };
 
   const runPrompt = async (prompt, message = null) => {
+    if (streamSessionBootstrapOpen) {
+      streamSessionBootstrapOpen = false;
+      const bootstrap = normalizeStreamSessionBootstrap(message);
+      if (bootstrap) {
+        const handle = createSession(sessionsRoot(loaded.yeaftDir), {
+          id: sessionId,
+          name: sessionId,
+          roster: bootstrap.roster,
+          defaultVpId: bootstrap.defaultVpId,
+          workDir,
+        });
+        handle.close();
+        sessionRunner = createCliSessionRunner({ loaded, sessionId, workDir, configureEngine: configureStreamEngine });
+        if (!sessionRunner) throw new Error(`Failed to initialize formal stream-json Session ${sessionId}`);
+      }
+    }
     const routingIntent = normalizeStreamRoutingIntent(message);
     if (routingIntent && !sessionRunner) {
       throw new Error('stream-json VP selectors require an existing formal Session with a persisted roster');
