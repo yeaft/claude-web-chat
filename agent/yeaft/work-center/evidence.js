@@ -154,10 +154,19 @@ function normalizeRepositorySegments(values, minimum = 1) {
 function normalizePullRequestPath(pathname) {
   const withoutTrailingSlash = pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
   if (!withoutTrailingSlash.startsWith('/') || withoutTrailingSlash.includes('//')) return '';
-  const segments = withoutTrailingSlash.slice(1).split('/');
+  let segments = withoutTrailingSlash.slice(1).split('/');
+  let lower = segments.map(segment => segment.toLowerCase());
+  const isBitbucketServerOverview = segments.length === 7
+    && ['projects', 'users'].includes(lower[0])
+    && lower[2] === 'repos'
+    && lower[4] === 'pull-requests'
+    && lower[6] === 'overview';
+  if (isBitbucketServerOverview) {
+    segments = segments.slice(0, -1);
+    lower = lower.slice(0, -1);
+  }
   const requestId = segments.at(-1);
   if (!/^[1-9]\d*$/.test(requestId || '')) return '';
-  const lower = segments.map(segment => segment.toLowerCase());
 
   if (segments.length === 4 && ['pull', 'pulls'].includes(lower[2])) {
     const repository = normalizeRepositorySegments(segments.slice(0, 2), 2);

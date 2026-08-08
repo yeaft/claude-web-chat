@@ -1412,8 +1412,10 @@ describe('Work Center dynamic coordination contract', () => {
     expect(JSON.stringify(projectWorkItemDetail(mergeDetail))).not.toContain('secret-token');
   });
 
-  it('rejects opaque pull-request URL suffixes and repository segments across every output boundary', () => {
+  it('canonicalizes Bitbucket Server overview URLs and rejects opaque PR suffixes across every output boundary', () => {
     const canonicalPr = 'https://github.com/example/repo/pull/1';
+    const bitbucketServerProjectPr = 'https://stash.example.test/projects/PROJ/repos/repo/pull-requests/17';
+    const bitbucketServerUserPr = 'https://stash.example.test/users/alice/repos/repo/pull-requests/18';
     const canonicalPrOutputs = [
       { kind: 'pr', label: 'GitHub pull request', ref: canonicalPr },
       {
@@ -1427,6 +1429,25 @@ describe('Work Center dynamic coordination contract', () => {
       {
         kind: 'pr', label: 'Azure pull request',
         ref: 'https://dev.azure.com/org/project/_git/repo/pullrequest/4',
+      },
+      {
+        kind: 'pr', label: 'Bitbucket project pull request',
+        ref: bitbucketServerProjectPr,
+      },
+      {
+        kind: 'pr', label: 'Bitbucket user pull request',
+        ref: bitbucketServerUserPr,
+      },
+    ];
+    const acceptedPrInputs = [
+      ...canonicalPrOutputs.slice(0, 4),
+      {
+        kind: 'pr', label: 'Bitbucket project pull request',
+        ref: `${bitbucketServerProjectPr}/overview`,
+      },
+      {
+        kind: 'pr', label: 'Bitbucket user pull request',
+        ref: `${bitbucketServerUserPr}/overview`,
       },
     ];
     const unsafePrUrls = [
@@ -1442,6 +1463,8 @@ describe('Work Center dynamic coordination contract', () => {
       'https://github.com/user%253Apass%2540nested.example/repo/pull/8',
       'https://github.com/%7B%22access_token%22%3A%22secret-token%22%7D/repo/pull/9',
       'https://gitlab.example.test/group/password=secret/repo/-/merge_requests/10',
+      `${bitbucketServerProjectPr}/diff`,
+      `${bitbucketServerUserPr}/arbitrary-suffix`,
     ];
     const unsafeOutputs = unsafePrUrls.map((ref, index) => ({
       kind: 'pr', label: `Unsafe pull request ${index + 1}`, ref,
@@ -1450,7 +1473,7 @@ describe('Work Center dynamic coordination contract', () => {
       outcome: 'completed', summary: 'Pull request reported', evidence: ['verified'],
       outputs: [
         ...unsafeOutputs,
-        ...canonicalPrOutputs,
+        ...acceptedPrInputs,
         { kind: 'pr', label: 'Canonicalized pull request', ref: `${canonicalPr}/?` },
       ],
       acceptanceChecks: [],
@@ -1534,49 +1557,70 @@ describe('Work Center dynamic coordination contract', () => {
     }, unsafeTurn.fence)).toThrow(/canonical pr output/i);
     expect(store.getWorkItemDetail(unsafeItem.id)).toMatchObject({ status: 'running', finalResult: null });
 
-    const canonicalItem = controller.create({
-      ...workItem({ id: 'canonical-pr-item', deliveryTarget: 'pull_request' }),
-      workDir: tempDir, workflowTemplate: 'coordinator-driven', start: true,
-    });
-    const canonicalAction = createAction(canonicalItem.id, 'canonical-pr-action');
-    const canonicalClaim = store.claimReadyAction('canonical-pr-runner', 5_000);
-    controller.submit(canonicalClaim.run.id, 'canonical-pr-runner', canonicalClaim.run.leaseEpoch, {
-      outcome: 'completed', summary: 'Canonical pull request reported', evidence: ['verified'],
-      outputs: [{ kind: 'pr', label: 'Pull request', ref: canonicalPr }],
-      acceptanceChecks: criteria.map(criterion => ({
-        criterion, status: 'passed', evidence: 'verified',
-      })),
-    });
-    expect(store.getRun(canonicalClaim.run.id).outputs).toEqual([
-      { kind: 'pr', label: 'Pull request', ref: canonicalPr },
-    ]);
-    expect(buildMainlineProjection(store.getWorkItemDetail(canonicalItem.id))
-      .canonicalActionResults[canonicalAction.id].outputs).toEqual([
-      { kind: 'pr', label: 'Pull request', ref: canonicalPr },
-    ]);
-    expect(projectWorkItemDetail(store.getWorkItemDetail(canonicalItem.id)).outputs).toEqual([
-      expect.objectContaining({ kind: 'pr', ref: canonicalPr }),
-    ]);
-    const canonicalWake = store.listPendingDynamicCoordinatorWakes()
-      .find(entry => entry.workItemId === canonicalItem.id);
-    const canonicalCoordinatorClaim = store.claimCoordinatorMailbox(canonicalItem.id, 'canonical-pr-coordinator');
-    const canonicalTurn = store.beginDynamicCoordinatorTurn(canonicalWake.id, {
-      ownerBootId: 'canonical-pr-coordinator', claimEpoch: canonicalCoordinatorClaim.claim_epoch,
-    });
-    const completed = store.completeCoordinatorTurn(canonicalTurn.turnId, {
-      reply: 'The pull request is complete.',
-      decision: {
-        kind: 'complete', reason: 'The canonical pull request is delivery evidence.',
-        completion: completion(canonicalClaim.run.id),
-      },
-    }, canonicalTurn.fence);
-    expect(completed).toMatchObject({ status: 'done' });
-    expect(completed.finalResult.outputs).toEqual([
-      { kind: 'pr', label: 'Pull request', ref: canonicalPr, runId: canonicalClaim.run.id },
-    ]);
-    expect(projectWorkItemDetail(completed).finalResult.outputs).toEqual([
-      expect.objectContaining({ kind: 'pr', ref: canonicalPr, runId: canonicalClaim.run.id }),
-    ]);
+    const canonicalCases = [
+      { name: 'project', ref: bitbucketServerProjectPr },
+      { name: 'user', ref: bitbucketServerUserPr },
+    ];
+    for (const canonicalCase of canonicalCases) {
+      const canonicalItem = controller.create({
+        ...workItem({
+          id: `canonical-${canonicalCase.name}-pr-item`, deliveryTarget: 'pull_request',
+        }),
+        workDir: tempDir, workflowTemplate: 'coordinator-driven', start: true,
+      });
+      const canonicalAction = createAction(
+        canonicalItem.id, `canonical-${canonicalCase.name}-pr-action`,
+      );
+      const runnerOwner = `canonical-${canonicalCase.name}-pr-runner`;
+      const canonicalClaim = store.claimReadyAction(runnerOwner, 5_000);
+      controller.submit(canonicalClaim.run.id, runnerOwner, canonicalClaim.run.leaseEpoch, {
+        outcome: 'completed', summary: 'Canonical pull request reported', evidence: ['verified'],
+        outputs: [{
+          kind: 'pr', label: 'Pull request', ref: `${canonicalCase.ref}/overview`,
+        }],
+        acceptanceChecks: criteria.map(criterion => ({
+          criterion, status: 'passed', evidence: 'verified',
+        })),
+      });
+      expect(store.getRun(canonicalClaim.run.id).outputs).toEqual([
+        { kind: 'pr', label: 'Pull request', ref: canonicalCase.ref },
+      ]);
+      expect(buildMainlineProjection(store.getWorkItemDetail(canonicalItem.id))
+        .canonicalActionResults[canonicalAction.id].outputs).toEqual([
+        { kind: 'pr', label: 'Pull request', ref: canonicalCase.ref },
+      ]);
+      expect(projectWorkItemDetail(store.getWorkItemDetail(canonicalItem.id)).outputs).toEqual([
+        expect.objectContaining({ kind: 'pr', ref: canonicalCase.ref }),
+      ]);
+      const canonicalWake = store.listPendingDynamicCoordinatorWakes()
+        .find(entry => entry.workItemId === canonicalItem.id);
+      const coordinatorOwner = `canonical-${canonicalCase.name}-pr-coordinator`;
+      const canonicalCoordinatorClaim = store.claimCoordinatorMailbox(
+        canonicalItem.id, coordinatorOwner,
+      );
+      const canonicalTurn = store.beginDynamicCoordinatorTurn(canonicalWake.id, {
+        ownerBootId: coordinatorOwner, claimEpoch: canonicalCoordinatorClaim.claim_epoch,
+      });
+      const completed = store.completeCoordinatorTurn(canonicalTurn.turnId, {
+        reply: 'The pull request is complete.',
+        decision: {
+          kind: 'complete', reason: 'The canonical pull request is delivery evidence.',
+          completion: completion(canonicalClaim.run.id),
+        },
+      }, canonicalTurn.fence);
+      expect(completed).toMatchObject({ status: 'done' });
+      expect(completed.finalResult.outputs).toEqual([
+        {
+          kind: 'pr', label: 'Pull request', ref: canonicalCase.ref,
+          runId: canonicalClaim.run.id,
+        },
+      ]);
+      expect(projectWorkItemDetail(completed).finalResult.outputs).toEqual([
+        expect.objectContaining({
+          kind: 'pr', ref: canonicalCase.ref, runId: canonicalClaim.run.id,
+        }),
+      ]);
+    }
   });
 
   it('requires a human decision when the delivery boundary is ambiguous', () => {
