@@ -13,8 +13,9 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 import { generateSystemdUnit } from '../../agent/service/linux.js';
@@ -226,11 +227,11 @@ describe('Browser Runtime configuration', () => {
   it('waits for an in-flight first config writer instead of overwriting it', async () => {
     const root = tempRoot();
     const barrier = tempRoot('yeaft-config-bootstrap-barrier-');
-    const helper = new URL('../helpers/config-transaction-child.mjs', import.meta.url);
+    const helper = fileURLToPath(new URL('../helpers/config-transaction-child.mjs', import.meta.url));
     const readyPath = join(barrier, 'ready');
     const startPath = join(barrier, 'start');
     const child = spawn(process.execPath, [
-      helper.pathname,
+      helper,
       root,
       readyPath,
       startPath,
@@ -262,10 +263,10 @@ describe('Browser Runtime configuration', () => {
     const root = tempRoot();
     const barrier = tempRoot('yeaft-config-barrier-');
     const startPath = join(barrier, 'start');
-    const helper = new URL('../helpers/config-transaction-child.mjs', import.meta.url);
+    const helper = fileURLToPath(new URL('../helpers/config-transaction-child.mjs', import.meta.url));
     const operations = ['browser', 'plugins', 'telemetry'];
     const children = operations.map((operation, index) => spawn(process.execPath, [
-      helper.pathname,
+      helper,
       root,
       join(barrier, `ready-${index}`),
       startPath,
@@ -464,7 +465,7 @@ describe('Managed Browser installation', () => {
     ].join('\n'), { mode: 0o755 });
     chmodSync(executablePath, 0o755);
 
-    const readerPath = new URL('../helpers/browser-version-reader.mjs', import.meta.url).pathname;
+    const readerPath = fileURLToPath(new URL('../helpers/browser-version-reader.mjs', import.meta.url));
     let descendantPid = null;
     try {
       const child = spawn(process.execPath, [readerPath, executablePath], {
@@ -511,7 +512,7 @@ describe('Managed Browser installation', () => {
     if (process.platform === 'win32') return;
     const root = tempRoot();
     const pidPath = join(root, 'version-check-pids.json');
-    const helperPath = new URL('../helpers/browser-version-hang.mjs', import.meta.url).pathname;
+    const helperPath = fileURLToPath(new URL('../helpers/browser-version-hang.mjs', import.meta.url));
     const executablePath = join(root, 'fake-chrome');
     writeFileSync(executablePath, [
       '#!/bin/sh',
@@ -1011,7 +1012,7 @@ describe('Browser Runtime lifecycle', () => {
 });
 
 describe('Browser Runtime extension package', () => {
-  it('has a pinned content digest and includes the complete offscreen endpoint', async () => {
+  it('has a pinned LF content digest and includes the complete offscreen endpoint', async () => {
     const manifest = JSON.parse(readFileSync(new URL(
       '../../agent/browser-runtime/extension/manifest.json',
       import.meta.url,
@@ -1022,6 +1023,17 @@ describe('Browser Runtime extension package', () => {
     expect(first.digest).toBe(BROWSER_EXTENSION_SHA256);
     expect(first).toEqual(second);
     expect(first.fileCount).toBeGreaterThanOrEqual(6);
+
+    const attributes = spawnSync('git', [
+      'check-attr',
+      'eol',
+      '--',
+      'agent/browser-runtime/extension/manifest.json',
+      'agent/browser-runtime/extension/service-worker.js',
+    ], { cwd: fileURLToPath(new URL('../..', import.meta.url)), encoding: 'utf8' });
+    expect(attributes.status).toBe(0);
+    expect(attributes.stdout).toContain('manifest.json: eol: lf');
+    expect(attributes.stdout).toContain('service-worker.js: eol: lf');
   });
 
   it('retries only the extension storage read while MV3 APIs finish attaching', async () => {
