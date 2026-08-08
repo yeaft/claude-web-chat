@@ -154,7 +154,7 @@ export async function findManagedBrowser(cacheDir, dependencies = {}) {
   return inspected.valid ? inspected.executablePath : null;
 }
 
-/** Explicit executables are version-fenced by the probe after launch. */
+/** Explicit executables are version-fenced by the probe before extension launch. */
 export async function resolveBrowserExecutable({ executablePath, cacheDir }) {
   if (executablePath) return await isExecutable(executablePath) ? executablePath : null;
   return findManagedBrowser(cacheDir);
@@ -174,16 +174,91 @@ function processIsAlive(pid) {
   }
 }
 
-async function lockOwnerIsStale(lockDir, staleMs) {
+async function readInstallLockOwner(lockDir) {
   const details = await stat(lockDir);
   if (!details.isDirectory()) throw new Error('Managed Chrome install lock is not a directory');
-  if (Date.now() - details.mtimeMs > staleMs) return true;
+  try {
+    return { owner: JSON.parse(await readFile(join(lockDir, 'owner.json'), 'utf8')), details };
+  } catch {
+    return { owner: null, details };
+  }
+}
+
+async function removeOrphanedInstallStaging(cacheDir) {
+  const prefix = `.chrome-${BROWSER_RUNTIME_CHROME_BUILD}-staging-`;
+  const entries = await readdir(cacheDir, { withFileTypes: true });
+  await Promise.all(entries
+    .filter(entry => entry.isDirectory() && entry.name.startsWith(prefix))
+    .map(async entry => {
+      const path = join(cacheDir, entry.name);
+      try {
+        const owner = JSON.parse(await readFile(join(path, 'owner.json'), 'utf8'));
+        if (owner?.host !== hostname() || processIsAlive(Number(owner.pid))) return;
+        await rm(path, { recursive: true, force: true });
+      } catch {}
+    }));
+}
+
+async function installLockCanBeTaken(lockDir, staleMs) {
+  const { owner, details } = await readInstallLockOwner(lockDir);
+  if (owner?.host === hostname()) return !processIsAlive(Number(owner.pid));
+  if (owner) return false;
+  return Date.now() - details.mtimeMs > staleMs;
+}
+
+async function installLockIsOwned(lockDir, token) {
   try {
     const owner = JSON.parse(await readFile(join(lockDir, 'owner.json'), 'utf8'));
-    return owner?.host === hostname() && !processIsAlive(Number(owner.pid));
+    return owner?.token === token;
   } catch {
     return false;
   }
+}
+
+async function releaseInstallLock(lockDir, token) {
+  if (!await installLockIsOwned(lockDir, token)) return false;
+  const claimed = `${lockDir}.release-${token}`;
+  try {
+    await rename(lockDir, claimed);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+  if (!await installLockIsOwned(claimed, token)) {
+    await rename(claimed, lockDir).catch(() => {});
+    return false;
+  }
+  await rm(claimed, { recursive: true, force: true });
+  return true;
+}
+
+function installLockOwnerIdentity(owner) {
+  if (!owner) return null;
+  if (typeof owner.token === 'string' && owner.token) return `token:${owner.token}`;
+  return `legacy:${owner.host || ''}:${Number(owner.pid) || 0}:${Number(owner.startedAt) || 0}`;
+}
+
+async function takeInstallLock(lockDir, staleMs) {
+  const observed = (await readInstallLockOwner(lockDir)).owner;
+  if (!await installLockCanBeTaken(lockDir, staleMs)) return false;
+  const observedIdentity = installLockOwnerIdentity(observed);
+  const claimed = `${lockDir}.stale-${randomUUID()}`;
+  try {
+    await rename(lockDir, claimed);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return true;
+    return false;
+  }
+  const claimedOwner = (await readInstallLockOwner(claimed)).owner;
+  const ownerChanged = installLockOwnerIdentity(claimedOwner) !== observedIdentity;
+  const ownerRevived = claimedOwner?.host === hostname()
+    && processIsAlive(Number(claimedOwner.pid));
+  if (ownerChanged || ownerRevived) {
+    await rename(claimed, lockDir).catch(() => {});
+    return false;
+  }
+  await rm(claimed, { recursive: true, force: true });
+  return true;
 }
 
 async function acquireInstallLock(cacheDir, {
@@ -196,24 +271,26 @@ async function acquireInstallLock(cacheDir, {
   const deadline = Date.now() + waitMs;
   for (;;) {
     if (typeof ready === 'function' && await ready()) return null;
+    const token = randomUUID();
     try {
       await mkdir(lockDir, { mode: 0o700 });
       await writeFile(join(lockDir, 'owner.json'), JSON.stringify({
         pid: process.pid,
         host: hostname(),
+        token,
         startedAt: Date.now(),
       }), { flag: 'wx', mode: 0o600 });
-      return () => rm(lockDir, { recursive: true, force: true });
+      return {
+        token,
+        release: () => releaseInstallLock(lockDir, token),
+      };
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
       try {
-        if (await lockOwnerIsStale(lockDir, staleMs)) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
+        if (await takeInstallLock(lockDir, staleMs)) continue;
       } catch (inspectionError) {
-        if (inspectionError?.code !== 'ENOENT') throw inspectionError;
-        continue;
+        if (inspectionError?.code === 'ENOENT') continue;
+        throw inspectionError;
       }
       if (Date.now() >= deadline) throw new Error('Managed Chrome install is busy');
       await delay(Math.min(INSTALL_RETRY_MS, Math.max(1, deadline - Date.now())));
@@ -258,23 +335,37 @@ async function downloadVerifiedArchive(asset, destination, { fetchFn, onProgress
   return actual;
 }
 
-async function executableVersion(executablePath, dependencies = {}) {
-  if (typeof dependencies.versionCheck === 'function') return dependencies.versionCheck(executablePath);
+export async function readBrowserExecutableVersion(executablePath, {
+  versionCheck = null,
+  signal = null,
+} = {}) {
+  if (typeof versionCheck === 'function') return versionCheck(executablePath, { signal });
   return new Promise((resolve, reject) => {
     const child = spawn(executablePath, ['--version'], {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      ...(signal ? { signal } : {}),
     });
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      callback(value);
+    };
     child.stdout.on('data', chunk => { stdout += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
-    child.once('error', reject);
+    child.once('error', error => finish(reject, error));
     child.once('exit', code => {
-      if (code === 0) resolve(stdout.trim());
-      else reject(new Error(`Managed Chrome version check failed (${code}): ${stderr.slice(0, 200)}`));
+      if (code === 0) finish(resolve, stdout.trim());
+      else finish(reject, new Error(`Managed Chrome version check failed (${code}): ${stderr.slice(0, 200)}`));
     });
   });
+}
+
+async function executableVersion(executablePath, dependencies = {}) {
+  return readBrowserExecutableVersion(executablePath, dependencies);
 }
 
 function installedDirectory(cacheDir, platform) {
@@ -290,16 +381,24 @@ export async function installManagedBrowser({
 } = {}) {
   if (!cacheDir) throw new Error('cacheDir required');
   if (typeof fetchFn !== 'function') throw new Error('fetch is unavailable');
-  const release = await acquireInstallLock(cacheDir, {
+  const lock = await acquireInstallLock(cacheDir, {
     ...dependencies,
     ready: async () => (await inspectManagedBrowser(cacheDir, dependencies)).valid,
   });
+  if (!lock) {
+    const existing = await inspectManagedBrowser(cacheDir, dependencies);
+    if (!existing.valid) throw new Error('Managed Chrome install completed without a verified browser');
+    return {
+      buildId: BROWSER_RUNTIME_CHROME_BUILD,
+      executablePath: existing.executablePath,
+      executableSha256: existing.executableSha256,
+      cacheDir,
+      status: 'available',
+    };
+  }
   let stagingRoot = null;
   try {
-    const entries = await readdir(cacheDir, { withFileTypes: true });
-    await Promise.all(entries
-      .filter(entry => entry.isDirectory() && entry.name.startsWith(`.chrome-${BROWSER_RUNTIME_CHROME_BUILD}-staging-`))
-      .map(entry => rm(join(cacheDir, entry.name), { recursive: true, force: true })));
+    if (lock) await removeOrphanedInstallStaging(cacheDir);
     const existing = await inspectManagedBrowser(cacheDir, dependencies);
     if (existing.valid) {
       return {
@@ -317,8 +416,17 @@ export async function installManagedBrowser({
     const asset = archiveForPlatform(platform, dependencies.archives);
     const finalDir = installedDirectory(cacheDir, platform);
 
-    stagingRoot = await mkdtemp(join(cacheDir, `.chrome-${BROWSER_RUNTIME_CHROME_BUILD}-staging-`));
+    stagingRoot = await mkdtemp(join(
+      cacheDir,
+      `.chrome-${BROWSER_RUNTIME_CHROME_BUILD}-staging-${lock.token}-`,
+    ));
     if (process.platform !== 'win32') await chmod(stagingRoot, 0o700);
+    await writeFile(join(stagingRoot, 'owner.json'), JSON.stringify({
+      pid: process.pid,
+      host: hostname(),
+      token: lock.token,
+      startedAt: Date.now(),
+    }), { flag: 'wx', mode: 0o600 });
     const archivePath = join(stagingRoot, asset.fileName);
     await downloadVerifiedArchive(asset, archivePath, { fetchFn, onProgress, signal });
 
@@ -367,6 +475,6 @@ export async function installManagedBrowser({
     };
   } finally {
     if (stagingRoot) await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
-    await release?.();
+    await lock.release();
   }
 }

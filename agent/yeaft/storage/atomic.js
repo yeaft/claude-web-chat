@@ -42,13 +42,14 @@ export function nextAtomicTmpPathForTest(path) {
   return `${path}.tmp.${process.pid}.${tmpCounter + 1}`;
 }
 
-function targetMode(path, fallbackMode) {
+function targetMode(path, requestedMode) {
   try {
     const stat = lstatSync(path);
     if (!stat.isFile()) throw new Error(`Atomic write target is not a regular file: ${path}`);
-    return stat.mode & 0o777;
+    const existingMode = stat.mode & 0o777;
+    return requestedMode == null ? existingMode : existingMode & requestedMode;
   } catch (error) {
-    if (error?.code === 'ENOENT') return fallbackMode;
+    if (error?.code === 'ENOENT') return requestedMode ?? 0o666;
     throw error;
   }
 }
@@ -57,11 +58,12 @@ function targetMode(path, fallbackMode) {
  * Atomically write `data` (string | Buffer) to `path`.
  * Throws on failure; never leaves `path` in a half-written state.
  *
- * `mode` is used only for first creation and is still restricted by umask.
- * Existing files keep their current permission bits. Secret-bearing callers
- * must pass an explicit restrictive mode such as `0o600`.
+ * When supplied, `mode` is the maximum permission set for the replacement and
+ * is still restricted by umask. Existing files preserve any tighter permissions
+ * but never retain bits outside that explicit maximum. Omitted mode preserves
+ * the historical behavior: existing modes survive, new files default to 0666.
  */
-export function writeAtomic(path, data, { mode = 0o666 } = {}) {
+export function writeAtomic(path, data, { mode = null } = {}) {
   const dir = dirname(path);
   const tmpPath = `${path}.tmp.${process.pid}.${++tmpCounter}`;
   const fileMode = targetMode(path, mode);

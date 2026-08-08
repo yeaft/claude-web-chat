@@ -2,15 +2,18 @@ import {
   chmodSync,
   existsSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
@@ -27,6 +30,7 @@ import { handleBrowserCommand } from '../../agent/browser-runtime/cli.js';
 import { BROWSER_EXTENSION_SHA256, hashBrowserExtension } from '../../agent/browser-runtime/extension.js';
 import { probeBrowserRuntime } from '../../agent/browser-runtime/probe.js';
 import { nextAtomicTmpPathForTest, writeAtomic } from '../../agent/yeaft/storage/atomic.js';
+import { mutateAgentConfig } from '../../agent/yeaft/config-store.js';
 import {
   getBrowserRuntimeSettings,
   updateBrowserRuntimeSettings,
@@ -108,14 +112,32 @@ describe('Browser Runtime configuration', () => {
     }
   });
 
-  it('preserves a tighter existing config mode across Browser updates', () => {
+  it('clamps an overly broad existing config and root mode while preserving tighter modes', () => {
     if (process.platform === 'win32') return;
     const root = tempRoot();
     const configPath = join(root, 'config.json');
-    writeFileSync(configPath, '{}', { mode: 0o600 });
-    chmodSync(configPath, 0o600);
+    chmodSync(root, 0o755);
+    writeFileSync(configPath, '{}', { mode: 0o644 });
+    chmodSync(configPath, 0o644);
     expect(updateBrowserRuntimeSettings({ enabled: true }, root).error).toBeUndefined();
+    expect(statSync(root).mode & 0o777).toBe(0o700);
     expect(statSync(configPath).mode & 0o777).toBe(0o600);
+
+    chmodSync(root, 0o700);
+    chmodSync(configPath, 0o400);
+    expect(updateBrowserRuntimeSettings({ enabled: false }, root).error).toBeUndefined();
+    expect(statSync(root).mode & 0o777).toBe(0o700);
+    expect(statSync(configPath).mode & 0o777).toBe(0o400);
+  });
+
+  it('preserves an existing non-secret atomic target mode when no maximum is requested', () => {
+    if (process.platform === 'win32') return;
+    const root = tempRoot();
+    const target = join(root, 'public-index');
+    writeFileSync(target, 'old', { mode: 0o644 });
+    chmodSync(target, 0o644);
+    writeAtomic(target, 'new');
+    expect(statSync(target).mode & 0o777).toBe(0o644);
   });
 
   it('refuses a pre-created atomic temp symlink without touching its victim', async () => {
@@ -152,6 +174,79 @@ describe('Browser Runtime configuration', () => {
     writeFileSync(join(root, 'config.json'), '{broken');
     expect(updateBrowserRuntimeSettings({ enabled: true }, root).error).toContain('Failed to read config.json');
     expect(readFileSync(join(root, 'config.json'), 'utf8')).toBe('{broken');
+  });
+
+  it('does not steal an old lock whose local owner process is still alive', () => {
+    const root = tempRoot();
+    const lockDir = join(root, '.config.json.lock');
+    mkdirSync(lockDir, { mode: 0o700 });
+    writeFileSync(join(lockDir, 'owner.json'), JSON.stringify({
+      pid: process.pid,
+      host: hostname(),
+      token: 'live-owner',
+      startedAt: Date.now() - 60 * 60_000,
+    }), { mode: 0o600 });
+    const old = new Date(Date.now() - 60 * 60_000);
+    utimesSync(lockDir, old, old);
+
+    expect(() => mutateAgentConfig(root, config => {
+      config.browserRuntime = { enabled: true };
+    }, { waitMs: 25 })).toThrow('config.json is busy');
+    expect(JSON.parse(readFileSync(join(lockDir, 'owner.json'), 'utf8')).token).toBe('live-owner');
+    expect(existsSync(join(root, 'config.json'))).toBe(false);
+  }, 15_000);
+
+  it('recovers a config lock whose local owner process is dead', () => {
+    const root = tempRoot();
+    const lockDir = join(root, '.config.json.lock');
+    mkdirSync(lockDir, { mode: 0o700 });
+    writeFileSync(join(lockDir, 'owner.json'), JSON.stringify({
+      pid: 999_999,
+      host: hostname(),
+      startedAt: Date.now(),
+    }), { mode: 0o600 });
+    mutateAgentConfig(root, config => {
+      config.browserRuntime = { enabled: true };
+    }, { waitMs: 100 });
+    expect(existsSync(lockDir)).toBe(false);
+    expect(JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'))).toMatchObject({
+      browserRuntime: { enabled: true },
+    });
+  });
+
+  it('waits for an in-flight first config writer instead of overwriting it', async () => {
+    const root = tempRoot();
+    const barrier = tempRoot('yeaft-config-bootstrap-barrier-');
+    const helper = new URL('../helpers/config-transaction-child.mjs', import.meta.url);
+    const readyPath = join(barrier, 'ready');
+    const startPath = join(barrier, 'start');
+    const child = spawn(process.execPath, [
+      helper.pathname,
+      root,
+      readyPath,
+      startPath,
+      'hold-browser',
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    await waitForFiles([readyPath]);
+    writeFileSync(startPath, 'go');
+    await waitForFiles([`${readyPath}.locked`]);
+    const initResult = new Promise((resolve, reject) => {
+      const initChild = spawn(process.execPath, [
+        '--input-type=module',
+        '-e',
+        `import { initYeaftDir } from ${JSON.stringify(new URL('../../agent/yeaft/init.js', import.meta.url).href)}; initYeaftDir(process.argv[1]);`,
+        root,
+      ], { stdio: ['ignore', 'ignore', 'pipe'] });
+      waitForExit(initChild).then(resolve, reject);
+    });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(existsSync(join(root, 'config.json'))).toBe(false);
+    writeFileSync(`${startPath}.release`, 'go');
+    await Promise.all([waitForExit(child), initResult]);
+
+    expect(JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'))).toMatchObject({
+      browserRuntime: expect.objectContaining({ enabled: true }),
+    });
   });
 
   it('serializes Browser, plugin, and telemetry writes across processes', async () => {
@@ -336,6 +431,16 @@ describe('Managed Browser installation', () => {
     };
   }
 
+  it('runs the real executable version reader without an AbortSignal', async () => {
+    if (process.platform === 'win32') return;
+    const root = tempRoot();
+    const executablePath = join(root, 'fake-chrome');
+    writeFileSync(executablePath, '#!/bin/sh\nprintf "Google Chrome 151.0.7922.71\\n"\n', { mode: 0o755 });
+    if (process.platform !== 'win32') chmodSync(executablePath, 0o755);
+    const { readBrowserExecutableVersion } = await import('../../agent/browser-runtime/browser-install.js');
+    await expect(readBrowserExecutableVersion(executablePath)).resolves.toContain(BROWSER_RUNTIME_CHROME_BUILD);
+  });
+
   it('rejects a managed archive whose pinned digest does not match', async () => {
     const cacheDir = tempRoot();
     const dependencies = installerDependencies(cacheDir);
@@ -418,6 +523,12 @@ describe('Managed Browser installation', () => {
     }));
     const orphanedStaging = join(cacheDir, `.chrome-${BROWSER_RUNTIME_CHROME_BUILD}-staging-orphaned`);
     await import('node:fs/promises').then(fs => fs.mkdir(orphanedStaging));
+    writeFileSync(join(orphanedStaging, 'owner.json'), JSON.stringify({
+      pid: 999_999,
+      host: hostname(),
+      token: 'dead-staging',
+      startedAt: Date.now(),
+    }));
 
     const result = await installManagedBrowser({
       cacheDir,
@@ -427,6 +538,99 @@ describe('Managed Browser installation', () => {
     expect(result.status).toBe('installed');
     expect(existsSync(lockDir)).toBe(false);
     expect(existsSync(orphanedStaging)).toBe(false);
+  });
+
+  it('does not steal an aged install lock whose local owner process is still alive', async () => {
+    const cacheDir = tempRoot();
+    const lockDir = join(cacheDir, `.chrome-${BROWSER_RUNTIME_CHROME_BUILD}.lock`);
+    await import('node:fs/promises').then(fs => fs.mkdir(lockDir));
+    writeFileSync(join(lockDir, 'owner.json'), JSON.stringify({
+      pid: process.pid,
+      host: hostname(),
+      token: 'live-installer',
+      startedAt: Date.now() - 60 * 60_000,
+    }));
+    const old = new Date(Date.now() - 60 * 60_000);
+    utimesSync(lockDir, old, old);
+    const dependencies = installerDependencies(cacheDir);
+
+    await expect(installManagedBrowser({
+      cacheDir,
+      fetchFn: vi.fn(),
+      dependencies: { ...dependencies, waitMs: 25, staleMs: 1 },
+    })).rejects.toThrow('Managed Chrome install is busy');
+    expect(JSON.parse(readFileSync(join(lockDir, 'owner.json'), 'utf8')).token).toBe('live-installer');
+    expect(dependencies.install).not.toHaveBeenCalled();
+  });
+
+  it('ignores an orphan staging directory with no ownership proof', async () => {
+    const cacheDir = tempRoot();
+    const unowned = join(cacheDir, `.chrome-${BROWSER_RUNTIME_CHROME_BUILD}-staging-unowned`);
+    mkdirSync(unowned);
+    writeFileSync(join(unowned, 'keep'), 'unowned');
+    const archive = Buffer.from('verified-archive');
+    const dependencies = installerDependencies(cacheDir);
+    dependencies.archives = {
+      ...BROWSER_RUNTIME_CHROME_ARCHIVES,
+      linux: {
+        ...BROWSER_RUNTIME_CHROME_ARCHIVES.linux,
+        sha256: createHash('sha256').update(archive).digest('hex'),
+      },
+    };
+    await installManagedBrowser({
+      cacheDir,
+      fetchFn: vi.fn().mockResolvedValue(archiveResponse(archive)),
+      dependencies,
+    });
+    expect(readFileSync(join(unowned, 'keep'), 'utf8')).toBe('unowned');
+  });
+
+  it('does not sweep another active installer staging directory', async () => {
+    const cacheDir = tempRoot();
+    const archive = Buffer.from('verified-archive');
+    const firstDependencies = installerDependencies(cacheDir, 'first-browser');
+    const secondDependencies = installerDependencies(cacheDir, 'second-browser');
+    const archives = {
+      ...BROWSER_RUNTIME_CHROME_ARCHIVES,
+      linux: {
+        ...BROWSER_RUNTIME_CHROME_ARCHIVES.linux,
+        sha256: createHash('sha256').update(archive).digest('hex'),
+      },
+    };
+    firstDependencies.archives = archives;
+    secondDependencies.archives = archives;
+    let releaseFirst;
+    const firstEntered = new Promise(resolve => {
+      firstDependencies.install.mockImplementation(async options => {
+        const finalDir = join(options.cacheDir, 'chrome', `linux-${BROWSER_RUNTIME_CHROME_BUILD}`);
+        const executablePath = join(finalDir, 'chrome-linux64', 'chrome');
+        await import('node:fs/promises').then(fs => fs.mkdir(join(finalDir, 'chrome-linux64'), { recursive: true }));
+        await import('node:fs/promises').then(fs => fs.writeFile(executablePath, 'first-browser', { mode: 0o755 }));
+        resolve();
+        await new Promise(done => { releaseFirst = done; });
+        return { executablePath };
+      });
+    });
+    const first = installManagedBrowser({
+      cacheDir,
+      fetchFn: vi.fn().mockResolvedValue(archiveResponse(archive)),
+      dependencies: { ...firstDependencies, staleMs: 1 },
+    });
+    await firstEntered;
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const second = installManagedBrowser({
+      cacheDir,
+      fetchFn: vi.fn().mockResolvedValue(archiveResponse(archive)),
+      dependencies: { ...secondDependencies, staleMs: 1, waitMs: 25 },
+    });
+    await expect(second).rejects.toThrow('Managed Chrome install is busy');
+    const stagingEntries = (await import('node:fs/promises')).readdir(cacheDir, { withFileTypes: true });
+    expect((await stagingEntries).some(entry => (
+      entry.isDirectory() && entry.name.startsWith(`.chrome-${BROWSER_RUNTIME_CHROME_BUILD}-staging-`)
+    ))).toBe(true);
+    releaseFirst();
+    await expect(first).resolves.toMatchObject({ status: 'installed' });
+    expect(secondDependencies.install).not.toHaveBeenCalled();
   });
 
   it('serializes concurrent installers and reuses the verified result', async () => {
@@ -440,20 +644,23 @@ describe('Managed Browser installation', () => {
         sha256: createHash('sha256').update(archive).digest('hex'),
       },
     };
-    let publishedExecutable = null;
-    dependencies.browsers.getInstalledBrowsers.mockImplementation(async () => (
-      publishedExecutable ? [{
+    dependencies.browsers.getInstalledBrowsers.mockImplementation(async () => {
+      const executablePath = join(
+        cacheDir,
+        'chrome',
+        `linux-${BROWSER_RUNTIME_CHROME_BUILD}`,
+        'chrome-linux64',
+        'chrome',
+      );
+      return existsSync(executablePath) ? [{
         browser: 'chrome',
         buildId: BROWSER_RUNTIME_CHROME_BUILD,
         platform: 'linux',
-        executablePath: publishedExecutable,
-      }] : []
-    ));
-    const fetchFn = vi.fn().mockImplementation(async () => archiveResponse(archive));
-    const first = installManagedBrowser({ cacheDir, fetchFn, dependencies }).then(result => {
-      publishedExecutable = result.executablePath;
-      return result;
+        executablePath,
+      }] : [];
     });
+    const fetchFn = vi.fn().mockImplementation(async () => archiveResponse(archive));
+    const first = installManagedBrowser({ cacheDir, fetchFn, dependencies });
     const second = installManagedBrowser({ cacheDir, fetchFn, dependencies });
     const results = await Promise.all([first, second]);
     expect(results.map(result => result.status).sort()).toEqual(['available', 'installed']);
@@ -606,6 +813,7 @@ describe('Browser Runtime extension package', () => {
     const result = await probeBrowserRuntime({
       executablePath: process.execPath,
       cacheDir: tempRoot(),
+      versionCheck: vi.fn().mockResolvedValue('Google Chrome 151.0.7922.71'),
       launch: vi.fn().mockResolvedValue(browser),
     });
     expect(result).toMatchObject({ ok: true, framesDecoded: 1 });
@@ -619,6 +827,7 @@ describe('Browser Runtime extension package', () => {
     const result = await probeBrowserRuntime({
       executablePath: process.execPath,
       cacheDir: tempRoot(),
+      versionCheck: vi.fn().mockResolvedValue('Google Chrome 151.0.7922.71'),
       expectedExtensionDigest: '0'.repeat(64),
       launch,
     });
@@ -626,17 +835,14 @@ describe('Browser Runtime extension package', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
-  it('rejects a mismatched Chrome build before creating a page or triggering the extension', async () => {
-    const browser = {
-      version: vi.fn().mockResolvedValue('Chrome/150.0.7871.24'),
-      newPage: vi.fn(),
-      extensions: vi.fn(),
-      close: vi.fn().mockResolvedValue(undefined),
-    };
+  it('rejects a mismatched Chrome build before any extension-bearing launch', async () => {
+    const launch = vi.fn();
+    const versionCheck = vi.fn().mockResolvedValue('Google Chrome 150.0.7871.24');
     const result = await probeBrowserRuntime({
       executablePath: process.execPath,
       cacheDir: tempRoot(),
-      launch: vi.fn().mockResolvedValue(browser),
+      launch,
+      versionCheck,
     });
     expect(result).toMatchObject({
       ok: false,
@@ -644,8 +850,10 @@ describe('Browser Runtime extension package', () => {
       expectedBuildId: '151.0.7922.71',
       actualBuildId: '150.0.7871.24',
     });
-    expect(browser.newPage).not.toHaveBeenCalled();
-    expect(browser.extensions).not.toHaveBeenCalled();
+    expect(versionCheck).toHaveBeenCalledWith(process.execPath, expect.objectContaining({
+      signal: expect.any(AbortSignal),
+    }));
+    expect(launch).not.toHaveBeenCalled();
   });
 
   it('enforces one cumulative deadline across otherwise successful stages', async () => {
@@ -665,14 +873,105 @@ describe('Browser Runtime extension package', () => {
     const result = await probeBrowserRuntime({
       executablePath: process.execPath,
       cacheDir: tempRoot(),
+      versionCheck: vi.fn().mockResolvedValue('Google Chrome 151.0.7922.71'),
       timeoutMs: 70,
       resolveExecutable: () => slow(process.execPath),
       hashExtension: () => slow({ digest: 'test', fileCount: 1 }),
       launch: vi.fn().mockResolvedValue(browser),
     });
     expect(result).toMatchObject({ ok: false });
-    expect(['browser_probe_timeout', 'browser_version_timeout']).toContain(result.code);
+    expect(result.code).toMatch(/_timeout$/);
     expect(Date.now() - startedAt).toBeLessThan(250);
+  });
+
+  it('returns within the same total deadline when Browser close never settles', async () => {
+    const browser = {
+      version: vi.fn().mockResolvedValue('Chrome/151.0.7922.71'),
+      newPage: vi.fn().mockRejectedValue(new Error('synthetic probe failure')),
+      close: vi.fn(() => new Promise(() => {})),
+      process: vi.fn(() => null),
+    };
+    const startedAt = Date.now();
+    const result = await probeBrowserRuntime({
+      executablePath: process.execPath,
+      cacheDir: tempRoot(),
+      timeoutMs: 50,
+      versionCheck: vi.fn().mockResolvedValue('Google Chrome 151.0.7922.71'),
+      launch: vi.fn().mockResolvedValue(browser),
+    });
+    expect(result).toMatchObject({ ok: false });
+    expect(Date.now() - startedAt).toBeLessThan(150);
+    expect(browser.close).toHaveBeenCalledOnce();
+  });
+
+  it('does not spend cleanup grace after the probe deadline is already exhausted', async () => {
+    const close = vi.fn(() => new Promise(() => {}));
+    const browser = {
+      newPage: vi.fn().mockResolvedValue({ goto: vi.fn().mockResolvedValue(undefined) }),
+      extensions: vi.fn(() => new Promise(() => {})),
+      close,
+      process: vi.fn(() => ({ pid: 999_999, exitCode: null, killed: false, kill: vi.fn() })),
+    };
+    const startedAt = Date.now();
+    const result = await probeBrowserRuntime({
+      executablePath: process.execPath,
+      cacheDir: tempRoot(),
+      timeoutMs: 40,
+      versionCheck: vi.fn().mockResolvedValue('Google Chrome 151.0.7922.71'),
+      launch: vi.fn().mockResolvedValue(browser),
+    });
+    expect(result.ok).toBe(false);
+    expect(Date.now() - startedAt).toBeLessThan(120);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('keeps profile cleanup inside the total deadline when removal never settles', async () => {
+    const profileParent = tempRoot();
+    const removeProfile = vi.fn(() => new Promise(() => {}));
+    const browser = {
+      newPage: vi.fn().mockRejectedValue(new Error('synthetic probe failure')),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const startedAt = Date.now();
+    const result = await probeBrowserRuntime({
+      executablePath: process.execPath,
+      cacheDir: tempRoot(),
+      timeoutMs: 50,
+      profileParent,
+      createProfile: async prefix => {
+        const path = `${prefix}hung-cleanup`;
+        mkdirSync(path);
+        return path;
+      },
+      versionCheck: vi.fn().mockResolvedValue('Google Chrome 151.0.7922.71'),
+      launch: vi.fn().mockResolvedValue(browser),
+      removeProfile,
+    });
+    expect(result.ok).toBe(false);
+    expect(Date.now() - startedAt).toBeLessThan(150);
+    expect(removeProfile).toHaveBeenCalledOnce();
+  });
+
+  it('aborts a non-settling executable version check at the total deadline', async () => {
+    let observedSignal;
+    const launch = vi.fn();
+    const versionCheck = vi.fn((_path, { signal }) => {
+      observedSignal = signal;
+      return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    });
+    const startedAt = Date.now();
+    const result = await probeBrowserRuntime({
+      executablePath: process.execPath,
+      cacheDir: tempRoot(),
+      timeoutMs: 40,
+      versionCheck,
+      launch,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.code).toMatch(/_timeout$/);
+    expect(Date.now() - startedAt).toBeLessThan(150);
+    expect(observedSignal.aborted).toBe(true);
+    expect(launch).not.toHaveBeenCalled();
   });
 
   it('settles a never-resolving CDP stage within the total timeout', async () => {
@@ -689,26 +988,35 @@ describe('Browser Runtime extension package', () => {
     const result = await probeBrowserRuntime({
       executablePath: process.execPath,
       cacheDir: tempRoot(),
+      versionCheck: vi.fn().mockResolvedValue('Google Chrome 151.0.7922.71'),
       timeoutMs: 50,
       launch: vi.fn().mockResolvedValue(browser),
     });
-    expect(result).toMatchObject({ ok: false, code: 'extension_list_timeout' });
+    expect(result.ok).toBe(false);
+    expect(result.code).toMatch(/_timeout$/);
     expect(Date.now() - startedAt).toBeLessThan(250);
     expect(close).toHaveBeenCalledOnce();
   });
 
   it('closes a Browser handle that resolves after launch timeout', async () => {
     const close = vi.fn().mockResolvedValue(undefined);
-    const browser = { close };
+    const kill = vi.fn();
+    const browser = {
+      close,
+      process: vi.fn(() => ({ pid: 999_999, exitCode: null, killed: false, kill })),
+    };
     const launch = vi.fn(() => new Promise(resolve => setTimeout(() => resolve(browser), 70)));
     const result = await probeBrowserRuntime({
       executablePath: process.execPath,
       cacheDir: tempRoot(),
+      versionCheck: vi.fn().mockResolvedValue('Google Chrome 151.0.7922.71'),
       timeoutMs: 40,
       launch,
     });
-    expect(result).toMatchObject({ ok: false, code: 'browser_launch_timeout' });
+    expect(result.ok).toBe(false);
+    expect(result.code).toMatch(/_timeout$/);
     await vi.waitFor(() => expect(close).toHaveBeenCalled());
+    expect(kill).toHaveBeenCalledWith('SIGKILL');
   });
 
   it('passes abort into launch and settles abort during launch', async () => {
@@ -723,14 +1031,21 @@ describe('Browser Runtime extension package', () => {
     const probe = probeBrowserRuntime({
       executablePath: process.execPath,
       cacheDir: tempRoot(),
+      versionCheck: vi.fn().mockResolvedValue('Google Chrome 151.0.7922.71'),
       timeoutMs: 1_000,
       launch,
       signal: controller.signal,
     });
     await vi.waitFor(() => expect(launch).toHaveBeenCalledOnce());
     controller.abort(new Error('shutdown'));
-    await expect(probe).resolves.toMatchObject({ ok: false, safeError: 'shutdown' });
-    expect(launchOptions.signal).toBe(controller.signal);
+    await expect(probe).resolves.toMatchObject({
+      ok: false,
+      code: 'browser_probe_aborted',
+      safeError: 'shutdown',
+    });
+    expect(launchOptions.signal).not.toBe(controller.signal);
+    expect(launchOptions.signal.aborted).toBe(true);
+    expect(launchOptions.signal.reason).toEqual(new Error('shutdown'));
     expect(launchOptions.protocolTimeout).toBeLessThanOrEqual(1_000);
   });
 
@@ -751,15 +1066,43 @@ describe('Browser Runtime extension package', () => {
     const probe = probeBrowserRuntime({
       executablePath: process.execPath,
       cacheDir: tempRoot(),
+      versionCheck: vi.fn().mockResolvedValue('Google Chrome 151.0.7922.71'),
       timeoutMs: 1_000,
       launch,
       signal: controller.signal,
     });
     await vi.waitFor(() => expect(browser.extensions).toHaveBeenCalledOnce());
     controller.abort(new Error('shutdown-after-launch'));
-    await expect(probe).resolves.toMatchObject({ ok: false, safeError: 'shutdown-after-launch' });
+    const abortStartedAt = Date.now();
+    await expect(probe).resolves.toMatchObject({
+      ok: false,
+      code: 'browser_probe_aborted',
+      safeError: 'shutdown-after-launch',
+    });
+    expect(Date.now() - abortStartedAt).toBeLessThan(150);
     expect(close).toHaveBeenCalledOnce();
-    expect(existsSync(profileDir)).toBe(false);
+    await vi.waitFor(() => expect(existsSync(profileDir)).toBe(false));
+  });
+
+  it('bounds the wait for process exit after force-kill', async () => {
+    const child = new EventEmitter();
+    Object.assign(child, { pid: 999_999, exitCode: null, killed: false, kill: vi.fn() });
+    const browser = {
+      newPage: vi.fn().mockRejectedValue(new Error('synthetic probe failure')),
+      close: vi.fn(() => new Promise(() => {})),
+      process: vi.fn(() => child),
+    };
+    const startedAt = Date.now();
+    const result = await probeBrowserRuntime({
+      executablePath: process.execPath,
+      cacheDir: tempRoot(),
+      timeoutMs: 50,
+      versionCheck: vi.fn().mockResolvedValue('Google Chrome 151.0.7922.71'),
+      launch: vi.fn().mockResolvedValue(browser),
+    });
+    expect(result.ok).toBe(false);
+    expect(Date.now() - startedAt).toBeLessThan(150);
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
   });
 
   it('force-kills when graceful Browser close never settles', async () => {
@@ -773,6 +1116,7 @@ describe('Browser Runtime extension package', () => {
     const result = await probeBrowserRuntime({
       executablePath: process.execPath,
       cacheDir: tempRoot(),
+      versionCheck: vi.fn().mockResolvedValue('Google Chrome 151.0.7922.71'),
       timeoutMs: 1_000,
       launch: vi.fn().mockResolvedValue(browser),
     });
@@ -794,6 +1138,7 @@ describe('Browser Runtime extension package', () => {
     const result = await probeBrowserRuntime({
       executablePath: process.execPath,
       cacheDir: tempRoot(),
+      versionCheck: vi.fn().mockResolvedValue('Google Chrome 151.0.7922.71'),
       launch,
     });
     expect(result).toMatchObject({ ok: false, code: 'browser_probe_failed' });

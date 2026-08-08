@@ -5,8 +5,10 @@ import {
   mkdirSync,
   writeFileSync,
   readFileSync,
+  renameSync,
   rmSync,
 } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { hostname } from 'node:os';
 import { normalizePluginConfig } from './plugins.js';
@@ -25,6 +27,11 @@ function ensureOwnerDirectory(path) {
   if (existsSync(path)) {
     const details = lstatSync(path);
     if (!details.isDirectory()) throw new Error('Yeaft data root is not a directory');
+    if (process.platform !== 'win32') {
+      const currentMode = details.mode & 0o777;
+      const restrictedMode = currentMode & 0o700;
+      if (currentMode !== restrictedMode) chmodSync(path, restrictedMode);
+    }
     return;
   }
   mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -54,16 +61,77 @@ function processIsAlive(pid) {
   }
 }
 
-function configLockIsStale(lockDir) {
+function readConfigLockOwner(lockDir) {
   const lockStat = lstatSync(lockDir);
   if (!lockStat.isDirectory()) throw new Error('config.json lock path is not a directory');
-  if (Date.now() - lockStat.mtimeMs > LOCK_STALE_MS) return true;
   try {
     const owner = JSON.parse(readFileSync(join(lockDir, 'owner.json'), 'utf8'));
-    return owner?.host === hostname() && !processIsAlive(Number(owner.pid));
+    return { owner, lockStat };
+  } catch {
+    return { owner: null, lockStat };
+  }
+}
+
+function configLockCanBeTaken(lockDir) {
+  const { owner, lockStat } = readConfigLockOwner(lockDir);
+  if (owner?.host === hostname()) return !processIsAlive(Number(owner.pid));
+  if (owner) return false;
+  return Date.now() - lockStat.mtimeMs > LOCK_STALE_MS;
+}
+
+function lockIsOwned(lockDir, token) {
+  try {
+    const owner = JSON.parse(readFileSync(join(lockDir, 'owner.json'), 'utf8'));
+    return owner?.token === token;
   } catch {
     return false;
   }
+}
+
+function removeConfigLockIfOwned(lockDir, token) {
+  if (!lockIsOwned(lockDir, token)) return false;
+  const claimed = `${lockDir}.release-${token}`;
+  try {
+    renameSync(lockDir, claimed);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+  if (!lockIsOwned(claimed, token)) {
+    try { renameSync(claimed, lockDir); } catch {}
+    return false;
+  }
+  rmSync(claimed, { recursive: true, force: true });
+  return true;
+}
+
+function lockOwnerIdentity(owner) {
+  if (!owner) return null;
+  if (typeof owner.token === 'string' && owner.token) return `token:${owner.token}`;
+  return `legacy:${owner.host || ''}:${Number(owner.pid) || 0}:${Number(owner.startedAt) || 0}`;
+}
+
+function takeConfigLock(lockDir) {
+  const observed = readConfigLockOwner(lockDir).owner;
+  if (!configLockCanBeTaken(lockDir)) return false;
+  const observedIdentity = lockOwnerIdentity(observed);
+  const claimed = `${lockDir}.stale-${randomUUID()}`;
+  try {
+    renameSync(lockDir, claimed);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return true;
+    return false;
+  }
+  const claimedOwner = readConfigLockOwner(claimed).owner;
+  const ownerChanged = lockOwnerIdentity(claimedOwner) !== observedIdentity;
+  const ownerRevived = claimedOwner?.host === hostname()
+    && processIsAlive(Number(claimedOwner.pid));
+  if (ownerChanged || ownerRevived) {
+    try { renameSync(claimed, lockDir); } catch {}
+    return false;
+  }
+  rmSync(claimed, { recursive: true, force: true });
+  return true;
 }
 
 function acquireConfigLock(root, { waitMs = LOCK_WAIT_MS } = {}) {
@@ -71,24 +139,23 @@ function acquireConfigLock(root, { waitMs = LOCK_WAIT_MS } = {}) {
   const lockDir = join(root, '.config.json.lock');
   const deadline = Date.now() + waitMs;
   for (;;) {
+    const token = randomUUID();
     try {
       mkdirSync(lockDir, { mode: 0o700 });
       writeFileSync(join(lockDir, 'owner.json'), JSON.stringify({
         pid: process.pid,
         host: hostname(),
+        token,
         startedAt: Date.now(),
       }), { flag: 'wx', mode: 0o600 });
-      return () => rmSync(lockDir, { recursive: true, force: true });
+      return () => removeConfigLockIfOwned(lockDir, token);
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
       try {
-        if (configLockIsStale(lockDir)) {
-          rmSync(lockDir, { recursive: true, force: true });
-          continue;
-        }
+        if (takeConfigLock(lockDir)) continue;
       } catch (inspectionError) {
-        if (inspectionError?.code !== 'ENOENT') throw inspectionError;
-        continue;
+        if (inspectionError?.code === 'ENOENT') continue;
+        throw inspectionError;
       }
       if (Date.now() >= deadline) throw new Error('config.json is busy');
       sleepSync(Math.min(LOCK_RETRY_MS, Math.max(1, deadline - Date.now())));
@@ -106,8 +173,9 @@ export function mutateAgentConfig(root, mutate, options = {}) {
   const release = acquireConfigLock(root, options);
   const configPath = join(root, 'config.json');
   try {
+    const exists = existsSync(configPath);
     const current = readConfigForWrite(configPath);
-    const result = mutate(current);
+    const result = mutate(current, { exists, configPath });
     writeAtomic(configPath, `${JSON.stringify(current, null, 2)}\n`, { mode: 0o600 });
     return result;
   } finally {

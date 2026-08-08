@@ -1,7 +1,11 @@
 import { mkdir, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { BROWSER_RUNTIME_CHROME_BUILD, resolveBrowserExecutable } from './browser-install.js';
+import {
+  BROWSER_RUNTIME_CHROME_BUILD,
+  readBrowserExecutableVersion,
+  resolveBrowserExecutable,
+} from './browser-install.js';
 import {
   hashBrowserExtension,
   BROWSER_EXTENSION_DIR,
@@ -13,12 +17,14 @@ import { BrowserRuntimeError } from './errors.js';
 const PROBE_PAGE = 'data:text/html,<style>body{margin:0;background:%2309637d;color:white;font:48px sans-serif}</style><main>Yeaft Browser Runtime</main>';
 const PROFILE_STALE_MS = 30 * 60_000;
 const CLEANUP_GRACE_MS = 250;
-const FORCE_KILL_WAIT_MS = 250;
 
 function abortError(signal) {
   const reason = signal?.reason;
-  if (reason instanceof Error) return reason;
-  return new BrowserRuntimeError('browser_probe_aborted', 'Browser Runtime probe aborted');
+  if (reason instanceof BrowserRuntimeError) return reason;
+  return new BrowserRuntimeError(
+    'browser_probe_aborted',
+    reason instanceof Error ? reason.message : 'Browser Runtime probe aborted',
+  );
 }
 
 function deadlineError() {
@@ -55,7 +61,7 @@ function delay(ms, boundary) {
 }
 
 function actualChromeBuild(version) {
-  const match = String(version || '').match(/(?:Chrome|Chromium)\/(\d+(?:\.\d+){0,3})/i);
+  const match = String(version || '').match(/(?:Chrome(?:\s+for\s+Testing)?|Chromium)(?:\/|\s+)(\d+(?:\.\d+){0,3})/i);
   return match?.[1] || null;
 }
 
@@ -70,36 +76,84 @@ async function readProbeResult(worker, boundary) {
   }
 }
 
+function browserProcess(browser) {
+  try { return browser?.process?.() || null; } catch { return null; }
+}
+
 function forceKillBrowser(browser) {
-  const child = browser?.process?.();
-  if (!child || child.exitCode !== null || child.killed) return;
+  const child = browserProcess(browser);
+  if (!child || child.exitCode !== null) return child;
   try {
     if (process.platform !== 'win32' && Number.isInteger(child.pid)) process.kill(-child.pid, 'SIGKILL');
     else child.kill('SIGKILL');
   } catch {
     try { child.kill('SIGKILL'); } catch {}
   }
+  return child;
 }
 
-async function cleanupBrowser(browser, profileDir) {
+async function settleWithin(promise, { deadline, signal, maxWaitMs = CLEANUP_GRACE_MS }) {
+  if (signal?.aborted) return false;
+  const budget = Math.min(maxWaitMs, Math.max(0, deadline - Date.now()));
+  if (budget <= 0) return false;
+  let timer;
+  let abortHandler;
+  try {
+    return await Promise.race([
+      Promise.resolve(promise).catch(() => false),
+      new Promise(resolve => { timer = setTimeout(() => resolve(false), budget); }),
+      new Promise(resolve => {
+        abortHandler = () => resolve(false);
+        signal?.addEventListener('abort', abortHandler, { once: true });
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    if (abortHandler) signal?.removeEventListener('abort', abortHandler);
+  }
+}
+
+async function waitForProcessExit(child, boundary) {
+  if (!child || child.exitCode !== null) return true;
+  if (typeof child.once !== 'function') return false;
+  const exited = new Promise(resolve => {
+    const onExit = () => {
+      child.off?.('exit', onExit);
+      child.off?.('close', onExit);
+      resolve(true);
+    };
+    child.once('exit', onExit);
+    child.once('close', onExit);
+    if (child.exitCode !== null) onExit();
+  });
+  return settleWithin(exited, boundary);
+}
+
+async function cleanupBrowser(browser, profileDir, boundary, removeProfile = rm) {
   if (browser) {
-    let closed = false;
+    let closeCompletion;
     try {
-      await Promise.race([
-        Promise.resolve(browser.close()).then(() => { closed = true; }),
-        new Promise(resolve => setTimeout(resolve, CLEANUP_GRACE_MS)),
-      ]);
-    } catch {}
+      closeCompletion = Promise.resolve(browser.close()).then(() => true, () => false);
+    } catch {
+      closeCompletion = Promise.resolve(false);
+    }
+    const closed = await settleWithin(closeCompletion, boundary);
     if (!closed) {
-      forceKillBrowser(browser);
-      await new Promise(resolve => setTimeout(resolve, FORCE_KILL_WAIT_MS));
+      const child = forceKillBrowser(browser);
+      if (Math.max(0, boundary.deadline - Date.now()) > 0) {
+        await waitForProcessExit(child, boundary);
+      }
     }
   }
   if (profileDir) {
-    await Promise.race([
-      rm(profileDir, { recursive: true, force: true }),
-      new Promise(resolve => setTimeout(resolve, CLEANUP_GRACE_MS)),
-    ]);
+    let removal;
+    try {
+      removal = Promise.resolve(removeProfile(profileDir, { recursive: true, force: true }))
+        .then(() => true, () => false);
+    } catch {
+      removal = Promise.resolve(false);
+    }
+    if (!await settleWithin(removal, boundary)) removal.catch(() => {});
   }
 }
 
@@ -130,12 +184,26 @@ export async function probeBrowserRuntime({
   launch = null,
   signal = null,
   resolveExecutable = resolveBrowserExecutable,
+  versionCheck = readBrowserExecutableVersion,
   hashExtension = hashBrowserExtension,
   createProfile = mkdtemp,
+  removeProfile = rm,
   profileParent = tmpdir(),
 } = {}) {
   const startedAt = Date.now();
   const deadline = startedAt + Math.max(1, Number(timeoutMs) || 1);
+  const deadlineController = new AbortController();
+  const deadlineTimer = setTimeout(() => deadlineController.abort(deadlineError()), Math.max(1, deadline - Date.now()));
+  const probeController = new AbortController();
+  const abortProbe = reason => {
+    if (!probeController.signal.aborted) probeController.abort(reason);
+  };
+  const abortFromCaller = () => abortProbe(signal?.reason || abortError(signal));
+  const abortFromDeadline = () => abortProbe(deadlineController.signal.reason || deadlineError());
+  signal?.addEventListener('abort', abortFromCaller, { once: true });
+  deadlineController.signal.addEventListener('abort', abortFromDeadline, { once: true });
+  if (signal?.aborted) abortFromCaller();
+  const boundarySignal = probeController.signal;
   let extension = null;
   let actualBuildId = null;
   let profileDir = null;
@@ -144,10 +212,10 @@ export async function probeBrowserRuntime({
   let launchBoundaryFailed = false;
 
   try {
-    signal?.throwIfAborted();
+    boundarySignal.throwIfAborted();
     const resolvedExecutable = await raceBoundary(
       resolveExecutable({ executablePath, cacheDir }),
-      { deadline, signal, code: 'browser_executable_timeout' },
+      { deadline, signal: boundarySignal, code: 'browser_executable_timeout' },
     );
     if (!resolvedExecutable) {
       return {
@@ -157,19 +225,36 @@ export async function probeBrowserRuntime({
       };
     }
 
+    let version;
+    try {
+      version = await raceBoundary(
+        versionCheck(resolvedExecutable, { signal: boundarySignal }),
+        { deadline, signal: boundarySignal, code: 'browser_version_timeout' },
+      );
+    } finally {
+      if (Date.now() >= deadline) abortProbe(deadlineError());
+    }
+    actualBuildId = actualChromeBuild(version);
+    if (actualBuildId !== BROWSER_RUNTIME_CHROME_BUILD) {
+      throw new BrowserRuntimeError(
+        'browser_version_mismatch',
+        `Browser Runtime requires Chrome ${BROWSER_RUNTIME_CHROME_BUILD}, got ${version || 'unknown'}`,
+      );
+    }
+
     extension = await raceBoundary(
       hashExtension(extensionDir, { expectedDigest: expectedExtensionDigest }),
-      { deadline, signal, code: 'extension_probe_timeout' },
+      { deadline, signal: boundarySignal, code: 'extension_probe_timeout' },
     );
     await raceBoundary(mkdir(profileParent, { recursive: true, mode: 0o700 }), {
       deadline,
-      signal,
+      signal: boundarySignal,
       code: 'probe_profile_timeout',
     });
     if (timeoutMs >= 1_000) {
       const profiles = await raceBoundary(readdir(profileParent, { withFileTypes: true }), {
         deadline,
-        signal,
+        signal: boundarySignal,
         code: 'probe_profile_timeout',
       });
       await raceBoundary(Promise.all(profiles
@@ -180,16 +265,16 @@ export async function probeBrowserRuntime({
           if (Date.now() - details.mtimeMs > PROFILE_STALE_MS) {
             await rm(profilePath, { recursive: true, force: true });
           }
-        })), { deadline, signal, code: 'probe_profile_timeout' });
+        })), { deadline, signal: boundarySignal, code: 'probe_profile_timeout' });
     }
     profileDir = await raceBoundary(
       createProfile(join(profileParent, 'probe-')),
-      { deadline, signal, code: 'probe_profile_timeout' },
+      { deadline, signal: boundarySignal, code: 'probe_profile_timeout' },
     );
 
     const launchBrowser = launch || (await raceBoundary(
       import('puppeteer-core').then(module => module.default.launch),
-      { deadline, signal, code: 'browser_launch_import_timeout' },
+      { deadline, signal: boundarySignal, code: 'browser_launch_import_timeout' },
     ));
     const launchTimeout = remaining(deadline);
     launchPromise = Promise.resolve(launchBrowser({
@@ -199,7 +284,7 @@ export async function probeBrowserRuntime({
       acceptInsecureCerts: false,
       timeout: launchTimeout,
       protocolTimeout: launchTimeout,
-      signal,
+      signal: boundarySignal,
       args: [
         `--disable-extensions-except=${extensionDir}`,
         `--load-extension=${extensionDir}`,
@@ -212,65 +297,65 @@ export async function probeBrowserRuntime({
       ],
     }));
     try {
-      browser = await raceBoundary(launchPromise, { deadline, signal, code: 'browser_launch_timeout' });
+      browser = await raceBoundary(launchPromise, { deadline, signal: boundarySignal, code: 'browser_launch_timeout' });
     } catch (error) {
       launchBoundaryFailed = true;
       throw error;
     }
 
-    const version = await raceBoundary(browser.version(), {
+    const launchedVersion = await raceBoundary(browser.version(), {
       deadline,
-      signal,
+      signal: boundarySignal,
       code: 'browser_version_timeout',
     });
-    actualBuildId = actualChromeBuild(version);
-    if (actualBuildId !== BROWSER_RUNTIME_CHROME_BUILD) {
+    const launchedBuildId = actualChromeBuild(launchedVersion);
+    if (launchedBuildId !== actualBuildId) {
       throw new BrowserRuntimeError(
         'browser_version_mismatch',
-        `Browser Runtime requires Chrome ${BROWSER_RUNTIME_CHROME_BUILD}, got ${version || 'unknown'}`,
+        `Browser Runtime executable changed after preflight: expected ${actualBuildId}, got ${launchedVersion || 'unknown'}`,
       );
     }
 
     const page = await raceBoundary(browser.newPage(), {
       deadline,
-      signal,
+      signal: boundarySignal,
       code: 'probe_page_create_timeout',
     });
     await raceBoundary(page.goto(PROBE_PAGE, {
       waitUntil: 'domcontentloaded',
       timeout: remaining(deadline),
-    }), { deadline, signal, code: 'probe_page_timeout' });
+    }), { deadline, signal: boundarySignal, code: 'probe_page_timeout' });
 
     let installed = null;
     while (!installed) {
       const extensions = await raceBoundary(browser.extensions(), {
         deadline,
-        signal,
+        signal: boundarySignal,
         code: 'extension_list_timeout',
       });
       installed = [...extensions.values()].find(candidate => candidate.name === BROWSER_EXTENSION_NAME) || null;
-      if (!installed) await delay(100, { deadline, signal });
+      if (!installed) await delay(100, { deadline, signal: boundarySignal });
     }
 
     await raceBoundary(page.triggerExtensionAction(installed), {
       deadline,
-      signal,
+      signal: boundarySignal,
       code: 'extension_action_timeout',
     });
     const workerTarget = await raceBoundary(browser.waitForTarget(target => (
       target.type() === 'service_worker' && target.url().startsWith(`chrome-extension://${installed.id}/`)
-    ), { timeout: remaining(deadline), signal }), {
+    ), { timeout: remaining(deadline), signal: boundarySignal }), {
       deadline,
-      signal,
+      signal: boundarySignal,
       code: 'extension_worker_timeout',
     });
     const worker = await raceBoundary(workerTarget.worker(), {
       deadline,
-      signal,
+      signal: boundarySignal,
       code: 'extension_worker_timeout',
     });
     if (!worker) throw new BrowserRuntimeError('extension_worker_missing', 'Browser Runtime extension worker unavailable');
-    const media = await readProbeResult(worker, { deadline, signal });
+    const media = await readProbeResult(worker, { deadline, signal: boundarySignal });
     if (media.ok !== true || media.framesDecoded < 1) {
       throw new BrowserRuntimeError(media.code || 'media_probe_failed', media.safeError || 'Browser Runtime media probe failed');
     }
@@ -294,17 +379,32 @@ export async function probeBrowserRuntime({
       ...baseResult(startedAt, extension, actualBuildId),
     };
   } finally {
+    clearTimeout(deadlineTimer);
+    signal?.removeEventListener('abort', abortFromCaller);
+    deadlineController.signal.removeEventListener('abort', abortFromDeadline);
     if (!browser && launchBoundaryFailed && launchPromise) {
-      try {
-        browser = await Promise.race([
-          launchPromise,
-          new Promise(resolve => setTimeout(() => resolve(null), CLEANUP_GRACE_MS)),
-        ]);
-      } catch {}
+      const lateBudget = Math.min(CLEANUP_GRACE_MS, Math.max(0, deadline - Date.now()));
+      if (lateBudget > 0) {
+        try {
+          browser = await Promise.race([
+            launchPromise,
+            new Promise(resolve => setTimeout(() => resolve(null), lateBudget)),
+          ]);
+        } catch {}
+      }
     }
-    await cleanupBrowser(browser, profileDir);
+    await cleanupBrowser(browser, profileDir, {
+      deadline,
+      signal: (signal?.aborted || Date.now() >= deadline) ? boundarySignal : null,
+    }, removeProfile);
     if (!browser && launchBoundaryFailed && launchPromise) {
-      launchPromise.then(lateBrowser => cleanupBrowser(lateBrowser, profileDir), () => {});
+      launchPromise.then(lateBrowser => {
+        forceKillBrowser(lateBrowser);
+        void cleanupBrowser(lateBrowser, profileDir, {
+          deadline: Date.now(),
+          signal: boundarySignal,
+        }, removeProfile);
+      }, () => {});
     }
   }
 }

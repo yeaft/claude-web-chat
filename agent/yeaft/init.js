@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, access
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { createHash } from 'crypto';
+import { mutateAgentConfig } from './config-store.js';
 // NOTE: migrateSessions runs at the end of initYeaftDir(). It collapses
 // legacy groups/ + chats/ + memory/{group,chat}/ into the unified sessions/
 // layout AND rewrites pre-rename per-message frontmatter (groupId → sessionId).
@@ -194,8 +195,20 @@ export function initYeaftDir(dir) {
   // config.json — default configuration (user edits this directly)
   const configJsonPath = join(root, 'config.json');
   if (!existsSync(configJsonPath)) {
-    safeWriteFile(configJsonPath, DEFAULT_CONFIG_JSON, warnings, 0o600);
-    created.push(configJsonPath);
+    let seeded = false;
+    try {
+      const defaults = JSON.parse(DEFAULT_CONFIG_JSON);
+      mutateAgentConfig(root, (current, state) => {
+        if (!state.exists) {
+          Object.assign(current, defaults);
+          seeded = true;
+        }
+      });
+      if (seeded) created.push(configJsonPath);
+    } catch (err) {
+      if (isPermissionError(err)) warnings.push(`Cannot write ${configJsonPath}: ${err.code}`);
+      else throw err;
+    }
   }
 
   const memoryPath = join(root, 'memory', 'MEMORY.md');
