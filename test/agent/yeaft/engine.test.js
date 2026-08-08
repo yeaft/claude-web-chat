@@ -6162,6 +6162,115 @@ describe('Engine', () => {
       expect(finalError.retryable).toBe(false);
     });
 
+    it('retries a content-policy 422 once with a safe recovery instruction', async () => {
+      const { LLMPolicyError } = await import('../../../agent/yeaft/llm/adapter.js');
+      const requests = [];
+      const engine = new Engine({
+        adapter: {
+          async *stream(params) {
+            requests.push(params);
+            if (requests.length === 1) {
+              throw new LLMPolicyError('LLM provider rejected the request because its content may violate the provider safety policy', 422);
+            }
+            yield { type: 'text_delta', text: 'Recovered without repeating sensitive samples.' };
+            yield { type: 'stop', stopReason: 'end_turn' };
+          },
+        },
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'review the security boundary' })) events.push(event);
+
+      expect(requests).toHaveLength(2);
+      expect(requests[1].messages.at(-1)).toMatchObject({
+        role: 'user',
+        content: expect.stringContaining('authorized code review'),
+      });
+      expect(requests[1].messages.at(-1).content).toContain('Do not repeat credential-like or exploit payloads');
+      expect(events.filter(event => event.type === 'llm_retry')).toEqual([
+        expect.objectContaining({
+          reason: 'content_policy_recovery',
+          attempt: 1,
+          maxRetries: 1,
+          statusCode: 422,
+          recoveryMode: 'continue',
+        }),
+      ]);
+      expect(events.find(event => event.type === 'error')).toBeUndefined();
+      expect(events).toContainEqual(expect.objectContaining({
+        type: 'text_delta',
+        text: 'Recovered without repeating sensitive samples.',
+      }));
+    });
+
+    it('stops after one content-policy recovery and exposes a safe actionable error', async () => {
+      const { LLMPolicyError } = await import('../../../agent/yeaft/llm/adapter.js');
+      let attempts = 0;
+      const engine = new Engine({
+        adapter: {
+          async *stream() {
+            attempts += 1;
+            throw new LLMPolicyError('raw provider body containing credential-like sample SECRET', 422);
+          },
+        },
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'review the security boundary' })) events.push(event);
+
+      expect(attempts).toBe(2);
+      expect(events.filter(event => event.type === 'llm_retry')).toHaveLength(1);
+      const errorEvent = events.find(event => event.type === 'error');
+      expect(errorEvent).toMatchObject({
+        retryable: false,
+        reason: 'content_policy_denied',
+        retryExhausted: true,
+        retryAttempts: 1,
+        maxRetries: 1,
+        error: expect.objectContaining({
+          name: 'LLMPolicyError',
+          statusCode: 422,
+          reasonCode: 'content_policy_denied',
+          message: expect.stringContaining('Continue and avoid repeating sensitive payloads'),
+        }),
+      });
+      expect(errorEvent.error.message).not.toContain('SECRET');
+      expect(events.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+        stopReason: 'error',
+        terminal: true,
+        detail: expect.objectContaining({
+          reason: 'content_policy_denied',
+          statusCode: 422,
+        }),
+      });
+    });
+
+    it('does not retry a generic validation 422', async () => {
+      let attempts = 0;
+      const invalid = Object.assign(new Error('Invalid request schema'), { statusCode: 422 });
+      const engine = new Engine({
+        adapter: {
+          async *stream() {
+            attempts += 1;
+            throw invalid;
+          },
+        },
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'hello' })) events.push(event);
+
+      expect(attempts).toBe(1);
+      expect(events.filter(event => event.type === 'llm_retry')).toHaveLength(0);
+      expect(events.find(event => event.type === 'error')).toMatchObject({ retryable: false });
+    });
+
     it('does not retry on non-retryable error', async () => {
       const { LLMAuthError } = await import('../../../agent/yeaft/llm/adapter.js');
       let attempts = 0;
