@@ -334,6 +334,7 @@ export function runProcess(command, args, options = {}) {
         return;
       }
       startConfirmationPolling();
+      if (maybeFinishStopped()) return;
       killProcessTree(
         proc,
         'SIGTERM',
@@ -399,6 +400,10 @@ export function runProcess(command, args, options = {}) {
     onClose = code => {
       directClosed = true;
       directCode = code;
+      if (!stopRequested && options.requireProcessGroupExit && !terminationConfirmed()) {
+        stop();
+        return;
+      }
       if (stopRequested) {
         if (platform !== 'win32' || !treeKillFailed || !options.requireProcessGroupExit) finishStoppedChild();
         return;

@@ -450,6 +450,38 @@ describe('Managed Browser installation', () => {
     await expect(readBrowserExecutableVersion(executablePath)).resolves.toContain(BROWSER_RUNTIME_CHROME_BUILD);
   });
 
+  it('reaps a resistant descendant before a successful version read settles', async () => {
+    if (process.platform === 'win32') return;
+    const root = tempRoot();
+    const pidPath = join(root, 'successful-version-descendant.pid');
+    const executablePath = join(root, 'fake-chrome');
+    writeFileSync(executablePath, [
+      '#!/bin/sh',
+      'sh -c \'trap "" TERM; while :; do sleep 1; done\' </dev/null >/dev/null 2>&1 &',
+      'printf \'%s\\n\' "$!" > "$YEAFT_TEST_PID_PATH"',
+      `printf 'Google Chrome ${BROWSER_RUNTIME_CHROME_BUILD}\\n'`,
+      '',
+    ].join('\n'), { mode: 0o755 });
+    chmodSync(executablePath, 0o755);
+
+    const { readBrowserExecutableVersion } = await import('../../agent/browser-runtime/browser-install.js');
+    let descendantPid = null;
+    try {
+      const version = await readBrowserExecutableVersion(executablePath, {
+        gracefulTerminationDeadline: Date.now() + 100,
+        terminationDeadline: Date.now() + 750,
+        processOptions: {
+          env: { ...process.env, YEAFT_TEST_PID_PATH: pidPath },
+        },
+      });
+      descendantPid = Number.parseInt(readFileSync(pidPath, 'utf8'), 10);
+      expect(version).toContain(BROWSER_RUNTIME_CHROME_BUILD);
+      expect(processExists(descendantPid)).toBe(false);
+    } finally {
+      if (processExists(descendantPid)) process.kill(descendantPid, 'SIGKILL');
+    }
+  });
+
   it('force-settles a real version-check process tree before the probe returns', async () => {
     if (process.platform === 'win32') return;
     const root = tempRoot();
@@ -503,6 +535,42 @@ describe('Managed Browser installation', () => {
       }
     }
   }, 5_000);
+
+  it('requires Windows tree cleanup before a successful version read settles', async () => {
+    const { readBrowserExecutableVersion } = await import('../../agent/browser-runtime/browser-install.js');
+    for (const taskkillResult of [{ status: 0 }, { status: 1 }]) {
+      const child = new EventEmitter();
+      child.pid = 4141;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = vi.fn(() => false);
+      child.off = child.removeListener.bind(child);
+      child.stdout.off = child.stdout.removeListener.bind(child.stdout);
+      child.stderr.off = child.stderr.removeListener.bind(child.stderr);
+      const spawnProcessSync = vi.fn(() => taskkillResult);
+      const pending = readBrowserExecutableVersion('chrome.exe', {
+        gracefulTerminationDeadline: Date.now(),
+        terminationDeadline: Date.now() + 20,
+        processOptions: {
+          platform: 'win32',
+          spawnProcess: () => child,
+          spawnProcessSync,
+        },
+      });
+      child.stdout.emit('data', `Google Chrome ${BROWSER_RUNTIME_CHROME_BUILD}\n`);
+      child.emit('close', 0);
+      if (taskkillResult.status === 0) {
+        await expect(pending).resolves.toContain(BROWSER_RUNTIME_CHROME_BUILD);
+      } else {
+        await expect(pending).rejects.toMatchObject({ name: 'ProcessTerminationError' });
+      }
+      expect(spawnProcessSync).toHaveBeenCalledWith(
+        'taskkill',
+        ['/pid', '4141', '/t', '/f'],
+        expect.objectContaining({ timeout: expect.any(Number) }),
+      );
+    }
+  });
 
   it('requires Windows tree-kill success before an aborted version check settles', async () => {
     const { readBrowserExecutableVersion } = await import('../../agent/browser-runtime/browser-install.js');
