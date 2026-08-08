@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -13,7 +14,10 @@ import { join } from 'node:path';
 import { createCliSessionRunner, createCliVpEngine } from '../../../agent/yeaft/cli-session-runner.js';
 import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
-import { runStreamSessionTurn } from '../../../agent/yeaft/stdio-protocol.js';
+import {
+  normalizeStreamSessionBootstrap,
+  runStreamSessionTurn,
+} from '../../../agent/yeaft/stdio-protocol.js';
 import { buildStreamSubAgentFrame } from '../../../agent/yeaft/sub-agent/public-event.js';
 import {
   emitStreamTaskEvent,
@@ -228,6 +232,60 @@ function writeMockProviderServer(root) {
   return { child, portPath, requestLogPath };
 }
 
+function writeRouteForwardProviderServer(root) {
+  const scriptPath = join(root, 'route-forward-provider.mjs');
+  const portPath = join(root, 'route-forward-provider-port');
+  const requestLogPath = join(root, 'route-forward-provider-requests.jsonl');
+  writeFileSync(requestLogPath, '');
+  writeFileSync(scriptPath, [
+    "import { createServer } from 'node:http';",
+    "import { appendFileSync, writeFileSync } from 'node:fs';",
+    "let routeForwardIssued = false;",
+    "function send(res, events) {",
+    "  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });",
+    "  res.end(events.map(event => `data: ${JSON.stringify(event)}\\n\\n`).join(''));",
+    "}",
+    "function textEvents(text) {",
+    "  return [",
+    "    { type: 'message_start', message: { usage: { input_tokens: 1, output_tokens: 0 } } },",
+    "    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },",
+    "    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },",
+    "    { type: 'content_block_stop', index: 0 },",
+    "    { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } },",
+    "    { type: 'message_stop' },",
+    "  ];",
+    "}",
+    "function routeForwardEvents() {",
+    "  const input = JSON.stringify({ to: 'margaret', text: 'Please answer the routed request.' });",
+    "  return [",
+    "    { type: 'message_start', message: { usage: { input_tokens: 1, output_tokens: 0 } } },",
+    "    { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'route-forward', name: 'RouteForward' } },",
+    "    { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: input } },",
+    "    { type: 'content_block_stop', index: 0 },",
+    "    { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 1 } },",
+    "    { type: 'message_stop' },",
+    "  ];",
+    "}",
+    "const server = createServer((req, res) => {",
+    "  let body = '';",
+    "  req.on('data', chunk => { body += chunk; });",
+    "  req.on('end', () => {",
+    "    appendFileSync(process.argv[3], `${body}\\n`);",
+    "    if (!routeForwardIssued && body.includes('route-forward request')) {",
+    "      routeForwardIssued = true;",
+    "      send(res, routeForwardEvents());",
+    "    } else {",
+    "      send(res, textEvents('mock response'));",
+    "    }",
+    "  });",
+    "});",
+    "server.listen(0, '127.0.0.1', () => writeFileSync(process.argv[2], String(server.address().port)));",
+    "process.on('SIGTERM', () => server.close(() => process.exit(0)));",
+  ].join('\n'));
+  const child = spawn(process.execPath, [scriptPath, portPath, requestLogPath], { stdio: 'ignore' });
+  return { child, portPath, requestLogPath };
+}
+
 async function waitForFile(path) {
   for (let attempt = 0; attempt < 500; attempt += 1) {
     try {
@@ -276,6 +334,35 @@ afterEach(() => {
 });
 
 describe('stream-json Session runtime protocol', () => {
+  it('validates opt-in stream-json Session bootstrap metadata', () => {
+    expect(normalizeStreamSessionBootstrap({
+      roster: ['omni', 'margaret'],
+      vps: ['omni', 'margaret'],
+      defaultVpId: 'omni',
+    })).toEqual({
+      roster: ['omni', 'margaret'],
+      defaultVpId: 'omni',
+    });
+    expect(normalizeStreamSessionBootstrap({ roster: ['omni'] })).toEqual({
+      roster: ['omni'],
+      defaultVpId: 'omni',
+    });
+    expect(normalizeStreamSessionBootstrap({ roster: [], defaultVpId: null })).toEqual({
+      roster: [],
+      defaultVpId: null,
+    });
+    expect(() => normalizeStreamSessionBootstrap({ defaultVpId: 'omni' }))
+      .toThrow('requires roster or vps');
+    expect(() => normalizeStreamSessionBootstrap({ roster: ['omni'], vps: ['margaret'] }))
+      .toThrow('must contain the same VP ids');
+    expect(() => normalizeStreamSessionBootstrap({ roster: ['omni', 'omni'] }))
+      .toThrow('duplicate VP id');
+    expect(() => normalizeStreamSessionBootstrap({ roster: ['all'] }))
+      .toThrow('invalid VP id');
+    expect(() => normalizeStreamSessionBootstrap({ roster: ['omni'], defaultVpId: 'margaret' }))
+      .toThrow('not in roster');
+  });
+
   it('projects the same scoped execution events for the live multi-VP runner', async () => {
     const writes = [];
     const runner = {
@@ -919,7 +1006,14 @@ describe('stream-json Session runtime protocol', () => {
       }));
       writeFileSync(join(root, 'models_dev_cache.json'), '{}');
       const input = [
-        JSON.stringify({ type: 'prompt', prompt: 'must reject before provider', targetVpId: 'missing' }),
+        JSON.stringify({
+          type: 'prompt',
+          prompt: 'must reject before provider',
+          targetVpId: 'missing',
+          roster: ['linus', 'martin'],
+          vps: ['linus', 'martin'],
+          defaultVpId: 'linus',
+        }),
         JSON.stringify({ type: 'prompt', prompt: 'second prompt', targetVpId: 'martin' }),
         '',
       ].join('\n');
@@ -946,6 +1040,114 @@ describe('stream-json Session runtime protocol', () => {
       expect(requests).toHaveLength(1);
       expect(requests[0]).toContain('second prompt');
       expect(requests[0]).not.toContain('must reject before provider');
+    } finally {
+      provider.child.kill('SIGTERM');
+      await new Promise(resolve => provider.child.once('close', resolve));
+    }
+  }, 40_000);
+
+  it('bootstraps an AgentLink Session from its first roster payload and returns aggregate turns', async () => {
+    const root = tempRoot('stdio-agentlink-bootstrap');
+    const sessionId = 'session_agentlink_stream_bootstrap';
+    const sessionDir = join(root, 'sessions', sessionId);
+    createFormalSession(root, 'session_existing_sibling', ['omni']);
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({
+      workDir: root,
+      providerId: 'yeaft',
+      sessionId,
+      roster: ['omni', 'margaret'],
+      defaultVpId: 'omni',
+    }, null, 2));
+    writeFileSync(join(root, 'sessions-manifest.json'), '{broken');
+
+    const provider = writeRouteForwardProviderServer(root);
+    try {
+      await waitForFile(provider.portPath);
+      const port = readFileSync(provider.portPath, 'utf8').trim();
+      writeFileSync(join(root, 'config.json'), JSON.stringify({
+        providers: [{
+          name: 'mock',
+          baseUrl: `http://127.0.0.1:${port}`,
+          apiKey: 'test',
+          protocol: 'anthropic',
+          models: ['claude-test'],
+        }],
+        primaryModel: 'mock/claude-test',
+        llmRetry: { maxRetries: 0, forbiddenRetryDelaysMs: [] },
+      }));
+      writeFileSync(join(root, 'models_dev_cache.json'), '{}');
+      const input = [
+        JSON.stringify({
+          type: 'user',
+          prompt: 'plain first prompt',
+          vps: ['omni', 'margaret'],
+          roster: ['omni', 'margaret'],
+          defaultVpId: 'omni',
+        }),
+        JSON.stringify({ type: 'user', prompt: 'route-forward request' }),
+        '',
+      ].join('\n');
+
+      const outcome = await runCli(root, [
+        '--session-id', sessionId,
+        '--cwd', root,
+        '--input-format', 'stream-json',
+        '--output-format', 'stream-json',
+      ], input);
+      const frames = outcome.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      const results = frames.filter(frame => frame.type === 'result');
+      const sessionMeta = JSON.parse(readFileSync(join(sessionDir, 'session.json'), 'utf8'));
+      const manifest = JSON.parse(readFileSync(join(root, 'sessions-manifest.json'), 'utf8'));
+      const routeForward = frames.find(frame => (
+        frame.type === 'tool' && frame.subtype === 'result' && frame.name === 'RouteForward'
+      ));
+
+      expect(outcome).toMatchObject({ code: 0, signal: null });
+      expect(frames[0]).toMatchObject({ type: 'system', subtype: 'init', session_id: sessionId });
+      expect(sessionMeta).toMatchObject({
+        id: sessionId,
+        name: sessionId,
+        roster: ['omni', 'margaret'],
+        defaultVpId: 'omni',
+        workDir: root,
+        workspaceKey: realpathSync(root),
+      });
+      expect(manifest.sessions).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: sessionId,
+          path: sessionDir,
+          workDir: root,
+          workspaceKey: realpathSync(root),
+        }),
+        expect.objectContaining({ id: 'session_existing_sibling' }),
+      ]));
+      expect(results).toHaveLength(2);
+      expect(results.every(result => (
+        Array.isArray(result.dispatched_vp_ids)
+        && Array.isArray(result.vp_results)
+        && result.vp_id === undefined
+      ))).toBe(true);
+      expect(results[0]).toMatchObject({
+        subtype: 'success',
+        is_error: false,
+        dispatched_vp_ids: ['omni'],
+        vp_results: [expect.objectContaining({ vp_id: 'omni', stop_reason: 'end_turn' })],
+      });
+      expect(results[1]).toMatchObject({
+        subtype: 'success',
+        is_error: false,
+        dispatched_vp_ids: ['omni'],
+      });
+      expect(results[1].vp_results.map(result => result.vp_id)).toEqual(
+        expect.arrayContaining(['omni', 'margaret']),
+      );
+      expect(routeForward).toBeDefined();
+      expect(JSON.parse(routeForward.content)).toMatchObject({
+        ok: true,
+        dispatched: ['margaret'],
+      });
+      expect(outcome.stdout).not.toContain('router_unavailable');
     } finally {
       provider.child.kill('SIGTERM');
       await new Promise(resolve => provider.child.once('close', resolve));

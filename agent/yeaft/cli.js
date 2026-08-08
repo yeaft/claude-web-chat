@@ -25,6 +25,7 @@
 
 import { createInterface } from 'readline';
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { join } from 'path';
@@ -35,13 +36,16 @@ import { listModels, resolveModel, parseModelRef, resolveContextWindow, resolveM
 import { buildSystemPrompt } from './prompts.js';
 import { searchMessages } from './conversation/search.js';
 import { ConversationStore } from './conversation/persist.js';
-import { snapshotSessions } from './sessions/session-crud.js';
+import { sessionsRoot, snapshotSessions } from './sessions/session-crud.js';
 import { loadSessionConfig, resolveSessionConfig } from './sessions/session-config.js';
+import { createSession } from './sessions/session-store.js';
+import { addOrUpdateManifestSession, withSessionManifestLock } from './sessions/session-manifest.js';
 import { validateSessionId } from './sessions/ids.js';
 import {
   createJsonlWriter,
   JsonlInput,
   normalizeStreamRoutingIntent,
+  normalizeStreamSessionBootstrap,
   runStreamTurn,
   runStreamSessionTurn,
 } from './stdio-protocol.js';
@@ -900,6 +904,7 @@ async function runStreamJson(config, args) {
   let taskEventIntakeOpen = true;
   let hadError = false;
   let singleEngineTail = Promise.resolve();
+  let streamSessionBootstrapOpen = false;
 
   const loadStreamHistory = () => conversationStore.loadRecentBySession(sessionId, 20).map(message => ({
     role: message.role,
@@ -1033,6 +1038,16 @@ async function runStreamJson(config, args) {
 
   configureStreamEngine(engine, null);
   sessionRunner = createCliSessionRunner({ loaded, sessionId, workDir, configureEngine: configureStreamEngine });
+  if (sessionRunner) {
+    snapshotSessions(loaded.yeaftDir);
+    const meta = sessionRunner.meta;
+    if (meta) addOrUpdateManifestSession(
+      loaded.yeaftDir,
+      meta,
+      join(sessionsRoot(loaded.yeaftDir), sessionId),
+    );
+  }
+  streamSessionBootstrapOpen = !sessionRunner;
 
   write({
     type: 'system',
@@ -1091,6 +1106,47 @@ async function runStreamJson(config, args) {
   };
 
   const runPrompt = async (prompt, message = null) => {
+    if (streamSessionBootstrapOpen) {
+      streamSessionBootstrapOpen = false;
+      const bootstrap = normalizeStreamSessionBootstrap(message);
+      if (bootstrap) {
+        let workspaceKey = '';
+        try { workspaceKey = realpathSync(resolve(workDir)); } catch { /* leave empty */ }
+        withSessionManifestLock(loaded.yeaftDir, () => {
+          sessionRunner = createCliSessionRunner({
+            loaded,
+            sessionId,
+            workDir,
+            configureEngine: configureStreamEngine,
+          });
+          if (sessionRunner) return;
+          const handle = createSession(sessionsRoot(loaded.yeaftDir), {
+            id: sessionId,
+            name: sessionId,
+            roster: bootstrap.roster,
+            defaultVpId: bootstrap.defaultVpId,
+            workDir,
+            workspaceKey,
+          });
+          handle.close();
+        });
+        if (!sessionRunner) {
+          sessionRunner = createCliSessionRunner({
+            loaded,
+            sessionId,
+            workDir,
+            configureEngine: configureStreamEngine,
+          });
+        }
+        if (!sessionRunner) throw new Error(`Failed to initialize formal stream-json Session ${sessionId}`);
+        const meta = sessionRunner.meta;
+        if (meta) addOrUpdateManifestSession(
+          loaded.yeaftDir,
+          meta,
+          join(sessionsRoot(loaded.yeaftDir), sessionId),
+        );
+      }
+    }
     const routingIntent = normalizeStreamRoutingIntent(message);
     if (routingIntent && !sessionRunner) {
       throw new Error('stream-json VP selectors require an existing formal Session with a persisted roster');

@@ -15,18 +15,25 @@
 import {
   cpSync,
   existsSync,
+  linkSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'path';
 import { loadSessionMeta } from './session-store.js';
+import { writeAtomic } from '../storage/atomic.js';
 
 export const SESSIONS_MANIFEST_FILE = 'sessions-manifest.json';
 const MANIFEST_VERSION = 1;
+const MANIFEST_LOCK_FILE = 'sessions-manifest.lock';
+const MANIFEST_LOCK_WAIT_MS = 5_000;
+const lockWaitArray = new Int32Array(new SharedArrayBuffer(4));
 
 export function sessionManifestPath(yeaftDir) {
   return join(yeaftDir, SESSIONS_MANIFEST_FILE);
@@ -62,6 +69,10 @@ export function loadSessionsManifest(yeaftDir) {
 }
 
 export function writeSessionsManifest(yeaftDir, sessions) {
+  return withManifestLock(yeaftDir, () => writeSessionsManifestUnlocked(yeaftDir, sessions));
+}
+
+function writeSessionsManifestUnlocked(yeaftDir, sessions) {
   if (!yeaftDir) throw new Error('yeaftDir required');
   mkdirSync(yeaftDir, { recursive: true });
   const manifest = {
@@ -69,7 +80,7 @@ export function writeSessionsManifest(yeaftDir, sessions) {
     generatedAt: new Date().toISOString(),
     sessions: dedupeSessions(sessions).sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || ''))),
   };
-  writeFileSync(sessionManifestPath(yeaftDir), `${JSON.stringify(manifest, null, 2)}\n`);
+  writeAtomic(sessionManifestPath(yeaftDir), `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest;
 }
 
@@ -171,21 +182,114 @@ export function ensureSessionsManifest(yeaftDir, options) {
     }
   }
 
-  const manifest = writeSessionsManifest(yeaftDir, buildManifestFromLocalSessions(yeaftDir, root));
-  return { created: true, migrated, skipped, migratedIds, skippedIds, manifest };
+  return withManifestLock(yeaftDir, () => {
+    const current = loadSessionsManifest(yeaftDir);
+    const manifest = writeSessionsManifestUnlocked(yeaftDir, [
+      ...(current?.sessions || []),
+      ...buildManifestFromLocalSessions(yeaftDir, root),
+    ]);
+    return {
+      created: !current,
+      migrated,
+      skipped,
+      migratedIds,
+      skippedIds,
+      manifest,
+    };
+  });
 }
 
 export function addOrUpdateManifestSession(yeaftDir, meta, dir) {
-  const current = loadSessionsManifest(yeaftDir) || { sessions: [] };
-  const rows = current.sessions.filter(row => row.id !== meta.id);
-  rows.push(manifestRowFromMeta(meta, dir));
-  return writeSessionsManifest(yeaftDir, rows);
+  return withManifestLock(yeaftDir, () => {
+    const current = loadSessionsManifest(yeaftDir);
+    const recovered = current?.sessions
+      || buildManifestFromLocalSessions(yeaftDir, join(yeaftDir, 'sessions'));
+    const rows = recovered.filter(row => row.id !== meta.id);
+    rows.push(manifestRowFromMeta(meta, dir));
+    return writeSessionsManifestUnlocked(yeaftDir, rows);
+  });
 }
 
 export function removeManifestSession(yeaftDir, sessionId) {
-  const current = loadSessionsManifest(yeaftDir);
-  if (!current) return null;
-  return writeSessionsManifest(yeaftDir, current.sessions.filter(row => row.id !== sessionId));
+  return withManifestLock(yeaftDir, () => {
+    const current = loadSessionsManifest(yeaftDir);
+    if (!current) return null;
+    return writeSessionsManifestUnlocked(yeaftDir, current.sessions.filter(row => row.id !== sessionId));
+  });
+}
+
+export function withSessionManifestLock(yeaftDir, operation) {
+  if (!yeaftDir) throw new Error('yeaftDir required');
+  mkdirSync(yeaftDir, { recursive: true });
+  const lockFile = join(yeaftDir, MANIFEST_LOCK_FILE);
+  const deadline = Date.now() + MANIFEST_LOCK_WAIT_MS;
+  const token = randomUUID();
+  const ownerFile = `${lockFile}.owner.${process.pid}.${token}`;
+  const owner = { pid: process.pid, token, ownerFile };
+  writeFileSync(ownerFile, `${JSON.stringify(owner)}\n`, { flag: 'wx' });
+  for (;;) {
+    try {
+      linkSync(ownerFile, lockFile);
+      break;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') {
+        try { unlinkSync(ownerFile); } catch {}
+        throw error;
+      }
+      reapDeadManifestLock(lockFile);
+      if (Date.now() >= deadline) {
+        try { unlinkSync(ownerFile); } catch {}
+        throw new Error('Timed out waiting for Session manifest lock');
+      }
+      Atomics.wait(lockWaitArray, 0, 0, 25);
+    }
+  }
+  try {
+    return operation();
+  } finally {
+    try {
+      const current = JSON.parse(readFileSync(lockFile, 'utf8'));
+      if (current.token === owner.token) unlinkSync(lockFile);
+    } catch {
+      // A missing lock means another process already recovered this owner.
+    }
+    try { unlinkSync(ownerFile); } catch {}
+  }
+}
+
+function withManifestLock(yeaftDir, operation) {
+  return withSessionManifestLock(yeaftDir, operation);
+}
+
+function reapDeadManifestLock(lockFile) {
+  let observed;
+  try {
+    observed = JSON.parse(readFileSync(lockFile, 'utf8'));
+  } catch {
+    return;
+  }
+  if (!Number.isInteger(observed.pid) || typeof observed.token !== 'string') return;
+  try {
+    process.kill(observed.pid, 0);
+    return;
+  } catch (error) {
+    if (error?.code === 'EPERM') return;
+  }
+  const claim = `${lockFile}.reap.${process.pid}.${randomUUID()}`;
+  try {
+    linkSync(lockFile, claim);
+    const claimed = JSON.parse(readFileSync(claim, 'utf8'));
+    if (claimed.token !== observed.token) return;
+    unlinkSync(lockFile);
+    const expectedOwnerFile = `${lockFile}.owner.${observed.pid}.${observed.token}`;
+    if (observed.ownerFile === expectedOwnerFile) {
+      try { unlinkSync(expectedOwnerFile); } catch {}
+    }
+  } catch {
+    // Another process either recovered or replaced the observed lock.
+  } finally {
+    try { unlinkSync(claim); } catch {}
+  }
 }
 
 function manifestRowFromMeta(meta, dir) {

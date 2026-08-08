@@ -143,7 +143,7 @@ Then open `http://localhost:3456`.
 The npm package installs two primary commands:
 
 - `yeaft-agent` runs or manages the Web-connected worker and local mode. Its `llm` subcommand edits the explicit `--config` path, or `~/.yeaft/config.json` by default; it does not infer a named running instance.
-- `yeaft` runs the native engine directly from a terminal. One-shot/interactive text mode can target an **existing** formal Web Session with `--session-id`. `stream-json` can also use a new validated ID as an ad-hoc CLI conversation key, but that does not create `session.json`, a roster, or a Web product Session.
+- `yeaft` runs the native engine directly from a terminal. One-shot/interactive text mode can target an **existing** formal Web Session with `--session-id`. `stream-json` can also use a new validated ID as an ad-hoc CLI conversation key. Its first JSONL user prompt may opt into a formal Session by supplying `roster` (or the identical `vps` alias) and an optional `defaultVpId`; the CLI then writes canonical `session.json` metadata and emits aggregate VP results. Later prompts cannot change that roster.
 
 Example machine-readable ad-hoc CLI conversation:
 

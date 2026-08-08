@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
+import { isReservedVpId, validateVpId } from './sessions/ids.js';
 
 const TERMINAL_STOP_REASONS = new Set([
   'end_turn', 'max_tokens', 'stop_sequence', 'aborted', 'error', 'tool_handoff', 'plan_recorded',
@@ -75,6 +76,62 @@ export function normalizeStreamRoutingIntent(message) {
     targetVpIds: Object.freeze(targetVpIds),
     broadcast,
     explicit: true,
+  });
+}
+
+/**
+ * Read the opt-in formal Session seed supplied by an integration's first
+ * stream-json prompt. Existing Sessions keep their persisted roster; this only
+ * establishes a canonical roster for a previously unknown session id.
+ */
+export function normalizeStreamSessionBootstrap(message) {
+  if (!message || typeof message !== 'object') return null;
+  const hasRoster = Object.hasOwn(message, 'roster');
+  const hasVps = Object.hasOwn(message, 'vps');
+  const hasDefault = Object.hasOwn(message, 'defaultVpId');
+  if (!hasRoster && !hasVps && !hasDefault) return null;
+  if (!hasRoster && !hasVps) {
+    throw new Error('stream-json defaultVpId requires roster or vps');
+  }
+
+  const readRoster = (key) => {
+    const value = message[key];
+    if (!Array.isArray(value)) throw new Error(`stream-json ${key} must be an array`);
+    return value.slice();
+  };
+  const roster = hasRoster ? readRoster('roster') : readRoster('vps');
+  if (hasRoster && hasVps) {
+    const vps = readRoster('vps');
+    if (vps.length !== roster.length || vps.some((vpId, index) => vpId !== roster[index])) {
+      throw new Error('stream-json roster and vps must contain the same VP ids in the same order');
+    }
+  }
+
+  const seen = new Set();
+  for (const vpId of roster) {
+    const verdict = validateVpId(vpId);
+    if (!verdict.ok || isReservedVpId(vpId)) {
+      throw new Error(`stream-json roster contains invalid VP id ${JSON.stringify(vpId)} (${verdict.reason || 'reserved'})`);
+    }
+    if (seen.has(vpId)) throw new Error(`stream-json roster contains duplicate VP id ${vpId}`);
+    seen.add(vpId);
+  }
+
+  let defaultVpId = roster[0] || null;
+  if (hasDefault && message.defaultVpId != null) {
+    defaultVpId = message.defaultVpId;
+    const verdict = validateVpId(defaultVpId);
+    if (!verdict.ok || isReservedVpId(defaultVpId)) {
+      throw new Error(`stream-json defaultVpId is invalid (${verdict.reason || 'reserved'})`);
+    }
+    if (!seen.has(defaultVpId)) {
+      throw new Error(`stream-json defaultVpId ${defaultVpId} is not in roster`);
+    }
+  }
+
+  return Object.freeze({
+    roster: Object.freeze(roster),
+    defaultVpId,
   });
 }
 

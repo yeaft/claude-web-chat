@@ -143,7 +143,7 @@ npm run dev
 npm 包安装两个主要命令：
 
 - `yeaft-agent`：运行/管理 Web-connected worker 与 local mode。它的 `llm` subcommand 修改显式 `--config` 路径，未传时固定使用 `~/.yeaft/config.json`；不会推断正在运行的 named instance。
-- `yeaft`：直接从终端运行原生引擎。One-shot/interactive text mode 可以通过 `--session-id` 指向一个**已有**正式 Web Session；`stream-json` 也允许用新的已校验 ID 作为 ad-hoc CLI conversation key，但不会创建 `session.json`、roster 或 Web 产品 Session。
+- `yeaft`：直接从终端运行原生引擎。One-shot/interactive text mode 可以通过 `--session-id` 指向一个**已有**正式 Web Session；`stream-json` 也允许用新的已校验 ID 作为 ad-hoc CLI conversation key。其第一条 JSONL user prompt 可提供 `roster`（或内容完全相同的 `vps` 别名）及可选的 `defaultVpId` 来创建正式 Session；CLI 会写入规范的 `session.json` 并输出聚合 VP result。后续 prompt 不能修改该 roster。
 
 机器可读的 ad-hoc CLI conversation 示例：
 
