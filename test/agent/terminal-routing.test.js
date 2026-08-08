@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ctx from '../../agent/context.js';
 import {
+  cleanupTerminalsForDisconnect,
   handleTerminalClose,
   handleTerminalCreate,
   handleTerminalInput,
@@ -63,7 +64,29 @@ describe('Agent terminal request routing metadata', () => {
     }));
   });
 
-  it('cancels a route terminal while the PTY backend is still loading', async () => {
+  it('kills established PTYs exactly once and empties the map on disconnect', async () => {
+    const owner = {
+      conversationId: '_workbench:yeaft:agent-a:session-a',
+      terminalId: 'disconnect-terminal',
+      cols: 80,
+      rows: 24,
+      workDir: '/workspace/a',
+      workbenchRouteKey: 'yeaft:agent-a:session-a',
+      workbenchWorkspaceGeneration: 'yeaft:agent-a:session-a@workspace-a',
+    };
+    await handleTerminalCreate(owner);
+    ctx.sendToServer.mockClear();
+
+    expect(cleanupTerminalsForDisconnect()).toBe(1);
+    expect(ptyProcess.kill).toHaveBeenCalledTimes(1);
+    expect(ctx.terminals.size).toBe(0);
+    ptyProcess.emit('exit', { exitCode: 0 });
+    expect(ctx.sendToServer).not.toHaveBeenCalled();
+    expect(cleanupTerminalsForDisconnect()).toBe(0);
+    expect(ptyProcess.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a route terminal while the PTY backend is still loading on disconnect', async () => {
     let resolvePty;
     const delayedPty = new Promise(resolve => { resolvePty = resolve; });
     ctx.nodePty = delayedPty;
@@ -80,7 +103,7 @@ describe('Agent terminal request routing metadata', () => {
     const createPromise = handleTerminalCreate(owner);
     await Promise.resolve();
     expect(ctx.terminals.get('pending-terminal')).toMatchObject({ pending: true });
-    handleTerminalClose(owner);
+    expect(cleanupTerminalsForDisconnect()).toBe(1);
     expect(ctx.terminals.has('pending-terminal')).toBe(false);
 
     const backend = { spawn: vi.fn(() => ptyProcess) };
@@ -88,6 +111,72 @@ describe('Agent terminal request routing metadata', () => {
     await createPromise;
     expect(backend.spawn).not.toHaveBeenCalled();
     expect(ctx.terminals.has('pending-terminal')).toBe(false);
+  });
+
+  it('keeps a reconnect replacement independent from the disconnected terminal', async () => {
+    const oldOwner = {
+      conversationId: '_workbench:yeaft:agent-a:session-a',
+      terminalId: 'old-terminal',
+      cols: 80,
+      rows: 24,
+      workDir: '/workspace/a',
+      workbenchRouteKey: 'yeaft:agent-a:session-a',
+      workbenchWorkspaceGeneration: 'yeaft:agent-a:session-a@workspace-a',
+    };
+    await handleTerminalCreate(oldOwner);
+    const oldPty = ptyProcess;
+    cleanupTerminalsForDisconnect();
+
+    ptyProcess = new FakePty();
+    ctx.nodePty = { spawn: vi.fn(() => ptyProcess) };
+    const newOwner = {
+      conversationId: '_workbench:yeaft:agent-a:session-a',
+      terminalId: 'new-terminal',
+      cols: 80,
+      rows: 24,
+      workDir: '/workspace/a',
+      workbenchRouteKey: 'yeaft:agent-a:session-a',
+      workbenchWorkspaceGeneration: 'yeaft:agent-a:session-a@workspace-a',
+    };
+    await handleTerminalCreate(newOwner);
+
+    handleTerminalInput({ ...oldOwner, data: 'stale\n' });
+    handleTerminalClose(oldOwner);
+    expect(oldPty.write).not.toHaveBeenCalled();
+    expect(oldPty.kill).toHaveBeenCalledTimes(1);
+    expect(ctx.terminals.has('new-terminal')).toBe(true);
+    handleTerminalInput({ ...newOwner, data: 'current\n' });
+    expect(ptyProcess.write).toHaveBeenCalledWith('current\n');
+  });
+
+  it('keeps disconnect, explicit close, and same-id replacement idempotent', async () => {
+    const owner = {
+      conversationId: '_workbench:yeaft:agent-a:session-a',
+      terminalId: 'race-terminal',
+      cols: 80,
+      rows: 24,
+      workDir: '/workspace/a',
+      workbenchRouteKey: 'yeaft:agent-a:session-a',
+      workbenchWorkspaceGeneration: 'yeaft:agent-a:session-a@workspace-a',
+    };
+    await handleTerminalCreate(owner);
+    const firstPty = ptyProcess;
+    handleTerminalClose(owner);
+    cleanupTerminalsForDisconnect();
+    expect(firstPty.kill).toHaveBeenCalledTimes(1);
+
+    ptyProcess = new FakePty();
+    ctx.nodePty = { spawn: vi.fn(() => ptyProcess) };
+    await handleTerminalCreate(owner);
+    const replacementPty = new FakePty();
+    ctx.nodePty = { spawn: vi.fn(() => replacementPty) };
+    await handleTerminalCreate(owner);
+    expect(ptyProcess.kill).toHaveBeenCalledTimes(1);
+    ptyProcess.emit('exit', { exitCode: 0 });
+    expect(ctx.terminals.get('race-terminal')?.pty).toBe(replacementPty);
+    cleanupTerminalsForDisconnect();
+    expect(replacementPty.kill).toHaveBeenCalledTimes(1);
+    expect(ctx.terminals.size).toBe(0);
   });
 
   it('rejects cross-route input, resize, close, and terminal-id replacement', async () => {

@@ -621,6 +621,80 @@ describe('agent received `registered` flips serverEncryptionRequired', () => {
   });
 });
 
+describe('Agent socket-close terminal cleanup', () => {
+  it('fail-closes PTYs on active transport replacement and ignores the stale close', () => {
+    const original = {
+      ws: ctx.ws,
+      CONFIG: ctx.CONFIG,
+      agentCapabilities: ctx.agentCapabilities,
+      terminals: ctx.terminals,
+      reconnectTimer: ctx.reconnectTimer,
+      agentHeartbeatTimer: ctx.agentHeartbeatTimer,
+    };
+    class ConnectSocket extends MockWebSocket {
+      static instances = [];
+      constructor(url) {
+        super();
+        this.url = url;
+        ConnectSocket.instances.push(this);
+      }
+    }
+
+    try {
+      ctx.CONFIG = {
+        instanceId: 'terminal-cleanup-agent',
+        agentName: 'Terminal Cleanup Agent',
+        workDir: '/tmp',
+        serverUrl: 'ws://localhost:1',
+        reconnectInterval: 1000,
+        disallowedTools: [],
+      };
+      ctx.agentCapabilities = ['terminal', 'workbench_session_routes'];
+      ctx.terminals = new Map();
+
+      connect(ConnectSocket);
+      const staleSocket = ctx.ws;
+      const replacedPty = { kill: vi.fn() };
+      ctx.terminals.set('replaced-terminal', {
+        pty: replacedPty,
+        cancelled: false,
+        timer: null,
+      });
+
+      connect(ConnectSocket);
+      const currentSocket = ctx.ws;
+      expect(replacedPty.kill).toHaveBeenCalledTimes(1);
+      expect(ctx.terminals.size).toBe(0);
+
+      const currentPty = { kill: vi.fn() };
+      ctx.terminals.set('current-terminal', {
+        pty: currentPty,
+        cancelled: false,
+        timer: null,
+      });
+      staleSocket.emit('close', 1008, 'stale socket');
+      expect(currentPty.kill).not.toHaveBeenCalled();
+      expect(ctx.terminals.has('current-terminal')).toBe(true);
+
+      currentSocket.emit('close', 1008, 'current socket');
+      expect(currentPty.kill).toHaveBeenCalledTimes(1);
+      expect(ctx.terminals.size).toBe(0);
+      currentSocket.emit('close', 1008, 'duplicate close');
+      expect(currentPty.kill).toHaveBeenCalledTimes(1);
+      expect(replacedPty.kill).toHaveBeenCalledTimes(1);
+    } finally {
+      clearTimeout(ctx.reconnectTimer);
+      if (ctx.agentHeartbeatTimer) clearInterval(ctx.agentHeartbeatTimer);
+      ctx.ws = original.ws;
+      ctx.CONFIG = original.CONFIG;
+      ctx.agentCapabilities = original.agentCapabilities;
+      ctx.terminals = original.terminals;
+      ctx.reconnectTimer = original.reconnectTimer;
+      ctx.agentHeartbeatTimer = original.agentHeartbeatTimer;
+    }
+  });
+});
+
 describe('sendToServer: encrypt vs plaintext gate', () => {
   it('writes plain JSON when serverEncryptionRequired is false (new server)', async () => {
     const { generateSessionKey } = await import('../../agent/encryption.js');
