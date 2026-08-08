@@ -17,6 +17,7 @@ import {
 import { constants } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { runProcess } from '../yeaft/tools/process-runner.js';
+import { readWindowsBrowserExecutableVersion } from './windows-version.js';
 
 // Chrome 151 is the first pinned Chrome for Testing build in this project that
 // exposes the Extensions CDP domain required for safe action activation.
@@ -341,19 +342,37 @@ export async function readBrowserExecutableVersion(executablePath, {
   gracefulTerminationDeadline = null,
   terminationDeadline = null,
   processOptions = null,
+  windowsVersionReader = readWindowsBrowserExecutableVersion,
 } = {}) {
   if (typeof versionCheck === 'function') return versionCheck(executablePath, { signal });
+  const startedAt = Date.now();
+  const resolvedGracefulDeadline = Number.isFinite(gracefulTerminationDeadline)
+    ? gracefulTerminationDeadline
+    : startedAt + 5_000;
+  const resolvedTerminationDeadline = Number.isFinite(terminationDeadline)
+    ? terminationDeadline
+    : resolvedGracefulDeadline + 500;
+  const platform = processOptions?.platform || process.platform;
+  if (platform === 'win32') {
+    return windowsVersionReader(executablePath, {
+      signal,
+      terminationDeadline: resolvedTerminationDeadline,
+      ...(processOptions?.windowsVersionOptions || {}),
+    });
+  }
   const result = await runProcess(executablePath, ['--version'], {
     signal,
+    timeoutMs: Math.max(1, resolvedGracefulDeadline - Date.now()),
     maxBytes: 64 * 1024,
     killGraceMs: 100,
-    gracefulTerminationDeadline,
-    terminationDeadline,
+    gracefulTerminationDeadline: resolvedGracefulDeadline,
+    terminationDeadline: resolvedTerminationDeadline,
     forceSettleMs: 500,
     treeKillTimeoutMs: 500,
     requireExitConfirmation: true,
     requireProcessGroupExit: true,
     ...(processOptions || {}),
+    platform,
   });
   if (result.code !== 0) {
     const termination = result.terminationError ? ` ${result.terminationError}` : '';

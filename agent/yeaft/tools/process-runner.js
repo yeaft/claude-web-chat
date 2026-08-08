@@ -265,7 +265,7 @@ export function runProcess(command, args, options = {}) {
     const startConfirmationPolling = () => {
       if (!options.requireExitConfirmation || confirmationTimer) return;
       confirmationTimer = setInterval(maybeFinishStopped, CONFIRMATION_POLL_MS);
-      confirmationTimer.unref?.();
+      if (!options.requireProcessGroupExit) confirmationTimer.unref?.();
     };
     const forceStop = () => {
       if (settled || forceRequested) return;
@@ -346,7 +346,7 @@ export function runProcess(command, args, options = {}) {
       if (graceBudget <= 0) forceStop();
       else {
         forceTimer = setTimeout(forceStop, graceBudget);
-        forceTimer.unref?.();
+        if (!options.requireProcessGroupExit) forceTimer.unref?.();
       }
     };
     const onAbort = () => {

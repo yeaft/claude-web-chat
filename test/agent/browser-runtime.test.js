@@ -450,7 +450,7 @@ describe('Managed Browser installation', () => {
     await expect(readBrowserExecutableVersion(executablePath)).resolves.toContain(BROWSER_RUNTIME_CHROME_BUILD);
   });
 
-  it('reaps a resistant descendant before a successful version read settles', async () => {
+  it('keeps standalone Node alive until a successful version descendant is reaped', async () => {
     if (process.platform === 'win32') return;
     const root = tempRoot();
     const pidPath = join(root, 'successful-version-descendant.pid');
@@ -464,22 +464,47 @@ describe('Managed Browser installation', () => {
     ].join('\n'), { mode: 0o755 });
     chmodSync(executablePath, 0o755);
 
-    const { readBrowserExecutableVersion } = await import('../../agent/browser-runtime/browser-install.js');
+    const readerPath = new URL('../helpers/browser-version-reader.mjs', import.meta.url).pathname;
     let descendantPid = null;
     try {
-      const version = await readBrowserExecutableVersion(executablePath, {
-        gracefulTerminationDeadline: Date.now() + 100,
-        terminationDeadline: Date.now() + 750,
-        processOptions: {
-          env: { ...process.env, YEAFT_TEST_PID_PATH: pidPath },
-        },
+      const child = spawn(process.execPath, [readerPath, executablePath], {
+        env: { ...process.env, YEAFT_TEST_PID_PATH: pidPath },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', chunk => { stdout += chunk; });
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      const code = await new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('exit', resolve);
       });
       descendantPid = Number.parseInt(readFileSync(pidPath, 'utf8'), 10);
-      expect(version).toContain(BROWSER_RUNTIME_CHROME_BUILD);
+      expect({ code, stdout, stderr }).toMatchObject({
+        code: 0,
+        stdout: expect.stringContaining(BROWSER_RUNTIME_CHROME_BUILD),
+        stderr: '',
+      });
       expect(processExists(descendantPid)).toBe(false);
     } finally {
       if (processExists(descendantPid)) process.kill(descendantPid, 'SIGKILL');
     }
+  });
+
+  it('bounds direct version reads without relying on an outer probe deadline', async () => {
+    if (process.platform === 'win32') return;
+    const root = tempRoot();
+    const executablePath = join(root, 'fake-chrome');
+    writeFileSync(executablePath, '#!/bin/sh\ntrap "" TERM\nwhile :; do sleep 1; done\n', { mode: 0o755 });
+    chmodSync(executablePath, 0o755);
+    const { readBrowserExecutableVersion } = await import('../../agent/browser-runtime/browser-install.js');
+    const startedAt = Date.now();
+    await expect(readBrowserExecutableVersion(executablePath, {
+      gracefulTerminationDeadline: startedAt + 25,
+      terminationDeadline: startedAt + 250,
+      processOptions: { killGraceMs: 25, forceSettleMs: 225 },
+    })).rejects.toThrow('failed (124)');
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 
   it('force-settles a real version-check process tree before the probe returns', async () => {
@@ -536,83 +561,122 @@ describe('Managed Browser installation', () => {
     }
   }, 5_000);
 
-  it('requires Windows tree cleanup before a successful version read settles', async () => {
+  it('uses pre-exit Windows Job ownership for successful version reads', async () => {
     const { readBrowserExecutableVersion } = await import('../../agent/browser-runtime/browser-install.js');
-    for (const taskkillResult of [{ status: 0 }, { status: 1 }]) {
-      const child = new EventEmitter();
-      child.pid = 4141;
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
-      child.kill = vi.fn(() => false);
-      child.off = child.removeListener.bind(child);
-      child.stdout.off = child.stdout.removeListener.bind(child.stdout);
-      child.stderr.off = child.stderr.removeListener.bind(child.stderr);
-      const spawnProcessSync = vi.fn(() => taskkillResult);
-      const pending = readBrowserExecutableVersion('chrome.exe', {
-        gracefulTerminationDeadline: Date.now(),
-        terminationDeadline: Date.now() + 20,
-        processOptions: {
-          platform: 'win32',
-          spawnProcess: () => child,
-          spawnProcessSync,
-        },
-      });
-      child.stdout.emit('data', `Google Chrome ${BROWSER_RUNTIME_CHROME_BUILD}\n`);
-      child.emit('close', 0);
-      if (taskkillResult.status === 0) {
-        await expect(pending).resolves.toContain(BROWSER_RUNTIME_CHROME_BUILD);
-      } else {
-        await expect(pending).rejects.toMatchObject({ name: 'ProcessTerminationError' });
-      }
-      expect(spawnProcessSync).toHaveBeenCalledWith(
-        'taskkill',
-        ['/pid', '4141', '/t', '/f'],
-        expect.objectContaining({ timeout: expect.any(Number) }),
-      );
-    }
+    const windowsVersionReader = vi.fn().mockResolvedValue(`Google Chrome ${BROWSER_RUNTIME_CHROME_BUILD}`);
+    await expect(readBrowserExecutableVersion('chrome.exe', {
+      terminationDeadline: Date.now() + 500,
+      processOptions: { platform: 'win32' },
+      windowsVersionReader,
+    })).resolves.toContain(BROWSER_RUNTIME_CHROME_BUILD);
+    expect(windowsVersionReader).toHaveBeenCalledWith('chrome.exe', expect.objectContaining({
+      signal: null,
+      terminationDeadline: expect.any(Number),
+    }));
   });
 
-  it('requires Windows tree-kill success before an aborted version check settles', async () => {
-    const { readBrowserExecutableVersion } = await import('../../agent/browser-runtime/browser-install.js');
-    for (const taskkillResult of [{ status: 0 }, { status: 1 }]) {
-      const child = new EventEmitter();
-      child.pid = 4242;
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
-      child.kill = vi.fn(signal => {
-        if (taskkillResult.status !== 0 && signal === 'SIGKILL') {
-          queueMicrotask(() => child.emit('close', null));
-          return true;
-        }
-        return false;
-      });
-      child.off = child.removeListener.bind(child);
-      child.stdout.off = child.stdout.removeListener.bind(child.stdout);
-      child.stderr.off = child.stderr.removeListener.bind(child.stderr);
-      const controller = new AbortController();
-      const spawnProcessSync = vi.fn(() => taskkillResult);
-      const startedAt = Date.now();
-      const pending = readBrowserExecutableVersion('chrome.exe', {
-        signal: controller.signal,
-        gracefulTerminationDeadline: Date.now(),
-        terminationDeadline: Date.now() + 20,
-        processOptions: {
-          platform: 'win32',
-          spawnProcess: () => child,
-          spawnProcessSync,
-        },
-      });
-      controller.abort();
-      if (taskkillResult.status === 0) child.emit('close', null);
-      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
-      const elapsedMs = Date.now() - startedAt;
-      expect(elapsedMs).toBeLessThan(250);
-      if (taskkillResult.status !== 0) expect(elapsedMs).toBeGreaterThanOrEqual(10);
-      expect(spawnProcessSync).toHaveBeenCalledWith(
-        'taskkill',
-        ['/pid', '4242', '/t', '/f'],
-        expect.objectContaining({ timeout: expect.any(Number) }),
-      );
+  it('keeps the Windows Job wrapper and worker arguments shell-free and bounded', async () => {
+    const { readWindowsBrowserExecutableVersion } = await import('../../agent/browser-runtime/windows-version.js');
+    const run = vi.fn().mockResolvedValue({
+      code: 0,
+      stdout: `${JSON.stringify({
+        ok: true,
+        code: 0,
+        stdout: `Google Chrome ${BROWSER_RUNTIME_CHROME_BUILD}\\r\\n`,
+        stderr: '',
+        truncated: false,
+      })}\n`,
+      stderr: '',
+      truncated: false,
+      timedOut: false,
+    });
+    await expect(readWindowsBrowserExecutableVersion('C:\\Program Files\\Chrome\\chrome.exe', {
+      run,
+      powershellPath: 'powershell.exe',
+      nodePath: 'node.exe',
+      workerPath: 'worker.js',
+      jobScriptPath: 'job.ps1',
+      terminationDeadline: Date.now() + 500,
+    })).resolves.toContain(BROWSER_RUNTIME_CHROME_BUILD);
+    expect(run).toHaveBeenCalledWith('powershell.exe', [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      'job.ps1',
+      '-NodePath',
+      'node.exe',
+      '-WorkerPath',
+      'worker.js',
+      '-ExecutablePath',
+      'C:\\Program Files\\Chrome\\chrome.exe',
+      '-CleanupTimeoutMs',
+      expect.any(String),
+    ], expect.objectContaining({
+      requireExitConfirmation: true,
+      timeoutMs: expect.any(Number),
+      maxBytes: 128 * 1024,
+    }));
+  });
+
+  it('rejects Windows Job wrapper failures instead of trusting a post-exit PID', async () => {
+    const { readWindowsBrowserExecutableVersion } = await import('../../agent/browser-runtime/windows-version.js');
+    const run = vi.fn().mockResolvedValue({
+      code: 1,
+      stdout: '',
+      stderr: 'AssignProcessToJobObject failed with Win32 error 5',
+      truncated: false,
+      timedOut: false,
+    });
+    await expect(readWindowsBrowserExecutableVersion('chrome.exe', {
+      run,
+      terminationDeadline: Date.now() + 50,
+    })).rejects.toThrow('AssignProcessToJobObject failed');
+  });
+
+  it('runs a real Windows Job-owned no-descendant version check', async () => {
+    if (process.platform !== 'win32') return;
+    const { readWindowsBrowserExecutableVersion } = await import('../../agent/browser-runtime/windows-version.js');
+    await expect(readWindowsBrowserExecutableVersion(process.execPath, {
+      terminationDeadline: Date.now() + 10_000,
+    })).resolves.toContain(process.version);
+  });
+
+  it('reaps a real Windows Job-owned descendant before version success settles', async () => {
+    if (process.platform !== 'win32') return;
+    const root = tempRoot();
+    const pidPath = join(root, 'windows-version-descendant.pid');
+    const executablePath = join(root, 'fake-chrome.js');
+    const descendantScript = join(root, 'descendant.js');
+    writeFileSync(descendantScript, 'require("node:fs").writeFileSync(process.argv[2], String(process.pid)); if (process.send) process.send("ready"); setInterval(() => {}, 1000);\n');
+    writeFileSync(executablePath, [
+      `const { fork } = require('node:child_process');`,
+      `process.stdin.setEncoding('utf8');`,
+      `process.stdin.once('data', () => {`,
+      `  const child = fork(${JSON.stringify(descendantScript)}, [${JSON.stringify(pidPath)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });`,
+      `  child.once('message', () => {`,
+      `    const result = { ok: true, code: 0, stdout: 'Google Chrome ${BROWSER_RUNTIME_CHROME_BUILD}\\n', stderr: '', truncated: false };`,
+      `    process.stdout.write(JSON.stringify(result) + '\\n', () => process.exit(0));`,
+      `  });`,
+      `});`,
+      `process.stdin.resume();`,
+      '',
+    ].join('\n'));
+    const { readWindowsBrowserExecutableVersion } = await import('../../agent/browser-runtime/windows-version.js');
+    let descendantPid = null;
+    try {
+      await expect(readWindowsBrowserExecutableVersion(process.execPath, {
+        terminationDeadline: Date.now() + 10_000,
+        workerPath: executablePath,
+      })).resolves.toContain(BROWSER_RUNTIME_CHROME_BUILD);
+      descendantPid = Number.parseInt(readFileSync(pidPath, 'utf8'), 10);
+      expect(processExists(descendantPid)).toBe(false);
+    } finally {
+      if (processExists(descendantPid)) {
+        spawn('taskkill.exe', ['/pid', String(descendantPid), '/t', '/f'], { stdio: 'ignore', windowsHide: true });
+      }
     }
   });
 
