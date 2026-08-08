@@ -526,13 +526,14 @@ describe('agent ctx defaults and upgrade contract', () => {
 describe('agent advertises plaintext-ok capability', () => {
   it('includes plaintext-ok in agent capability list', async () => {
     // Mirror agent/index.js definition.
-    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center'];
+    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'workbench_session_routes', 'work_center'];
     expect(capabilities).toContain('plaintext-ok');
+    expect(capabilities).toContain('workbench_session_routes');
     expect(capabilities).toContain('work_center');
   });
 
   it('serializes plaintext-ok into the auth-frame capabilities array', () => {
-    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center'];
+    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'workbench_session_routes', 'work_center'];
     const authFrame = {
       type: 'auth',
       tempId: 'temp_abc',
@@ -541,14 +542,16 @@ describe('agent advertises plaintext-ok capability', () => {
       version: '0.1.999'
     };
     expect(authFrame.capabilities).toContain('plaintext-ok');
+    expect(authFrame.capabilities).toContain('workbench_session_routes');
     expect(authFrame.capabilities).toContain('work_center');
   });
 
   it('serializes plaintext-ok into the URL ?capabilities= query', () => {
-    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center'];
+    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'workbench_session_routes', 'work_center'];
     const params = new URLSearchParams({ capabilities: capabilities.join(',') });
-    expect(params.get('capabilities')).toBe('background_tasks,file_editor,ping_session,plaintext-ok,work_center');
+    expect(params.get('capabilities')).toBe('background_tasks,file_editor,ping_session,plaintext-ok,workbench_session_routes,work_center');
     expect(params.get('capabilities').split(',')).toContain('plaintext-ok');
+    expect(params.get('capabilities').split(',')).toContain('workbench_session_routes');
     expect(params.get('capabilities').split(',')).toContain('work_center');
   });
 });
@@ -614,6 +617,80 @@ describe('agent received `registered` flips serverEncryptionRequired', () => {
       ctx.agentCapabilities = original.agentCapabilities;
       ctx.outboundSendQueue = original.outboundSendQueue;
       ctx.outboundSendQueueActive = original.outboundSendQueueActive;
+    }
+  });
+});
+
+describe('Agent socket-close terminal cleanup', () => {
+  it('fail-closes PTYs on active transport replacement and ignores the stale close', () => {
+    const original = {
+      ws: ctx.ws,
+      CONFIG: ctx.CONFIG,
+      agentCapabilities: ctx.agentCapabilities,
+      terminals: ctx.terminals,
+      reconnectTimer: ctx.reconnectTimer,
+      agentHeartbeatTimer: ctx.agentHeartbeatTimer,
+    };
+    class ConnectSocket extends MockWebSocket {
+      static instances = [];
+      constructor(url) {
+        super();
+        this.url = url;
+        ConnectSocket.instances.push(this);
+      }
+    }
+
+    try {
+      ctx.CONFIG = {
+        instanceId: 'terminal-cleanup-agent',
+        agentName: 'Terminal Cleanup Agent',
+        workDir: '/tmp',
+        serverUrl: 'ws://localhost:1',
+        reconnectInterval: 1000,
+        disallowedTools: [],
+      };
+      ctx.agentCapabilities = ['terminal', 'workbench_session_routes'];
+      ctx.terminals = new Map();
+
+      connect(ConnectSocket);
+      const staleSocket = ctx.ws;
+      const replacedPty = { kill: vi.fn() };
+      ctx.terminals.set('replaced-terminal', {
+        pty: replacedPty,
+        cancelled: false,
+        timer: null,
+      });
+
+      connect(ConnectSocket);
+      const currentSocket = ctx.ws;
+      expect(replacedPty.kill).toHaveBeenCalledTimes(1);
+      expect(ctx.terminals.size).toBe(0);
+
+      const currentPty = { kill: vi.fn() };
+      ctx.terminals.set('current-terminal', {
+        pty: currentPty,
+        cancelled: false,
+        timer: null,
+      });
+      staleSocket.emit('close', 1008, 'stale socket');
+      expect(currentPty.kill).not.toHaveBeenCalled();
+      expect(ctx.terminals.has('current-terminal')).toBe(true);
+
+      currentSocket.emit('close', 1008, 'current socket');
+      expect(currentPty.kill).toHaveBeenCalledTimes(1);
+      expect(ctx.terminals.size).toBe(0);
+      currentSocket.emit('close', 1008, 'duplicate close');
+      expect(currentPty.kill).toHaveBeenCalledTimes(1);
+      expect(replacedPty.kill).toHaveBeenCalledTimes(1);
+    } finally {
+      clearTimeout(ctx.reconnectTimer);
+      if (ctx.agentHeartbeatTimer) clearInterval(ctx.agentHeartbeatTimer);
+      ctx.ws = original.ws;
+      ctx.CONFIG = original.CONFIG;
+      ctx.agentCapabilities = original.agentCapabilities;
+      ctx.terminals = original.terminals;
+      ctx.reconnectTimer = original.reconnectTimer;
+      ctx.agentHeartbeatTimer = original.agentHeartbeatTimer;
     }
   });
 });

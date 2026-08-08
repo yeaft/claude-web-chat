@@ -3,6 +3,7 @@ import ctx from '../context.js';
 import { sendToServer, parseMessage } from './buffer.js';
 import { startAgentHeartbeat, stopAgentHeartbeat, scheduleReconnect } from './heartbeat.js';
 import { handleMessage } from './message-router.js';
+import { cleanupTerminalsForDisconnect } from '../terminal.js';
 
 export function resetConnectionTransport() {
   ctx.sessionKey = null;
@@ -35,6 +36,7 @@ export function connect(WebSocketImpl = WebSocket) {
     console.log(`Disallowed tools: ${ctx.CONFIG.disallowedTools.join(', ')}`);
   }
 
+  const previousSocket = ctx.ws;
   const socket = new WebSocketImpl(url, {
     // Match server's permessage-deflate config (bounded memory,
     // skip compression for small frames). The `ws` library handles
@@ -46,6 +48,12 @@ export function connect(WebSocketImpl = WebSocket) {
       threshold: 1024
     }
   });
+  if (previousSocket && previousSocket !== socket) {
+    const closedTerminals = cleanupTerminalsForDisconnect();
+    if (closedTerminals > 0) {
+      console.log(`[PTY] Closed ${closedTerminals} terminal(s) before Agent transport replacement`);
+    }
+  }
   ctx.ws = socket;
 
   socket.on('open', () => {
@@ -99,6 +107,10 @@ export function connect(WebSocketImpl = WebSocket) {
     ctx.sessionKey = null;
     ctx.pendingAuthTempId = null;
     stopAgentHeartbeat();
+    const closedTerminals = cleanupTerminalsForDisconnect();
+    if (closedTerminals > 0) {
+      console.log(`[PTY] Closed ${closedTerminals} terminal(s) after Agent transport disconnect`);
+    }
 
     if (code === 1008) {
       console.error('Authentication failed. Check AGENT_SECRET configuration.');
