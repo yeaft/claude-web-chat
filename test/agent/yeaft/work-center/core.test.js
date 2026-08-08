@@ -21,6 +21,7 @@ import {
 import { WorkCenterService } from '../../../../agent/yeaft/work-center/service.js';
 import {
   __testSetWorkCenterService,
+  createWorkItemFromProducer,
   handleWorkCenterRequest,
 } from '../../../../agent/yeaft/work-center/bridge.js';
 import ctx from '../../../../agent/context.js';
@@ -33,7 +34,10 @@ import {
   applyAdditivePlanProposal,
   applyCoordinatorReplan,
 } from '../../../../agent/yeaft/work-center/plan-mutation.js';
-import { resolvePlanningWorkflowSnapshot } from '../../../../agent/yeaft/work-center/workflow.js';
+import {
+  applyGeneratedPlan,
+  resolvePlanningWorkflowSnapshot,
+} from '../../../../agent/yeaft/work-center/workflow.js';
 import {
   MAX_WORK_ITEM_BROWSER_DTO_BYTES,
   projectActionMessagePage,
@@ -126,6 +130,57 @@ describe('Work Center core', () => {
   });
 
 
+  it('preserves browser delivery targets through the bridge without granting producer authority', async () => {
+    const bridgeService = new WorkCenterService({
+      yeaftDir: dir,
+      store,
+      controller,
+      runner: null,
+      coordinator: null,
+      settingsReader: () => ({ startImmediately: false }),
+    });
+    __testSetWorkCenterService(bridgeService);
+    const bridgeFrames = [];
+    ctx.ws = { readyState: 1, send: vi.fn(value => bridgeFrames.push(JSON.parse(value))) };
+    globalThis.WebSocket = { OPEN: 1 };
+
+    for (const deliveryTarget of ['workspace_files', 'pull_request', 'merge']) {
+      const requestId = `create-${deliveryTarget}`;
+      await handleWorkCenterRequest({
+        requestId,
+        op: 'create',
+        payload: {
+          title: `Browser ${deliveryTarget}`,
+          goal: 'Preserve the browser-selected delivery boundary.',
+          acceptanceCriteria: ['The selected delivery target persists'],
+          workItemType: 'software-change',
+          workDir: dir,
+          reuseMemory: false,
+          start: false,
+          deliveryTarget,
+        },
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(bridgeFrames.find(frame => frame.requestId === requestId)).toMatchObject({
+        type: 'work_center_response',
+        ok: true,
+        data: { deliveryTarget },
+      });
+    }
+
+    const producerItem = await createWorkItemFromProducer({
+      title: 'Producer cannot choose delivery',
+      goal: 'Keep model producer provenance separate from delivery authority.',
+      acceptanceCriteria: ['The producer-selected target is ignored'],
+      workItemType: 'software-change',
+      workDir: dir,
+      reuseMemory: false,
+      start: false,
+      deliveryTarget: 'merge',
+    });
+    expect(producerItem.deliveryTarget).toBeNull();
+  });
+
   it('persists Run identity and projects one continuous Action conversation', async () => {
     const bridgeDetail = { id: 'wi', actions: [] };
     const projectedBridgeDetail = { id: 'wi', status: 'ready', actions: [] };
@@ -175,6 +230,9 @@ describe('Work Center core', () => {
       .run('late terminal rewrite', first.run.id)).toThrow(/terminal Run result is immutable/);
     expect(() => store.db.prepare('UPDATE runs SET acceptance_checks = ? WHERE id = ?')
       .run('[{"criterion":"rewritten"}]', first.run.id)).toThrow(/terminal Run result is immutable/);
+    expect(() => store.db.prepare('UPDATE runs SET outputs = ? WHERE id = ?')
+      .run('[{"kind":"file","label":"late","ref":"late.md"}]', first.run.id))
+      .toThrow(/terminal Run result is immutable/);
     expect(() => store.db.prepare('UPDATE runs SET action_id = ? WHERE id = ?')
       .run('different-action', second.run.id)).toThrow(/Run identity is immutable/);
     const coordinatorDetail = store.getWorkItemDetail(item.id);
@@ -1291,6 +1349,36 @@ describe('Work Center core', () => {
         expect(item.workflowSnapshot.stages).toHaveLength(1);
       });
     }
+  });
+
+  it('rejects create_vp Actions from legacy AI planning', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    expect(() => applyGeneratedPlan({
+      workflowSnapshot,
+    }, {
+      workItemType: 'vp-provisioning',
+      actions: [
+        {
+          id: 'create-specialist', name: 'Create specialist', type: 'create_vp',
+          objective: 'Create a specialist VP for accessibility review.',
+          approach: 'Persist a focused VP definition in the Agent library.',
+          expectedOutcome: 'A specialist VP is available to later Actions.',
+          capability: 'vp_authoring', candidateVpIds: ['omni'],
+          assignmentReason: 'Omni would author the specialist.',
+          dependsOnActionIds: [], workspaceMode: 'shared',
+        },
+        {
+          id: 'review-specialist', name: 'Review specialist', type: 'review',
+          objective: 'Review the proposed specialist definition.',
+          approach: 'Inspect the created role and persona for scope and safety.',
+          expectedOutcome: 'The specialist definition has an independent review decision.',
+          capability: 'review', candidateVpIds: ['omni'],
+          assignmentReason: 'Omni would review the definition.',
+          dependsOnActionIds: ['create-specialist'],
+          changesRequestedActionId: 'create-specialist', workspaceMode: 'read',
+        },
+      ],
+    }, { availableVpIds: ['omni'] })).toThrow(/create_vp.*Coordinator/i);
   });
 
   it('rejects AI-planned Actions without task-specific execution fields', () => {

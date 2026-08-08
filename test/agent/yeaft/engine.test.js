@@ -5442,6 +5442,11 @@ describe('Engine', () => {
             });
             if (!started) return null;
             const actionId = `cache-write-${started.turnId}`;
+            // This harness supplies the durable authority that a real browser
+            // confirmation would establish. The model tool itself must not be
+            // able to grant delivery scope through its input.
+            workCenter.store.db.prepare('UPDATE work_items SET delivery_target = ? WHERE id = ?')
+              .run('workspace_files', options.workItemId);
             const detail = workCenter.store.completeCoordinatorTurn(started.turnId, {
               reply: 'Starting the state update Action.',
               decision: {

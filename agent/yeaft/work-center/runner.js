@@ -4,6 +4,8 @@ import { defineTool } from '../tools/types.js';
 import { allTools } from '../tools/index.js';
 import { parsePatch } from '../tools/apply-patch.js';
 import { defaultRegistry } from '../vp/registry.js';
+import { createVp } from '../vp/vp-crud.js';
+import { loadVpFromDir } from '../vp/vp-store.js';
 import { createTrace } from '../debug-trace.js';
 import { isPathInsideOrEqual } from '../tools/path-safety.js';
 import { resolveWorkItemModel, selectWorkItemVp } from './assignment.js';
@@ -41,7 +43,7 @@ import {
   MAX_REPLAN_ADDED_ACTIONS,
 } from './plan-mutation.js';
 import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
-import { normalizeEvidence } from './evidence.js';
+import { normalizeEvidence, normalizeOutputs } from './evidence.js';
 import {
   MAINLINE_CONTEXT_HARD_LIMIT_BYTES,
   buildMainlineContextSnapshot,
@@ -268,18 +270,18 @@ function assertToolInput(toolName, input, workDir, attachmentFiles) {
   return next;
 }
 
-export function workItemToolPolicySnapshot(workDir, attachmentRefs = [], mcpToolNames = []) {
+export function workItemToolPolicySnapshot(workDir, attachmentRefs = [], extraToolNames = []) {
   const hasAttachments = attachmentRefs.length > 0;
   const builtInTools = WORK_ITEM_TOOL_NAMES.filter(name => !hasAttachments || name !== 'Bash');
   return {
     policyVersion: 1,
-    allowedToolNames: [...builtInTools, ...mcpToolNames],
+    allowedToolNames: [...builtInTools, ...extraToolNames],
     readRoots: [workDir],
     attachmentRefs,
     writeRoots: [workDir],
     shell: { enabled: !hasAttachments, fixedCwd: workDir, background: false, sandboxed: false },
     async: false,
-    mcpTools: [...mcpToolNames],
+    mcpTools: extraToolNames.filter(name => name.startsWith('mcp__')),
   };
 }
 
@@ -329,6 +331,69 @@ function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunAct
   };
 }
 
+export function createWorkItemVpTool({ yeaftDir, registry, isRunActive }) {
+  return defineTool({
+    name: 'CreateWorkItemVp',
+    description: 'Create one persistent specialist VP in this Agent instance after the Coordinator assigned this VP-authoring Action. Use a narrow role and persona for the missing capability; do not clone an existing VP or create a general-purpose replacement.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['vpId', 'displayName', 'role', 'area', 'traits', 'persona'],
+      properties: {
+        vpId: { type: 'string', minLength: 1, maxLength: 64 },
+        displayName: { type: 'string', minLength: 1, maxLength: 120 },
+        displayNameZh: { type: 'string', maxLength: 120 },
+        description: { type: 'string', maxLength: 500 },
+        descriptionZh: { type: 'string', maxLength: 500 },
+        role: { type: 'string', minLength: 1, maxLength: 200 },
+        roleZh: { type: 'string', maxLength: 200 },
+        area: { type: 'string', minLength: 1, maxLength: 64 },
+        traits: { type: 'array', minItems: 1, maxItems: 20, uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 80 } },
+        modelHint: { type: 'string', enum: ['primary', 'fast'] },
+        persona: { type: 'string', minLength: 1, maxLength: 12_000 },
+      },
+    },
+    async execute(input) {
+      if (!isRunActive()) throw new Error('Work Center Run is no longer active');
+      if (!yeaftDir) throw new Error('Work Center VP creation requires the current Agent data directory');
+      const libDir = path.join(yeaftDir, 'virtual-persons');
+      const { vpId, dir } = createVp(input, {
+        libDir,
+        memoryRoot: path.join(yeaftDir, 'memory'),
+      });
+      const vp = loadVpFromDir(dir);
+      if (!vp) throw new Error(`Created Work Center VP could not be loaded: ${vpId}`);
+      registry?.setVp?.(vp);
+      return JSON.stringify({ created: true, vpId });
+    },
+    isConcurrencySafe: () => false,
+    isReadOnly: () => false,
+    sideEffectScope: 'external',
+  });
+}
+
+function assertCreateVpActionAuthority(workItem, action, registry) {
+  if (action?.type !== 'create_vp') return;
+  if (action.workspaceMode === 'read') {
+    const error = new Error('create_vp Action cannot use read workspace mode because VP creation mutates Agent-global state');
+    error.retryable = false;
+    throw error;
+  }
+  const assignmentPolicy = action.assignmentPolicy;
+  const assignedVpIds = assignmentPolicy?.mode === 'planned'
+    ? assignmentPolicy.candidateVpIds || []
+    : [];
+  if (!isDynamicWorkItem(workItem)
+      || action.creationSource !== 'dynamic_coordinator'
+      || assignedVpIds.length !== 1
+      || !String(assignmentPolicy?.assignmentReason || '').trim()
+      || !registry?.getVp?.(assignedVpIds[0])) {
+    const error = new Error('create_vp Action lacks dynamic Coordinator provenance and one explicit existing VP assignment');
+    error.retryable = false;
+    throw error;
+  }
+}
+
 export function planningVpCatalog(vps) {
   return vps.map(vp => ({
     id: vp.id,
@@ -350,7 +415,7 @@ export function createSubmitWorkItemPlanTool({
 }) {
   const vpCatalog = planningVpCatalog(vps);
   const vpIds = vpCatalog.map(vp => vp.id);
-  const actionTypes = BUILT_IN_ACTION_TYPES.filter(type => type !== 'triage');
+  const actionTypes = BUILT_IN_ACTION_TYPES.filter(type => !['triage', 'create_vp'].includes(type));
   const catalogDescription = `Action types: ${actionTypes.join(', ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'}; ${vp.traits.join(', ') || 'no traits'})`).join('; ')}.`;
   return defineTool({
     name: 'SubmitWorkItemPlan',
@@ -445,7 +510,7 @@ function plannedActionSchema(vpIds, { requireCandidates = true } = {}) {
   if (requireCandidates) required.push('candidateVpIds', 'assignmentReason');
   return { type: 'object', additionalProperties: false, required, properties: {
     id: { type: 'string', minLength: 1, maxLength: 64 }, name: { type: 'string', minLength: 1, maxLength: 120 },
-    type: { type: 'string', enum: BUILT_IN_ACTION_TYPES.filter(type => type !== 'triage') }, capability: { type: 'string', maxLength: 64 },
+    type: { type: 'string', enum: BUILT_IN_ACTION_TYPES.filter(type => !['triage', 'create_vp'].includes(type)) }, capability: { type: 'string', maxLength: 64 },
     objective: { type: 'string', minLength: 1, maxLength: 2_000 }, approach: { type: 'string', minLength: 1, maxLength: 2_000 }, expectedOutcome: { type: 'string', minLength: 1, maxLength: 2_000 },
     candidateVpIds: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string', enum: vpIds } }, assignmentReason: { type: 'string', minLength: 1, maxLength: 1_000 },
     dependsOnActionIds: { type: 'array', uniqueItems: true, items: { type: 'string' } }, workspaceMode: { type: 'string', enum: ['read', 'isolated-write', 'integrate', 'shared'] },
@@ -631,6 +696,7 @@ export function parseStructuredResult(text, actionType) {
       outcome: parsed.outcome,
       summary: String(parsed.summary || ''),
       evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
+      outputs: normalizeOutputs(parsed.outputs),
       waitingReason: parsed.waitingReason ? String(parsed.waitingReason) : null,
       error: parsed.error ? String(parsed.error) : null,
       reviewDecision: ['approved', 'changes_requested'].includes(parsed.reviewDecision)
@@ -689,10 +755,11 @@ function completionContract(action, workItem) {
   "outcome": "completed|waiting|retryable|failed",
   "summary": "short result",
   "evidence": ["test, PR, file, or other verifiable evidence"],
+  "outputs": [{ "kind": "file|link|pr|commit", "label": "user-facing output name", "ref": "safe relative path for file, safe HTTP(S) URL for link/pr, or commit hash/full refs/... name for commit; never relabel a URL as file/commit" }],
   "acceptanceChecks": ${JSON.stringify(acceptanceChecks)},
   "waitingReason": null,
   "error": null${reviewField}${triageField}${planField}
-}\nFor completed, provide at least one concrete evidence item and exactly one acceptanceChecks entry for every current acceptance criterion, in the same order, with status passed, deferred, or not_applicable and a non-empty evidence reference. Triage must use its proposed criteria when submitting a contractPatch. An intermediate Action may defer criteria outside its task-specific expected result; the final deliver Action, and an approved review with no downstream work, require every criterion to pass. If a criterion is no longer applicable, ask the WorkItem Coordinator to revise the contract instead of pretending it passed. This is a deterministic submission gate, not independent proof: later verification and delivery Actions must verify the claims. A model turn ending is not completion. Use waiting when user or external input is required. Use retryable only for a transient failure. Do not start background jobs or delegate this Action.`;
+}\nFor completed, provide at least one concrete evidence item and exactly one acceptanceChecks entry for every current acceptance criterion, in the same order, with status passed, deferred, or not_applicable and a non-empty evidence reference. Report every user-consumable file, URL, PR, or commit in outputs; evidence proves work, while outputs tell the user where the deliverable is. Triage must use its proposed criteria when submitting a contractPatch. An intermediate Action may defer criteria outside its task-specific expected result; the final deliver Action, and an approved review with no downstream work, require every criterion to pass. If a criterion is no longer applicable, ask the WorkItem Coordinator to revise the contract instead of pretending it passed. This is a deterministic submission gate, not independent proof: later verification and delivery Actions must verify the claims. A model turn ending is not completion. Use waiting when user or external input is required. Use retryable only for a transient failure. Do not start background jobs or delegate this Action.`;
 }
 
 function safeCheckpointUrl(value) {
@@ -1023,6 +1090,7 @@ export class WorkItemRunner {
   }
 
   async run({ workItem, action, run, signal, ownerBootId, onProgress, registerProgressReader, registerInputWake, onEngineEvent = null }) {
+    assertCreateVpActionAuthority(workItem, action, this.registry);
     const runtime = await this.runtimeProvider();
     const currentSettings = ['ai', 'coordinator'].includes(workItem?.workflowSnapshot?.planningMode)
       && this.policyProvider ? await this.policyProvider() : null;
@@ -1106,6 +1174,13 @@ export class WorkItemRunner {
       && workItem?.workflowSnapshot?.planningMode === 'ai'
       && !replanToolEnabled;
     const runTools = [];
+    if (executionAction.type === 'create_vp') {
+      runTools.push(createWorkItemVpTool({
+        yeaftDir: runtime.yeaftDir || this.yeaftDir,
+        registry: this.registry,
+        isRunActive,
+      }));
+    }
     if (planToolEnabled) runTools.push(createSubmitWorkItemPlanTool({
       vps: this.registry.listVps(),
       workItem,

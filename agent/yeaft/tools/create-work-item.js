@@ -74,7 +74,7 @@ Use this when work must continue beyond the current turn, needs role handoffs, r
       // a different dispatch policy into it.
       origin: {
         sessionId,
-        messageId: ctx.inboundEnvelope?.msgId || null,
+        messageId: ctx.inboundEnvelope?.msg?.id || null,
         createdBy: ctx.currentVpId || 'assistant',
       },
       linkedSessionIds: [sessionId],
