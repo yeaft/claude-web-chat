@@ -2,7 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { normalizeEvidence } from './evidence.js';
+import { normalizeEvidence, normalizeOutputs } from './evidence.js';
+import { normalizeContractPatch } from './completion-contract.js';
 import { normalizeActionCheckpoint } from './action-checkpoint.js';
 import { currentActionInputEventIds, runMatchesActionIdentity } from './action-identity.js';
 import { isDynamicWorkItem, usesLegacyGraph } from './execution-mode.js';
@@ -108,6 +109,7 @@ function mapWorkItem(row) {
     ledgerRevision: Math.max(0, Number(row.ledger_revision) || 0),
     coordinationMode: row.coordination_mode || 'legacy',
     finalResult: parseJson(row.final_result, null),
+    deliveryTarget: row.delivery_target || null,
     title: row.title,
     goal: row.goal,
     acceptanceCriteria: parseJson(row.acceptance_criteria, []),
@@ -211,6 +213,7 @@ function mapAction(row) {
     modelPolicy: parseJson(row.model_policy, null),
     dependsOnStageIds: parseJson(row.depends_on_stage_ids, []),
     sourceActionIds: parseJson(row.source_action_ids, []),
+    creationSource: row.creation_source || 'legacy',
     workspaceMode: row.workspace_mode || 'shared',
     changesRequestedStageId: row.changes_requested_stage_id || null,
     workspace: parseJson(row.workspace, null),
@@ -229,6 +232,8 @@ function mapAction(row) {
     currentRunId: row.current_run_id || null,
     leaseEpoch: row.lease_epoch,
     replacesActionId: row.replaces_action_id || null,
+    closeReason: row.close_reason || null,
+    closedAt: row.closed_at || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -271,6 +276,7 @@ function mapRun(row) {
     response: row.response || '',
     summary: row.summary || '',
     evidence: normalizeEvidence(parseJson(row.evidence, [])),
+    outputs: normalizeOutputs(parseJson(row.outputs, [])),
     acceptanceChecks: parseJson(row.acceptance_checks, []),
     waitingReason: row.waiting_reason || null,
     error: row.error || null,
@@ -830,6 +836,7 @@ export class WorkItemStore {
         ledger_revision INTEGER NOT NULL DEFAULT 0,
         coordination_mode TEXT NOT NULL DEFAULT 'legacy',
         final_result TEXT,
+        delivery_target TEXT,
         title TEXT NOT NULL,
         goal TEXT NOT NULL,
         acceptance_criteria TEXT NOT NULL,
@@ -861,6 +868,7 @@ export class WorkItemStore {
         model_policy TEXT,
         depends_on_stage_ids TEXT NOT NULL DEFAULT '[]',
         source_action_ids TEXT NOT NULL DEFAULT '[]',
+        creation_source TEXT NOT NULL DEFAULT 'legacy',
         workspace_mode TEXT NOT NULL DEFAULT 'shared',
         changes_requested_stage_id TEXT,
         workspace TEXT,
@@ -878,6 +886,8 @@ export class WorkItemStore {
         current_run_id TEXT,
         lease_epoch INTEGER NOT NULL DEFAULT 0,
         replaces_action_id TEXT REFERENCES actions(id) ON DELETE SET NULL,
+        close_reason TEXT,
+        closed_at INTEGER,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         UNIQUE(work_item_id, sequence)
@@ -900,6 +910,7 @@ export class WorkItemStore {
         execution_manifest TEXT,
         summary TEXT,
         evidence TEXT NOT NULL DEFAULT '[]',
+        outputs TEXT NOT NULL DEFAULT '[]',
         acceptance_checks TEXT NOT NULL DEFAULT '[]',
         waiting_reason TEXT,
         error TEXT,
@@ -1106,8 +1117,14 @@ export class WorkItemStore {
     if (!hasColumn(this.db, 'work_items', 'final_result')) {
       this.db.exec('ALTER TABLE work_items ADD COLUMN final_result TEXT');
     }
+    if (!hasColumn(this.db, 'work_items', 'delivery_target')) {
+      this.db.exec('ALTER TABLE work_items ADD COLUMN delivery_target TEXT');
+    }
     if (!hasColumn(this.db, 'actions', 'source_action_ids')) {
       this.db.exec("ALTER TABLE actions ADD COLUMN source_action_ids TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!hasColumn(this.db, 'actions', 'creation_source')) {
+      this.db.exec("ALTER TABLE actions ADD COLUMN creation_source TEXT NOT NULL DEFAULT 'legacy'");
     }
     if (!hasColumn(this.db, 'actions', 'generation')) {
       this.db.exec('ALTER TABLE actions ADD COLUMN generation INTEGER NOT NULL DEFAULT 1');
@@ -1130,6 +1147,15 @@ export class WorkItemStore {
     }
     if (!hasColumn(this.db, 'actions', 'replaces_action_id')) {
       this.db.exec('ALTER TABLE actions ADD COLUMN replaces_action_id TEXT REFERENCES actions(id) ON DELETE SET NULL');
+    }
+    if (!hasColumn(this.db, 'actions', 'close_reason')) {
+      this.db.exec('ALTER TABLE actions ADD COLUMN close_reason TEXT');
+    }
+    if (!hasColumn(this.db, 'actions', 'closed_at')) {
+      this.db.exec('ALTER TABLE actions ADD COLUMN closed_at INTEGER');
+    }
+    if (!hasColumn(this.db, 'runs', 'outputs')) {
+      this.db.exec("ALTER TABLE runs ADD COLUMN outputs TEXT NOT NULL DEFAULT '[]'");
     }
     if (!hasColumn(this.db, 'runs', 'action_generation')) {
       this.db.exec('ALTER TABLE runs ADD COLUMN action_generation INTEGER NOT NULL DEFAULT 1');
@@ -2296,14 +2322,15 @@ export class WorkItemStore {
       const id = input.id || randomUUID();
       const workspaceKey = canonicalWorkspaceKey(input.workDir);
       this.db.prepare(`INSERT INTO work_items
-        (id, revision, execution_schema_version, ledger_revision, coordination_mode, final_result,
+        (id, revision, execution_schema_version, ledger_revision, coordination_mode, final_result, delivery_target,
          title, goal, acceptance_criteria, workflow_template, workflow_snapshot, status,
          current_action_id, current_run_id, work_dir, workspace_key, reuse_memory, origin, linked_session_ids,
          session_context, attachments, created_at, updated_at)
-        VALUES (?, 1, ?, 0, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        VALUES (?, 1, ?, 0, ?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         id,
         Number.isInteger(input.executionSchemaVersion) ? input.executionSchemaVersion : 2,
         input.coordinationMode || 'legacy',
+        input.deliveryTarget || null,
         input.title,
         input.goal,
         stringify(input.acceptanceCriteria || []),
@@ -2330,14 +2357,25 @@ export class WorkItemStore {
     });
   }
 
-  #insertAction(workItemId, input, sequence, now = this.now()) {
+  #insertAction(workItemId, input, sequence, now = this.now(), options = {}) {
+    const workItem = this.getWorkItem(workItemId);
     const stageId = input.stageId || input.type;
-    const activeStage = usesLegacyGraph(this.getWorkItem(workItemId))
+    const activeStage = usesLegacyGraph(workItem)
       ? this.db.prepare(`SELECT id FROM actions WHERE work_item_id = ? AND stage_id = ?
           AND status NOT IN ('superseded', 'cancelled') LIMIT 1`).get(workItemId, stageId)
       : null;
     if (activeStage) {
       throw new Error(`Work Center Action stage identity is already active: ${stageId}`);
+    }
+    const creationSource = input.creationSource || 'legacy';
+    if (input.type === 'create_vp'
+        && (!isDynamicWorkItem(workItem)
+          || creationSource !== 'dynamic_coordinator'
+          || options.dynamicCoordinator !== true)) {
+      throw new Error('create_vp Actions can only be persisted by the dynamic WorkItem Coordinator');
+    }
+    if (input.type === 'create_vp' && input.workspaceMode === 'read') {
+      throw new Error('create_vp Actions cannot use read workspace mode because VP creation mutates Agent-global state');
     }
     const action = {
       id: input.id || randomUUID(),
@@ -2349,6 +2387,7 @@ export class WorkItemStore {
       modelPolicy: input.modelPolicy || null,
       dependsOnStageIds: Array.isArray(input.dependsOnStageIds) ? input.dependsOnStageIds : [],
       sourceActionIds: Array.isArray(input.sourceActionIds) ? input.sourceActionIds : [],
+      creationSource,
       workspaceMode: input.workspaceMode || 'shared',
       changesRequestedStageId: input.changesRequestedStageId || null,
       workspace: input.workspace || null,
@@ -2373,10 +2412,10 @@ export class WorkItemStore {
     action.identityHistory = actionIdentityHistory(action);
     this.db.prepare(`INSERT INTO actions
       (id, work_item_id, sequence, type, required_role, stage_id, assignment_policy, model_policy,
-       depends_on_stage_ids, source_action_ids, workspace_mode, changes_requested_stage_id, workspace,
+       depends_on_stage_ids, source_action_ids, creation_source, workspace_mode, changes_requested_stage_id, workspace,
        instruction, brief, context, contract_revision, generation, spec_hash, identity_history, result_run_id,
        status, attempt, max_attempts, current_run_id, lease_epoch, replaces_action_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?)`).run(
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?)`).run(
       action.id,
       workItemId,
       action.sequence,
@@ -2387,6 +2426,7 @@ export class WorkItemStore {
       stringify(action.modelPolicy),
       stringify(action.dependsOnStageIds),
       stringify(action.sourceActionIds),
+      action.creationSource,
       action.workspaceMode,
       action.changesRequestedStageId,
       stringify(action.workspace),
@@ -3150,10 +3190,11 @@ export class WorkItemStore {
         coordinatorRevision: detail.coordinatorRevision,
         status: detail.status,
         actionFence: coordinatorActionFence(
-          (detail.actions || []).filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status)),
+          (detail.actions || []).filter(action => !['completed', 'closed', 'superseded', 'cancelled'].includes(action.status)),
         ),
         recovery: assistant.recovery ? { ...assistant.recovery } : null,
         automatic: assistant.automatic === true,
+        userOriginated: assistant.userOriginated === true,
         claim: {
           mailboxId: claim.mailboxId,
           ownerBootId: claim.ownerBootId,
@@ -3215,9 +3256,10 @@ export class WorkItemStore {
           coordinatorRevision,
           status: workItem.status,
           actionFence: coordinatorActionFence(
-            (detail.actions || []).filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status)),
+            (detail.actions || []).filter(action => !['completed', 'closed', 'superseded', 'cancelled'].includes(action.status)),
           ),
           automatic: true,
+          userOriginated: false,
           claim: {
             mailboxId: mailbox.id,
             ownerBootId: expected.ownerBootId,
@@ -3285,7 +3327,7 @@ export class WorkItemStore {
           isImage: attachment.isImage === true,
         }));
       const activeActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
-        AND status NOT IN ('completed', 'superseded', 'cancelled') ORDER BY sequence`).all(id).map(mapAction);
+        AND status NOT IN ('completed', 'closed', 'superseded', 'cancelled') ORDER BY sequence`).all(id).map(mapAction);
       this.#assertNoIntegrationReservation(activeActions, now);
       let recovery = options.recovery && typeof options.recovery === 'object'
         ? { ...options.recovery } : null;
@@ -3325,6 +3367,7 @@ export class WorkItemStore {
       const assistantMessage = {
         id: randomUUID(), turnId, role: 'assistant', text: '', status: 'thinking',
         createdAt: now, updatedAt: now, decision: null,
+        userOriginated: userMessage !== null,
         ...(recovery ? { recovery: { ...recovery } } : {}),
       };
       if (userMessage) {
@@ -3380,6 +3423,8 @@ export class WorkItemStore {
           status: workItem.status,
           actionFence: coordinatorActionFence(activeActions),
           recovery: recovery ? { ...recovery } : null,
+          userOriginated: userMessage !== null,
+          claim: null,
         },
       };
     });
@@ -3411,7 +3456,7 @@ export class WorkItemStore {
       const decision = result?.decision || {};
       const now = this.now();
       const activeActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
-        AND status NOT IN ('completed', 'superseded', 'cancelled') ORDER BY sequence`).all(workItem.id).map(mapAction);
+        AND status NOT IN ('completed', 'closed', 'superseded', 'cancelled') ORDER BY sequence`).all(workItem.id).map(mapAction);
       if (coordinatorActionFence(activeActions) !== expected.actionFence) {
         throw new Error('WorkItem Actions changed while the Coordinator was responding; send the message again');
       }
@@ -3420,6 +3465,9 @@ export class WorkItemStore {
         return this.#completeDynamicCoordinatorTurn({
           turnId, result, expected, workItem, messages, assistantIndex, activeActions, now,
         });
+      }
+      if (decision.contractPatch?.deliveryTarget) {
+        throw new Error('Only a dynamic user-originated Coordinator turn can confirm the WorkItem delivery target');
       }
 
       const graphMode = usesLegacyGraph(workItem);
@@ -3636,10 +3684,33 @@ export class WorkItemStore {
     turnId, result, expected, workItem, messages, assistantIndex, activeActions, now,
   }) {
     const decision = result?.decision || {};
+    if (expected.automatic === true && result?.mutation?.contractPatch?.deliveryTarget) {
+      throw new Error('Automatic Work Center Coordinator delivery target changes are forbidden');
+    }
+    if (decision.contractPatch?.deliveryTarget && expected.userOriginated !== true) {
+      throw new Error('WorkItem delivery target confirmation requires a user-originated Coordinator turn');
+    }
+    if (decision.contractPatch?.deliveryTarget && decision.kind !== 'request_human') {
+      throw new Error('WorkItem delivery target confirmation requires a user-originated request_human decision');
+    }
     let affectedActionIds = [];
     let nextStatus = workItem.status;
     let currentActionId = workItem.currentActionId;
     let finalResult = null;
+    const contractPatch = normalizeContractPatch(decision.contractPatch);
+    if (decision.kind === 'create_actions'
+        && !workItem.deliveryTarget
+        && (result?.mutation?.createdActions || []).some(action => (
+          action.type === 'create_vp' || action.workspaceMode !== 'read'
+        ))) {
+      throw new Error('WorkItem delivery target must be confirmed before creating mutating or delivery Actions');
+    }
+    if (contractPatch) {
+      if (contractPatch.title) workItem.title = contractPatch.title;
+      if (contractPatch.goal) workItem.goal = contractPatch.goal;
+      if (contractPatch.acceptanceCriteria) workItem.acceptanceCriteria = contractPatch.acceptanceCriteria;
+      if (contractPatch.deliveryTarget) workItem.deliveryTarget = contractPatch.deliveryTarget;
+    }
 
     if (decision.kind === 'create_actions') {
       if (activeActions.some(action => action.status === 'running')) {
@@ -3648,6 +3719,24 @@ export class WorkItemStore {
       const mutation = result.mutation;
       if (!mutation || !Array.isArray(mutation.createdActions) || mutation.createdActions.length === 0) {
         throw new Error('Dynamic Coordinator Action creation is missing a validated mutation');
+      }
+      for (const closure of mutation.closeActions || []) {
+        const action = activeActions.find(candidate => candidate.id === closure.actionId);
+        if (!action || !['waiting', 'failed'].includes(action.status)) {
+          throw new Error('Dynamic Coordinator close target changed before apply');
+        }
+        this.#supersedePendingActionInputs([action], closure.reason, now);
+        const changed = this.db.prepare(`UPDATE actions SET status = 'closed', current_run_id = NULL,
+          close_reason = ?, closed_at = ?, lease_epoch = lease_epoch + 1, updated_at = ?
+          WHERE id = ? AND generation = ? AND status IN ('waiting', 'failed')`).run(
+          closure.reason, now, now, action.id, action.generation,
+        );
+        if (Number(changed.changes) !== 1) throw new Error('Dynamic Coordinator lost an Action close fence');
+        affectedActionIds.push(action.id);
+        this.appendEvent(workItem.id, 'action.closed', { reason: closure.reason }, {
+          actionId: action.id,
+          actionGeneration: action.generation,
+        });
       }
       for (const actionId of mutation.supersedeActionIds || []) {
         const action = activeActions.find(candidate => candidate.id === actionId);
@@ -3679,8 +3768,11 @@ export class WorkItemStore {
       const current = this.getWorkItem(workItem.id);
       for (const candidate of mutation.createdActions) {
         const action = this.#insertAction(workItem.id, {
-          ...candidate, status: 'ready', contractRevision: current.revision,
-        }, this.#nextSequence(workItem.id), now);
+          ...candidate,
+          creationSource: 'dynamic_coordinator',
+          status: 'ready',
+          contractRevision: current.revision,
+        }, this.#nextSequence(workItem.id), now, { dynamicCoordinator: true });
         affectedActionIds.push(action.id);
       }
       nextStatus = 'ready';
@@ -3719,7 +3811,29 @@ export class WorkItemStore {
       nextStatus = 'waiting';
       currentActionId = null;
     } else if (decision.kind === 'complete') {
-      if (activeActions.length > 0) throw new Error('Work Center cannot complete with unfinished Actions');
+      const closing = new Map((decision.closeActions || []).map(entry => [entry.actionId, entry]));
+      if (activeActions.some(action => action.status !== 'closed' && !closing.has(action.id))) {
+        throw new Error('Work Center cannot complete with unfinished Actions');
+      }
+      for (const action of activeActions) {
+        const closure = closing.get(action.id);
+        if (!closure) continue;
+        if (!['waiting', 'failed'].includes(action.status)) {
+          throw new Error('Dynamic Coordinator completion close target changed before apply');
+        }
+        this.#supersedePendingActionInputs([action], closure.reason, now);
+        const changed = this.db.prepare(`UPDATE actions SET status = 'closed', current_run_id = NULL,
+          close_reason = ?, closed_at = ?, lease_epoch = lease_epoch + 1, updated_at = ?
+          WHERE id = ? AND generation = ? AND status IN ('waiting', 'failed')`).run(
+          closure.reason, now, now, action.id, action.generation,
+        );
+        if (Number(changed.changes) !== 1) throw new Error('Dynamic Coordinator completion lost an Action close fence');
+        affectedActionIds.push(action.id);
+        this.appendEvent(workItem.id, 'action.closed', { reason: closure.reason }, {
+          actionId: action.id,
+          actionGeneration: action.generation,
+        });
+      }
       if (this.#hasBlockingOperation(workItem.id)) {
         throw new Error('WorkItem has an unsafe blocking Operation and cannot complete');
       }
@@ -3744,6 +3858,27 @@ export class WorkItemStore {
           throw new Error(`Completion evidence Run has incomplete acceptance checks: ${runId}`);
         }
       }
+      finalResult.outputs = [];
+      const seenOutputs = new Set();
+      for (const runId of finalResult.evidenceRunIds) {
+        for (const output of canonicalRuns.get(runId)?.outputs || []) {
+          const key = `${output.kind}\u0000${output.ref}`;
+          if (seenOutputs.has(key)) continue;
+          seenOutputs.add(key);
+          finalResult.outputs.push({ ...output, runId });
+        }
+      }
+      const requiredOutputKind = {
+        workspace_files: 'file',
+        pull_request: 'pr',
+        merge: 'commit',
+      }[workItem.deliveryTarget];
+      if (!requiredOutputKind) {
+        throw new Error('WorkItem delivery target must be confirmed before completion');
+      }
+      if (!finalResult.outputs.some(output => output.kind === requiredOutputKind)) {
+        throw new Error(`WorkItem completion requires a canonical ${requiredOutputKind} output for delivery target ${workItem.deliveryTarget}`);
+      }
       for (const [index, acceptanceResult] of finalResult.acceptanceResults.entries()) {
         const provesCriterion = acceptanceResult.evidenceRunIds.some(runId => (
           canonicalRuns.get(runId)?.acceptanceChecks?.[index]?.criterion === criteria[index]
@@ -3762,7 +3897,12 @@ export class WorkItemStore {
     messages[assistantIndex] = {
       ...messages[assistantIndex], text: result.reply, status: 'completed', updatedAt: now,
       ...(result.speaker ? { speaker: result.speaker } : {}),
-      decision: { kind: decision.kind, reason: decision.reason, affectedActionIds },
+      decision: {
+        kind: decision.kind,
+        reason: decision.reason,
+        affectedActionIds,
+        ...(decision.kind === 'request_human' ? { question: decision.question } : {}),
+      },
     };
     this.#appendConversationEntry(
       workItem.id, messages[assistantIndex], `coordinator:turn:${turnId}:assistant`,
@@ -3774,11 +3914,13 @@ export class WorkItemStore {
     const current = this.getWorkItem(workItem.id);
     const changed = this.db.prepare(`UPDATE work_items SET messages = ?,
       coordinator_revision = coordinator_revision + 1, status = ?, current_action_id = ?,
-      current_run_id = NULL, final_result = COALESCE(final_result, ?), updated_at = ?
+      current_run_id = NULL, final_result = COALESCE(final_result, ?), title = ?, goal = ?,
+      acceptance_criteria = ?, delivery_target = ?, revision = revision + ?, updated_at = ?
       WHERE id = ? AND coordinator_revision = ? AND revision = ? AND plan_revision = ?
       AND ledger_revision = ? AND status NOT IN ('done', 'cancelled')`).run(
       stringify(messages), nextStatus, currentActionId, finalResult ? stringify(finalResult) : null,
-      now, workItem.id, current.coordinatorRevision, current.revision,
+      workItem.title, workItem.goal, stringify(workItem.acceptanceCriteria), workItem.deliveryTarget,
+      contractPatch ? 1 : 0, now, workItem.id, current.coordinatorRevision, current.revision,
       current.planRevision, current.ledgerRevision,
     );
     if (Number(changed.changes) !== 1) throw new Error('Dynamic Coordinator completion lost its turn fence');
@@ -4739,7 +4881,7 @@ export class WorkItemStore {
       const ledgerIncrement = workItem.executionSchemaVersion >= 2
         && ['completed', 'failed', 'waiting'].includes(result.outcome) ? 1 : 0;
       this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, response = ?, summary = ?, evidence = ?,
-        acceptance_checks = ?, waiting_reason = ?, error = ?, failure_kind = ?, failure_code = ?, review_decision = ?, contract_patch = ?, checkpoint = ?,
+        outputs = ?, acceptance_checks = ?, waiting_reason = ?, error = ?, failure_kind = ?, failure_code = ?, review_decision = ?, contract_patch = ?, checkpoint = ?,
         loop_count = ?, tool_count = ?, llm_request_count = ?, input_tokens = ?, output_tokens = ?,
         cache_read_tokens = ?, cache_write_tokens = ?, total_tokens = ?,
         progress_revision = progress_revision + 1 WHERE id = ?`).run(
@@ -4748,6 +4890,7 @@ export class WorkItemStore {
         normalizeRunResponse(result.response),
         result.summary || '',
         stringify(normalizeEvidence(result.evidence)),
+        stringify(normalizeOutputs(result.outputs)),
         stringify(Array.isArray(result.acceptanceChecks) ? result.acceptanceChecks : []),
         result.waitingReason || null,
         result.error || null,
@@ -5098,7 +5241,7 @@ export class WorkItemStore {
         ...trigger,
         ledgerRevision: detail.ledgerRevision,
         actionIds: (detail.actions || [])
-          .filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status))
+          .filter(action => !['completed', 'closed', 'superseded', 'cancelled'].includes(action.status))
           .map(action => action.id),
       },
     }, `dynamic:reconcile:${workItemId}:${detail.ledgerRevision}`);

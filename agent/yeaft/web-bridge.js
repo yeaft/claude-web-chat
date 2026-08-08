@@ -4464,9 +4464,13 @@ function handleEngineEvent(event, hctx) {
       const errMsg = event.error?.message || 'Unknown error';
       const retryAttempts = Number.isFinite(event.retryAttempts) ? event.retryAttempts : 0;
       const exhaustedIdle = event.reason === 'stream_idle_timeout' && event.retryExhausted;
-      const visibleErrMsg = exhaustedIdle && retryAttempts > 0
-        ? `${errMsg} after ${retryAttempts} fresh request retries`
-        : errMsg;
+      const contentPolicyDenied = event.reason === 'content_policy_denied'
+        || event.error?.reasonCode === 'content_policy_denied';
+      const visibleErrMsg = contentPolicyDenied
+        ? 'Provider blocked this request for content-safety reasons after one safe recovery attempt. Continue and ask the VP to avoid repeating sensitive payloads, credentials, tokens, or exploit samples.'
+        : exhaustedIdle && retryAttempts > 0
+          ? `${errMsg} after ${retryAttempts} fresh request retries`
+          : errMsg;
       hctx.lastEngineErrorDetail = {
         message: visibleErrMsg,
         ...(event.reason ? { reason: event.reason } : {}),

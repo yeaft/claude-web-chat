@@ -11,7 +11,7 @@ import {
 } from './workflow.js';
 import { renderSessionContextSnapshot } from './session-context.js';
 import { normalizeSessionMessageQuote } from '../session-message-quote.js';
-import { normalizeEvidence } from './evidence.js';
+import { normalizeEvidence, normalizeOutputs } from './evidence.js';
 import { isDynamicWorkItem } from './execution-mode.js';
 import { applyAdditivePlanProposal, applyReplanMutation } from './plan-mutation.js';
 import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
@@ -25,6 +25,7 @@ function normalizeTerminalResult(result, action) {
     response: String(result.response || ''),
     summary: String(result.summary || ''),
     evidence: normalizeEvidence(result.evidence),
+    outputs: normalizeOutputs(result.outputs),
     waitingReason: result.waitingReason ? String(result.waitingReason) : null,
     error: result.error ? String(result.error) : null,
     failureKind: result.failureKind === 'system_blocked' ? 'system_blocked' : null,

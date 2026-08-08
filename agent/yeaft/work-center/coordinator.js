@@ -9,7 +9,11 @@ import {
 } from '../llm/adapter.js';
 import { resolveWorkItemModel, selectWorkItemVp } from './assignment.js';
 import { normalizeContractPatch } from './completion-contract.js';
-import { prepareDynamicActionMutation } from './dynamic-coordination.js';
+import { normalizeOutputs } from './evidence.js';
+import {
+  normalizeDynamicActionClosures,
+  prepareDynamicActionMutation,
+} from './dynamic-coordination.js';
 import { isDynamicWorkItem } from './execution-mode.js';
 import { applyCoordinatorReplan } from './plan-mutation.js';
 import { buildWorkItemAttachmentContext } from './attachments.js';
@@ -127,6 +131,7 @@ function coordinatorStageReferences(detail) {
 }
 
 function boundedAction(action, result, stageReferences, compact = false, dynamic = false) {
+  const preserveCanonicalResult = action?.status === 'completed';
   const brief = action?.brief && typeof action.brief === 'object' ? action.brief : null;
   return {
     ...(dynamic
@@ -153,18 +158,21 @@ function boundedAction(action, result, stageReferences, compact = false, dynamic
         expectedOutcome: truncateUtf8(brief.expectedOutcome, 256),
       },
     } : {}),
+    ...(action?.closeReason ? { closeReason: truncateUtf8(action.closeReason, 1_000) } : {}),
     result: result ? {
+      runId: truncateUtf8(result.id, 256),
       status: truncateUtf8(result.status, 64),
       summary: truncateUtf8(result.summary, compact ? 256 : 768),
-      ...(!compact ? {
-        evidence: boundedEvidence(result.evidence),
-        acceptanceChecks: (Array.isArray(result.acceptanceChecks) ? result.acceptanceChecks : [])
+      evidence: boundedEvidence(result.evidence),
+      outputs: boundedEvidence(normalizeOutputs(result.outputs)),
+      acceptanceChecks: preserveCanonicalResult
+        ? (Array.isArray(result.acceptanceChecks) ? result.acceptanceChecks : [])
           .slice(0, 24).map(check => ({
             criterion: truncateUtf8(check?.criterion, 512),
             status: truncateUtf8(check?.status, 64),
             evidence: truncateUtf8(check?.evidence, 1_000),
-          })),
-      } : {}),
+          }))
+        : [],
       waitingReason: truncateUtf8(result.waitingReason, 384) || null,
       error: truncateUtf8(result.error, 384) || null,
       reviewDecision: truncateUtf8(result.reviewDecision, 64) || null,
@@ -219,6 +227,7 @@ Return exactly one JSON object and no surrounding prose:
     "question": null,
     "workItemType": null,
     "contractPatch": null,
+    "closeActions": [],
     "supersedeActionIds": [],
     "guidance": [],
     "actions": [],
@@ -229,10 +238,12 @@ Return exactly one JSON object and no surrounding prose:
 Rules:
 - answer: explain state only. Never use it for an automatic advance trigger.
 - create_actions: create 1..8 currently runnable Actions. Every Action needs type, objective, approach, expectedOutcome, capability, candidateVpIds, assignmentReason, sourceActionIds, workspaceMode, and optional maxAttempts/separateFromActionTypes. sourceActionIds are context/audit references, never scheduling dependencies. Do not include dependsOnActionIds, dependsOnStageIds, stages, or a graph.
+- If no existing VP can execute a required capability, create one create_vp Action assigned to the existing VP best suited to author that specialist. After it completes, create the original Action with the new VP id. Never fail or retry the original Action merely because its capability label has no match.
+- closeActions may accompany create_actions. Each entry is {"actionId":"failed or waiting durable Action id","reason":"why it is no longer required"}. Close only work made obsolete by replacement evidence or a clarified contract. Closed Actions remain audit history, are never acceptance evidence, and do not block completion.
 - guide_actions: target 1..8 unfinished non-running Actions by durable actionId.
-- request_human: only when external information or a user decision is genuinely required.
-- complete: only when every acceptance criterion has canonical completed Run evidence and there are no unfinished Actions. Include summary, ordered acceptanceResults with evidenceRunIds, evidenceRunIds, and residualRisks.
-- Preserve completed Action history. Never claim tests, review, merge, release, or external effects without canonical Run evidence.
+- request_human: use when external information or a user decision is genuinely required. Before creating mutating or delivery Actions, ask whether the delivery boundary is files only, PR, or merge when the contract does not already say. After the user answers, persist it with contractPatch.deliveryTarget = workspace_files | pull_request | merge before creating more Actions.
+- complete: only when every acceptance criterion has canonical completed Run evidence and there are no unfinished Actions after applying optional closeActions. Include summary, ordered acceptanceResults with evidenceRunIds, evidenceRunIds, and residualRisks. Reuse structured outputs already present on canonical Runs; do not create repetitive evidence-packaging Actions.
+- Preserve completed and closed Action history. Never claim tests, review, merge, release, or external effects without canonical Run evidence.
 - Action templates are reusable capabilities, not a prescribed workflow. Create the smallest useful Action boundary, not tool-call-sized work.
 - Never return destructive cancellation. The user owns the explicit cancel control.`;
 
@@ -268,6 +279,13 @@ function cleanText(value, limit, name) {
   const text = typeof value === 'string' ? value.trim().slice(0, limit) : '';
   if (!text) throw new Error(`Work Center Coordinator ${name} is required`);
   return text;
+}
+
+function requiresDeliveryBoundaryDecision(detail, actions) {
+  const requested = Array.isArray(actions) ? actions : [];
+  return !detail?.deliveryTarget && requested.some(action => (
+    action?.type === 'create_vp' || action?.workspaceMode !== 'read'
+  ));
 }
 
 function permanentCoordinatorDiagnostic(cause, phase, language) {
@@ -378,7 +396,7 @@ function normalizeGuidance(value, detail) {
   }
   const dynamic = isDynamicWorkItem(detail);
   const active = (detail.actions || [])
-    .filter(action => !['completed', 'superseded', 'cancelled'].includes(action.status));
+    .filter(action => !['completed', 'closed', 'superseded', 'cancelled'].includes(action.status));
   const activeByReference = new Map(active.map(action => [dynamic ? action.id : action.stageId, action]));
   const stageReferences = coordinatorStageReferences(detail);
   const seen = new Set();
@@ -456,13 +474,17 @@ export function normalizeCoordinatorResponse(value, detail, options = {}) {
     };
   }
   if (kind === 'request_human') {
+    if (options.automatic === true && source.contractPatch?.deliveryTarget) {
+      throw new Error('Automatic Work Center Coordinator delivery target changes are forbidden');
+    }
+    const contractPatch = dynamic ? normalizeContractPatch(source.contractPatch) : null;
     return {
       reply,
       decision: {
         kind,
         reason,
         question: cleanText(source.question, COORDINATOR_MAX_REPLY_CHARS, 'human question'),
-        contractPatch: null,
+        contractPatch: dynamic && options.automatic !== true ? contractPatch : null,
         guidance: [],
         actions: [],
       },
@@ -474,6 +496,7 @@ export function normalizeCoordinatorResponse(value, detail, options = {}) {
       decision: {
         kind,
         reason,
+        closeActions: normalizeDynamicActionClosures(source.closeActions, detail.actions || []),
         completion: source.completion,
         contractPatch: null,
         guidance: [],
@@ -482,12 +505,19 @@ export function normalizeCoordinatorResponse(value, detail, options = {}) {
     };
   }
   if (dynamic && kind === 'create_actions') {
+    if (options.automatic === true && source.contractPatch?.deliveryTarget) {
+      throw new Error('Automatic Work Center Coordinator delivery target changes are forbidden');
+    }
     const contractPatch = normalizeContractPatch(source.contractPatch);
+    if (requiresDeliveryBoundaryDecision(detail, source.actions)) {
+      throw new Error('Work Center delivery target is unconfirmed; the delivery boundary requires request_human before creating mutating or delivery Actions');
+    }
     const decision = {
       kind,
       reason,
       workItemType: source.workItemType,
       contractPatch,
+      closeActions: source.closeActions,
       supersedeActionIds: source.supersedeActionIds,
       guidance: [],
       actions: source.actions,
@@ -581,6 +611,7 @@ function coordinatorSnapshot(detail) {
     status: truncateUtf8(detail.status, 64),
     title: truncateUtf8(detail.title, 1 * 1024),
     goal: truncateUtf8(detail.goal, 4 * 1024),
+    deliveryTarget: detail.deliveryTarget || null,
     acceptanceCriteria,
     workItemType: truncateUtf8(detail.workflowSnapshot?.workItemType, 256) || null,
   };
@@ -592,8 +623,8 @@ function coordinatorSnapshot(detail) {
   const currentActions = (Array.isArray(detail.actions) ? detail.actions : [])
     .filter(action => !['superseded', 'cancelled'].includes(action.status));
   const stageReferences = coordinatorStageReferences(detail);
-  const unfinished = currentActions.filter(action => action.status !== 'completed');
-  const completed = currentActions.filter(action => action.status === 'completed');
+  const unfinished = currentActions.filter(action => !['completed', 'closed'].includes(action.status));
+  const completed = currentActions.filter(action => ['completed', 'closed'].includes(action.status));
   const selected = [
     ...unfinished,
     ...completed.slice(-Math.max(0, COORDINATOR_MAX_ACTIONS - unfinished.length)),
@@ -627,7 +658,7 @@ function coordinatorSnapshot(detail) {
   return {
     workItem,
     actions,
-    omittedCompletedActionCount: Math.max(0, completed.length - actions.filter(action => action.status === 'completed').length),
+    omittedCompletedActionCount: Math.max(0, completed.length - actions.filter(action => ['completed', 'closed'].includes(action.status)).length),
     conversation: coordinatorHistory(detail.messages),
   };
 }

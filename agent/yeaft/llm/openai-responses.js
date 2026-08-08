@@ -30,6 +30,7 @@ import {
   LLMRateLimitError,
   LLMAuthError,
   classifyAuthError,
+  classifyPolicyError,
   LLMContextError,
   LLMServerError,
   LLMAbortError,
@@ -219,6 +220,8 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
       const retryAfter = retryAfterFromResponse(response);
       return new LLMRateLimitError(`Overloaded: ${body}`, status, retryAfter);
     }
+    const policyError = classifyPolicyError(status, body);
+    if (policyError) return policyError;
     if (status === 413 || body.includes('context_length_exceeded') || body.includes('maximum context length')) {
       return new LLMContextError(`Context too long: ${body}`);
     }

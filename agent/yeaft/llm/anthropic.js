@@ -13,6 +13,7 @@ import {
   retryAfterFromResponse,
   LLMAuthError,
   classifyAuthError,
+  classifyPolicyError,
   LLMContextError,
   LLMServerError,
   LLMAbortError,
@@ -230,6 +231,8 @@ export class AnthropicAdapter extends LLMAdapter {
       const retryAfter = retryAfterFromResponse(response);
       return new LLMRateLimitError(`Anthropic overloaded (${authHint}): ${body}`, status, retryAfter);
     }
+    const policyError = classifyPolicyError(status, body);
+    if (policyError) return policyError;
     if (body.includes('prompt is too long') || body.includes('max_tokens')) {
       return new LLMContextError(`Anthropic context error (${authHint}): ${body}`);
     }
