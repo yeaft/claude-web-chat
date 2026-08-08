@@ -196,6 +196,10 @@ export function handleMessage(store, msg) {
       store.applyWorkCenterEvent(msg.agentId, msg.event);
       break;
 
+    case 'client_hello_ack':
+      store.workbenchRouteProtocolSupported = msg.workbenchRouteProtocol === 1;
+      break;
+
     case 'auth_result':
       if (msg.success) {
         store.authenticated = true;
@@ -213,6 +217,9 @@ export function handleMessage(store, msg) {
           store.serverEncryptionRequired = false;
         }
         store.yeaftSessionInventoryCompleteSupported = msg.yeaftSessionInventoryComplete === true;
+        // auth_result advertises Server support; the route protocol is usable
+        // only after Server confirms it processed our client_hello.
+        store.workbenchRouteProtocolSupported = false;
         store.yeaftSessionHydrateSlices = [];
         store._hasHandledYeaftSessionHydrate = false;
         store.yeaftSessionHydrateError = null;

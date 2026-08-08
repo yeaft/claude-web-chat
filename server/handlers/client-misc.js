@@ -79,7 +79,9 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
         if (!await checkAgentAccess(ftAgentId)) break;
         const resolved = resolveWorkbenchRequest(client, msg, ftAgentId);
         if (!resolved) break;
-        const identity = resolved.routeKey || ftAgentId;
+        const identity = resolved.routeKey
+          ? `${resolved.routeKey}\u0000${resolved.workspaceGeneration}`
+          : ftAgentId;
         const key = `${client.userId}:${identity}`;
         userFileTabs.set(key, {
           files: (msg.openFiles || []).map(f => ({ path: f.path })),
@@ -96,7 +98,9 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
         if (!await checkAgentAccess(ftAgentId)) break;
         const resolved = resolveWorkbenchRequest(client, msg, ftAgentId);
         if (!resolved) break;
-        const identity = resolved.routeKey || ftAgentId;
+        const identity = resolved.routeKey
+          ? `${resolved.routeKey}\u0000${resolved.workspaceGeneration}`
+          : ftAgentId;
         const key = `${client.userId}:${identity}`;
         const saved = userFileTabs.get(key);
         await sendToWebClient(client, {
@@ -104,6 +108,7 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
           agentId: ftAgentId,
           conversationId: resolved.conversationId || msg.conversationId || client.currentConversation,
           workbenchRouteKey: resolved.routeKey,
+          workbenchWorkspaceGeneration: resolved.workspaceGeneration,
           openFiles: saved?.files || [],
           activeIndex: saved?.activeIndex || 0
         });

@@ -3,6 +3,10 @@ import { mount } from '@vue/test-utils';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  isWorkbenchMessageForRoute,
+  workbenchWorkspaceGeneration,
+} from '../../web/utils/workbench-route.js';
 import * as Vue from 'vue';
 import { decorateMessageFileReferences, resolveMessageFileReference } from '../../web/utils/message-file-reference.js';
 
@@ -19,12 +23,13 @@ function capabilityStub(name, className) {
       sessionId: { type: String, default: '' },
       conversationId: { type: String, default: '' },
       workDir: { type: String, default: '' },
+      workspaceGeneration: { type: String, default: '' },
     },
     setup(props) {
       Vue.onMounted(() => capabilityMounts.push({ name, ...props }));
       return { props };
     },
-    template: `<div :class="'${className}'" :data-route-key="props.routeKey" :data-session-id="props.sessionId" :data-work-dir="props.workDir">${name}</div>`,
+    template: `<div :class="'${className}'" :data-route-key="props.routeKey" :data-session-id="props.sessionId" :data-work-dir="props.workDir" :data-workspace-generation="props.workspaceGeneration">${name}</div>`,
   };
 }
 
@@ -40,6 +45,7 @@ const workbenchStore = Vue.reactive({
   },
   effectiveWorkDir: '/workspace/a',
   capabilities: ['terminal', 'file_editor', 'workbench_session_routes'],
+  workbenchRouteProtocolSupported: true,
   hasCapability(capability) {
     return this.capabilities.includes(capability);
   },
@@ -85,6 +91,7 @@ describe('Workbench capability launcher', () => {
     };
     workbenchStore.effectiveWorkDir = '/workspace/a';
     workbenchStore.capabilities = ['terminal', 'file_editor', 'workbench_session_routes'];
+    workbenchStore.workbenchRouteProtocolSupported = true;
     capabilityMounts.length = 0;
     workbenchStore.toggleWorkbench.mockClear();
     workbenchStore.toggleWorkbenchMaximized.mockClear();
@@ -124,6 +131,10 @@ describe('Workbench capability launcher', () => {
       'data-route-key': 'yeaft:agent-1:session-a',
       'data-session-id': 'session-a',
       'data-work-dir': '/workspace/a',
+      'data-workspace-generation': workbenchWorkspaceGeneration(
+        'yeaft:agent-1:session-a',
+        '/workspace/a',
+      ),
     });
     expect(capabilityMounts.map(entry => entry.name)).toEqual(['terminal']);
     expect(wrapper.get('.workbench-header-title').text()).toBe('workbench.terminal');
@@ -163,12 +174,39 @@ describe('Workbench capability launcher', () => {
       'data-route-key': 'yeaft:agent-1:session-b',
       'data-session-id': 'session-b',
       'data-work-dir': '/workspace/b',
+      'data-workspace-generation': workbenchWorkspaceGeneration(
+        'yeaft:agent-1:session-b',
+        '/workspace/b',
+      ),
     });
     expect(capabilityMounts.map(entry => `${entry.name}:${entry.routeKey}`)).toEqual([
       'terminal:yeaft:agent-1:session-a',
       'git:yeaft:agent-1:session-b',
     ]);
     wrapper.unmount();
+  });
+
+  it('rejects delayed responses from an older workspace generation on the same route', () => {
+    const routeKey = 'yeaft:agent-1:session-a';
+    const oldGeneration = workbenchWorkspaceGeneration(routeKey, '/workspace/a');
+    const currentGeneration = workbenchWorkspaceGeneration(routeKey, '/workspace/b');
+    for (const type of [
+      'git_status_result',
+      'directory_listing',
+      'file_search_result',
+      'file_tabs_restored',
+    ]) {
+      expect(isWorkbenchMessageForRoute({
+        type,
+        workbenchRouteKey: routeKey,
+        workbenchWorkspaceGeneration: oldGeneration,
+      }, routeKey, currentGeneration)).toBe(false);
+      expect(isWorkbenchMessageForRoute({
+        type,
+        workbenchRouteKey: routeKey,
+        workbenchWorkspaceGeneration: currentGeneration,
+      }, routeKey, currentGeneration)).toBe(true);
+    }
   });
 
   it('keeps Browser discoverable without pretending Phase 0 has a viewer', async () => {
@@ -203,6 +241,7 @@ describe('Workbench capability launcher', () => {
 
   it('shows unavailable detail for unsupported legacy capabilities', async () => {
     workbenchStore.capabilities = ['terminal', 'file_editor'];
+    workbenchStore.workbenchRouteProtocolSupported = false;
     const wrapper = mountWorkbench();
 
     await wrapper.get('[data-workbench-capability="git"]').trigger('click');

@@ -20,6 +20,7 @@ export default {
     sessionId: { type: String, required: true },
     conversationId: { type: String, required: true },
     workDir: { type: String, default: '' },
+    workspaceGeneration: { type: String, required: true },
   },
   template: `
     <div class="files-tab file-two-col" :class="{ 'mobile-editor-view': isMobile && mobileView === 'editor', 'tree-collapsed': !treeVisible }" ref="rootEl">
@@ -656,6 +657,7 @@ export default {
       renderOfficeLocal: preview.renderOfficeLocal,
       editorContainer, debugStatus: editor.debugStatus,
       routeKey: props.routeKey,
+      workspaceGeneration: props.workspaceGeneration,
     });
 
     // --- Wrapped operation callbacks (pass t at init time) ---

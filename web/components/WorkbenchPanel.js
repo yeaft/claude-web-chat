@@ -1,5 +1,9 @@
 import WorkbenchCapabilityHost from './WorkbenchCapabilityHost.js';
-import { workbenchConversationId, workbenchRouteKey } from '../utils/workbench-route.js';
+import {
+  workbenchConversationId,
+  workbenchRouteKey,
+  workbenchWorkspaceGeneration,
+} from '../utils/workbench-route.js';
 
 export default {
   name: 'WorkbenchPanel',
@@ -120,7 +124,10 @@ export default {
     const activeRoute = Vue.computed(() => store.activeSessionRoute || null);
     const activeRouteKey = Vue.computed(() => workbenchRouteKey(activeRoute.value));
     const activeWorkDir = Vue.computed(() => store.effectiveWorkDir || '');
-    const workbenchContextKey = Vue.computed(() => `${activeRouteKey.value}\u0000${activeWorkDir.value}`);
+    const activeWorkspaceGeneration = Vue.computed(() => (
+      workbenchWorkspaceGeneration(activeRouteKey.value, activeWorkDir.value)
+    ));
+    const workbenchContextKey = Vue.computed(() => `${activeRouteKey.value}\u0000${activeWorkspaceGeneration.value}`);
     const routeProps = Vue.computed(() => ({
       routeKey: activeRouteKey.value,
       runtimeProvider: activeRoute.value?.runtimeProvider || '',
@@ -128,9 +135,13 @@ export default {
       sessionId: activeRoute.value?.sessionId || '',
       conversationId: workbenchConversationId(activeRouteKey.value),
       workDir: activeWorkDir.value,
+      workspaceGeneration: activeWorkspaceGeneration.value,
     }));
 
-    const hasSessionRoutes = Vue.computed(() => store.hasCapability('workbench_session_routes'));
+    const hasSessionRoutes = Vue.computed(() => (
+      store.workbenchRouteProtocolSupported === true
+      && store.hasCapability('workbench_session_routes')
+    ));
     const hasTerminal = Vue.computed(() => hasSessionRoutes.value && store.hasCapability('terminal'));
     const hasExplorer = Vue.computed(() => hasSessionRoutes.value && store.hasCapability('file_editor'));
     const hasBrowser = Vue.computed(() => (

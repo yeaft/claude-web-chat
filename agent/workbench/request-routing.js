@@ -1,8 +1,10 @@
 export function workbenchRequestRouting(source) {
   return {
-    ...(source?._requestUserId ? { _requestUserId: source._requestUserId } : {}),
-    ...(source?._requestClientId ? { _requestClientId: source._requestClientId } : {}),
+    ...(source?._workbenchRequestId ? { _workbenchRequestId: source._workbenchRequestId } : {}),
     ...(source?.workbenchRouteKey ? { workbenchRouteKey: source.workbenchRouteKey } : {}),
+    ...(source?.workbenchWorkspaceGeneration
+      ? { workbenchWorkspaceGeneration: source.workbenchWorkspaceGeneration }
+      : {}),
   };
 }
 

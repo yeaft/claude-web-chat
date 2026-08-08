@@ -4,6 +4,12 @@ import {
   verifyConversationOwnership, getCachedDir
 } from '../ws-utils.js';
 import { resolveWorkbenchRequest } from '../workbench-route.js';
+import {
+  deleteWorkbenchRequest,
+  getWorkbenchTerminalOwner,
+  registerWorkbenchRequest,
+  registerWorkbenchTerminalOwner,
+} from '../workbench-correlation.js';
 
 /**
  * Handle workbench messages from web client (terminal, file, git operations).
@@ -31,19 +37,94 @@ async function denyWorkbenchRoute(client, msg) {
   await sendToWebClient(client, { type: 'error', message: 'Invalid Workbench Session route' });
 }
 
+const RESPONSE_TYPES = Object.freeze({
+  terminal_create: ['terminal_created', 'terminal_error'],
+  read_file: ['file_content'],
+  write_file: ['file_saved'],
+  list_directory: ['directory_listing'],
+  git_status: ['git_status_result'],
+  git_diff: ['git_diff_result'],
+  git_add: ['git_op_result'],
+  git_reset: ['git_op_result'],
+  git_restore: ['git_op_result'],
+  git_commit: ['git_op_result'],
+  git_push: ['git_op_result'],
+  file_search: ['file_search_result'],
+  create_file: ['file_op_result'],
+  delete_files: ['file_op_result'],
+  move_files: ['file_op_result'],
+  copy_files: ['file_op_result'],
+  upload_to_dir: ['file_op_result'],
+});
+
 function canonicalWorkbenchMessage(msg, resolved, { canonicalWorkDir = false } = {}) {
+  const {
+    _requestUserId: _ignoredUserId,
+    _requestClientId: _ignoredClientId,
+    _workbenchRequestId: _ignoredRequestId,
+    ...clientFields
+  } = msg || {};
   if (resolved.legacy) return {
-    ...msg,
+    ...clientFields,
     ...(resolved.conversationId ? { conversationId: resolved.conversationId } : {}),
   };
   return {
-    ...msg,
+    ...clientFields,
     agentId: resolved.agentId,
     conversationId: resolved.conversationId,
     workDir: canonicalWorkDir ? resolved.workDir : resolved.requestedWorkDir,
     workbenchRoute: resolved.route,
     workbenchRouteKey: resolved.routeKey,
+    workbenchWorkspaceGeneration: resolved.workspaceGeneration,
   };
+}
+
+function correlateWorkbenchRequest({ agentId, clientId, client, msg, resolved, canonical }) {
+  if (resolved.legacy) {
+    return {
+      ...canonical,
+      _requestUserId: client.userId,
+      _requestClientId: clientId,
+    };
+  }
+  const expectedResponseTypes = RESPONSE_TYPES[msg.type];
+  if (!expectedResponseTypes) return canonical;
+  const registration = {
+    agentId,
+    clientId,
+    userId: client.userId,
+    routeKey: resolved.routeKey,
+    conversationId: resolved.conversationId,
+    workspaceGeneration: resolved.workspaceGeneration,
+    route: resolved.route,
+    role: client.role,
+    requestType: msg.type,
+    expectedResponseTypes,
+    publicRequestId: typeof msg.requestId === 'string' ? msg.requestId : null,
+    terminalId: msg.terminalId || null,
+  };
+  const requestId = registerWorkbenchRequest(registration);
+  if (!requestId) return null;
+  if (msg.type === 'terminal_create'
+      && !registerWorkbenchTerminalOwner({ ...registration, requestId })) {
+    deleteWorkbenchRequest({ agentId, requestId });
+    return null;
+  }
+  return { ...canonical, _workbenchRequestId: requestId };
+}
+
+async function forwardCorrelatedWorkbenchRequest({ agentId, clientId, client, msg, resolved, canonical }) {
+  const outbound = correlateWorkbenchRequest({ agentId, clientId, client, msg, resolved, canonical });
+  if (!outbound) return false;
+  try {
+    await forwardToAgent(agentId, outbound);
+    return true;
+  } catch (error) {
+    if (outbound._workbenchRequestId) {
+      deleteWorkbenchRequest({ agentId, requestId: outbound._workbenchRequestId });
+    }
+    throw error;
+  }
 }
 
 export async function handleClientWorkbench(clientId, client, msg, checkAgentAccess) {
@@ -70,13 +151,42 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
       }
-      await forwardToAgent(termAgentId, {
-        ...canonicalWorkbenchMessage(msg, { ...resolved, conversationId: termConvId }, {
+      let terminalResolved = { ...resolved, conversationId: termConvId };
+      if (!resolved.legacy && msg.type !== 'terminal_create') {
+        const owner = getWorkbenchTerminalOwner(termAgentId, msg.terminalId);
+        const ownerMatches = owner
+          && owner.clientId === clientId
+          && owner.userId === client.userId
+          && owner.routeKey === resolved.routeKey
+          && owner.conversationId === termConvId;
+        const generationMatches = msg.type === 'terminal_close'
+          ? msg.workbenchWorkspaceGeneration === owner?.workspaceGeneration
+          : owner?.workspaceGeneration === resolved.workspaceGeneration;
+        if (!ownerMatches || !generationMatches) {
+          await denyWorkbenchRoute(client, msg);
+          return;
+        }
+        if (msg.type === 'terminal_close') {
+          terminalResolved = {
+            ...terminalResolved,
+            workspaceGeneration: owner.workspaceGeneration,
+          };
+        }
+      }
+      const forwarded = await forwardCorrelatedWorkbenchRequest({
+        agentId: termAgentId,
+        clientId,
+        client,
+        msg,
+        resolved: terminalResolved,
+        canonical: canonicalWorkbenchMessage(msg, terminalResolved, {
           canonicalWorkDir: msg.type === 'terminal_create',
         }),
-        _requestUserId: client.userId,
-        _requestClientId: clientId,
       });
+      if (!forwarded) {
+        await denyWorkbenchRoute(client, msg);
+        return;
+      }
       break;
     }
 
@@ -91,10 +201,13 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
       }
       const fileConvId = resolved.conversationId || msg.conversationId || client.currentConversation || '_explorer';
       console.log(`[Server] Forwarding read_file to agent ${fileAgentId}, conv=${fileConvId}, path=${msg.filePath}`);
-      await forwardToAgent(fileAgentId, {
-        ...canonicalWorkbenchMessage(msg, { ...resolved, conversationId: fileConvId }),
-        _requestUserId: client.userId,
-        _requestClientId: clientId,
+      await forwardCorrelatedWorkbenchRequest({
+        agentId: fileAgentId,
+        clientId,
+        client,
+        msg,
+        resolved,
+        canonical: canonicalWorkbenchMessage(msg, { ...resolved, conversationId: fileConvId }),
       });
       break;
     }
@@ -117,10 +230,13 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
           return;
         }
       }
-      await forwardToAgent(writeAgentId, {
-        ...canonicalWorkbenchMessage(msg, { ...resolved, conversationId: writeConvId }),
-        _requestUserId: client.userId,
-        _requestClientId: clientId,
+      await forwardCorrelatedWorkbenchRequest({
+        agentId: writeAgentId,
+        clientId,
+        client,
+        msg,
+        resolved,
+        canonical: canonicalWorkbenchMessage(msg, { ...resolved, conversationId: writeConvId }),
       });
       break;
     }
@@ -157,11 +273,13 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
         return;
       }
 
-      await forwardToAgent(dirAgentId, {
-        ...canonical,
-        type: 'list_directory',
-        _requestUserId: client.userId,
-        _requestClientId: clientId
+      await forwardCorrelatedWorkbenchRequest({
+        agentId: dirAgentId,
+        clientId,
+        client,
+        msg,
+        resolved,
+        canonical: { ...canonical, type: 'list_directory' },
       });
       break;
     }
@@ -182,10 +300,13 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
         await denyWorkbenchRoute(client, msg);
         return;
       }
-      await forwardToAgent(gitAgentId, {
-        ...canonicalWorkbenchMessage(msg, resolved),
-        _requestUserId: client.userId,
-        _requestClientId: clientId,
+      await forwardCorrelatedWorkbenchRequest({
+        agentId: gitAgentId,
+        clientId,
+        client,
+        msg,
+        resolved,
+        canonical: canonicalWorkbenchMessage(msg, resolved),
       });
       break;
     }
@@ -203,10 +324,13 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
         await denyWorkbenchRoute(client, msg);
         return;
       }
-      await forwardToAgent(fopAgentId, {
-        ...canonicalWorkbenchMessage(msg, resolved),
-        _requestUserId: client.userId,
-        _requestClientId: clientId,
+      await forwardCorrelatedWorkbenchRequest({
+        agentId: fopAgentId,
+        clientId,
+        client,
+        msg,
+        resolved,
+        canonical: canonicalWorkbenchMessage(msg, resolved),
       });
       break;
     }

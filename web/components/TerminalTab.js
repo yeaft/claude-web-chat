@@ -12,6 +12,7 @@ export default {
     sessionId: { type: String, required: true },
     conversationId: { type: String, required: true },
     workDir: { type: String, default: '' },
+    workspaceGeneration: { type: String, required: true },
   },
   template: `
     <div class="terminal-tab">
@@ -346,7 +347,7 @@ export default {
 
     function handleWorkbenchMessage(event) {
       const msg = event.detail;
-      if (!msg || !isWorkbenchMessageForRoute(msg, props.routeKey)) return;
+      if (!msg || !isWorkbenchMessageForRoute(msg, props.routeKey, props.workspaceGeneration)) return;
       if (props.routeKey && workbenchMessageScope(msg, props.routeKey) !== 'main') return;
 
       switch (msg.type) {

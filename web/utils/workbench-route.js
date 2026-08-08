@@ -19,6 +19,22 @@ export function workbenchRouteKey(route) {
     .join(':');
 }
 
+function stableWorkspaceHash(value) {
+  let hash = 0xcbf29ce484222325n;
+  for (const char of String(value || '')) {
+    hash ^= BigInt(char.codePointAt(0));
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, '0');
+}
+
+export function workbenchWorkspaceGeneration(routeKey, workDir) {
+  const normalizedRouteKey = cleanRoutePart(routeKey);
+  const normalizedWorkDir = cleanRoutePart(workDir);
+  if (!normalizedRouteKey || !normalizedWorkDir) return '';
+  return `${normalizedRouteKey}@${stableWorkspaceHash(normalizedWorkDir)}`;
+}
+
 export function workbenchConversationId(routeKey, scope = 'main') {
   if (!routeKey) return '';
   const normalizedScope = ['main', 'files-folder-picker', 'git-folder-picker'].includes(scope)
@@ -64,6 +80,7 @@ export function createRouteBoundWorkbenchStore(store, route) {
       agentId: workbenchRoute.agentId,
       workbenchRoute,
       workbenchRouteKey: route.routeKey,
+      workbenchWorkspaceGeneration: route.workspaceGeneration,
       workbenchScope,
       conversationId: workbenchConversationId(route.routeKey, workbenchScope),
     };
@@ -92,10 +109,12 @@ export function createRouteBoundWorkbenchStore(store, route) {
   });
 }
 
-export function isWorkbenchMessageForRoute(message, routeKey) {
+export function isWorkbenchMessageForRoute(message, routeKey, workspaceGeneration = '') {
   if (!routeKey) return true;
-  if (message?.workbenchRouteKey) return message.workbenchRouteKey === routeKey;
-  // Rolling-upgrade fallback: old Servers echo the synthetic conversation id
-  // but do not yet project workbenchRouteKey.
-  return workbenchMessageScope(message, routeKey) !== null;
+  const routeMatches = message?.workbenchRouteKey
+    ? message.workbenchRouteKey === routeKey
+    : workbenchMessageScope(message, routeKey) !== null;
+  if (!routeMatches) return false;
+  if (!workspaceGeneration) return true;
+  return message?.workbenchWorkspaceGeneration === workspaceGeneration;
 }

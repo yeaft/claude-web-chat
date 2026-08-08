@@ -14,6 +14,7 @@ export default {
     sessionId: { type: String, required: true },
     conversationId: { type: String, required: true },
     workDir: { type: String, default: '' },
+    workspaceGeneration: { type: String, required: true },
   },
   template: `
     <div class="git-status-tab git-three-col">
@@ -425,7 +426,7 @@ export default {
     // --- Handle messages from server ---
     const handleWorkbenchMessage = (event) => {
       const msg = event.detail;
-      if (!msg || !isWorkbenchMessageForRoute(msg, props.routeKey)) return;
+      if (!msg || !isWorkbenchMessageForRoute(msg, props.routeKey, props.workspaceGeneration)) return;
 
       switch (msg.type) {
         case 'directory_listing': {

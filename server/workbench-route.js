@@ -24,6 +24,22 @@ export function workbenchRouteKey(route) {
     .join(':');
 }
 
+function stableWorkspaceHash(value) {
+  let hash = 0xcbf29ce484222325n;
+  for (const char of String(value || '')) {
+    hash ^= BigInt(char.codePointAt(0));
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, '0');
+}
+
+export function workbenchWorkspaceGeneration(routeKey, workDir) {
+  const normalizedRouteKey = clean(routeKey, 1200);
+  const normalizedWorkDir = clean(workDir, 4096);
+  if (!normalizedRouteKey || !normalizedWorkDir) return '';
+  return `${normalizedRouteKey}@${stableWorkspaceHash(normalizedWorkDir)}`;
+}
+
 export function workbenchConversationId(route, scope = 'main') {
   const routeKey = workbenchRouteKey(route);
   if (!routeKey) return '';
@@ -57,8 +73,12 @@ function resolveYeaftRow(client, route) {
     const owned = yeaftSessionDb.getForAgent(client.userId, route.agentId, route.sessionId);
     if (owned) return owned;
   }
-  if (!CONFIG.skipAuth) return null;
-  return agents.get(route.agentId)?.yeaftSessions?.get(route.sessionId)
+  const agent = agents.get(route.agentId);
+  if (!CONFIG.skipAuth) {
+    if (client?.role !== 'admin' || agent?.ownerId) return null;
+    return agent?.yeaftSessions?.get(route.sessionId) || null;
+  }
+  return agent?.yeaftSessions?.get(route.sessionId)
     || yeaftSessionDb.getByAgent(route.agentId).find(row => row?.id === route.sessionId)
     || null;
 }
@@ -86,8 +106,27 @@ function resolveChatRow(client, route) {
  *
  * `legacy: true` preserves old clients that predate route-scoped Workbench.
  */
+export function currentWorkbenchWorkspaceGeneration({ route, userId, role }) {
+  if (!route || !userId) return '';
+  const client = { userId, role };
+  const row = route.runtimeProvider === 'yeaft'
+    ? resolveYeaftRow(client, route)
+    : resolveChatRow(client, route);
+  if (!row || row.isArchived) return '';
+  const workDir = clean(route.runtimeProvider === 'yeaft' ? row.workDir : row.work_dir, 4096);
+  return workbenchWorkspaceGeneration(workbenchRouteKey(route), workDir);
+}
+
 export function resolveWorkbenchRequest(client, msg, targetAgentId, { allowMissingSession = false } = {}) {
+  const agent = agents.get(targetAgentId);
+  const agentSupportsRoutes = Array.isArray(agent?.capabilities)
+    && agent.capabilities.includes(WORKBENCH_SESSION_ROUTE_CAPABILITY);
+  const clientSupportsRoutes = client?.workbenchRouteProtocol === 1;
+
   if (!msg?.workbenchRoute) {
+    // Legacy is a negotiated pairing, not a caller-selected downgrade. Once
+    // either side speaks the route protocol, route-less Workbench is invalid.
+    if (clientSupportsRoutes || agentSupportsRoutes) return null;
     return {
       legacy: true,
       agentId: targetAgentId,
@@ -97,6 +136,7 @@ export function resolveWorkbenchRequest(client, msg, targetAgentId, { allowMissi
     };
   }
 
+  if (!clientSupportsRoutes || !agentSupportsRoutes) return null;
   const route = {
     runtimeProvider: clean(msg.workbenchRoute.runtimeProvider, 32),
     agentId: clean(msg.workbenchRoute.agentId),
@@ -104,13 +144,11 @@ export function resolveWorkbenchRequest(client, msg, targetAgentId, { allowMissi
   };
   const routeKey = workbenchRouteKey(route);
   if (!routeKey || route.agentId !== targetAgentId) return null;
-  const agent = agents.get(targetAgentId);
-  if (!Array.isArray(agent?.capabilities)
-      || !agent.capabilities.includes(WORKBENCH_SESSION_ROUTE_CAPABILITY)) return null;
 
   const row = route.runtimeProvider === 'yeaft'
     ? resolveYeaftRow(client, route)
     : resolveChatRow(client, route);
+  if (row?.isArchived && !allowMissingSession) return null;
   if (!row && !allowMissingSession) return null;
 
   let scope = SCOPES.has(msg.workbenchScope) ? msg.workbenchScope : 'main';
@@ -121,6 +159,10 @@ export function resolveWorkbenchRequest(client, msg, targetAgentId, { allowMissi
   const sessionWorkDir = clean(row
     ? (route.runtimeProvider === 'yeaft' ? row.workDir : row.work_dir)
     : '', 4096);
+  const workspaceGeneration = sessionWorkDir
+    ? workbenchWorkspaceGeneration(routeKey, sessionWorkDir)
+    : clean(msg.workbenchWorkspaceGeneration, 1600);
+  if (!workspaceGeneration && !allowMissingSession) return null;
   return {
     legacy: false,
     route,
@@ -132,5 +174,7 @@ export function resolveWorkbenchRequest(client, msg, targetAgentId, { allowMissi
     // existing Agent-path picker and use requestedWorkDir after route auth.
     workDir: sessionWorkDir,
     requestedWorkDir: clean(msg.workDir, 4096) || sessionWorkDir,
+    workspaceGeneration,
+    archived: row?.isArchived === true,
   };
 }

@@ -21,6 +21,7 @@ export function createWsHandler({
   // Preview
   mdPreviewMode, renderOfficeLocal, editorContainer, debugStatus,
   routeKey = '',
+  workspaceGeneration = '',
 }) {
   const pendingRevealLines = new Map();
 
@@ -42,7 +43,7 @@ export function createWsHandler({
 
   const handleWorkbenchMessage = (event) => {
     const msg = event.detail;
-    if (!msg || !isWorkbenchMessageForRoute(msg, routeKey)) return;
+    if (!msg || !isWorkbenchMessageForRoute(msg, routeKey, workspaceGeneration)) return;
     const messageScope = workbenchMessageScope(msg, routeKey);
 
     switch (msg.type) {
