@@ -11,6 +11,7 @@ const cacheDir = cacheIndex >= 0
 const result = await probeBrowserRuntime({
   executablePath,
   cacheDir,
+  profileParent: `${cacheDir}-profiles`,
   headless: !process.argv.includes('--headful'),
 });
 console.log(JSON.stringify(result, null, 2));

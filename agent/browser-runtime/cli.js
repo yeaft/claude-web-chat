@@ -1,6 +1,6 @@
 import {
+  resolveManagedYeaftDir,
   resolveServiceInstanceId,
-  resolveYeaftDir,
   warnDeprecatedInstanceArg,
 } from '../service/config.js';
 
@@ -33,7 +33,11 @@ export async function handleBrowserCommand(args, dependencies = {}) {
   const warn = dependencies.warn || console.warn;
   warnDeprecatedInstanceArg(identityArgs, warn);
   const instanceId = resolveServiceInstanceId(identityArgs, env, { management: true });
-  const yeaftDir = (dependencies.resolveYeaftDir || resolveYeaftDir)(identityArgs, env, instanceId);
+  const resolveManagementRoot = dependencies.resolveManagedYeaftDir || resolveManagedYeaftDir;
+  const yeaftDir = resolveManagementRoot(identityArgs, env, instanceId, {
+    loadServiceConfig: dependencies.loadServiceConfig,
+    getDefaultYeaftDir: dependencies.getDefaultYeaftDir,
+  });
   const browser = dependencies.browserModule || await import('./index.js');
   const configApi = dependencies.configApi || await import('../yeaft/config-api.js');
   const current = configApi.getBrowserRuntimeSettings(yeaftDir);
@@ -52,6 +56,7 @@ export async function handleBrowserCommand(args, dependencies = {}) {
       cacheDir,
       headless: options.headless ?? current.headless,
       timeoutMs: current.startupProbeTimeoutMs,
+      profileParent: `${cacheDir}-profiles`,
     });
     log(JSON.stringify(result, null, 2));
     if (!result.ok) {

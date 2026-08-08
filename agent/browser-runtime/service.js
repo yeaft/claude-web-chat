@@ -47,6 +47,7 @@ export class BrowserRuntimeService {
       cacheDir: this.config.cacheDir,
       headless: this.config.headless,
       timeoutMs: this.config.startupProbeTimeoutMs,
+      profileParent: `${this.config.cacheDir}-profiles`,
       signal: this.#probeAbort.signal,
     }).then(result => {
       this.probeResult = Object.freeze({ ...result });

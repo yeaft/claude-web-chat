@@ -274,7 +274,7 @@ async function handleLlmCommand(args) {
       const preset = args[1];
       if (preset === 'github-copilot') {
         result = await useGitHubCopilot(current, options);
-        writeLocalLlmConfig(result.config, configPath);
+        writeLocalLlmConfig(result.config, configPath, current);
         console.log(`Configured GitHub Copilot provider with ${result.discovery.models.length} ${result.discovery.source} models.`);
         if (result.discovery.warning) console.log(`Warning: ${result.discovery.warning}`);
         console.log(`Primary model: ${result.config.primaryModel}`);
@@ -283,7 +283,7 @@ async function handleLlmCommand(args) {
       }
       if (preset === 'openai-compatible') {
         result = await useOpenAICompatible(current, options, process.env);
-        writeLocalLlmConfig(result.config, configPath);
+        writeLocalLlmConfig(result.config, configPath, current);
         console.log(`Configured ${result.provider.name} with ${result.discovery.models.length} live models.`);
         console.log(`Primary model: ${result.config.primaryModel}`);
         if (result.config.fastModel) console.log(`Fast model: ${result.config.fastModel}`);
@@ -294,7 +294,7 @@ async function handleLlmCommand(args) {
 
     if (subcommand === 'add-provider') {
       result = addOrUpdateProvider(current, options, process.env);
-      writeLocalLlmConfig(result.config, configPath);
+      writeLocalLlmConfig(result.config, configPath, current);
       console.log(`${result.replaced ? 'Updated' : 'Added'} provider: ${result.provider.name}`);
       if (result.config.primaryModel) console.log(`Primary model: ${result.config.primaryModel}`);
       if (result.config.fastModel) console.log(`Fast model: ${result.config.fastModel}`);
@@ -303,7 +303,7 @@ async function handleLlmCommand(args) {
 
     if (subcommand === 'set-model') {
       result = setLocalModels(current, options);
-      writeLocalLlmConfig(result.config, configPath);
+      writeLocalLlmConfig(result.config, configPath, current);
       if (result.config.primaryModel) console.log(`Primary model: ${result.config.primaryModel}`);
       if (result.config.fastModel) console.log(`Fast model: ${result.config.fastModel}`);
       return;
@@ -311,7 +311,7 @@ async function handleLlmCommand(args) {
 
     if (subcommand === 'remove-provider') {
       result = removeProvider(current, options);
-      writeLocalLlmConfig(result.config, configPath);
+      writeLocalLlmConfig(result.config, configPath, current);
       console.log(result.removed ? `Removed provider: ${options.name}` : `Provider not found: ${options.name}`);
       if (result.cleared.length) {
         console.log(`Cleared ${result.cleared.join(', ')} because it referenced ${options.name}`);
@@ -443,7 +443,7 @@ async function runLlmSetup(current, configPath) {
     const fastAnswer = (await rl.question('Fast model number or id (optional): ')).trim();
     const fast = fastAnswer ? (ids[Number(fastAnswer) - 1] || fastAnswer) : null;
     const result = await useGitHubCopilot(current, { model: primary, fast, allowUnknownModel: false });
-    writeLocalLlmConfig(result.config, configPath);
+    writeLocalLlmConfig(result.config, configPath, current);
     console.log(`Configured GitHub Copilot with ${result.discovery.models.length} ${result.discovery.source} models.`);
     if (result.discovery.warning) console.log(`Warning: ${result.discovery.warning}`);
     console.log(`Primary model: ${result.config.primaryModel}`);

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 export const BROWSER_EXTENSION_DIR = join(moduleDir, 'extension');
 export const BROWSER_EXTENSION_NAME = 'Yeaft Browser Runtime';
-export const BROWSER_EXTENSION_SHA256 = '9a947b51ced492758d977431a8956dfa14721be53eef0fd0373bc7c4bd3d99b1';
+export const BROWSER_EXTENSION_SHA256 = '51cc6519ec9f72f86af7a0a98c3511c32e0e8fde6e8e3406886e7048f0c5972e';
 
 async function walkFiles(root, current = root) {
   const entries = await readdir(current, { withFileTypes: true });

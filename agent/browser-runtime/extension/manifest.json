@@ -13,7 +13,6 @@
   "permissions": [
     "offscreen",
     "storage",
-    "tabCapture",
-    "tabs"
+    "tabCapture"
   ]
 }

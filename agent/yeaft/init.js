@@ -31,9 +31,9 @@ export function isPermissionError(err) {
  * @param {string} content
  * @param {string[]} warnings — array to push warning messages into
  */
-function safeWriteFile(filePath, content, warnings) {
+function safeWriteFile(filePath, content, warnings, mode = 0o644) {
   try {
-    writeFileSync(filePath, content, { encoding: 'utf8', mode: 0o644 });
+    writeFileSync(filePath, content, { encoding: 'utf8', mode });
   } catch (err) {
     if (isPermissionError(err)) {
       warnings.push(`Cannot write ${filePath}: ${err.code}`);
@@ -49,9 +49,9 @@ function safeWriteFile(filePath, content, warnings) {
  * @param {string[]} warnings — array to push warning messages into
  * @returns {boolean} — true if directory exists (created or already existed)
  */
-function safeMkdir(dirPath, warnings) {
+function safeMkdir(dirPath, warnings, mode = 0o755) {
   try {
-    mkdirSync(dirPath, { recursive: true, mode: 0o755 });
+    mkdirSync(dirPath, { recursive: true, mode });
     return true;
   } catch (err) {
     if (isPermissionError(err)) {
@@ -168,7 +168,7 @@ export function initYeaftDir(dir) {
 
   // Ensure root exists
   if (!existsSync(root)) {
-    if (safeMkdir(root, warnings)) {
+    if (safeMkdir(root, warnings, 0o700)) {
       created.push(root);
     }
   }
@@ -194,7 +194,7 @@ export function initYeaftDir(dir) {
   // config.json — default configuration (user edits this directly)
   const configJsonPath = join(root, 'config.json');
   if (!existsSync(configJsonPath)) {
-    safeWriteFile(configJsonPath, DEFAULT_CONFIG_JSON, warnings);
+    safeWriteFile(configJsonPath, DEFAULT_CONFIG_JSON, warnings, 0o600);
     created.push(configJsonPath);
   }
 

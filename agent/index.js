@@ -105,7 +105,7 @@ const { agentName: AGENT_NAME, instanceId: INSTANCE_ID } = resolveRuntimeIdentit
 const YEAFT_DIR = process.env.YEAFT_DIR || fileConfig.yeaftDir || getDefaultYeaftDir(INSTANCE_ID);
 try {
   if (!existsSync(YEAFT_DIR)) {
-    mkdirSync(YEAFT_DIR, { recursive: true });
+    mkdirSync(YEAFT_DIR, { recursive: true, mode: 0o700 });
     console.log(`[Agent] Created yeaft dir: ${YEAFT_DIR}`);
   }
 } catch (err) {
@@ -406,7 +406,7 @@ process.on('SIGTERM', async () => {
     });
     const probe = ctx.browserRuntime.snapshot().probe;
     if (probe?.ok) {
-      console.log(`[BrowserRuntime] ready: capture=${probe.captureMode} build=${probe.buildId}`);
+      console.log(`[BrowserRuntime] ready: capture=${probe.captureMode} build=${probe.actualBuildId || probe.expectedBuildId}`);
     } else if (runtimeConfig?.enabled) {
       console.warn(`[BrowserRuntime] unavailable: ${probe?.code || 'probe_failed'}`);
     }

@@ -23,8 +23,9 @@ Phase 0 只落地 Agent-local 配置、受管浏览器安装、固定扩展、st
 
 - Automation：`puppeteer-core@24.41.0`，兼容项目 Node `>=22.5.0` 边界。
 - Browser distribution：显式安装并固定 Chrome for Testing `151.0.7922.71`。系统 branded Chrome 不作为隐式 fallback；它可能拒绝 unpacked extension，协议版本也可能缺失 `Extensions` CDP domain。
-- Browser 下载：只在执行 `yeaft-agent browser install` 时发生，普通 Agent 安装不自动下载约 389 MiB 的 Chromium，也不在默认关闭状态启动浏览器进程。
-- Extension：npm Agent 包内固定 MV3 extension；启动前校验 SHA-256 `9a947b51ced492758d977431a8956dfa14721be53eef0fd0373bc7c4bd3d99b1`。
+- Browser 下载：只在执行 `yeaft-agent browser install` 时发生，普通 Agent 安装不会自动下载 Chrome，也不会在默认关闭状态启动浏览器进程。Linux x86_64 固定归档约 `184 MiB`；其他平台大小不同。
+- Browser 完整性：各支持平台的 Chrome for Testing 归档使用固定 SHA-256；下载到私有 staging，校验后解包并原子发布。复用时重新校验 executable digest。
+- Extension：npm Agent 包内固定 MV3 extension；启动前校验 SHA-256 `51cc6519ec9f72f86af7a0a98c3511c32e0e8fde6e8e3406886e7048f0c5972e`。
 - Capture：`chrome.tabCapture` + offscreen document。
 - Codec baseline：强制协商并验证 `video/VP8`。
 - Profile：每次 probe 使用临时 profile，结束或失败后删除；Phase 0 不保存用户登录态。
@@ -41,14 +42,16 @@ Phase 0 只落地 Agent-local 配置、受管浏览器安装、固定扩展、st
 - 2.08 秒 probe 期间平均 CPU：约 `66%` 单核；
 - Server WebSocket：没有 video/frame payload。
 
-100 次真实 create/close soak：
+旧 exact head 的独立 100 次真实 create/close soak（durable task `task_msju19pp_edaaa32f`）：
 
 - 成功：`100/100`；
-- 首帧/完整 probe duration：p50 `1.612 s`、p95 `2.613 s`、max `11.737 s`；
-- 临时 profile：前后均为 `0`；
-- Chrome 进程：前后均为 `0`。
+- 首帧/完整 probe duration：p50 `2.310 s`、p95 `3.075 s`、max `12.929 s`；
+- 临时 profile：`2 → 2`（没有新增残留）；
+- Chrome 进程：`0 → 0`。
 
-初始 soak 曾出现 `3/100` 次 MV3 service worker attach race：target 已可见但 `chrome.storage.session` 尚未注入。修复只在同一总 deadline 内重试只读 storage 查询，不重放 extension action 或 capture 副作用；修复后为上述 `100/100`。
+初始 soak 曾出现 MV3 service worker attach race：target 已可见但 `chrome.storage.session` 尚未注入。修复只在同一总 deadline 内重试只读 storage 查询，不重放 extension action 或 capture 副作用。
+
+当前修复状态的 fresh 100 次 soak：`100/100`，p50 `2.089 s`、p95 `2.599 s`、max `2.853 s`，owner-scoped profile `0 → 0`，Chrome 进程基线前后不变。完整 JSONL 保存于 durable task `task_msjwp5f6_2fd1dd8f` 对应的 `/tmp/yeaft-pr1588-evidence/soak-100.jsonl`，提交后仍需以 exact head 复核 SHA。
 
 ## 对 Agent 的压力
 
@@ -71,7 +74,7 @@ Phase 0 只落地 Agent-local 配置、受管浏览器安装、固定扩展、st
 | 项目 | 结果 | 说明 |
 | --- | --- | --- |
 | Linux headless tabCapture | GO | action activation、offscreen capture、VP8 decode 已实测 |
-| Linux cleanup | GO | 修复 attach race 后 100 次循环无 profile/process 泄漏 |
+| Linux cleanup | GO | 当前修复状态 fresh `100/100`，owner-scoped profile 与 Chrome 进程基线不增长 |
 | Node/package | GO | Node `>=22.5` 兼容；extension 已进入 npm package dry-run 清单 |
 | 默认 Agent 压力 | GO | 默认关闭、无 Chromium 下载/进程、无 capability |
 | macOS / Windows | NO-GO | 尚未实测，禁止 advertise |
