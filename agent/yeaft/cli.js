@@ -39,7 +39,7 @@ import { ConversationStore } from './conversation/persist.js';
 import { sessionsRoot, snapshotSessions } from './sessions/session-crud.js';
 import { loadSessionConfig, resolveSessionConfig } from './sessions/session-config.js';
 import { createSession } from './sessions/session-store.js';
-import { addOrUpdateManifestSession } from './sessions/session-manifest.js';
+import { addOrUpdateManifestSession, withSessionManifestLock } from './sessions/session-manifest.js';
 import { validateSessionId } from './sessions/ids.js';
 import {
   createJsonlWriter,
@@ -1112,19 +1112,39 @@ async function runStreamJson(config, args) {
       if (bootstrap) {
         let workspaceKey = '';
         try { workspaceKey = realpathSync(resolve(workDir)); } catch { /* leave empty */ }
-        const handle = createSession(sessionsRoot(loaded.yeaftDir), {
-          id: sessionId,
-          name: sessionId,
-          roster: bootstrap.roster,
-          defaultVpId: bootstrap.defaultVpId,
-          workDir,
-          workspaceKey,
+        withSessionManifestLock(loaded.yeaftDir, () => {
+          sessionRunner = createCliSessionRunner({
+            loaded,
+            sessionId,
+            workDir,
+            configureEngine: configureStreamEngine,
+          });
+          if (sessionRunner) return;
+          const handle = createSession(sessionsRoot(loaded.yeaftDir), {
+            id: sessionId,
+            name: sessionId,
+            roster: bootstrap.roster,
+            defaultVpId: bootstrap.defaultVpId,
+            workDir,
+            workspaceKey,
+          });
+          handle.close();
         });
-        const meta = handle.getMeta();
-        if (meta) addOrUpdateManifestSession(loaded.yeaftDir, meta, handle.dir);
-        handle.close();
-        sessionRunner = createCliSessionRunner({ loaded, sessionId, workDir, configureEngine: configureStreamEngine });
+        if (!sessionRunner) {
+          sessionRunner = createCliSessionRunner({
+            loaded,
+            sessionId,
+            workDir,
+            configureEngine: configureStreamEngine,
+          });
+        }
         if (!sessionRunner) throw new Error(`Failed to initialize formal stream-json Session ${sessionId}`);
+        const meta = sessionRunner.meta;
+        if (meta) addOrUpdateManifestSession(
+          loaded.yeaftDir,
+          meta,
+          join(sessionsRoot(loaded.yeaftDir), sessionId),
+        );
       }
     }
     const routingIntent = normalizeStreamRoutingIntent(message);

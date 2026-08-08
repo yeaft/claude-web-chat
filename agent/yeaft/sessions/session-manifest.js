@@ -15,20 +15,23 @@
 import {
   cpSync,
   existsSync,
+  linkSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'path';
 import { loadSessionMeta } from './session-store.js';
 import { writeAtomic } from '../storage/atomic.js';
 
 export const SESSIONS_MANIFEST_FILE = 'sessions-manifest.json';
 const MANIFEST_VERSION = 1;
-const MANIFEST_LOCK_DIR = 'sessions-manifest.lock';
+const MANIFEST_LOCK_FILE = 'sessions-manifest.lock';
 const MANIFEST_LOCK_WAIT_MS = 5_000;
 const lockWaitArray = new Int32Array(new SharedArrayBuffer(4));
 
@@ -215,25 +218,77 @@ export function removeManifestSession(yeaftDir, sessionId) {
   });
 }
 
-function withManifestLock(yeaftDir, operation) {
+export function withSessionManifestLock(yeaftDir, operation) {
   if (!yeaftDir) throw new Error('yeaftDir required');
   mkdirSync(yeaftDir, { recursive: true });
-  const lockDir = join(yeaftDir, MANIFEST_LOCK_DIR);
+  const lockFile = join(yeaftDir, MANIFEST_LOCK_FILE);
   const deadline = Date.now() + MANIFEST_LOCK_WAIT_MS;
+  const token = randomUUID();
+  const ownerFile = `${lockFile}.owner.${process.pid}.${token}`;
+  const owner = { pid: process.pid, token, ownerFile };
+  writeFileSync(ownerFile, `${JSON.stringify(owner)}\n`, { flag: 'wx' });
   for (;;) {
     try {
-      mkdirSync(lockDir);
+      linkSync(ownerFile, lockFile);
       break;
     } catch (error) {
-      if (error?.code !== 'EEXIST') throw error;
-      if (Date.now() >= deadline) throw new Error('Timed out waiting for Session manifest lock');
+      if (error?.code !== 'EEXIST') {
+        try { unlinkSync(ownerFile); } catch {}
+        throw error;
+      }
+      reapDeadManifestLock(lockFile);
+      if (Date.now() >= deadline) {
+        try { unlinkSync(ownerFile); } catch {}
+        throw new Error('Timed out waiting for Session manifest lock');
+      }
       Atomics.wait(lockWaitArray, 0, 0, 25);
     }
   }
   try {
     return operation();
   } finally {
-    rmSync(lockDir, { recursive: true, force: true });
+    try {
+      const current = JSON.parse(readFileSync(lockFile, 'utf8'));
+      if (current.token === owner.token) unlinkSync(lockFile);
+    } catch {
+      // A missing lock means another process already recovered this owner.
+    }
+    try { unlinkSync(ownerFile); } catch {}
+  }
+}
+
+function withManifestLock(yeaftDir, operation) {
+  return withSessionManifestLock(yeaftDir, operation);
+}
+
+function reapDeadManifestLock(lockFile) {
+  let observed;
+  try {
+    observed = JSON.parse(readFileSync(lockFile, 'utf8'));
+  } catch {
+    return;
+  }
+  if (!Number.isInteger(observed.pid) || typeof observed.token !== 'string') return;
+  try {
+    process.kill(observed.pid, 0);
+    return;
+  } catch (error) {
+    if (error?.code === 'EPERM') return;
+  }
+  const claim = `${lockFile}.reap.${process.pid}.${randomUUID()}`;
+  try {
+    linkSync(lockFile, claim);
+    const claimed = JSON.parse(readFileSync(claim, 'utf8'));
+    if (claimed.token !== observed.token) return;
+    unlinkSync(lockFile);
+    const expectedOwnerFile = `${lockFile}.owner.${observed.pid}.${observed.token}`;
+    if (observed.ownerFile === expectedOwnerFile) {
+      try { unlinkSync(expectedOwnerFile); } catch {}
+    }
+  } catch {
+    // Another process either recovered or replaced the observed lock.
+  } finally {
+    try { unlinkSync(claim); } catch {}
   }
 }
 
