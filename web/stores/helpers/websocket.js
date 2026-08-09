@@ -7,6 +7,12 @@ import { clearSessionLoading } from './session.js';
 // Pending ensureConnected resolvers — settled by onopen/timeout
 let _connectResolvers = [];
 
+function notifyBrowserTransportReset() {
+  if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function'
+      || typeof CustomEvent === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('browser-runtime-transport-reset'));
+}
+
 function isAuthenticationClose(event) {
   return event?.code === 1008
     && String(event.reason || '').toLowerCase().includes('authentication');
@@ -142,6 +148,9 @@ export function connect(store) {
   store._hasHandledYeaftSessionHydrate = false;
   store.yeaftSessionInventoryCompleteSupported = null;
   store.workbenchRouteProtocolSupported = null;
+  store.browserRuntimeProtocolSupported = null;
+  store.browserRuntimeServerEnabled = false;
+  notifyBrowserTransportReset();
   store.yeaftSessionHydrateRequestId = null;
   store.yeaftSessionHydrateSlices = [];
   store.yeaftSessionHydrateError = null;
@@ -228,6 +237,7 @@ export function connect(store) {
         type: 'client_hello',
         plaintextOk: true,
         workbenchRouteProtocol: 1,
+        browserRuntimeProtocol: 1,
       }));
     } catch (e) {
       console.warn('[WS] Failed to send client_hello:', e);
@@ -259,6 +269,9 @@ export function connect(store) {
     store._hasHandledYeaftSessionHydrate = false;
     store.yeaftSessionInventoryCompleteSupported = null;
     store.workbenchRouteProtocolSupported = null;
+    store.browserRuntimeProtocolSupported = null;
+    store.browserRuntimeServerEnabled = false;
+    notifyBrowserTransportReset();
     store.yeaftSessionHydrateRequestId = null;
     store.yeaftSessionHydrateSlices = [];
     store.yeaftSessionHydrateError = null;

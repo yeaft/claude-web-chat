@@ -9,6 +9,7 @@ export class MockAgent {
     this.ws = null;
     this.agentId = null;
     this.conversations = new Map();
+    this.browserSessions = new Map();
     this._messageHandlers = [];
     this._receivedMessages = [];
     this._messageHistory = [];
@@ -22,6 +23,9 @@ export class MockAgent {
       'work_center',
       'work_center_message_v2',
       'work_item_attachments',
+      'browser_runtime',
+      'browser_webrtc',
+      'browser_capture_tab',
       'plaintext-ok',
     ];
     const params = new URLSearchParams({
@@ -72,6 +76,60 @@ export class MockAgent {
           this.send({
             type: 'conversation_deleted',
             conversationId: msg.conversationId
+          });
+        }
+
+        if (msg.type === 'browser_session_list') {
+          this.send({
+            type: 'browser_session_list_result',
+            requestId: msg.requestId,
+            sessions: [...this.browserSessions.values()],
+          });
+        }
+        if (msg.type === 'browser_session_create') {
+          const browserSessionId = `browser-${randomUUID()}`;
+          const snapshot = {
+            browserSessionId,
+            revision: 2,
+            state: 'ready',
+            activeUrl: 'about:blank',
+            title: '',
+            pageRevision: 1,
+            captureMode: 'tab',
+            viewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
+            viewerCount: 0,
+          };
+          this.browserSessions.set(browserSessionId, snapshot);
+          this.send({ type: 'browser_session_created', requestId: msg.requestId, ...snapshot });
+        }
+        if (msg.type === 'browser_peer_prepare') {
+          this.send({
+            type: 'browser_peer_prepared',
+            browserSessionId: msg.browserSessionId,
+            peerId: msg.peerId,
+            connectionGeneration: msg.connectionGeneration,
+          });
+          this.send({
+            type: 'browser_peer_offer',
+            browserSessionId: msg.browserSessionId,
+            peerId: msg.peerId,
+            connectionGeneration: msg.connectionGeneration,
+            description: {
+              type: 'offer',
+              sdp: 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=Yeaft E2E\r\nt=0 0\r\n',
+            },
+          });
+        }
+        if (msg.type === 'browser_session_close') {
+          const snapshot = this.browserSessions.get(msg.browserSessionId);
+          this.browserSessions.delete(msg.browserSessionId);
+          this.send({
+            type: 'browser_session_snapshot',
+            requestId: msg.requestId,
+            ...(snapshot || { browserSessionId: msg.browserSessionId, revision: 1 }),
+            revision: Number(snapshot?.revision || 1) + 1,
+            state: 'closed',
+            terminalReason: 'user_closed',
           });
         }
         this._receivedMessages.push(msg);

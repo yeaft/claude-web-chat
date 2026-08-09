@@ -17,10 +17,12 @@ import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import WebSocket from 'ws';
 import { hostname } from 'node:os';
 import { generateSystemdUnit } from '../../agent/service/linux.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BrowserRuntimeService } from '../../agent/browser-runtime/service.js';
+import { BrowserExtensionBridge } from '../../agent/browser-runtime/local-bridge.js';
 import {
   BROWSER_RUNTIME_DEFAULTS,
   normaliseBrowserRuntimeSection,
@@ -909,6 +911,40 @@ describe('Managed Browser installation', () => {
   });
 });
 
+describe('Browser Runtime extension bridge', () => {
+  it('accepts only the per-session token and fences the Browser Session id', async () => {
+    const bridge = new BrowserExtensionBridge();
+    const messages = [];
+    const registration = await bridge.registerSession('session-a', {
+      onMessage: message => messages.push(message),
+    });
+    const invalid = new WebSocket(registration.bridgeUrl.replace(/[^/]+$/, 'invalid-token'));
+    const invalidClose = new Promise(resolve => invalid.once('close', (code) => resolve(code)));
+    await expect(invalidClose).resolves.toBe(1008);
+
+    const socket = new WebSocket(registration.bridgeUrl);
+    await new Promise((resolve, reject) => {
+      socket.once('open', resolve);
+      socket.once('error', reject);
+    });
+    socket.send(JSON.stringify({ type: 'runtime_ready', browserSessionId: 'session-b' }));
+    const mismatchedClose = await new Promise(resolve => socket.once('close', (code) => resolve(code)));
+    expect(mismatchedClose).toBe(1008);
+
+    const valid = new WebSocket(registration.bridgeUrl);
+    await new Promise((resolve, reject) => {
+      valid.once('open', resolve);
+      valid.once('error', reject);
+    });
+    valid.send(JSON.stringify({ type: 'runtime_ready', browserSessionId: 'session-a' }));
+    await expect(registration.waitUntilReady(500)).resolves.toMatchObject({ type: 'runtime_ready' });
+    valid.send(JSON.stringify({ type: 'peer_state', browserSessionId: 'session-a', state: 'connected' }));
+    await vi.waitFor(() => expect(messages).toContainEqual(expect.objectContaining({ state: 'connected' })));
+    expect(bridge.send('session-a', { type: 'peer_close' })).toBe(true);
+    await bridge.close();
+  });
+});
+
 describe('Browser Runtime sequence fencing', () => {
   it('keeps reliable control and lossy pointer sequence spaces independent', () => {
     const state = new ProducerSequenceState({ producerId: 'p1', producerGeneration: 1 });
@@ -959,22 +995,191 @@ describe('Browser Runtime lifecycle', () => {
     expect(runtime.capabilities()).toEqual([]);
   });
 
-  it('keeps Phase 0 unadvertised after a successful probe and enforces capacity', async () => {
+  it('advertises only a probe-ready Linux tab-capture runtime and enforces live Session capacity', async () => {
+    const page = Object.assign(new EventEmitter(), {
+      url: vi.fn(() => 'about:blank'),
+      title: vi.fn().mockResolvedValue(''),
+      mainFrame: vi.fn(() => null),
+    });
+    const closeSession = vi.fn().mockResolvedValue(undefined);
+    const bridge = {
+      registerSession: vi.fn(async () => ({
+        bridgeUrl: 'ws://127.0.0.1:1/browser-runtime/token',
+        waitUntilReady: vi.fn().mockResolvedValue({ type: 'runtime_ready' }),
+      })),
+      send: vi.fn(() => true),
+      unregisterSession: vi.fn(() => true),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
     const runtime = new BrowserRuntimeService({
       yeaftDir: tempRoot(),
       config: { enabled: true, maxSessions: 1 },
       probe: vi.fn().mockResolvedValue({ ok: true, captureMode: 'tab', buildId: 'test' }),
+      bridge,
+      launchSession: vi.fn().mockResolvedValue({
+        page,
+        viewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
+        captureMode: 'tab',
+        close: closeSession,
+      }),
+      send: vi.fn(() => 'sent'),
+      platform: 'linux',
     });
     expect(runtime.capabilities()).toEqual([]);
     await expect(runtime.startupProbe()).resolves.toMatchObject({ ok: true });
-    expect(runtime.ready).toBe(true);
-    expect(runtime.capabilities()).toEqual([]);
-    const reservation = runtime.reserveSession('owner-1');
-    expect(reservation.ownerUserId).toBe('owner-1');
-    expect(() => runtime.reserveSession('owner-1')).toThrowError(expect.objectContaining({ code: 'browser_session_limit' }));
-    expect(runtime.releaseSession(reservation.browserSessionId)).toBe(true);
+    expect(runtime.capabilities()).toEqual(['browser_runtime', 'browser_webrtc', 'browser_capture_tab']);
+    const identity = {
+      ownerUserId: 'owner-1', clientId: 'client-1',
+      webConnectionId: 'connection-1', webConnectionGeneration: 'generation-1',
+    };
+    const created = await runtime.createSession({
+      requestId: 'request-1', serverIdentity: identity, options: { initialUrl: 'about:blank' },
+    });
+    expect(created).toMatchObject({ type: 'browser_session_created', state: 'ready' });
+    await expect(runtime.createSession({
+      requestId: 'request-2', serverIdentity: identity, options: { initialUrl: 'about:blank' },
+    })).rejects.toMatchObject({ code: 'browser_session_limit' });
+    await runtime.handleTransportDisconnect();
+    expect(closeSession).toHaveBeenCalledOnce();
+    expect(runtime.snapshot()).toMatchObject({ activeSessions: 0 });
     await runtime.shutdown();
     expect(runtime.snapshot()).toMatchObject({ state: 'closed', activeSessions: 0 });
+  });
+
+  it('rejects local and privileged initial URLs even when a Server command bypasses validation', async () => {
+    const runtime = new BrowserRuntimeService({
+      yeaftDir: tempRoot(), config: { enabled: true }, platform: 'linux',
+      probe: vi.fn().mockResolvedValue({ ok: true, captureMode: 'tab' }),
+      bridge: { close: vi.fn() }, launchSession: vi.fn(), send: vi.fn(),
+    });
+    await runtime.startupProbe();
+    await expect(runtime.createSession({
+      requestId: 'file-create',
+      serverIdentity: {
+        ownerUserId: 'owner-1', clientId: 'client-1',
+        webConnectionId: 'connection-1', webConnectionGeneration: 'generation-1',
+      },
+      options: { initialUrl: 'file:///etc/passwd' },
+    })).rejects.toMatchObject({ code: 'browser_url_invalid' });
+    await runtime.shutdown();
+  });
+
+  it('keeps Browser Session ownership immutable and fences peer operations to the exact Web connection', async () => {
+    let bridgeHandlers;
+    const page = Object.assign(new EventEmitter(), {
+      url: vi.fn(() => 'about:blank'), title: vi.fn().mockResolvedValue(''), mainFrame: vi.fn(() => null),
+    });
+    const bridge = {
+      registerSession: vi.fn(async (_id, handlers) => {
+        bridgeHandlers = handlers;
+        return {
+          bridgeUrl: 'ws://127.0.0.1:1/browser-runtime/token',
+          waitUntilReady: vi.fn().mockResolvedValue({ type: 'runtime_ready' }),
+        };
+      }),
+      send: vi.fn(() => true), unregisterSession: vi.fn(() => true), close: vi.fn(),
+    };
+    const runtime = new BrowserRuntimeService({
+      yeaftDir: tempRoot(), config: { enabled: true }, platform: 'linux', bridge,
+      probe: vi.fn().mockResolvedValue({ ok: true, captureMode: 'tab' }),
+      launchSession: vi.fn().mockResolvedValue({
+        page, viewport: { width: 1280, height: 720, deviceScaleFactor: 1 }, captureMode: 'tab', close: vi.fn(),
+      }),
+      send: vi.fn(() => 'sent'),
+    });
+    await runtime.startupProbe();
+    const owner = {
+      ownerUserId: 'owner-1', clientId: 'client-a',
+      webConnectionId: 'connection-a', webConnectionGeneration: 'web-generation-a',
+    };
+    const created = await runtime.createSession({ requestId: 'create-a', serverIdentity: owner });
+    await expect(runtime.preparePeer({
+      browserSessionId: created.browserSessionId,
+      peerId: 'peer-wrong-owner', connectionGeneration: 1,
+      serverIdentity: { ...owner, ownerUserId: 'owner-2' },
+    })).rejects.toMatchObject({ code: 'browser_owner_mismatch' });
+
+    await runtime.preparePeer({
+      browserSessionId: created.browserSessionId,
+      peerId: 'peer-a', connectionGeneration: 1,
+      serverIdentity: owner,
+    });
+    bridgeHandlers.onMessage({
+      type: 'peer_prepared', browserSessionId: created.browserSessionId,
+      peerId: 'peer-a', connectionGeneration: 1,
+    });
+    expect(() => runtime.answerPeer({
+      browserSessionId: created.browserSessionId,
+      peerId: 'peer-a', connectionGeneration: 1,
+      description: { type: 'answer', sdp: 'v=0' },
+      serverIdentity: { ...owner, clientId: 'client-b' },
+    })).toThrowError(expect.objectContaining({ code: 'browser_peer_owner_mismatch' }));
+    runtime.answerPeer({
+      browserSessionId: created.browserSessionId,
+      peerId: 'peer-a', connectionGeneration: 1,
+      description: { type: 'answer', sdp: 'v=0' }, serverIdentity: owner,
+    });
+    expect(bridge.send).toHaveBeenLastCalledWith(created.browserSessionId, expect.objectContaining({
+      type: 'peer_answer', peerId: 'peer-a', connectionGeneration: 1,
+    }));
+    bridgeHandlers.onMessage({
+      type: 'peer_state', browserSessionId: created.browserSessionId,
+      peerId: 'peer-a', connectionGeneration: 1, state: 'connected',
+    });
+    bridgeHandlers.onMessage({
+      type: 'peer_state', browserSessionId: created.browserSessionId,
+      peerId: 'peer-a', connectionGeneration: 1, state: 'failed',
+    });
+    await vi.waitFor(() => expect(bridge.send).toHaveBeenCalledWith(
+      created.browserSessionId,
+      expect.objectContaining({ type: 'peer_close', reason: 'peer_failed' }),
+    ));
+    await runtime.shutdown();
+  });
+
+  it('cancels an in-flight Session launch on transport disconnect and closes a late runtime', async () => {
+    let resolveLaunch;
+    let observedSignal;
+    const close = vi.fn().mockResolvedValue(undefined);
+    const page = Object.assign(new EventEmitter(), {
+      url: vi.fn(() => 'about:blank'), title: vi.fn().mockResolvedValue(''), mainFrame: vi.fn(() => null),
+    });
+    const bridge = {
+      registerSession: vi.fn(async () => ({
+        bridgeUrl: 'ws://127.0.0.1:1/browser-runtime/token',
+        waitUntilReady: vi.fn().mockResolvedValue({ type: 'runtime_ready' }),
+      })),
+      send: vi.fn(() => true), unregisterSession: vi.fn(() => true), close: vi.fn(),
+    };
+    const send = vi.fn(() => 'sent');
+    const runtime = new BrowserRuntimeService({
+      yeaftDir: tempRoot(), config: { enabled: true }, platform: 'linux', bridge, send,
+      probe: vi.fn().mockResolvedValue({ ok: true, captureMode: 'tab' }),
+      launchSession: vi.fn(({ signal }) => {
+        observedSignal = signal;
+        return new Promise(resolve => { resolveLaunch = resolve; });
+      }),
+    });
+    await runtime.startupProbe();
+    const create = runtime.createSession({
+      requestId: 'late-create',
+      serverIdentity: {
+        ownerUserId: 'owner-1', clientId: 'client-1',
+        webConnectionId: 'connection-1', webConnectionGeneration: 'generation-1',
+      },
+    });
+    await vi.waitFor(() => expect(resolveLaunch).toBeTypeOf('function'));
+    const cleanup = runtime.handleTransportDisconnect();
+    expect(observedSignal.aborted).toBe(true);
+    resolveLaunch({
+      page, viewport: { width: 1280, height: 720, deviceScaleFactor: 1 }, captureMode: 'tab', close,
+    });
+    await cleanup;
+    await expect(create).rejects.toMatchObject({ code: 'browser_session_cancelled' });
+    expect(close).toHaveBeenCalledOnce();
+    expect(send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'browser_session_created' }));
+    expect(runtime.snapshot()).toMatchObject({ activeSessions: 0 });
+    await runtime.shutdown();
   });
 
   it('aborts and awaits an in-flight startup probe during shutdown', async () => {
@@ -1266,7 +1471,7 @@ describe('Browser Runtime extension package', () => {
     });
     expect(result.ok).toBe(false);
     expect(result.code).toMatch(/_timeout$/);
-    await vi.waitFor(() => expect(close).toHaveBeenCalled());
+    await vi.waitFor(() => expect(close).toHaveBeenCalled(), { timeout: 5_000 });
     expect(kill).toHaveBeenCalledWith('SIGKILL');
   });
 

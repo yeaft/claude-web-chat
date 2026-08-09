@@ -16,6 +16,8 @@ import { handleAgentFileTerminal } from './handlers/agent-file-terminal.js';
 import { handleAgentSync } from './handlers/agent-sync.js';
 import { recordPerfTraceEvent } from './perf-trace.js';
 import { clearWorkbenchCorrelationsForAgent } from './workbench-correlation.js';
+import { clearBrowserRuntimeForAgent } from './browser-runtime-routes.js';
+import { handleAgentBrowser } from './handlers/agent-browser.js';
 import { markAgentHeartbeatSeen } from './heartbeat-policy.js';
 
 /**
@@ -229,6 +231,7 @@ function handleAgentDisconnect(agentId, agentName, ws) {
   // Phase 4: 清理目录缓存
   clearAgentDirCache(agentId);
   clearWorkbenchCorrelationsForAgent(agentId);
+  clearBrowserRuntimeForAgent(agentId);
   // Phase 1: 清理同步超时
   if (agent._syncTimeout) {
     clearTimeout(agent._syncTimeout);
@@ -294,6 +297,7 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
   agents.get(agentId)._syncTimeout = syncTimeout;
 
   if (existingAgent?.ws && existingAgent.ws !== ws) {
+    clearBrowserRuntimeForAgent(agentId);
     existingAgent.ws.close(1008, 'Superseded by a newer Agent connection');
   }
 
@@ -347,7 +351,9 @@ async function handleAgentMessage(agentId, msg, ws) {
     'yeaft_history_chunk', 'yeaft_history_outline', 'yeaft_history_search_result', 'yeaft_history_window', 'slash_commands_update', 'agent_metrics',
     'file_content', 'file_saved', 'file_op_result', 'file_search_result',
     'git_status_result', 'git_diff_result', 'git_op_result',
-    'terminal_created', 'terminal_output', 'terminal_closed', 'terminal_error'
+    'terminal_created', 'terminal_output', 'terminal_closed', 'terminal_error',
+    'browser_session_created', 'browser_session_error', 'browser_session_snapshot', 'browser_session_list_result',
+    'browser_peer_prepared', 'browser_peer_offer', 'browser_peer_ice_candidate', 'browser_peer_state', 'browser_peer_error'
   ]);
   if (msg.conversationId && !CONV_EXEMPT_TYPES.has(msg.type)) {
     if (!agent.conversations.has(msg.conversationId)) {
@@ -358,6 +364,7 @@ async function handleAgentMessage(agentId, msg, ws) {
 
   // Dispatch to handler sub-modules
   if (await handleAgentConversation(agentId, agent, msg)) return;
+  if (await handleAgentBrowser(agentId, agent, msg)) return;
   if (await handleAgentWorkCenter(agentId, msg)) return;
   if (await handleAgentOutput(agentId, agent, msg)) return;
   if (await handleAgentFileTerminal(agentId, agent, msg)) return;

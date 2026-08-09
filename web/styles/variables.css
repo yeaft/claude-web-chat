@@ -63,6 +63,7 @@ select option:checked {
   --session-sidebar-width: 260px;
   --session-content-width: 90%;
   --bg-workbench: #f6f5f3;
+  --browser-stage-bg: #111110;
   --bg-user-msg: #eeeee9;
   --bg-user-msg-subtle: #f4f3ef;
   --bg-assistant-msg: transparent;
@@ -256,6 +257,7 @@ select option:checked {
   --bg-main: #1a1a1a;
   --bg-sidebar: #141414;
   --bg-workbench: #171716;
+  --browser-stage-bg: #0f0f0e;
   --bg-user-msg: #2a2a28;
   --bg-user-msg-subtle: #242321;
   --bg-assistant-msg: transparent;

@@ -236,18 +236,93 @@ test.describe('Workbench', () => {
     expect(filesRequest.workbenchRouteKey).toBe(`yeaft:${encodeURIComponent(mockAgent.agentId)}:workbench-session-b`);
   });
 
-  test('keeps Browser discoverable without exposing a fake viewer', async ({ chatPage, mockAgent }) => {
+  test('keeps Browser discoverable without exposing a fake viewer when the Agent capability is absent', async ({ chatPage, mockAgent }) => {
     await openYeaftWorkbench(chatPage, mockAgent);
 
     const panel = chatPage.locator('.workbench-panel');
     await capability(panel, 'browser').click();
     await expect(panel.locator('.workbench-browser-view')).toBeVisible();
-    await expect(panel.locator('.workbench-browser-view')).toContainText('Phase 0 runtime does not expose browser sessions');
+    await expect(panel.locator('.workbench-browser-view')).toContainText('Browser Runtime requires Server rollout');
     await expect(panel.locator('video')).toHaveCount(0);
     await expect(panel.locator('iframe')).toHaveCount(0);
 
     await panel.locator('.workbench-view-close').click();
     await expect(panel.locator('.workbench-launcher')).toBeVisible();
+  });
+
+  test('creates a Browser Session and mounts the generation-fenced WebRTC viewer', async ({ chatPage, mockAgent }) => {
+    await openYeaftWorkbench(chatPage, mockAgent);
+    await chatPage.evaluate(agentId => {
+      class E2EPeerConnection {
+        constructor(config) {
+          this.config = config;
+          this.localDescription = null;
+          this.remoteDescription = null;
+          this.connectionState = 'new';
+          this.onicecandidate = null;
+          this.onconnectionstatechange = null;
+          this.ontrack = null;
+        }
+        async setRemoteDescription(description) { this.remoteDescription = description; }
+        async createAnswer() { return { type: 'answer', sdp: 'v=0\\r\\no=web-e2e 1 1 IN IP4 127.0.0.1\\r\\ns=Yeaft E2E\\r\\nt=0 0\\r\\n' }; }
+        async setLocalDescription(description) { this.localDescription = description; }
+        async addIceCandidate() {}
+        close() { this.connectionState = 'closed'; }
+      }
+      window.RTCPeerConnection = E2EPeerConnection;
+      const store = window.Pinia.useChatStore();
+      const agent = store.agents.find(item => item.id === agentId);
+      agent.capabilities = [
+        ...new Set([
+          ...(agent.capabilities || []),
+          'browser_runtime', 'browser_webrtc', 'browser_capture_tab',
+        ]),
+      ];
+      store.currentAgentInfo = agent;
+    }, mockAgent.agentId);
+
+    const panel = chatPage.locator('.workbench-panel');
+    await expect(capability(panel, 'browser').locator('.workbench-capability-status')).toHaveText('Available');
+    await capability(panel, 'browser').click();
+    await expect(panel.locator('.browser-panel')).toBeVisible();
+    await expect(panel.locator('.browser-video')).toBeVisible();
+    await expect(panel.locator('iframe')).toHaveCount(0);
+
+    const list = await mockAgent.waitForMessage('browser_session_list');
+    expect(list).toMatchObject({
+      agentId: mockAgent.agentId,
+      requestId: expect.any(String),
+      serverIdentity: expect.objectContaining({ ownerUserId: expect.any(String) }),
+    });
+    const create = await mockAgent.waitForMessage('browser_session_create');
+    expect(create).toMatchObject({
+      agentId: mockAgent.agentId,
+      requestId: expect.any(String),
+      sourceRef: { kind: 'yeaft-session', sessionId: 'workbench-session' },
+    });
+    expect(create).not.toHaveProperty('_requestClientId');
+    const prepare = await mockAgent.waitForMessage('browser_peer_prepare');
+    expect(prepare).toMatchObject({
+      browserSessionId: expect.any(String),
+      peerId: expect.any(String),
+      connectionGeneration: 1,
+      serverIdentity: expect.objectContaining({ clientId: expect.any(String) }),
+    });
+    const answer = await mockAgent.waitForMessage('browser_peer_answer');
+    expect(answer).toMatchObject({
+      browserSessionId: prepare.browserSessionId,
+      peerId: prepare.peerId,
+      connectionGeneration: prepare.connectionGeneration,
+      description: { type: 'answer', sdp: expect.stringContaining('web-e2e') },
+    });
+
+    const detachCount = mockAgent.messages('browser_peer_detach').length;
+    await panel.locator('.browser-end-button').click();
+    const close = await mockAgent.waitForMessage('browser_session_close');
+    expect(close.browserSessionId).toBe(prepare.browserSessionId);
+    expect(close.expectedRevision).toBe(2);
+    expect(mockAgent.messages('browser_peer_detach')).toHaveLength(detachCount);
+    await expect(panel.locator('.browser-video')).toHaveCount(0);
   });
 
   test('maximizes across the conversation area and restores it', async ({ chatPage, mockAgent }) => {

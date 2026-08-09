@@ -64,9 +64,35 @@ Use Terminal for merge-conflict resolution and interactive rebase.
 
 ## Browser
 
-Browser is part of the launcher so capability availability is explicit. The current Browser Runtime Phase 0 foundation does not advertise a usable Browser capability and does not expose signaling, a Web viewer, or user input. Current Agents therefore show an unavailable state instead of an embedded browser placeholder.
+Browser opens an isolated Chromium process on the selected Agent and displays its active tab as a live WebRTC video stream. Browser Sessions are memory-only, use a temporary profile, and are bounded by the Agent's configured Session and idle limits.
 
-A future Agent must advertise the complete Browser capability combination before Workbench treats Browser as available.
+The current viewer is read-only. Navigation, keyboard, pointer, and scroll control arrive in the next Browser Runtime phase; the UI does not pretend those controls are available in this release.
+
+### Enable Browser Runtime
+
+Browser is fail-closed at three layers. All three must be ready:
+
+1. Enable the Server rollout gate with `BROWSER_RUNTIME_ENABLED=true`.
+2. Configure ICE. `BROWSER_STUN_URLS` is optional for direct connectivity. Production deployments should configure `BROWSER_TURN_URLS` and `BROWSER_TURN_SECRET`; use `BROWSER_ICE_TRANSPORT_POLICY=relay` when direct candidates are not allowed.
+3. On the selected Agent instance, install and enable the pinned managed browser, then restart that Agent:
+
+```bash
+yeaft-agent browser install --name <agent-instance>
+yeaft-agent browser probe --name <agent-instance>
+yeaft-agent browser enable --name <agent-instance>
+```
+
+After restart, a successful Linux tab-capture probe advertises `browser_runtime`, `browser_webrtc`, and `browser_capture_tab`. Workbench enables Browser only after the Web protocol handshake, Server rollout gate, and complete Agent capability combination all succeed.
+
+A deployment without TURN may work over direct ICE, but it is a degraded direct-only setup and is not a production availability guarantee across NATs or restrictive networks.
+
+### Session lifecycle
+
+- opening Browser restores an existing ready Browser Session for that Agent or creates one
+- closing the Browser capability detaches only the viewer; the Agent reclaims a no-viewer Session after the configured idle timeout
+- **End browser** closes Chromium and deletes its temporary profile immediately
+- WebSocket or Agent transport replacement invalidates the peer generation and closes Agent-owned Browser Sessions fail-closed
+- SDP, ICE candidates, TURN credentials, video, and temporary profile data are never written to Chat or Yeaft transcripts
 
 ## Troubleshooting
 

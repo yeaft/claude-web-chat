@@ -64,9 +64,35 @@ Git 显示当前 Session 所选仓库的状态：
 
 ## 浏览器
 
-浏览器保留在选择页中，让能力是否可用清晰可见。当前 Browser Runtime Phase 0 基础实现不会声明可用的 Browser capability，也没有向 Web UI 提供 signaling、查看器或用户输入链路。因此当前 Agent 显示不可用状态，而不是伪造一个嵌入式浏览器。
+浏览器能力会在所选 Agent 上启动一个隔离的 Chromium 进程，并通过实时 WebRTC 视频显示当前标签页。Browser Session 只保存在内存中，使用临时 profile，并受 Agent 配置的 Session 数量和空闲回收上限约束。
 
-未来 Agent 只有声明完整的 Browser capability 组合后，Workbench 才会把浏览器标记为可用。
+当前查看器是只读的。导航、键盘、鼠标和滚动控制将在下一阶段交付；本版本不会伪装这些控制已经可用。
+
+### 启用 Browser Runtime
+
+Browser Runtime 在三层均为 fail-closed，必须全部就绪：
+
+1. 在 Server 设置 `BROWSER_RUNTIME_ENABLED=true` 开启 rollout gate。
+2. 配置 ICE。`BROWSER_STUN_URLS` 可用于直连；生产部署应配置 `BROWSER_TURN_URLS` 和 `BROWSER_TURN_SECRET`。禁止直连候选时设置 `BROWSER_ICE_TRANSPORT_POLICY=relay`。
+3. 在所选 Agent instance 安装并启用固定版本的受管浏览器，然后重启该 Agent：
+
+```bash
+yeaft-agent browser install --name <agent-instance>
+yeaft-agent browser probe --name <agent-instance>
+yeaft-agent browser enable --name <agent-instance>
+```
+
+重启后，Linux tab-capture probe 成功才会声明 `browser_runtime`、`browser_webrtc` 和 `browser_capture_tab`。只有 Web 协议握手、Server gate 和完整 Agent capability 组合同时通过，Workbench 才会把浏览器标记为可用。
+
+未配置 TURN 时可能通过 direct ICE 工作，但这只是降级的 direct-only 部署，不能保证跨 NAT 或受限网络的生产可用性。
+
+### Session 生命周期
+
+- 打开浏览器时会恢复该 Agent 上已有的 ready Browser Session；没有时才新建
+- 关闭浏览器能力只会 detach viewer；无 viewer 后 Agent 会按空闲超时回收 Session
+- 点击“结束浏览器”会立即关闭 Chromium 并删除临时 profile
+- WebSocket 或 Agent transport replacement 会使旧 peer generation 失效，并 fail-closed 关闭 Agent Browser Session
+- SDP、ICE candidate、TURN credential、视频和临时 profile 数据都不会写入 Chat 或 Yeaft transcript
 
 ## 常见问题
 

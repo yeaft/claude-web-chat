@@ -198,6 +198,9 @@ export function handleMessage(store, msg) {
 
     case 'client_hello_ack':
       store.workbenchRouteProtocolSupported = msg.workbenchRouteProtocol === 1;
+      store.browserRuntimeProtocolSupported = msg.browserRuntimeProtocol === 1;
+      store.browserRuntimeServerEnabled = msg.browserRuntimeEnabled === true;
+      window.dispatchEvent(new CustomEvent('browser-runtime-message', { detail: msg }));
       break;
 
     case 'auth_result':
@@ -220,6 +223,9 @@ export function handleMessage(store, msg) {
         // auth_result advertises Server support; the route protocol is usable
         // only after Server confirms it processed our client_hello.
         store.workbenchRouteProtocolSupported = false;
+        store.browserRuntimeProtocolSupported = false;
+        store.browserRuntimeServerEnabled = msg.browserRuntimeEnabled === true;
+        window.dispatchEvent(new CustomEvent('browser-runtime-message', { detail: msg }));
         store.yeaftSessionHydrateSlices = [];
         store._hasHandledYeaftSessionHydrate = false;
         store.yeaftSessionHydrateError = null;
@@ -979,6 +985,19 @@ export function handleMessage(store, msg) {
     case 'upgrade_agent_ack':
       console.log(`[Agent] Upgrade ${msg.success ? 'succeeded' : 'failed'} for agent: ${msg.agentId}`, msg.error || '');
       window.dispatchEvent(new CustomEvent('agent-upgrade-ack', { detail: { agentId: msg.agentId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version, reason: msg.reason, currentNode: msg.currentNode, requiredNode: msg.requiredNode, requiredCapability: msg.requiredCapability } }));
+      break;
+
+    // Browser Runtime lifecycle/signaling belongs to the dedicated browser store.
+    case 'browser_session_created':
+    case 'browser_session_error':
+    case 'browser_session_snapshot':
+    case 'browser_session_list_result':
+    case 'browser_peer_prepared':
+    case 'browser_peer_offer':
+    case 'browser_peer_ice_candidate':
+    case 'browser_peer_state':
+    case 'browser_peer_error':
+      window.dispatchEvent(new CustomEvent('browser-runtime-message', { detail: msg }));
       break;
 
     // Workbench messages - forward to components
