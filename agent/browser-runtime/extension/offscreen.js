@@ -1,5 +1,5 @@
 const PROBE_TIMEOUT_MS = 5_000;
-const peers = new Map();
+const sessions = new Map();
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -104,17 +104,34 @@ function bridgeSend(record, message) {
   }
 }
 
-function closePeer(record, notify = true) {
-  if (!record) return;
-  if (peers.get(record.browserSessionId) === record) peers.delete(record.browserSessionId);
+function peerRecord(record, message) {
+  const peer = record?.peers.get(message?.peerId);
+  return peer?.connectionGeneration === message?.connectionGeneration ? peer : null;
+}
+
+function closePeer(record, peer, notify = false) {
+  if (!record || !peer || record.peers.get(peer.peerId) !== peer) return false;
+  record.peers.delete(peer.peerId);
+  peer.connection.close();
+  if (notify) bridgeSend(record, {
+    type: 'peer_closed',
+    peerId: peer.peerId,
+    connectionGeneration: peer.connectionGeneration,
+  });
+  return true;
+}
+
+function closeSession(record, notify = true) {
+  if (!record || record.closed) return;
+  record.closed = true;
+  if (sessions.get(record.browserSessionId) === record) sessions.delete(record.browserSessionId);
+  for (const peer of [...record.peers.values()]) closePeer(record, peer, notify);
   record.stream?.getTracks().forEach(track => track.stop());
-  record.peer?.close();
-  if (notify) bridgeSend(record, { type: 'peer_closed' });
   try { record.socket?.close(1000, 'Browser Session closed'); } catch {}
 }
 
 async function startRuntime({ browserSessionId, bridgeUrl, streamId }) {
-  closePeer(peers.get(browserSessionId), false);
+  closeSession(sessions.get(browserSessionId), false);
   const { stream, track } = await captureTab(streamId);
   const socket = new WebSocket(bridgeUrl);
   const record = {
@@ -122,11 +139,10 @@ async function startRuntime({ browserSessionId, bridgeUrl, streamId }) {
     stream,
     track,
     socket,
-    peer: null,
-    connectionGeneration: 0,
-    pendingCandidates: [],
+    peers: new Map(),
+    closed: false,
   };
-  peers.set(browserSessionId, record);
+  sessions.set(browserSessionId, record);
   track.addEventListener('ended', () => bridgeSend(record, { type: 'capture_ended' }), { once: true });
   socket.onopen = () => bridgeSend(record, {
     type: 'runtime_ready',
@@ -137,36 +153,43 @@ async function startRuntime({ browserSessionId, bridgeUrl, streamId }) {
     let message;
     try { message = JSON.parse(event.data); } catch { return; }
     if (message.browserSessionId !== browserSessionId) return;
-    handleBridgeMessage(record, message).catch(error => bridgeSend(record, {
-      type: 'peer_error',
-      peerId: message.peerId || null,
-      connectionGeneration: message.connectionGeneration || null,
-      code: error?.name || 'peer_failed',
-      safeError: String(error?.message || error).slice(0, 500),
-    }));
+    handleBridgeMessage(record, message).catch(error => {
+      const peer = peerRecord(record, message);
+      if (peer) closePeer(record, peer);
+      bridgeSend(record, {
+        type: 'peer_error',
+        peerId: message.peerId || null,
+        connectionGeneration: message.connectionGeneration || null,
+        code: error?.name || 'peer_failed',
+        safeError: String(error?.message || error).slice(0, 500),
+      });
+    });
   };
-  socket.onclose = () => closePeer(record, false);
+  socket.onclose = () => closeSession(record, false);
   return { ok: true };
 }
 
 async function createPeer(record, message) {
-  record.peer?.close();
-  const peer = new RTCPeerConnection({
+  const peerId = message.peerId;
+  const connectionGeneration = message.connectionGeneration;
+  const existing = record.peers.get(peerId);
+  if (existing?.connectionGeneration === connectionGeneration) return;
+  if (existing) closePeer(record, existing);
+  const connection = new RTCPeerConnection({
     iceServers: Array.isArray(message.iceServers) ? message.iceServers : [],
     iceTransportPolicy: message.iceTransportPolicy === 'relay' ? 'relay' : 'all',
   });
-  const peerId = message.peerId;
-  const connectionGeneration = message.connectionGeneration;
-  record.peer = peer;
-  record.peerId = peerId;
-  record.connectionGeneration = connectionGeneration;
-  record.pendingCandidates = [];
-  record.offerSent = false;
-  record.localCandidates = [];
-  const isCurrent = () => record.peer === peer
-    && record.peerId === peerId
-    && record.connectionGeneration === connectionGeneration;
-  peer.onicecandidate = event => {
+  const peer = {
+    peerId,
+    connectionGeneration,
+    connection,
+    pendingCandidates: [],
+    offerSent: false,
+    localCandidates: [],
+  };
+  record.peers.set(peerId, peer);
+  const isCurrent = () => peerRecord(record, peer) === peer;
+  connection.onicecandidate = event => {
     if (!isCurrent()) return;
     const candidateMessage = {
       type: 'peer_ice_candidate',
@@ -174,27 +197,27 @@ async function createPeer(record, message) {
       connectionGeneration,
       candidate: event.candidate ? event.candidate.toJSON() : null,
     };
-    if (!record.offerSent) record.localCandidates.push(candidateMessage);
+    if (!peer.offerSent) peer.localCandidates.push(candidateMessage);
     else bridgeSend(record, candidateMessage);
   };
-  peer.onconnectionstatechange = () => {
+  connection.onconnectionstatechange = () => {
     if (!isCurrent()) return;
     bridgeSend(record, {
       type: 'peer_state',
       peerId,
       connectionGeneration,
-      state: peer.connectionState,
+      state: connection.connectionState,
     });
   };
-  const sender = peer.addTrack(record.track, record.stream);
-  preferVp8(peer, sender);
+  const sender = connection.addTrack(record.track, record.stream);
+  preferVp8(connection, sender);
   const parameters = sender.getParameters();
   if (parameters.encodings?.length) {
     parameters.encodings[0].maxBitrate = Number(message.maxBitrate) || 4_000_000;
     parameters.encodings[0].maxFramerate = Number(message.maxFps) || 30;
     await sender.setParameters(parameters);
   }
-  await peer.setLocalDescription(await peer.createOffer());
+  await connection.setLocalDescription(await connection.createOffer());
   if (!isCurrent()) return;
   bridgeSend(record, {
     type: 'peer_prepared',
@@ -205,33 +228,35 @@ async function createPeer(record, message) {
     type: 'peer_offer',
     peerId,
     connectionGeneration,
-    description: peer.localDescription,
+    description: connection.localDescription,
   });
-  record.offerSent = true;
-  for (const candidate of record.localCandidates.splice(0)) bridgeSend(record, candidate);
+  peer.offerSent = true;
+  for (const candidate of peer.localCandidates.splice(0)) bridgeSend(record, candidate);
 }
 
 async function handleBridgeMessage(record, message) {
+  if (record.closed) return;
+  if (message.type === 'session_close') {
+    closeSession(record);
+    return;
+  }
   if (message.type === 'peer_prepare') return createPeer(record, message);
-  if (!record.peer || message.peerId !== record.peerId
-      || message.connectionGeneration !== record.connectionGeneration) return;
-  const peer = record.peer;
+  const peer = peerRecord(record, message);
+  if (!peer) return;
+  const connection = peer.connection;
   if (message.type === 'peer_answer') {
-    await peer.setRemoteDescription(message.description);
-    if (record.peer !== peer) return;
-    for (const candidate of record.pendingCandidates.splice(0)) {
-      await peer.addIceCandidate(candidate);
-      if (record.peer !== peer) return;
+    await connection.setRemoteDescription(message.description);
+    if (peerRecord(record, message) !== peer) return;
+    for (const candidate of peer.pendingCandidates.splice(0)) {
+      await connection.addIceCandidate(candidate);
+      if (peerRecord(record, message) !== peer) return;
     }
   } else if (message.type === 'peer_ice_candidate') {
     if (!message.candidate) return;
-    if (!peer.remoteDescription) record.pendingCandidates.push(message.candidate);
-    else await peer.addIceCandidate(message.candidate);
+    if (!connection.remoteDescription) peer.pendingCandidates.push(message.candidate);
+    else await connection.addIceCandidate(message.candidate);
   } else if (message.type === 'peer_close') {
-    record.peer.close();
-    record.peer = null;
-  } else if (message.type === 'session_close') {
-    closePeer(record);
+    closePeer(record, peer);
   }
 }
 

@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { runInNewContext } from 'node:vm';
 import WebSocket from 'ws';
 import { hostname } from 'node:os';
 import { generateSystemdUnit } from '../../agent/service/linux.js';
@@ -1330,6 +1331,171 @@ describe('Browser Runtime extension package', () => {
     expect(attributes.status).toBe(0);
     expect(attributes.stdout).toContain('manifest.json: eol: lf');
     expect(attributes.stdout).toContain('service-worker.js: eol: lf');
+  });
+
+  it('keeps actual offscreen peers independent while sharing one Session capture stream', async () => {
+    const sockets = [];
+    const connections = [];
+    let runtimeListener;
+    const track = {
+      stop: vi.fn(),
+      addEventListener: vi.fn(),
+      getSettings: vi.fn(() => ({ width: 1280, height: 720, frameRate: 30 })),
+    };
+    const stream = {
+      getVideoTracks: vi.fn(() => [track]),
+      getTracks: vi.fn(() => [track]),
+    };
+    const getUserMedia = vi.fn(async () => stream);
+    class FakeWebSocket {
+      static OPEN = 1;
+      constructor(url) {
+        this.url = url;
+        this.readyState = FakeWebSocket.OPEN;
+        this.sent = [];
+        this.closed = false;
+        sockets.push(this);
+      }
+      send(payload) { this.sent.push(JSON.parse(payload)); }
+      close() { this.closed = true; this.readyState = 3; }
+    }
+    class FakePeerConnection {
+      constructor(config) {
+        this.config = config;
+        this.closed = false;
+        this.connectionState = 'new';
+        this.localDescription = null;
+        this.remoteDescription = null;
+        this.addedCandidates = [];
+        this.sender = {
+          getParameters: vi.fn(() => ({ encodings: [{}] })),
+          setParameters: vi.fn(async () => {}),
+        };
+        this.transceiver = { sender: this.sender, setCodecPreferences: vi.fn() };
+        connections.push(this);
+      }
+      addTrack() { return this.sender; }
+      getTransceivers() { return [this.transceiver]; }
+      async createOffer() { return { type: 'offer', sdp: `offer-${connections.indexOf(this) + 1}` }; }
+      async setLocalDescription(description) { this.localDescription = description; }
+      async setRemoteDescription(description) { this.remoteDescription = description; }
+      async addIceCandidate(candidate) {
+        if (candidate?.candidate === 'candidate-failure') throw new Error('candidate failure');
+        this.addedCandidates.push(candidate);
+      }
+      close() { this.closed = true; this.connectionState = 'closed'; }
+    }
+    const source = readFileSync(new URL(
+      '../../agent/browser-runtime/extension/offscreen.js',
+      import.meta.url,
+    ), 'utf8');
+    runInNewContext(source, {
+      chrome: { runtime: { onMessage: { addListener: listener => { runtimeListener = listener; } } } },
+      navigator: { mediaDevices: { getUserMedia } },
+      document: { querySelector: vi.fn(() => ({ srcObject: null, play: vi.fn(async () => {}) })) },
+      RTCPeerConnection: FakePeerConnection,
+      RTCRtpSender: { getCapabilities: vi.fn(() => ({ codecs: [{ mimeType: 'video/VP8' }] })) },
+      MediaStream: class MediaStream {},
+      WebSocket: FakeWebSocket,
+      setTimeout,
+      clearTimeout,
+      console,
+    }, { filename: 'browser-runtime-offscreen.js' });
+    expect(runtimeListener).toBeTypeOf('function');
+    const start = new Promise(resolve => runtimeListener({
+      target: 'browser_runtime_offscreen',
+      type: 'browser_runtime_start',
+      browserSessionId: 'browser-session-a',
+      bridgeUrl: 'ws://127.0.0.1/browser-runtime/token',
+      streamId: 'stream-a',
+    }, null, resolve));
+    await expect(start).resolves.toEqual({ ok: true });
+    expect(getUserMedia).toHaveBeenCalledOnce();
+    const socket = sockets[0];
+    const receive = message => socket.onmessage({
+      data: JSON.stringify({ browserSessionId: 'browser-session-a', ...message }),
+    });
+
+    receive({ type: 'peer_prepare', peerId: 'peer-a', connectionGeneration: 1 });
+    await vi.waitFor(() => expect(socket.sent).toContainEqual(expect.objectContaining({
+      type: 'peer_offer', peerId: 'peer-a', connectionGeneration: 1,
+    })));
+    receive({ type: 'peer_prepare', peerId: 'peer-b', connectionGeneration: 2 });
+    await vi.waitFor(() => expect(socket.sent).toContainEqual(expect.objectContaining({
+      type: 'peer_offer', peerId: 'peer-b', connectionGeneration: 2,
+    })));
+    expect(connections).toHaveLength(2);
+    expect(connections[0].closed).toBe(false);
+    expect(connections[1].closed).toBe(false);
+    receive({ type: 'peer_prepare', peerId: 'peer-b', connectionGeneration: 2 });
+    await Promise.resolve();
+    expect(connections).toHaveLength(2);
+    expect(connections[1].closed).toBe(false);
+
+    receive({
+      type: 'peer_ice_candidate', peerId: 'peer-a', connectionGeneration: 1,
+      candidate: { candidate: 'candidate-a' },
+    });
+    receive({
+      type: 'peer_ice_candidate', peerId: 'peer-b', connectionGeneration: 2,
+      candidate: { candidate: 'candidate-b' },
+    });
+    receive({
+      type: 'peer_answer', peerId: 'peer-a', connectionGeneration: 1,
+      description: { type: 'answer', sdp: 'answer-a' },
+    });
+    receive({
+      type: 'peer_answer', peerId: 'peer-b', connectionGeneration: 2,
+      description: { type: 'answer', sdp: 'answer-b' },
+    });
+    await vi.waitFor(() => {
+      expect(connections[0].remoteDescription?.sdp).toBe('answer-a');
+      expect(connections[1].remoteDescription?.sdp).toBe('answer-b');
+      expect(connections[0].addedCandidates.map(candidate => candidate.candidate)).toEqual(['candidate-a']);
+      expect(connections[1].addedCandidates.map(candidate => candidate.candidate)).toEqual(['candidate-b']);
+    });
+
+    receive({
+      type: 'peer_ice_candidate', peerId: 'peer-a', connectionGeneration: 1,
+      candidate: { candidate: 'candidate-failure' },
+    });
+    await vi.waitFor(() => {
+      expect(connections[0].closed).toBe(true);
+      expect(socket.sent).toContainEqual(expect.objectContaining({
+        type: 'peer_error', peerId: 'peer-a', connectionGeneration: 1,
+      }));
+    });
+    expect(connections[1].closed).toBe(false);
+
+    receive({ type: 'peer_prepare', peerId: 'peer-a', connectionGeneration: 3 });
+    await vi.waitFor(() => expect(connections).toHaveLength(3));
+    expect(connections[1].closed).toBe(false);
+    receive({
+      type: 'peer_answer', peerId: 'peer-a', connectionGeneration: 1,
+      description: { type: 'answer', sdp: 'stale-answer-a' },
+    });
+    await Promise.resolve();
+    expect(connections[2].remoteDescription).toBeNull();
+    receive({
+      type: 'peer_answer', peerId: 'peer-a', connectionGeneration: 3,
+      description: { type: 'answer', sdp: 'replacement-answer-a' },
+    });
+    await vi.waitFor(() => expect(connections[2].remoteDescription?.sdp).toBe('replacement-answer-a'));
+    receive({ type: 'peer_close', peerId: 'peer-b', connectionGeneration: 2 });
+    await vi.waitFor(() => expect(connections[1].closed).toBe(true));
+    expect(connections[2].closed).toBe(false);
+
+    receive({ type: 'session_close' });
+    await vi.waitFor(() => {
+      expect(connections[2].closed).toBe(true);
+      expect(track.stop).toHaveBeenCalledOnce();
+      expect(socket.closed).toBe(true);
+    });
+    socket.onclose();
+    receive({ type: 'peer_prepare', peerId: 'late-peer', connectionGeneration: 4 });
+    await Promise.resolve();
+    expect(connections).toHaveLength(3);
+    expect(track.stop).toHaveBeenCalledOnce();
   });
 
   it('retries only the extension storage read while MV3 APIs finish attaching', async () => {
