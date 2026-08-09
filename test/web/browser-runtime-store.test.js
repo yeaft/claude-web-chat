@@ -128,30 +128,98 @@ describe('Browser Runtime Web store', () => {
     expect(sent).toHaveLength(sentBefore);
   });
 
-  it('detaches a peer whose prepared response arrives after the viewer was closed', async () => {
+  it('retains cancelled attach identities across replacement and detaches the matching late peer', async () => {
     const store = useBrowserStore();
-    const peer = await store.attach({
+    const first = await store.attach({
       agentId: 'agent-a', browserSessionId: 'browser-a',
       videoElement: { srcObject: null, play: vi.fn() },
     });
     store.detach('agent-a', 'browser-a', { notify: true });
     expect(store.peers).toEqual({});
-    expect(store.cancelledPeers['agent-a\0browser-a']).toMatchObject({
-      requestId: peer.requestId,
-      connectionGeneration: peer.connectionGeneration,
+    expect(Object.values(store.cancelledPeers)).toContainEqual(expect.objectContaining({
+      requestId: first.requestId,
+      connectionGeneration: first.connectionGeneration,
+    }));
+
+    const replacement = await store.attach({
+      agentId: 'agent-a', browserSessionId: 'browser-a',
+      videoElement: { srcObject: null, play: vi.fn() },
     });
+    expect(Object.values(store.cancelledPeers)).toContainEqual(expect.objectContaining({
+      requestId: first.requestId,
+      connectionGeneration: first.connectionGeneration,
+    }));
     store.handleMessage({
       type: 'browser_peer_prepared',
       agentId: 'agent-a', browserSessionId: 'browser-a',
-      requestId: peer.requestId,
+      requestId: first.requestId,
       peerId: 'late-peer',
-      connectionGeneration: peer.connectionGeneration,
+      connectionGeneration: first.connectionGeneration,
     });
     expect(sent).toContainEqual(expect.objectContaining({
       type: 'browser_peer_detach', peerId: 'late-peer',
-      connectionGeneration: peer.connectionGeneration,
+      connectionGeneration: first.connectionGeneration,
     }));
+    expect(store.peers['agent-a\0browser-a']).toBe(replacement);
     expect(store.cancelledPeers).toEqual({});
+  });
+
+  it('consumes only the exact cancelled attach terminal event and resets tombstones with transport', async () => {
+    const store = useBrowserStore();
+    const first = await store.attach({
+      agentId: 'agent-a', browserSessionId: 'browser-a',
+      videoElement: { srcObject: null, play: vi.fn() },
+    });
+    store.detach('agent-a', 'browser-a', { notify: true });
+    const replacement = await store.attach({
+      agentId: 'agent-a', browserSessionId: 'browser-a',
+      videoElement: { srcObject: null, play: vi.fn() },
+    });
+
+    store.handleMessage({
+      type: 'browser_peer_error',
+      agentId: 'agent-a', browserSessionId: 'browser-a',
+      requestId: 'not-the-cancelled-request', peerId: 'unrelated-peer',
+      connectionGeneration: first.connectionGeneration,
+      code: 'unrelated_failure', safeError: 'unrelated failure',
+    });
+    expect(Object.values(store.cancelledPeers)).toHaveLength(1);
+    expect(store.peers['agent-a\0browser-a']).toBe(replacement);
+
+    store.handleMessage({
+      type: 'browser_peer_error',
+      agentId: 'agent-a', browserSessionId: 'browser-a',
+      requestId: first.requestId, peerId: 'late-peer',
+      connectionGeneration: first.connectionGeneration,
+      code: 'cancelled_peer_failed', safeError: 'cancelled peer failed',
+    });
+    expect(store.cancelledPeers).toEqual({});
+    expect(store.peers['agent-a\0browser-a']).toBe(replacement);
+
+    store.detach('agent-a', 'browser-a', { notify: true });
+    expect(Object.values(store.cancelledPeers)).toHaveLength(1);
+    store.handleTransportReset();
+    expect(store.cancelledPeers).toEqual({});
+  });
+
+  it('bounds and expires cancelled attach tombstones', async () => {
+    vi.useFakeTimers();
+    const store = useBrowserStore();
+    try {
+      for (let index = 0; index < 260; index += 1) {
+        await store.attach({
+          agentId: 'agent-a', browserSessionId: 'browser-a',
+          videoElement: { srcObject: null, play: vi.fn() },
+        });
+        store.detach('agent-a', 'browser-a', { notify: true });
+      }
+      expect(Object.keys(store.cancelledPeers)).toHaveLength(256);
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+      expect(store.cancelledPeers).toEqual({});
+    } finally {
+      store.clearCancelledPeers();
+      vi.useRealTimers();
+    }
   });
 
   it('rejects pending requests and closes every peer when the Web socket changes', async () => {

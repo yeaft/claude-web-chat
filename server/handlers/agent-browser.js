@@ -297,6 +297,7 @@ export async function handleAgentBrowser(agentId, agent, msg) {
     browserSessionId: peer.browserSessionId,
     peerId: peer.peerId,
     connectionGeneration: peer.connectionGeneration,
+    requestId: peer.requestId,
     state: clean(msg.state, 32) || null,
     code: clean(msg.code, 128) || null,
     safeError: clean(msg.safeError, 500) || null,

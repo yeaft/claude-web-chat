@@ -534,7 +534,8 @@ export class BrowserRuntimeService {
   #handleBridgeMessage(session, message) {
     if (this.sessions.get(session.browserSessionId) !== session) return;
     if (message.type === 'peer_prepared' || message.type === 'peer_offer'
-        || message.type === 'peer_ice_candidate' || message.type === 'peer_state') {
+        || message.type === 'peer_ice_candidate' || message.type === 'peer_state'
+        || message.type === 'peer_error') {
       const peer = session.peers.get(clean(message.peerId));
       if (!peer || peer.connectionGeneration !== Number(message.connectionGeneration)) return;
       if (message.type === 'peer_prepared') {
@@ -569,6 +570,17 @@ export class BrowserRuntimeService {
           connectionGeneration: peer.connectionGeneration,
           candidate: message.candidate || null,
         });
+      } else if (message.type === 'peer_error') {
+        this.#dropPeer(session, peer, 'peer_failed');
+        void this.#emit({
+          type: 'browser_peer_error',
+          browserSessionId: session.browserSessionId,
+          peerId: peer.peerId,
+          connectionGeneration: peer.connectionGeneration,
+          code: clean(message.code, 128) || 'peer_failed',
+          safeError: clean(message.safeError, 500) || 'Browser peer failed',
+        });
+        void this.#emitSnapshot(session);
       } else {
         const nextState = clean(message.state, 32) || peer.state;
         if (nextState === 'connected') {
@@ -591,9 +603,7 @@ export class BrowserRuntimeService {
       }
       return;
     }
-    if (message.type === 'capture_ended' || message.type === 'peer_error') {
-      void this.closeSessionRecord(session, message.type === 'capture_ended' ? 'capture_ended' : 'peer_failed');
-    }
+    if (message.type === 'capture_ended') void this.closeSessionRecord(session, 'capture_ended');
   }
 
   snapshot() {

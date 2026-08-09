@@ -1137,6 +1137,97 @@ describe('Browser Runtime lifecycle', () => {
     await runtime.shutdown();
   });
 
+  it('contains peer errors to the exact peer generation without closing single or multi-viewer Sessions', async () => {
+    let bridgeHandlers;
+    const page = Object.assign(new EventEmitter(), {
+      url: vi.fn(() => 'about:blank'), title: vi.fn().mockResolvedValue(''), mainFrame: vi.fn(() => null),
+    });
+    const bridge = {
+      registerSession: vi.fn(async (_id, handlers) => {
+        bridgeHandlers = handlers;
+        return {
+          bridgeUrl: 'ws://127.0.0.1:1/browser-runtime/token',
+          waitUntilReady: vi.fn().mockResolvedValue({ type: 'runtime_ready' }),
+        };
+      }),
+      send: vi.fn(() => true), unregisterSession: vi.fn(() => true), close: vi.fn(),
+    };
+    const send = vi.fn(() => 'sent');
+    const runtime = new BrowserRuntimeService({
+      yeaftDir: tempRoot(), config: { enabled: true, maxPeersPerSession: 2 }, platform: 'linux', bridge, send,
+      probe: vi.fn().mockResolvedValue({ ok: true, captureMode: 'tab' }),
+      launchSession: vi.fn().mockResolvedValue({
+        page, viewport: { width: 1280, height: 720, deviceScaleFactor: 1 }, captureMode: 'tab', close: vi.fn(),
+      }),
+    });
+    await runtime.startupProbe();
+    const owner = {
+      ownerUserId: 'owner-1', clientId: 'client-a',
+      webConnectionId: 'connection-a', webConnectionGeneration: 'web-generation-a',
+    };
+    const created = await runtime.createSession({ requestId: 'create-peer-errors', serverIdentity: owner });
+    await runtime.preparePeer({
+      browserSessionId: created.browserSessionId, peerId: 'peer-a', connectionGeneration: 1, serverIdentity: owner,
+    });
+    await runtime.preparePeer({
+      browserSessionId: created.browserSessionId, peerId: 'peer-b', connectionGeneration: 2, serverIdentity: owner,
+    });
+
+    bridgeHandlers.onMessage({
+      type: 'peer_error', peerId: 'peer-a', connectionGeneration: 1,
+      code: `peer_${'x'.repeat(200)}`, safeError: `failure ${'y'.repeat(800)}`,
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'browser_peer_error', browserSessionId: created.browserSessionId,
+      peerId: 'peer-a', connectionGeneration: 1,
+    })));
+    const firstError = send.mock.calls.find(([message]) => message.type === 'browser_peer_error')[0];
+    expect(firstError.code).toHaveLength(128);
+    expect(firstError.safeError).toHaveLength(500);
+    expect(runtime.sessions.get(created.browserSessionId)?.peers.has('peer-a')).toBe(false);
+    expect(runtime.sessions.get(created.browserSessionId)?.peers.has('peer-b')).toBe(true);
+    expect(runtime.snapshot()).toMatchObject({ activeSessions: 1 });
+    expect(bridge.unregisterSession).not.toHaveBeenCalled();
+
+    await runtime.preparePeer({
+      browserSessionId: created.browserSessionId, peerId: 'peer-a', connectionGeneration: 3, serverIdentity: owner,
+    });
+    send.mockClear();
+    bridge.send.mockClear();
+    bridgeHandlers.onMessage({
+      type: 'peer_error', peerId: 'peer-a', connectionGeneration: 1,
+      code: 'late_old_peer_failure', safeError: 'late old peer failure',
+    });
+    await Promise.resolve();
+    expect(send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'browser_peer_error' }));
+    expect(bridge.send).not.toHaveBeenCalledWith(created.browserSessionId, expect.objectContaining({
+      type: 'peer_close', peerId: 'peer-a', connectionGeneration: 1,
+    }));
+    expect(runtime.sessions.get(created.browserSessionId)?.peers.get('peer-a'))
+      .toMatchObject({ connectionGeneration: 3 });
+
+    bridgeHandlers.onMessage({
+      type: 'peer_error', peerId: 'peer-a', connectionGeneration: 3,
+      code: 'replacement_failed', safeError: 'replacement failed',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'browser_peer_error', peerId: 'peer-a', connectionGeneration: 3,
+    })));
+    expect(runtime.sessions.get(created.browserSessionId)?.peers.has('peer-b')).toBe(true);
+    bridgeHandlers.onMessage({
+      type: 'peer_error', peerId: 'peer-b', connectionGeneration: 2,
+      code: 'last_viewer_failed', safeError: 'last viewer failed',
+    });
+    await vi.waitFor(() => expect(runtime.sessions.get(created.browserSessionId)?.peers.size).toBe(0));
+    expect(runtime.snapshot()).toMatchObject({ activeSessions: 1 });
+    expect(bridge.unregisterSession).not.toHaveBeenCalled();
+
+    bridgeHandlers.onMessage({ type: 'capture_ended' });
+    await vi.waitFor(() => expect(runtime.snapshot()).toMatchObject({ activeSessions: 0 }));
+    expect(bridge.unregisterSession).toHaveBeenCalledWith(created.browserSessionId, 'capture_ended');
+    await runtime.shutdown();
+  });
+
   it('cancels an in-flight Session launch on transport disconnect and closes a late runtime', async () => {
     let resolveLaunch;
     let observedSignal;

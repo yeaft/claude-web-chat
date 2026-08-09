@@ -239,6 +239,25 @@ describe('Browser Runtime Server ownership and signaling', () => {
 
     sendToWebClient.mockClear();
     await handleAgentBrowser('agent-a', agents.get('agent-a'), {
+      type: 'browser_peer_error', browserSessionId: 'browser-session-a', peerId: prepare.peerId,
+      connectionGeneration: 7, code: 'peer_failed', safeError: 'peer failed',
+    });
+    expect(sendToWebClient).toHaveBeenCalledWith(clientA, expect.objectContaining({
+      type: 'browser_peer_error', requestId: 'attach-a', peerId: prepare.peerId,
+      connectionGeneration: 7, code: 'peer_failed', safeError: 'peer failed',
+    }));
+    expect(browserPeers.has(prepare.peerId)).toBe(false);
+
+    await handleClientBrowser(clientA, {
+      type: 'browser_peer_attach', agentId: 'agent-a', browserSessionId: 'browser-session-a',
+      requestId: 'attach-b', connectionGeneration: 8,
+    }, async () => true);
+    expect(sendToAgent.mock.calls.at(-1)[1]).toMatchObject({
+      type: 'browser_peer_prepare', requestId: 'attach-b', connectionGeneration: 8,
+    });
+
+    sendToWebClient.mockClear();
+    await handleAgentBrowser('agent-a', agents.get('agent-a'), {
       type: 'browser_session_snapshot', browserSessionId: 'browser-session-a',
       revision: 3, state: 'closed', terminalReason: 'capture_ended',
       credential: 'must-not-leak',

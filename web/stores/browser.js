@@ -2,6 +2,8 @@ const { defineStore } = Pinia;
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const PEER_ATTACH_TIMEOUT_MS = 20_000;
+const CANCELLED_PEER_TTL_MS = 60 * 60_000;
+const MAX_CANCELLED_PEERS = 256;
 
 function id() {
   return globalThis.crypto?.randomUUID?.()
@@ -10,6 +12,10 @@ function id() {
 
 function sessionKey(agentId, browserSessionId) {
   return `${String(agentId || '')}\0${String(browserSessionId || '')}`;
+}
+
+function cancelledPeerKey(agentId, browserSessionId, requestId, connectionGeneration) {
+  return `${sessionKey(agentId, browserSessionId)}\0${String(requestId || '')}\0${String(connectionGeneration || '')}`;
 }
 
 function safeError(message, fallback = 'Browser Runtime request failed') {
@@ -30,6 +36,7 @@ export const useBrowserStore = defineStore('browser', {
     protocolSupported: null,
     connectionEpoch: 0,
     lastError: null,
+    _cancelledPeerCleanupTimer: null,
     _messageListenerInstalled: false,
   }),
 
@@ -78,6 +85,57 @@ export const useBrowserStore = defineStore('browser', {
       if (error) pending.reject(error);
       else pending.resolve(value);
       return true;
+    },
+
+    clearCancelledPeers() {
+      clearTimeout(this._cancelledPeerCleanupTimer);
+      this._cancelledPeerCleanupTimer = null;
+      this.cancelledPeers = {};
+    },
+
+    pruneCancelledPeers(now = Date.now()) {
+      clearTimeout(this._cancelledPeerCleanupTimer);
+      this._cancelledPeerCleanupTimer = null;
+      for (const [key, cancelled] of Object.entries(this.cancelledPeers)) {
+        if (Number(cancelled.expiresAt) <= now) delete this.cancelledPeers[key];
+      }
+      const nextExpiry = Math.min(...Object.values(this.cancelledPeers)
+        .map(cancelled => Number(cancelled.expiresAt)).filter(Number.isFinite));
+      if (Number.isFinite(nextExpiry)) {
+        this._cancelledPeerCleanupTimer = setTimeout(
+          () => this.pruneCancelledPeers(), Math.max(1, nextExpiry - Date.now()),
+        );
+      }
+    },
+
+    rememberCancelledPeer(peer) {
+      const now = Date.now();
+      this.pruneCancelledPeers(now);
+      while (Object.keys(this.cancelledPeers).length >= MAX_CANCELLED_PEERS) {
+        delete this.cancelledPeers[Object.keys(this.cancelledPeers)[0]];
+      }
+      this.cancelledPeers[cancelledPeerKey(
+        peer.agentId, peer.browserSessionId, peer.requestId, peer.connectionGeneration,
+      )] = {
+        agentId: peer.agentId,
+        browserSessionId: peer.browserSessionId,
+        requestId: peer.requestId,
+        connectionGeneration: peer.connectionGeneration,
+        expiresAt: now + CANCELLED_PEER_TTL_MS,
+      };
+      this.pruneCancelledPeers(now);
+    },
+
+    takeCancelledPeer(message) {
+      const key = cancelledPeerKey(
+        message.agentId, message.browserSessionId, message.requestId, message.connectionGeneration,
+      );
+      const cancelled = this.cancelledPeers[key];
+      if (!cancelled) return null;
+      delete this.cancelledPeers[key];
+      this.pruneCancelledPeers();
+      if (Number(cancelled.expiresAt) <= Date.now()) return null;
+      return cancelled;
     },
 
     async createSession({ agentId, sourceRef = null, initialUrl = 'about:blank', viewport = null, locale = 'en-US' }) {
@@ -135,7 +193,6 @@ export const useBrowserStore = defineStore('browser', {
         pendingCandidates: [],
         attachTimer: null,
       };
-      delete this.cancelledPeers[localKey];
       this.peers[localKey] = peer;
       peer.attachTimer = setTimeout(() => {
         if (this.peers[localKey] !== peer || peer.state === 'connected') return;
@@ -230,14 +287,7 @@ export const useBrowserStore = defineStore('browser', {
       if (!peer) return;
       delete this.peers[localKey];
       clearTimeout(peer.attachTimer);
-      if (notify && !peer.peerId) {
-        this.cancelledPeers[localKey] = {
-          agentId,
-          browserSessionId,
-          requestId: peer.requestId,
-          connectionGeneration: peer.connectionGeneration,
-        };
-      }
+      if (notify && !peer.peerId) this.rememberCancelledPeer(peer);
       if (notify && peer.peerId) {
         try {
           this.send({
@@ -273,7 +323,7 @@ export const useBrowserStore = defineStore('browser', {
         this.detach(peer.agentId, peer.browserSessionId, { notify: false });
       }
       this.peers = {};
-      this.cancelledPeers = {};
+      this.clearCancelledPeers();
     },
 
     handleMessage(message) {
@@ -311,21 +361,22 @@ export const useBrowserStore = defineStore('browser', {
       const localKey = sessionKey(message.agentId, message.browserSessionId);
       const peer = this.peers[localKey];
       if (!peer || peer.connectionGeneration !== Number(message.connectionGeneration)) {
-        const cancelled = this.cancelledPeers[localKey];
-        if (message.type === 'browser_peer_prepared'
-            && cancelled?.connectionGeneration === Number(message.connectionGeneration)
-            && cancelled.requestId === message.requestId) {
-          delete this.cancelledPeers[localKey];
-          try {
-            this.send({
-              type: 'browser_peer_detach',
-              requestId: id(),
-              agentId: cancelled.agentId,
-              browserSessionId: cancelled.browserSessionId,
-              peerId: message.peerId,
-              connectionGeneration: cancelled.connectionGeneration,
-            });
-          } catch {}
+        if (message.type === 'browser_peer_prepared' || message.type === 'browser_peer_error'
+            || (message.type === 'browser_peer_state'
+              && ['failed', 'disconnected', 'closed'].includes(message.state))) {
+          const cancelled = this.takeCancelledPeer(message);
+          if (cancelled && message.type === 'browser_peer_prepared') {
+            try {
+              this.send({
+                type: 'browser_peer_detach',
+                requestId: id(),
+                agentId: cancelled.agentId,
+                browserSessionId: cancelled.browserSessionId,
+                peerId: message.peerId,
+                connectionGeneration: cancelled.connectionGeneration,
+              });
+            } catch {}
+          }
         }
         return;
       }
