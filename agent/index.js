@@ -164,6 +164,7 @@ async function detectCapabilities() {
   if (process.platform === 'linux') capabilities.push('work_item_attachments');
   const pty = await loadNodePty();
   if (pty) capabilities.push('terminal');
+  if (ctx.browserRuntime) capabilities.push(...ctx.browserRuntime.capabilities());
 
   console.log(`[Capabilities] Detected: ${capabilities.join(', ')}`);
   return capabilities;
@@ -403,6 +404,7 @@ process.on('SIGTERM', async () => {
     ctx.browserRuntime = await bootBrowserRuntime({
       yeaftDir: YEAFT_DIR,
       config: runtimeConfig,
+      send: message => ctx.sendToServer?.(message) || 'dropped',
     });
     const probe = ctx.browserRuntime.snapshot().probe;
     if (probe?.ok) {

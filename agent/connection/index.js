@@ -53,6 +53,7 @@ export function connect(WebSocketImpl = WebSocket) {
     if (closedTerminals > 0) {
       console.log(`[PTY] Closed ${closedTerminals} terminal(s) before Agent transport replacement`);
     }
+    void ctx.browserRuntime?.handleTransportDisconnect?.();
   }
   ctx.ws = socket;
 
@@ -111,6 +112,7 @@ export function connect(WebSocketImpl = WebSocket) {
     if (closedTerminals > 0) {
       console.log(`[PTY] Closed ${closedTerminals} terminal(s) after Agent transport disconnect`);
     }
+    void ctx.browserRuntime?.handleTransportDisconnect?.();
 
     if (code === 1008) {
       console.error('Authentication failed. Check AGENT_SECRET configuration.');

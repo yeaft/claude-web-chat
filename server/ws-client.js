@@ -6,14 +6,16 @@ import { authenticateRequest } from './auth/request-auth.js';
 import { encodeKey } from './encryption.js';
 import { userDb } from './database.js';
 import { agents, clearYeaftDebugRequestsForClient, webClients, isHeartbeatMessageType, trackRequest } from './context.js';
-import { applyClientHello, WORKBENCH_ROUTE_PROTOCOL } from './client-protocol.js';
+import { applyClientHello, BROWSER_RUNTIME_PROTOCOL, WORKBENCH_ROUTE_PROTOCOL } from './client-protocol.js';
 import { clearWorkbenchCorrelationsForClient } from './workbench-correlation.js';
+import { clearBrowserRuntimeForClient } from './browser-runtime-routes.js';
 import {
   parseMessage, sendToWebClient, sendToAgent,
   broadcastAgentList, resolveAgentAccessError
 } from './ws-utils.js';
 import { handleClientConversation } from './handlers/client-conversation.js';
 import { handleClientWorkbench } from './handlers/client-workbench.js';
+import { CLIENT_BROWSER_TYPES, handleClientBrowser } from './handlers/client-browser.js';
 import { handleClientMisc } from './handlers/client-misc.js';
 import { clearWorkCenterRequestsForClient, handleClientWorkCenter } from './handlers/client-work-center.js';
 import { recordPerfTraceEvent } from './perf-trace.js';
@@ -64,7 +66,11 @@ export function handleWebConnection(ws, url, req = {}) {
     }
   }
 
+  const connectionId = randomUUID();
   webClients.set(clientId, {
+    id: clientId,
+    connectionId,
+    connectionGeneration: connectionId,
     ws,
     authenticated,
     username,
@@ -79,8 +85,9 @@ export function handleWebConnection(ws, url, req = {}) {
     // `false` when the client sends `client_hello { plaintextOk: true }`
     // — see early dispatch in handleWebMessage.
     encryptOutbound: true,
-    // Explicit Workbench protocol negotiation. Zero means legacy Web.
+    // Explicit protocols have no omission-based downgrade for security fields.
     workbenchRouteProtocol: 0,
+    browserRuntimeProtocol: 0,
   });
 
   // 心跳响应处理
@@ -108,6 +115,8 @@ export function handleWebConnection(ws, url, req = {}) {
       acceptPlaintext: true,
       yeaftSessionInventoryComplete: true,
       workbenchRouteProtocol: WORKBENCH_ROUTE_PROTOCOL,
+      browserRuntimeProtocol: BROWSER_RUNTIME_PROTOCOL,
+      browserRuntimeEnabled: CONFIG.browserRuntime.enabled,
     }));
     setTimeout(() => broadcastAgentList(), 100);
   } else {
@@ -169,6 +178,24 @@ export function handleWebConnection(ws, url, req = {}) {
     }
     clearWorkCenterRequestsForClient(client);
     clearYeaftDebugRequestsForClient(clientId);
+    const browserPeers = clearBrowserRuntimeForClient(client);
+    for (const peer of browserPeers) {
+      const agent = agents.get(peer.agentId);
+      if (!agent) continue;
+      void sendToAgent(agent, {
+        type: 'browser_peer_detach',
+        agentId: peer.agentId,
+        browserSessionId: peer.browserSessionId,
+        peerId: peer.peerId,
+        connectionGeneration: peer.connectionGeneration,
+        serverIdentity: {
+          ownerUserId: peer.ownerUserId,
+          clientId: peer.clientId,
+          webConnectionId: peer.webConnectionId,
+          webConnectionGeneration: peer.webConnectionGeneration,
+        },
+      }).catch(error => console.warn('[BrowserRuntime] peer disconnect cleanup failed:', error.message));
+    }
     const ownedTerminals = clearWorkbenchCorrelationsForClient(clientId);
     for (const owner of ownedTerminals) {
       const agent = agents.get(owner.agentId);
@@ -192,6 +219,7 @@ export function handleWebConnection(ws, url, req = {}) {
 
 // Workbench 功能（terminal、file、git、proxy）仅 admin/pro 可用
 const WORKBENCH_TYPES = new Set([
+  ...CLIENT_BROWSER_TYPES,
   'terminal_create', 'terminal_input', 'terminal_resize', 'terminal_close',
   'read_file', 'write_file', 'create_file', 'delete_files', 'move_files', 'copy_files', 'upload_to_dir', 'file_search',
   'git_status', 'git_diff', 'git_add', 'git_reset', 'git_restore', 'git_commit', 'git_push',
@@ -220,6 +248,8 @@ async function handleWebMessage(clientId, msg) {
     await sendToWebClient(client, {
       type: 'client_hello_ack',
       workbenchRouteProtocol: client.workbenchRouteProtocol,
+      browserRuntimeProtocol: client.browserRuntimeProtocol,
+      browserRuntimeEnabled: CONFIG.browserRuntime.enabled,
     });
     return;
   }
@@ -246,6 +276,7 @@ async function handleWebMessage(clientId, msg) {
 
   // Dispatch to handler sub-modules
   if (await handleClientConversation(clientId, client, msg, checkAgentAccess)) return;
+  if (await handleClientBrowser(client, msg, checkAgentAccess)) return;
   if (await handleClientWorkbench(clientId, client, msg, checkAgentAccess)) return;
   if (await handleClientWorkCenter(client, msg, checkAgentAccess)) return;
   if (await handleClientMisc(clientId, client, msg, checkAgentAccess)) return;

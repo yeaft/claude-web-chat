@@ -69,7 +69,7 @@ export async function handleBrowserCommand(args, dependencies = {}) {
     const result = configApi.updateBrowserRuntimeSettings({ enabled: action === 'enable' }, yeaftDir);
     if (result.error) throw new Error(result.error);
     log(JSON.stringify(result, null, 2));
-    log('Restart the selected Agent instance to run the startup probe. Phase 0 does not advertise Browser capability.');
+    log('Restart the selected Agent instance. A successful supported-platform probe advertises Browser viewer capability.');
     return;
   }
   if (action === 'status') {

@@ -1,4 +1,5 @@
 import WorkbenchCapabilityHost from './WorkbenchCapabilityHost.js';
+import BrowserPanel from './BrowserPanel.js';
 import {
   workbenchConversationId,
   workbenchRouteKey,
@@ -7,7 +8,7 @@ import {
 
 export default {
   name: 'WorkbenchPanel',
-  components: { WorkbenchCapabilityHost },
+  components: { WorkbenchCapabilityHost, BrowserPanel },
   template: `
     <div ref="panelRoot" class="workbench-panel" :class="{ expanded: store.workbenchExpanded, maximized: store.workbenchMaximized }" :style="panelStyle">
       <div class="workbench-content" v-if="store.workbenchExpanded">
@@ -101,12 +102,18 @@ export default {
             <button type="button" class="btn-secondary" @click="closeCapability">{{ $t('workbench.backToCapabilities') }}</button>
           </section>
 
-          <section v-if="activeCapability === 'browser'" class="workbench-capability-empty workbench-browser-view">
+          <BrowserPanel
+            v-if="activeCapability === 'browser' && hasBrowser"
+            :key="'browser:' + workbenchContextKey"
+            v-bind="routeProps"
+          />
+
+          <section v-else-if="activeCapability === 'browser'" class="workbench-capability-empty workbench-browser-view">
             <span class="workbench-capability-icon workbench-capability-empty-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2zm0 14H4V9h16v9zM4 7V6h16v1H4zm2-1h2v1H6V6z"/></svg>
             </span>
             <h2>{{ $t('workbench.browser') }}</h2>
-            <p>{{ $t(hasBrowser ? 'workbench.browserViewerPending' : 'workbench.browserUnavailable') }}</p>
+            <p>{{ $t('workbench.browserUnavailable') }}</p>
             <button type="button" class="btn-secondary" @click="closeCapability">{{ $t('workbench.backToCapabilities') }}</button>
           </section>
         </div>
@@ -145,7 +152,9 @@ export default {
     const hasTerminal = Vue.computed(() => hasSessionRoutes.value && store.hasCapability('terminal'));
     const hasExplorer = Vue.computed(() => hasSessionRoutes.value && store.hasCapability('file_editor'));
     const hasBrowser = Vue.computed(() => (
-      store.hasCapability('browser_runtime')
+      store.browserRuntimeServerEnabled === true
+      && store.browserRuntimeProtocolSupported === true
+      && store.hasCapability('browser_runtime')
       && store.hasCapability('browser_webrtc')
       && (store.hasCapability('browser_capture_tab') || store.hasCapability('browser_capture_cdp'))
     ));
