@@ -121,12 +121,10 @@ export function handleAgentConnection(ws, url) {
           }
 
           const authCapabilitiesProvided = Array.isArray(msg.capabilities);
-          const urlCapabilityValue = url.searchParams.get('capabilities');
           // Modern Agents always include this query key, including for an
-          // explicit empty list. Treat a missing or empty URL value as old
-          // metadata omission unless the auth frame itself supplied an array.
-          const urlCapabilitiesProvided = typeof urlCapabilityValue === 'string'
-            && urlCapabilityValue.trim().length > 0;
+          // explicit empty list. The key's presence is the metadata signal;
+          // its value only determines the effective capability list.
+          const urlCapabilitiesProvided = url.searchParams.has('capabilities');
           const capabilityMetadataProvided = authCapabilitiesProvided || urlCapabilitiesProvided;
           const capabilities = authCapabilitiesProvided ? msg.capabilities : urlCapabilities;
           const agentVersion = msg.version || null;

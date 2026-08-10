@@ -628,7 +628,7 @@ describe('resolveAgentAccessError', () => {
     ]);
   });
 
-  it('distinguishes missing and explicit capability metadata through a real Agent handshake', async () => {
+  it('distinguishes missing and explicit empty URL capability metadata through a real Agent handshake', async () => {
     CONFIG.skipAuth = true;
     const client = {
       userId: null, role: 'admin', authenticated: true, encryptOutbound: false,
@@ -636,39 +636,51 @@ describe('resolveAgentAccessError', () => {
       ws: { readyState: WS_OPEN, send(payload) { client.sent.push(JSON.parse(payload)); }, close() {} },
     };
 
-    for (const [agentId, authCapabilities, urlCapabilities] of [
-      ['plugins-handshake-legacy', undefined, null],
-      ['plugins-handshake-explicit', [], 'plaintext-ok'],
+    for (const { agentId, urlCapabilitiesProvided, capabilityMetadataProvided } of [
+      {
+        agentId: 'plugins-handshake-legacy',
+        urlCapabilitiesProvided: false,
+        capabilityMetadataProvided: false,
+      },
+      {
+        agentId: 'plugins-handshake-empty-url',
+        urlCapabilitiesProvided: true,
+        capabilityMetadataProvided: true,
+      },
     ]) {
       const socket = new MockWebSocket(WS_OPEN);
       const url = new URL(`ws://localhost/?type=agent&id=${agentId}&name=${agentId}&instanceId=${agentId}`);
-      if (urlCapabilities !== null) url.searchParams.set('capabilities', urlCapabilities);
+      if (urlCapabilitiesProvided) url.searchParams.set('capabilities', '');
       handleAgentConnection(socket, url);
       const challenge = socket.getLastMessage();
-      socket.simulateMessage({
-        type: 'auth',
-        tempId: challenge.tempId,
-        secret: '',
-        ...(authCapabilities === undefined ? {} : { capabilities: authCapabilities }),
-      });
+      socket.simulateMessage({ type: 'auth', tempId: challenge.tempId, secret: '' });
       await new Promise(resolve => setTimeout(resolve, 0));
 
       const registered = agents.get(agentId);
       expect(registered?.capabilities).toEqual(['terminal', 'file_editor', 'background_tasks']);
-      expect(registered?.capabilityMetadataProvided).toBe(authCapabilities !== undefined);
+      expect(registered?.capabilityMetadataProvided).toBe(capabilityMetadataProvided);
 
       socket.clearMessages();
       client.sent.length = 0;
       await handleClientMisc('plugin-handshake-client', client, {
         type: 'get_yeaft_plugins', requestId: `${agentId}-config`, agentId,
       }, async requestedAgentId => requestedAgentId === agentId);
+      await handleClientMisc('plugin-handshake-client', client, {
+        type: 'update_yeaft_plugins', requestId: `${agentId}-update`, agentId,
+        plugins: { tools: ['FileRead'] },
+      }, async requestedAgentId => requestedAgentId === agentId);
       await handleClientConversation('plugin-handshake-client', client, {
         type: 'yeaft_plugin_catalog', requestId: `${agentId}-catalog`, agentId,
       }, async requestedAgentId => requestedAgentId === agentId);
 
-      if (authCapabilities === undefined) {
+      if (!capabilityMetadataProvided) {
         expect(socket.getSentMessages()).toEqual([
           { type: 'get_yeaft_plugins', requestId: `${agentId}-config` },
+          {
+            type: 'update_yeaft_plugins',
+            requestId: `${agentId}-update`,
+            plugins: { tools: ['FileRead'] },
+          },
           expect.objectContaining({
             type: 'yeaft_plugin_catalog',
             requestId: `${agentId}-catalog`,
@@ -683,6 +695,12 @@ describe('resolveAgentAccessError', () => {
             type: 'yeaft_plugins',
             agentId,
             requestId: `${agentId}-config`,
+            error: YEAFT_PLUGINS_UNSUPPORTED_ERROR,
+          }),
+          expect.objectContaining({
+            type: 'yeaft_plugins_updated',
+            agentId,
+            requestId: `${agentId}-update`,
             error: YEAFT_PLUGINS_UNSUPPORTED_ERROR,
           }),
           expect.objectContaining({
