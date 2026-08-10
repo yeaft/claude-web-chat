@@ -303,6 +303,41 @@ test.describe('Workbench', () => {
     });
   });
 
+  test('keeps a failed Browser install visible after automatic status refresh and allows retry', async ({ chatPage, mockAgent }) => {
+    const checksumError = 'Managed Chrome archive checksum mismatch for chrome-linux64.zip';
+    mockAgent.failBrowserRuntimeInstall(checksumError);
+    await openYeaftWorkbench(chatPage, mockAgent);
+    await chatPage.evaluate(agentId => {
+      const store = window.Pinia.useChatStore();
+      const agent = store.agents.find(item => item.id === agentId);
+      agent.capabilities = [
+        ...new Set([
+          ...(agent.capabilities || []).filter(capability => ![
+            'browser_runtime', 'browser_webrtc', 'browser_capture_tab',
+          ].includes(capability)),
+          'browser_runtime_setup',
+        ]),
+      ];
+      store.currentAgentInfo = agent;
+    }, mockAgent.agentId);
+
+    const panel = chatPage.locator('.workbench-panel');
+    await capability(panel, 'browser').click();
+    await mockAgent.waitForMessage('browser_runtime_status');
+    const installButton = panel.locator('.browser-setup-stage .btn-primary');
+    await expect(installButton).toBeEnabled();
+    await installButton.click();
+    await mockAgent.waitForMessage('browser_runtime_install');
+    const refresh = await mockAgent.waitForMessage('browser_runtime_status');
+    expect(refresh).toMatchObject({ agentId: mockAgent.agentId, requestId: expect.any(String) });
+
+    await expect(panel.locator('.browser-setup-error')).toHaveText(checksumError);
+    await expect(installButton).toBeEnabled();
+    const attempts = mockAgent.messages('browser_runtime_install').length;
+    await installButton.click();
+    await expect.poll(() => mockAgent.messages('browser_runtime_install').length).toBe(attempts + 1);
+  });
+
   test('creates a Browser Session and mounts the generation-fenced WebRTC viewer', async ({ chatPage, mockAgent }) => {
     await openYeaftWorkbench(chatPage, mockAgent);
     await chatPage.evaluate(agentId => {

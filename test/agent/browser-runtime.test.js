@@ -1050,6 +1050,58 @@ describe('Browser Runtime lifecycle', () => {
     await runtime.shutdown();
   });
 
+  it('keeps a failed install error through status refresh until an explicit retry supersedes it', async () => {
+    const checksumError = new Error('Managed Chrome archive checksum mismatch for chrome-linux64.zip');
+    let finishRetry;
+    let installed = false;
+    const installBrowser = vi.fn()
+      .mockRejectedValueOnce(checksumError)
+      .mockImplementationOnce(() => new Promise(resolve => {
+        finishRetry = () => {
+          installed = true;
+          resolve({ status: 'installed', executablePath: '/managed/chrome' });
+        };
+      }));
+    const runtime = new BrowserRuntimeService({
+      yeaftDir: tempRoot(),
+      config: {},
+      resolveBrowser: vi.fn().mockImplementation(async () => (
+        installed ? '/managed/chrome' : null
+      )),
+      installBrowser,
+      saveSettings: vi.fn().mockReturnValue({ enabled: true, executablePath: null }),
+      probe: vi.fn().mockResolvedValue({ ok: true, captureMode: 'tab' }),
+      platform: 'linux',
+      arch: 'x64',
+    });
+    const confirmation = {
+      confirmedBuildId: BROWSER_RUNTIME_CHROME_BUILD,
+      confirmedDownloadBytes: 193_285_407,
+    };
+
+    await expect(runtime.installAndEnable(confirmation)).rejects.toThrow(checksumError.message);
+    await expect(runtime.setupStatus()).resolves.toMatchObject({
+      state: 'not_installed',
+      installed: false,
+      safeError: checksumError.message,
+    });
+
+    const retry = runtime.installAndEnable(confirmation);
+    await vi.waitFor(() => expect(installBrowser).toHaveBeenCalledTimes(2));
+    await expect(runtime.setupStatus()).resolves.toMatchObject({
+      state: 'installing',
+      safeError: null,
+    });
+    finishRetry();
+    await expect(retry).resolves.toMatchObject({
+      state: 'ready',
+      installed: true,
+      ready: true,
+      safeError: null,
+    });
+    await runtime.shutdown();
+  });
+
   it('single-flights an explicit install, persists enablement, probes, and refreshes capabilities', async () => {
     let finishInstall;
     const installBrowser = vi.fn(({ onProgress }) => new Promise(resolve => {

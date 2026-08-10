@@ -10,6 +10,7 @@ export class MockAgent {
     this.agentId = null;
     this.conversations = new Map();
     this.browserSessions = new Map();
+    this.browserRuntimeInstallFailure = null;
     this._messageHandlers = [];
     this._receivedMessages = [];
     this._messageHistory = [];
@@ -92,6 +93,15 @@ export class MockAgent {
             buildId: '151.0.7922.71',
             platform: 'linux',
             downloadBytes: 193_285_407,
+            safeError: null,
+          });
+        }
+        if (msg.type === 'browser_runtime_install' && this.browserRuntimeInstallFailure) {
+          this.send({
+            type: 'browser_runtime_error',
+            requestId: msg.requestId,
+            code: 'browser_install_failed',
+            safeError: this.browserRuntimeInstallFailure,
           });
         }
         if (msg.type === 'browser_session_list') {
@@ -189,6 +199,10 @@ export class MockAgent {
 
   messages(type = null) {
     return this._messageHistory.filter(message => !type || message.type === type);
+  }
+
+  failBrowserRuntimeInstall(safeError) {
+    this.browserRuntimeInstallFailure = safeError;
   }
 
   waitForMessage(type, timeoutMs = 5000) {

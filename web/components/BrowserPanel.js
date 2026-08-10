@@ -257,10 +257,10 @@ export default {
       }
     };
 
-    const refreshRuntime = async ({ startWhenReady = false } = {}) => {
+    const refreshRuntime = async ({ startWhenReady = false, preserveError = false } = {}) => {
       if (runtimeLoading.value || !props.agentId || browser.protocolSupported !== true) return;
       runtimeLoading.value = true;
-      setupError.value = '';
+      if (!preserveError) setupError.value = '';
       try {
         const status = await browser.getRuntimeStatus(props.agentId);
         if (disposed) return;
@@ -268,7 +268,9 @@ export default {
         else clearStatusPoll();
         if (startWhenReady && status.ready === true && !snapshot.value) await startViewer();
       } catch (cause) {
-        setupError.value = cause?.message || String(cause);
+        if (!preserveError || !setupError.value) {
+          setupError.value = cause?.message || String(cause);
+        }
       } finally {
         runtimeLoading.value = false;
       }
@@ -284,7 +286,7 @@ export default {
         if (!disposed && status.ready === true) await startViewer();
       } catch (cause) {
         setupError.value = cause?.message || String(cause);
-        await refreshRuntime();
+        await refreshRuntime({ preserveError: true });
       } finally {
         installing.value = false;
         scheduleStatusPoll();
@@ -300,7 +302,7 @@ export default {
         if (!disposed && status.ready === true) await startViewer();
       } catch (cause) {
         setupError.value = cause?.message || String(cause);
-        await refreshRuntime();
+        await refreshRuntime({ preserveError: true });
       } finally {
         enabling.value = false;
       }

@@ -196,21 +196,25 @@ export class BrowserRuntimeService {
 
   async setupStatus() {
     let executablePath = null;
-    this.lastSetupError = null;
     if (this.setupInfo.supported) {
       try {
         executablePath = await this.resolveBrowser({
           executablePath: this.config.executablePath,
           cacheDir: this.config.cacheDir,
         });
+        if (this.lastSetupError?.source === 'status') this.lastSetupError = null;
       } catch (error) {
-        this.lastSetupError = {
-          code: error?.code || 'browser_status_failed',
-          safeError: String(error?.message || error).slice(0, 500),
-        };
+        if (!this.lastSetupError || this.lastSetupError.source === 'status') {
+          this.lastSetupError = {
+            source: 'status',
+            code: error?.code || 'browser_status_failed',
+            safeError: String(error?.message || error).slice(0, 500),
+          };
+        }
       }
     }
     const installed = !!executablePath;
+    if (this.ready) this.lastSetupError = null;
     const state = !this.setupInfo.supported ? 'unsupported'
       : this.ready ? 'ready'
         : this.#installPromise ? 'installing'
@@ -230,7 +234,7 @@ export class BrowserRuntimeService {
       downloadedBytes: Number(this.installProgress?.downloadedBytes) || 0,
       totalBytes: Number(this.installProgress?.totalBytes) || this.setupInfo.downloadBytes,
       probeCode: this.probeResult?.code || null,
-      safeError: this.probeResult?.safeError || this.lastSetupError?.safeError || null,
+      safeError: this.lastSetupError?.safeError || this.probeResult?.safeError || null,
     });
   }
 
@@ -270,16 +274,25 @@ export class BrowserRuntimeService {
   async enableAndProbe() {
     if (!this.setupInfo.supported) throw new BrowserRuntimeError('browser_platform_unsupported');
     this.lastSetupError = null;
-    const executablePath = await this.resolveBrowser({
-      executablePath: this.config.executablePath,
-      cacheDir: this.config.cacheDir,
-    });
-    if (!executablePath) throw new BrowserRuntimeError('browser_executable_missing');
-    await this.#persistEnabled();
-    this.probeResult = null;
-    const probe = await this.startupProbe({ force: true });
-    await this.#notifyCapabilitiesChanged();
-    return { ...(await this.setupStatus()), probeCode: probe.code || null };
+    try {
+      const executablePath = await this.resolveBrowser({
+        executablePath: this.config.executablePath,
+        cacheDir: this.config.cacheDir,
+      });
+      if (!executablePath) throw new BrowserRuntimeError('browser_executable_missing');
+      await this.#persistEnabled();
+      this.probeResult = null;
+      const probe = await this.startupProbe({ force: true });
+      await this.#notifyCapabilitiesChanged();
+      return { ...(await this.setupStatus()), probeCode: probe.code || null };
+    } catch (error) {
+      this.lastSetupError = {
+        source: 'enable',
+        code: error?.code || 'browser_enable_failed',
+        safeError: String(error?.message || error).slice(0, 500),
+      };
+      throw error;
+    }
   }
 
   async installAndEnable({ confirmedBuildId, confirmedDownloadBytes, onProgress = null } = {}) {
@@ -329,6 +342,7 @@ export class BrowserRuntimeService {
         return this.setupStatus();
       })().catch(error => {
         this.lastSetupError = {
+          source: 'install',
           code: error?.code || 'browser_install_failed',
           safeError: String(error?.message || error).slice(0, 500),
         };
