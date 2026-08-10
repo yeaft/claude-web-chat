@@ -120,7 +120,15 @@ export function handleAgentConnection(ws, url) {
             return;
           }
 
-          const capabilities = Array.isArray(msg.capabilities) ? msg.capabilities : urlCapabilities;
+          const authCapabilitiesProvided = Array.isArray(msg.capabilities);
+          const urlCapabilityValue = url.searchParams.get('capabilities');
+          // Modern Agents always include this query key, including for an
+          // explicit empty list. Treat a missing or empty URL value as old
+          // metadata omission unless the auth frame itself supplied an array.
+          const urlCapabilitiesProvided = typeof urlCapabilityValue === 'string'
+            && urlCapabilityValue.trim().length > 0;
+          const capabilityMetadataProvided = authCapabilitiesProvided || urlCapabilitiesProvided;
+          const capabilities = authCapabilitiesProvided ? msg.capabilities : urlCapabilities;
           const agentVersion = msg.version || null;
           const agentPlatform = typeof msg.platform === 'string' && msg.platform
             ? msg.platform
@@ -152,6 +160,7 @@ export function handleAgentConnection(ws, url) {
             pending.workDir,
             authResult.sessionKey,
             capabilities,
+            capabilityMetadataProvided,
             ownerId,
             ownerUsername,
             agentVersion,
@@ -243,7 +252,7 @@ function handleAgentDisconnect(agentId, agentName, ws) {
   broadcastAgentList();
 }
 
-function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, capabilities = [], ownerId = null, ownerUsername = null, agentVersion = null, instanceId = null, agentPlatform = null) {
+function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, capabilities = [], capabilityMetadataProvided = false, ownerId = null, ownerUsername = null, agentVersion = null, instanceId = null, agentPlatform = null) {
   // 如果是重连，保留 conversations；否则（server 重启）创建空 Map
   const existingAgent = agents.get(agentId);
   const conversations = existingAgent?.conversations || new Map();
@@ -274,6 +283,9 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
     isAlive: true,
     lastSeenAt: Date.now(),
     capabilities: effectiveCapabilities,
+    // The fallback list supports old UI features but cannot prove that an
+    // Agent made an explicit capability claim.
+    capabilityMetadataProvided,
     proxyPorts,
     slashCommands,
     slashCommandDescriptions,

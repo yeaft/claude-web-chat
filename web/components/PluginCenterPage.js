@@ -1,3 +1,5 @@
+import { agentSupportsYeaftPlugins } from '../utils/yeaft-plugin-capability.js';
+
 export default {
   name: 'PluginCenterPage',
   emits: ['close'],
@@ -26,8 +28,7 @@ export default {
       return this.agents.find(agent => agent.id === this.agentId) || null;
     },
     agentSupportsPlugins() {
-      const capabilities = this.selectedAgent?.capabilities;
-      return !Array.isArray(capabilities) || capabilities.includes('yeaft_plugins');
+      return agentSupportsYeaftPlugins(this.selectedAgent);
     },
     configRecord() {
       return this.store?.pluginConfigByAgent?.[this.agentId] || null;

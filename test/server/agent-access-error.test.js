@@ -574,7 +574,7 @@ describe('resolveAgentAccessError', () => {
     }
   });
 
-  it('rejects Plugin requests immediately when the selected Agent lacks the protocol capability', async () => {
+  it('rejects Plugin configuration and catalog requests when the selected Agent lacks the protocol capability', async () => {
     CONFIG.skipAuth = false;
     const forwarded = [];
     const client = {
@@ -586,6 +586,7 @@ describe('resolveAgentAccessError', () => {
     agents.set('agent-plugins', {
       ownerId: 'user-1',
       capabilities: ['plaintext-ok'],
+      capabilityMetadataProvided: true,
       encryptOutbound: false,
       ws: { readyState: WS_OPEN, send(payload) { forwarded.push(JSON.parse(payload)); } },
     });
@@ -596,6 +597,9 @@ describe('resolveAgentAccessError', () => {
     ]) {
       await handleClientMisc('plugin-unsupported-client', client, request, async agentId => agentId === 'agent-plugins');
     }
+    await handleClientConversation('plugin-unsupported-client', client, {
+      type: 'yeaft_plugin_catalog', agentId: 'agent-plugins', requestId: 'plugins-catalog', workDir: 'Q:\\project',
+    }, async agentId => agentId === 'agent-plugins');
 
     expect(YEAFT_PLUGINS_UNSUPPORTED_ERROR).toContain('does not support Plugins');
     expect(forwarded).toEqual([]);
@@ -614,30 +618,85 @@ describe('resolveAgentAccessError', () => {
         plugins: {},
         error: expect.stringContaining('does not support Plugins'),
       }),
+      expect.objectContaining({
+        type: 'yeaft_plugin_catalog_result',
+        agentId: 'agent-plugins',
+        requestId: 'plugins-catalog',
+        catalog: { tools: [], skills: [], mcpServers: [] },
+        error: YEAFT_PLUGINS_UNSUPPORTED_ERROR,
+      }),
     ]);
   });
 
-  it('keeps legacy Agents without capability metadata compatible', async () => {
-    CONFIG.skipAuth = false;
-    const forwarded = [];
-    agents.set('agent-plugins-legacy', {
-      ownerId: 'user-1',
-      encryptOutbound: false,
-      ws: { readyState: WS_OPEN, send(payload) { forwarded.push(JSON.parse(payload)); } },
-    });
+  it('distinguishes missing and explicit capability metadata through a real Agent handshake', async () => {
+    CONFIG.skipAuth = true;
     const client = {
-      userId: 'user-1', role: 'user', currentAgent: 'agent-plugins-legacy', authenticated: true,
-      ws: { readyState: WS_OPEN, send() {}, close() {} },
+      userId: null, role: 'admin', authenticated: true, encryptOutbound: false,
+      sent: [],
+      ws: { readyState: WS_OPEN, send(payload) { client.sent.push(JSON.parse(payload)); }, close() {} },
     };
 
-    await handleClientMisc('plugin-legacy-client', client, {
-      type: 'get_yeaft_plugins', requestId: 'plugins-legacy',
-    }, async agentId => agentId === 'agent-plugins-legacy');
+    for (const [agentId, authCapabilities, urlCapabilities] of [
+      ['plugins-handshake-legacy', undefined, null],
+      ['plugins-handshake-explicit', [], 'plaintext-ok'],
+    ]) {
+      const socket = new MockWebSocket(WS_OPEN);
+      const url = new URL(`ws://localhost/?type=agent&id=${agentId}&name=${agentId}&instanceId=${agentId}`);
+      if (urlCapabilities !== null) url.searchParams.set('capabilities', urlCapabilities);
+      handleAgentConnection(socket, url);
+      const challenge = socket.getLastMessage();
+      socket.simulateMessage({
+        type: 'auth',
+        tempId: challenge.tempId,
+        secret: '',
+        ...(authCapabilities === undefined ? {} : { capabilities: authCapabilities }),
+      });
+      await new Promise(resolve => setTimeout(resolve, 0));
 
-    expect(forwarded).toEqual([{
-      type: 'get_yeaft_plugins', requestId: 'plugins-legacy',
-    }]);
+      const registered = agents.get(agentId);
+      expect(registered?.capabilities).toEqual(['terminal', 'file_editor', 'background_tasks']);
+      expect(registered?.capabilityMetadataProvided).toBe(authCapabilities !== undefined);
+
+      socket.clearMessages();
+      client.sent.length = 0;
+      await handleClientMisc('plugin-handshake-client', client, {
+        type: 'get_yeaft_plugins', requestId: `${agentId}-config`, agentId,
+      }, async requestedAgentId => requestedAgentId === agentId);
+      await handleClientConversation('plugin-handshake-client', client, {
+        type: 'yeaft_plugin_catalog', requestId: `${agentId}-catalog`, agentId,
+      }, async requestedAgentId => requestedAgentId === agentId);
+
+      if (authCapabilities === undefined) {
+        expect(socket.getSentMessages()).toEqual([
+          { type: 'get_yeaft_plugins', requestId: `${agentId}-config` },
+          expect.objectContaining({
+            type: 'yeaft_plugin_catalog',
+            requestId: `${agentId}-catalog`,
+            _requestClientId: 'plugin-handshake-client',
+          }),
+        ]);
+        expect(client.sent).toEqual([]);
+      } else {
+        expect(socket.getSentMessages()).toEqual([]);
+        expect(client.sent).toEqual([
+          expect.objectContaining({
+            type: 'yeaft_plugins',
+            agentId,
+            requestId: `${agentId}-config`,
+            error: YEAFT_PLUGINS_UNSUPPORTED_ERROR,
+          }),
+          expect.objectContaining({
+            type: 'yeaft_plugin_catalog_result',
+            agentId,
+            requestId: `${agentId}-catalog`,
+            catalog: { tools: [], skills: [], mcpServers: [] },
+            error: YEAFT_PLUGINS_UNSUPPORTED_ERROR,
+          }),
+        ]);
+      }
+    }
   });
+
 
   it('preserves explicit falsy Plugin payloads for Agent-side validation', async () => {
     CONFIG.skipAuth = false;

@@ -3,18 +3,17 @@ import {
   sendToWebClient, forwardToAgent, broadcastAgentList
 } from '../ws-utils.js';
 import { resolveWorkbenchRequest } from '../workbench-route.js';
+import {
+  agentSupportsYeaftPlugins,
+  YEAFT_PLUGINS_CAPABILITY,
+  YEAFT_PLUGINS_UNSUPPORTED_ERROR,
+} from '../yeaft-plugin-capability.js';
 
 // Only Agents that explicitly advertise the package-replacement-safe updater
 // may receive remote upgrade commands. Version thresholds are insufficient:
 // builds without this capability may still inherit the installed package cwd.
 export const SAFE_REMOTE_UPGRADE_CAPABILITY = 'remote_upgrade_safe';
-export const YEAFT_PLUGINS_CAPABILITY = 'yeaft_plugins';
-export const YEAFT_PLUGINS_UNSUPPORTED_ERROR = 'The selected Agent does not support Plugins; upgrade and restart the Agent';
-
-function agentSupportsYeaftPlugins(agent) {
-  const capabilities = agent?.capabilities;
-  return !Array.isArray(capabilities) || capabilities.includes(YEAFT_PLUGINS_CAPABILITY);
-}
+export { YEAFT_PLUGINS_CAPABILITY, YEAFT_PLUGINS_UNSUPPORTED_ERROR };
 
 async function rejectUnsupportedYeaftPlugins(client, msg, agentId) {
   await sendToWebClient(client, {

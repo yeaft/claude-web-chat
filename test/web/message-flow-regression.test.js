@@ -171,7 +171,13 @@ describe('message flow regressions', () => {
 
   it('renders an immediate upgrade requirement instead of waiting for an unsupported Plugin Agent', async () => {
     const pluginStore = Vue.reactive({
-      agents: [{ id: 'agent-old', name: 'Old Agent', online: true, capabilities: ['plaintext-ok'] }],
+      agents: [{
+        id: 'agent-old',
+        name: 'Old Agent',
+        online: true,
+        capabilities: ['plaintext-ok'],
+        capabilityMetadataProvided: true,
+      }],
       currentAgent: 'agent-old',
       pluginCenterAgentId: 'agent-old',
       pluginConfigByAgent: {},
@@ -199,9 +205,14 @@ describe('message flow regressions', () => {
     globalThis.Pinia.useChatStore = priorStore;
   });
 
-  it('does not send Plugin requests for an Agent that explicitly lacks the capability', async () => {
+  it('distinguishes explicit Plugin incompatibility from missing capability metadata', async () => {
     const store = useChatStore();
-    store.agents = [{ id: 'agent-old', online: true, capabilities: ['plaintext-ok'] }];
+    store.agents = [{
+      id: 'agent-old',
+      online: true,
+      capabilities: ['plaintext-ok'],
+      capabilityMetadataProvided: true,
+    }];
     store.sendWsMessage = vi.fn();
 
     await expect(store.loadPluginConfig('agent-old')).resolves.toMatchObject({
@@ -214,7 +225,28 @@ describe('message flow regressions', () => {
       error: expect.stringContaining('does not support Plugins'),
     });
     expect(store.sendWsMessage).not.toHaveBeenCalled();
+
+    store.agents = [{ id: 'agent-legacy', online: true, capabilities: ['plaintext-ok'] }];
+    const config = store.loadPluginConfig('agent-legacy');
+    const catalog = store.loadPluginCatalog('agent-legacy');
+
+    expect(store.sendWsMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'get_yeaft_plugins', agentId: 'agent-legacy',
+    }));
+    expect(store.sendWsMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'yeaft_plugin_catalog', agentId: 'agent-legacy',
+    }));
+
+    for (const [requestId, pending] of Object.entries(store._pluginPending)) {
+      clearTimeout(pending.timer);
+      delete store._pluginPending[requestId];
+      pending.resolve(pending.kind === 'catalog'
+        ? { catalog: { tools: [], skills: [], mcpServers: [] }, error: null }
+        : { plugins: {}, error: null });
+    }
+    await Promise.all([config, catalog]);
   });
+
 
   it('applies the final serialized MCP mutation broadcast to the configured cache', () => {
     const store = useChatStore();

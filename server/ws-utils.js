@@ -169,6 +169,7 @@ export async function broadcastAgentList() {
           status: agent.status || 'ready',
           latency: agent.latency || null,
           capabilities: agent.capabilities || ['terminal', 'file_editor', 'background_tasks'],
+          ...(agent.capabilityMetadataProvided === true ? { capabilityMetadataProvided: true } : {}),
           version: agent.version || null,
           yeaftStatus: agent.yeaftStatus || null,
           proxyPorts: agent.proxyPorts || [],
