@@ -169,6 +169,85 @@ describe('message flow regressions', () => {
     expect(store.yeaftMcpError).toContain('Failed to read config.json');
   });
 
+  it('renders an immediate upgrade requirement instead of waiting for an unsupported Plugin Agent', async () => {
+    const pluginStore = Vue.reactive({
+      agents: [{
+        id: 'agent-old',
+        name: 'Old Agent',
+        online: true,
+        capabilities: ['plaintext-ok'],
+        capabilityMetadataProvided: true,
+      }],
+      currentAgent: 'agent-old',
+      pluginCenterAgentId: 'agent-old',
+      pluginConfigByAgent: {},
+      pluginCatalogByKey: {},
+      pluginCatalogKey: (agentId, workDir = '') => `${agentId}:${workDir}`,
+      loadPluginConfig: vi.fn(),
+      loadPluginCatalog: vi.fn(),
+      savePluginConfig: vi.fn(),
+      sendWsMessage: vi.fn(),
+    });
+    const priorStore = globalThis.Pinia.useChatStore;
+    globalThis.Pinia.useChatStore = () => pluginStore;
+    const pluginCenter = mount(PluginCenterPage, {
+      global: { mocks: { $t: key => key } },
+    });
+    await Vue.nextTick();
+
+    expect(pluginStore.loadPluginConfig).not.toHaveBeenCalled();
+    expect(pluginStore.loadPluginCatalog).not.toHaveBeenCalled();
+    expect(pluginCenter.text()).toContain('yeaft.plugins.upgradeRequired');
+    expect(pluginCenter.get('.btn-ghost').attributes('disabled')).toBeDefined();
+    expect(pluginCenter.get('.btn-primary').attributes('disabled')).toBeDefined();
+
+    pluginCenter.unmount();
+    globalThis.Pinia.useChatStore = priorStore;
+  });
+
+  it('distinguishes explicit Plugin incompatibility from missing capability metadata', async () => {
+    const store = useChatStore();
+    store.agents = [{
+      id: 'agent-old',
+      online: true,
+      capabilities: ['plaintext-ok'],
+      capabilityMetadataProvided: true,
+    }];
+    store.sendWsMessage = vi.fn();
+
+    await expect(store.loadPluginConfig('agent-old')).resolves.toMatchObject({
+      error: expect.stringContaining('does not support Plugins'),
+    });
+    await expect(store.savePluginConfig({}, 'agent-old')).resolves.toMatchObject({
+      error: expect.stringContaining('does not support Plugins'),
+    });
+    await expect(store.loadPluginCatalog('agent-old')).resolves.toMatchObject({
+      error: expect.stringContaining('does not support Plugins'),
+    });
+    expect(store.sendWsMessage).not.toHaveBeenCalled();
+
+    store.agents = [{ id: 'agent-legacy', online: true, capabilities: ['plaintext-ok'] }];
+    const config = store.loadPluginConfig('agent-legacy');
+    const catalog = store.loadPluginCatalog('agent-legacy');
+
+    expect(store.sendWsMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'get_yeaft_plugins', agentId: 'agent-legacy',
+    }));
+    expect(store.sendWsMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'yeaft_plugin_catalog', agentId: 'agent-legacy',
+    }));
+
+    for (const [requestId, pending] of Object.entries(store._pluginPending)) {
+      clearTimeout(pending.timer);
+      delete store._pluginPending[requestId];
+      pending.resolve(pending.kind === 'catalog'
+        ? { catalog: { tools: [], skills: [], mcpServers: [] }, error: null }
+        : { plugins: {}, error: null });
+    }
+    await Promise.all([config, catalog]);
+  });
+
+
   it('applies the final serialized MCP mutation broadcast to the configured cache', () => {
     const store = useChatStore();
     const github = { name: 'github', command: 'node', args: [], env: {} };
@@ -2175,7 +2254,7 @@ describe('message flow regressions', () => {
 
     const pluginConfigRequests = [];
     const pluginStore = Vue.reactive({
-      agents: [{ id: 'agent-a', name: 'Agent A', online: true }],
+      agents: [{ id: 'agent-a', name: 'Agent A', online: true, capabilities: ['yeaft_plugins'] }],
       currentAgent: 'agent-a',
       pluginCenterAgentId: 'agent-a',
       pluginConfigByAgent: {},

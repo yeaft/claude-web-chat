@@ -870,6 +870,7 @@ export default {
   'yeaft.plugins.loading': '正在加载插件…',
   'yeaft.plugins.empty': '此 Agent 没有可配置的插件。',
   'yeaft.plugins.loadError': '加载插件失败：{error}',
+  'yeaft.plugins.upgradeRequired': '此 Agent 不支持插件。请升级并重启该 Agent。',
   'yeaft.plugins.retry': '重试',
   'yeaft.plugins.tools': '工具',
   'yeaft.plugins.skills': '技能',

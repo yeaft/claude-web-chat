@@ -455,6 +455,7 @@ export function handleAgentSelected(store, msg) {
     name: msg.agentName,
     workDir: msg.workDir,
     capabilities: msg.capabilities || ['terminal', 'file_editor', 'background_tasks'],
+    ...(msg.capabilityMetadataProvided === true ? { capabilityMetadataProvided: true } : {}),
     version: msg.version || null,
   };
   if (typeof store.activateYeaftAgent === 'function') {

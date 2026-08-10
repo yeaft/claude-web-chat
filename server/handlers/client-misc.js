@@ -3,11 +3,27 @@ import {
   sendToWebClient, forwardToAgent, broadcastAgentList
 } from '../ws-utils.js';
 import { resolveWorkbenchRequest } from '../workbench-route.js';
+import {
+  agentSupportsYeaftPlugins,
+  YEAFT_PLUGINS_CAPABILITY,
+  YEAFT_PLUGINS_UNSUPPORTED_ERROR,
+} from '../yeaft-plugin-capability.js';
 
 // Only Agents that explicitly advertise the package-replacement-safe updater
 // may receive remote upgrade commands. Version thresholds are insufficient:
 // builds without this capability may still inherit the installed package cwd.
 export const SAFE_REMOTE_UPGRADE_CAPABILITY = 'remote_upgrade_safe';
+export { YEAFT_PLUGINS_CAPABILITY, YEAFT_PLUGINS_UNSUPPORTED_ERROR };
+
+async function rejectUnsupportedYeaftPlugins(client, msg, agentId) {
+  await sendToWebClient(client, {
+    type: msg.type === 'update_yeaft_plugins' ? 'yeaft_plugins_updated' : 'yeaft_plugins',
+    agentId,
+    requestId: msg.requestId || null,
+    plugins: {},
+    error: YEAFT_PLUGINS_UNSUPPORTED_ERROR,
+  });
+}
 
 export function requiresManualUpgradeBridge(capabilities, platform = null) {
   if (Array.isArray(capabilities) && capabilities.includes(SAFE_REMOTE_UPGRADE_CAPABILITY)) return false;
@@ -204,6 +220,10 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       const targetAgentId = msg.agentId || client.currentAgent;
       if (!targetAgentId) break;
       if (!await checkAgentAccess(targetAgentId)) break;
+      if (!agentSupportsYeaftPlugins(agents.get(targetAgentId))) {
+        await rejectUnsupportedYeaftPlugins(client, msg, targetAgentId);
+        break;
+      }
       await forwardToAgent(targetAgentId, {
         type: 'get_yeaft_plugins',
         requestId: msg.requestId || null,
@@ -215,6 +235,10 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       const targetAgentId = msg.agentId || client.currentAgent;
       if (!targetAgentId) break;
       if (!await checkAgentAccess(targetAgentId)) break;
+      if (!agentSupportsYeaftPlugins(agents.get(targetAgentId))) {
+        await rejectUnsupportedYeaftPlugins(client, msg, targetAgentId);
+        break;
+      }
       const hasPlugins = Object.prototype.hasOwnProperty.call(msg, 'plugins');
       const hasConfig = Object.prototype.hasOwnProperty.call(msg, 'config');
       await forwardToAgent(targetAgentId, {

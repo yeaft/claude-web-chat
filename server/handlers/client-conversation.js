@@ -27,6 +27,10 @@ import {
   chatCatalogKey,
   yeaftCatalogKey,
 } from '../session-catalog.js';
+import {
+  agentSupportsYeaftPlugins,
+  YEAFT_PLUGINS_UNSUPPORTED_ERROR,
+} from '../yeaft-plugin-capability.js';
 
 
 function isRetiredCollabSessionId(id) {
@@ -42,6 +46,14 @@ function emptyYeaftToolStats(reason = '') {
   };
   if (reason) payload.notice = reason;
   return payload;
+}
+
+function emptyYeaftPluginCatalog(error = null) {
+  return {
+    type: 'yeaft_plugin_catalog_result',
+    catalog: { tools: [], skills: [], mcpServers: [] },
+    ...(error ? { error } : {}),
+  };
 }
 
 async function sendVpSnapshotError(client, msg, error) {
@@ -420,6 +432,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
             agentName: agent.name,
             workDir: agent.workDir,
             capabilities: agent.capabilities || ['terminal', 'file_editor', 'background_tasks'],
+            ...(agent.capabilityMetadataProvided === true ? { capabilityMetadataProvided: true } : {}),
             version: agent.version || null,
             conversations: filteredConvs,
             slashCommands: agent.slashCommands || [],
@@ -1626,6 +1639,15 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           } else if (relayType === 'yeaft_vp_subscribe') {
             await sendVpSnapshotError(client, msg, 'The selected Agent is not available.');
           }
+          return true;
+        }
+        if (relayType === 'yeaft_plugin_catalog'
+            && !agentSupportsYeaftPlugins(agents.get(relayAgentId))) {
+          await sendToWebClient(client, {
+            ...emptyYeaftPluginCatalog(YEAFT_PLUGINS_UNSUPPORTED_ERROR),
+            agentId: relayAgentId,
+            requestId: msg.requestId || null,
+          });
           return true;
         }
         const relayAgent = agents.get(relayAgentId);
