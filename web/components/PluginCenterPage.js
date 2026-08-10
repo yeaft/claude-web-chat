@@ -25,6 +25,10 @@ export default {
     selectedAgent() {
       return this.agents.find(agent => agent.id === this.agentId) || null;
     },
+    agentSupportsPlugins() {
+      const capabilities = this.selectedAgent?.capabilities;
+      return !Array.isArray(capabilities) || capabilities.includes('yeaft_plugins');
+    },
     configRecord() {
       return this.store?.pluginConfigByAgent?.[this.agentId] || null;
     },
@@ -36,10 +40,12 @@ export default {
       return this.catalogRecord?.catalog || { tools: [], skills: [], mcpServers: [] };
     },
     loading() {
-      return !this.catalogRecord || !!this.catalogRecord.loading;
+      return this.agentSupportsPlugins
+        && (!this.catalogRecord || !!this.catalogRecord.loading);
     },
     configReady() {
       return !!this.agentId
+        && this.agentSupportsPlugins
         && this.configLoadedAgentId === this.agentId
         && !this.configLoading
         && !this.configLoadError;
@@ -72,6 +78,13 @@ export default {
           this.configLoadedAgentId = null;
           return;
         }
+        if (!this.agentSupportsPlugins) {
+          this.selection = null;
+          this.configLoading = false;
+          this.configLoadError = this.$t('yeaft.plugins.upgradeRequired');
+          this.configLoadedAgentId = null;
+          return;
+        }
         this.loadConfig(next);
         this.store?.loadPluginCatalog?.(next).catch(() => {});
       },
@@ -84,6 +97,10 @@ export default {
       this.configLoadedAgentId = null;
       this.configLoading = false;
       this.configLoadError = '';
+      if (!this.agentSupportsPlugins) {
+        this.configLoadError = this.$t('yeaft.plugins.upgradeRequired');
+        return;
+      }
       if (this.configRecord?.loaded && !this.configRecord?.error) {
         this.selection = this.copySelection(this.configRecord.plugins);
         this.configLoadedAgentId = agentId;
@@ -138,13 +155,13 @@ export default {
       this.error = '';
     },
     async refresh() {
-      if (!this.agentId) return;
+      if (!this.agentId || !this.agentSupportsPlugins) return;
       this.error = '';
       const result = await this.store?.loadPluginCatalog?.(this.agentId);
       if (result?.error) this.error = result.error;
     },
     async save() {
-      if (this.saving || !this.agentId || !this.configReady) return;
+      if (this.saving || !this.agentId || !this.agentSupportsPlugins || !this.configReady) return;
       this.saving = true;
       this.error = '';
       try {
@@ -170,7 +187,7 @@ export default {
           <p>{{ $t('yeaft.plugins.subtitle') }}</p>
         </div>
         <div class="plugin-center-header-actions">
-          <button type="button" class="btn-ghost" @click="refresh" :disabled="loading" :title="$t('common.refresh')">
+          <button type="button" class="btn-ghost" @click="refresh" :disabled="loading || !agentSupportsPlugins" :title="$t('common.refresh')">
             {{ $t('common.refresh') }}
           </button>
           <button type="button" class="btn-ghost" @click="$emit('close')">{{ $t('common.close') }}</button>
@@ -203,7 +220,10 @@ export default {
             </button>
           </div>
 
-          <div v-if="loading" class="plugin-center-state">{{ $t('yeaft.plugins.loading') }}</div>
+          <div v-if="!agentSupportsPlugins" class="plugin-center-state is-error">
+            {{ $t('yeaft.plugins.upgradeRequired') }}
+          </div>
+          <div v-else-if="loading" class="plugin-center-state">{{ $t('yeaft.plugins.loading') }}</div>
           <div v-else-if="catalogRecord?.error" class="plugin-center-state is-error">
             {{ $t('yeaft.plugins.loadError', { error: catalogRecord.error }) }}
             <button type="button" class="btn-secondary" @click="refresh">{{ $t('yeaft.plugins.retry') }}</button>

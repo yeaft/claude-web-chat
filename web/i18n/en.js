@@ -871,6 +871,7 @@ export default {
   'yeaft.plugins.loading': 'Loading plugins…',
   'yeaft.plugins.empty': 'No configurable plugins are available on this Agent.',
   'yeaft.plugins.loadError': 'Failed to load plugins: {error}',
+  'yeaft.plugins.upgradeRequired': 'This Agent does not support Plugins. Upgrade and restart the Agent.',
   'yeaft.plugins.retry': 'Retry',
   'yeaft.plugins.tools': 'Tools',
   'yeaft.plugins.skills': 'Skills',

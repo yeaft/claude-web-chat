@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { MockWebSocket, WS_CLOSED, WS_OPEN } from '../helpers/mockWs.js';
 import {
   DEFAULT_UPGRADE_REGISTRY,
@@ -523,36 +523,17 @@ describe('agent ctx defaults and upgrade contract', () => {
   });
 });
 
-describe('agent advertises plaintext-ok capability', () => {
-  it('includes plaintext-ok in agent capability list', async () => {
-    // Mirror agent/index.js definition.
-    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'workbench_session_routes', 'work_center'];
-    expect(capabilities).toContain('plaintext-ok');
-    expect(capabilities).toContain('workbench_session_routes');
-    expect(capabilities).toContain('work_center');
+describe('agent capability advertisement', () => {
+  it('includes the Plugin protocol capability in agent/index.js', () => {
+    const source = readFileSync(resolve(process.cwd(), 'agent/index.js'), 'utf8');
+    expect(source).toMatch(/const capabilities = \[[^\]]*'yeaft_plugins'/s);
   });
 
-  it('serializes plaintext-ok into the auth-frame capabilities array', () => {
-    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'workbench_session_routes', 'work_center'];
-    const authFrame = {
-      type: 'auth',
-      tempId: 'temp_abc',
-      secret: 'my-secret',
-      capabilities,
-      version: '0.1.999'
-    };
-    expect(authFrame.capabilities).toContain('plaintext-ok');
-    expect(authFrame.capabilities).toContain('workbench_session_routes');
-    expect(authFrame.capabilities).toContain('work_center');
-  });
-
-  it('serializes plaintext-ok into the URL ?capabilities= query', () => {
-    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'workbench_session_routes', 'work_center'];
-    const params = new URLSearchParams({ capabilities: capabilities.join(',') });
-    expect(params.get('capabilities')).toBe('background_tasks,file_editor,ping_session,plaintext-ok,workbench_session_routes,work_center');
-    expect(params.get('capabilities').split(',')).toContain('plaintext-ok');
-    expect(params.get('capabilities').split(',')).toContain('workbench_session_routes');
-    expect(params.get('capabilities').split(',')).toContain('work_center');
+  it('keeps plaintext-ok, workbench routes, and Plugin protocol capabilities in the source list', () => {
+    const source = readFileSync(resolve(process.cwd(), 'agent/index.js'), 'utf8');
+    for (const capability of ['plaintext-ok', 'workbench_session_routes', 'work_center', 'yeaft_plugins']) {
+      expect(source).toContain(`'${capability}'`);
+    }
   });
 });
 

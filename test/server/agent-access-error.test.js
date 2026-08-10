@@ -14,6 +14,8 @@ import { handleAgentConversation } from '../../server/handlers/agent-conversatio
 import { handleClientConversation } from '../../server/handlers/client-conversation.js';
 import {
   SAFE_REMOTE_UPGRADE_CAPABILITY,
+  YEAFT_PLUGINS_CAPABILITY,
+  YEAFT_PLUGINS_UNSUPPORTED_ERROR,
   handleClientMisc,
   requiresManualUpgradeBridge,
 } from '../../server/handlers/client-misc.js';
@@ -572,11 +574,77 @@ describe('resolveAgentAccessError', () => {
     }
   });
 
+  it('rejects Plugin requests immediately when the selected Agent lacks the protocol capability', async () => {
+    CONFIG.skipAuth = false;
+    const forwarded = [];
+    const client = {
+      userId: 'user-1', role: 'user', currentAgent: 'agent-plugins', authenticated: true,
+      encryptOutbound: false,
+      sent: [],
+      ws: { readyState: WS_OPEN, send(payload) { client.sent.push(JSON.parse(payload)); }, close() {} },
+    };
+    agents.set('agent-plugins', {
+      ownerId: 'user-1',
+      capabilities: ['plaintext-ok'],
+      encryptOutbound: false,
+      ws: { readyState: WS_OPEN, send(payload) { forwarded.push(JSON.parse(payload)); } },
+    });
+
+    for (const request of [
+      { type: 'get_yeaft_plugins', requestId: 'plugins-read' },
+      { type: 'update_yeaft_plugins', requestId: 'plugins-write', plugins: { tools: ['FileRead'] } },
+    ]) {
+      await handleClientMisc('plugin-unsupported-client', client, request, async agentId => agentId === 'agent-plugins');
+    }
+
+    expect(YEAFT_PLUGINS_UNSUPPORTED_ERROR).toContain('does not support Plugins');
+    expect(forwarded).toEqual([]);
+    expect(client.sent).toEqual([
+      expect.objectContaining({
+        type: 'yeaft_plugins',
+        agentId: 'agent-plugins',
+        requestId: 'plugins-read',
+        plugins: {},
+        error: expect.stringContaining('does not support Plugins'),
+      }),
+      expect.objectContaining({
+        type: 'yeaft_plugins_updated',
+        agentId: 'agent-plugins',
+        requestId: 'plugins-write',
+        plugins: {},
+        error: expect.stringContaining('does not support Plugins'),
+      }),
+    ]);
+  });
+
+  it('keeps legacy Agents without capability metadata compatible', async () => {
+    CONFIG.skipAuth = false;
+    const forwarded = [];
+    agents.set('agent-plugins-legacy', {
+      ownerId: 'user-1',
+      encryptOutbound: false,
+      ws: { readyState: WS_OPEN, send(payload) { forwarded.push(JSON.parse(payload)); } },
+    });
+    const client = {
+      userId: 'user-1', role: 'user', currentAgent: 'agent-plugins-legacy', authenticated: true,
+      ws: { readyState: WS_OPEN, send() {}, close() {} },
+    };
+
+    await handleClientMisc('plugin-legacy-client', client, {
+      type: 'get_yeaft_plugins', requestId: 'plugins-legacy',
+    }, async agentId => agentId === 'agent-plugins-legacy');
+
+    expect(forwarded).toEqual([{
+      type: 'get_yeaft_plugins', requestId: 'plugins-legacy',
+    }]);
+  });
+
   it('preserves explicit falsy Plugin payloads for Agent-side validation', async () => {
     CONFIG.skipAuth = false;
     const forwarded = [];
     agents.set('agent-plugins', {
       ownerId: 'user-1',
+      capabilities: [YEAFT_PLUGINS_CAPABILITY],
       encryptOutbound: false,
       ws: { readyState: WS_OPEN, send(payload) { forwarded.push(JSON.parse(payload)); } },
     });

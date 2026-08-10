@@ -1710,6 +1710,10 @@ export const useChatStore = defineStore('chat', {
     },
     loadPluginConfig(agentId = this.pluginCenterAgentId || this.currentAgent) {
       if (!agentId) return Promise.resolve({ plugins: {}, error: 'no agent' });
+      const target = this.agents.find(agent => agent?.id === agentId);
+      if (Array.isArray(target?.capabilities) && !target.capabilities.includes('yeaft_plugins')) {
+        return Promise.resolve({ plugins: {}, error: 'The selected Agent does not support Plugins; upgrade and restart the Agent' });
+      }
       const requestId = `plugins-get-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       return new Promise((resolve) => {
         const timer = setTimeout(() => {
@@ -1724,6 +1728,10 @@ export const useChatStore = defineStore('chat', {
     },
     savePluginConfig(plugins, agentId = this.pluginCenterAgentId || this.currentAgent) {
       if (!agentId) return Promise.resolve({ plugins: {}, error: 'no agent' });
+      const target = this.agents.find(agent => agent?.id === agentId);
+      if (Array.isArray(target?.capabilities) && !target.capabilities.includes('yeaft_plugins')) {
+        return Promise.resolve({ plugins: {}, error: 'The selected Agent does not support Plugins; upgrade and restart the Agent' });
+      }
       const requestId = `plugins-save-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       return new Promise((resolve) => {
         const timer = setTimeout(() => {
@@ -1738,6 +1746,10 @@ export const useChatStore = defineStore('chat', {
     },
     loadPluginCatalog(agentId = this.pluginCenterAgentId || this.currentAgent, workDir = '') {
       if (!agentId) return Promise.resolve({ catalog: { tools: [], skills: [], mcpServers: [] }, error: 'no agent' });
+      const target = this.agents.find(agent => agent?.id === agentId);
+      if (Array.isArray(target?.capabilities) && !target.capabilities.includes('yeaft_plugins')) {
+        return Promise.resolve({ catalog: { tools: [], skills: [], mcpServers: [] }, error: 'The selected Agent does not support Plugins; upgrade and restart the Agent' });
+      }
       const key = this.pluginCatalogKey(agentId, workDir);
       const requestId = `plugins-catalog-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       this.pluginCatalogByKey = {
