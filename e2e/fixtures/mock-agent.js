@@ -23,6 +23,7 @@ export class MockAgent {
       'work_center',
       'work_center_message_v2',
       'work_item_attachments',
+      'browser_runtime_setup',
       'browser_runtime',
       'browser_webrtc',
       'browser_capture_tab',
@@ -79,6 +80,20 @@ export class MockAgent {
           });
         }
 
+        if (msg.type === 'browser_runtime_status') {
+          this.send({
+            type: 'browser_runtime_status_result',
+            requestId: msg.requestId,
+            supported: true,
+            state: 'not_installed',
+            installed: false,
+            enabled: false,
+            ready: false,
+            buildId: '151.0.7922.71',
+            platform: 'linux',
+            downloadBytes: 193_285_407,
+          });
+        }
         if (msg.type === 'browser_session_list') {
           this.send({
             type: 'browser_session_list_result',

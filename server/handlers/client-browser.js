@@ -15,6 +15,9 @@ import {
 } from '../browser-runtime-routes.js';
 
 const CLIENT_BROWSER_TYPES = new Set([
+  'browser_runtime_status',
+  'browser_runtime_install',
+  'browser_runtime_enable',
   'browser_session_create',
   'browser_session_get',
   'browser_session_list',
@@ -34,8 +37,11 @@ function digest(value) {
 }
 
 async function fail(client, msg, code, safeError = code) {
+  const type = String(msg.type || '');
   await sendToWebClient(client, {
-    type: String(msg.type || '').startsWith('browser_peer_') ? 'browser_peer_error' : 'browser_session_error',
+    type: type.startsWith('browser_peer_') ? 'browser_peer_error'
+      : type.startsWith('browser_runtime_') ? 'browser_runtime_error'
+        : 'browser_session_error',
     requestId: clean(msg.requestId) || null,
     browserSessionId: clean(msg.browserSessionId) || null,
     peerId: clean(msg.peerId) || null,
@@ -44,6 +50,10 @@ async function fail(client, msg, code, safeError = code) {
     safeError,
   });
   return true;
+}
+
+function agentSupportsBrowserSetup(agent) {
+  return new Set(agent?.capabilities || []).has('browser_runtime_setup');
 }
 
 function agentSupportsBrowser(agent) {
@@ -98,16 +108,53 @@ function ownerRoute(client, msg) {
 export async function handleClientBrowser(client, msg, checkAgentAccess) {
   if (!CLIENT_BROWSER_TYPES.has(msg?.type)) return false;
   if (!CONFIG.browserRuntime.enabled) return fail(client, msg, 'browser_runtime_disabled');
-  if (client.browserRuntimeProtocol !== 1) return fail(client, msg, 'browser_protocol_required');
+  const setupRequest = String(msg.type || '').startsWith('browser_runtime_');
+  if (setupRequest) {
+    if (client.browserRuntimeSetupProtocol !== 1) {
+      return fail(client, msg, 'browser_setup_protocol_required');
+    }
+  } else if (client.browserRuntimeProtocol !== 1) {
+    return fail(client, msg, 'browser_protocol_required');
+  }
   const agentId = clean(msg.agentId);
   if (!await checkAgentAccess(agentId)) return true;
   const agent = agents.get(agentId);
-  if (!agentSupportsBrowser(agent)) return fail(client, msg, 'browser_runtime_unavailable');
+  if (setupRequest ? !agentSupportsBrowserSetup(agent) : !agentSupportsBrowser(agent)) {
+    return fail(client, msg, 'browser_runtime_unavailable');
+  }
   const requestId = clean(msg.requestId);
   const requestRequired = msg.type !== 'browser_peer_answer'
     && msg.type !== 'browser_peer_ice_candidate';
   if (requestRequired && !requestId) return fail(client, msg, 'browser_request_id_required');
   const identity = browserServerIdentity(client);
+
+  if (setupRequest) {
+    const canonical = msg.type === 'browser_runtime_install' ? {
+      confirmedBuildId: clean(msg.confirmedBuildId, 128),
+      confirmedDownloadBytes: Number(msg.confirmedDownloadBytes) || 0,
+    } : {};
+    const registration = registerBrowserCreateRequest({
+      agentId,
+      client,
+      requestId,
+      digest: digest({ type: msg.type, ...canonical }),
+      kind: msg.type,
+    });
+    if (registration.conflict) return fail(client, msg, 'browser_request_conflict');
+    if (registration.capacity) return fail(client, msg, 'browser_request_capacity');
+    if (registration.duplicate) {
+      if (registration.request.response) await sendToWebClient(client, registration.request.response);
+      return true;
+    }
+    await sendToAgent(agent, {
+      type: msg.type,
+      agentId,
+      requestId: registration.request.serverRequestId,
+      ...canonical,
+      serverIdentity: identity,
+    });
+    return true;
+  }
 
   if (msg.type === 'browser_session_create') {
     const canonical = canonicalCreate(msg);

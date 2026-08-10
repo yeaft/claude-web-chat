@@ -23,6 +23,7 @@ import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
 import { SAFE_REMOTE_UPGRADE_CAPABILITY } from './upgrade-command.js';
 import { loadConfig as loadYeaftConfig } from './yeaft/config.js';
+import { updateBrowserRuntimeSettings } from './yeaft/config-api.js';
 import { bootBrowserRuntime, shutdownBrowserRuntime } from './browser-runtime/index.js';
 import {
   ensureManagedCliTools,
@@ -164,7 +165,9 @@ async function detectCapabilities() {
   if (process.platform === 'linux') capabilities.push('work_item_attachments');
   const pty = await loadNodePty();
   if (pty) capabilities.push('terminal');
-  if (ctx.browserRuntime) capabilities.push(...ctx.browserRuntime.capabilities());
+  if (ctx.browserRuntime) {
+    capabilities.push(...ctx.browserRuntime.setupCapabilities(), ...ctx.browserRuntime.capabilities());
+  }
 
   console.log(`[Capabilities] Detected: ${capabilities.join(', ')}`);
   return capabilities;
@@ -404,6 +407,14 @@ process.on('SIGTERM', async () => {
     ctx.browserRuntime = await bootBrowserRuntime({
       yeaftDir: YEAFT_DIR,
       config: runtimeConfig,
+      saveSettings: update => updateBrowserRuntimeSettings(update, YEAFT_DIR),
+      onCapabilitiesChanged: async () => {
+        ctx.agentCapabilities = await detectCapabilities();
+        ctx.sendToServer?.({
+          type: 'agent_capabilities_updated',
+          capabilities: ctx.agentCapabilities,
+        });
+      },
       send: message => ctx.sendToServer?.(message) || 'dropped',
     });
     const probe = ctx.browserRuntime.snapshot().probe;

@@ -1,6 +1,7 @@
 const { defineStore } = Pinia;
 
 const REQUEST_TIMEOUT_MS = 30_000;
+const INSTALL_TIMEOUT_MS = 60 * 60_000;
 const PEER_ATTACH_TIMEOUT_MS = 20_000;
 const CANCELLED_PEER_TTL_MS = 60 * 60_000;
 const MAX_CANCELLED_PEERS = 256;
@@ -33,6 +34,8 @@ export const useBrowserStore = defineStore('browser', {
     peers: {},
     cancelledPeers: {},
     errors: {},
+    runtimeStatus: {},
+    installProgress: {},
     protocolSupported: null,
     connectionEpoch: 0,
     lastError: null,
@@ -136,6 +139,29 @@ export const useBrowserStore = defineStore('browser', {
       this.pruneCancelledPeers();
       if (Number(cancelled.expiresAt) <= Date.now()) return null;
       return cancelled;
+    },
+
+    async getRuntimeStatus(agentId) {
+      const result = await this.beginRequest('browser_runtime_status', { agentId });
+      this.runtimeStatus[agentId] = result;
+      return result;
+    },
+
+    async installRuntime(agentId, status) {
+      const result = await this.beginRequest('browser_runtime_install', {
+        agentId,
+        confirmedBuildId: status?.buildId,
+        confirmedDownloadBytes: Number(status?.downloadBytes) || 0,
+      }, INSTALL_TIMEOUT_MS);
+      this.runtimeStatus[agentId] = result;
+      delete this.installProgress[agentId];
+      return result;
+    },
+
+    async enableRuntime(agentId) {
+      const result = await this.beginRequest('browser_runtime_enable', { agentId }, 60_000);
+      this.runtimeStatus[agentId] = result;
+      return result;
     },
 
     async createSession({ agentId, sourceRef = null, initialUrl = 'about:blank', viewport = null, locale = 'en-US' }) {
@@ -323,6 +349,8 @@ export const useBrowserStore = defineStore('browser', {
         this.detach(peer.agentId, peer.browserSessionId, { notify: false });
       }
       this.peers = {};
+      this.runtimeStatus = {};
+      this.installProgress = {};
       this.clearCancelledPeers();
     },
 
@@ -334,6 +362,25 @@ export const useBrowserStore = defineStore('browser', {
       }
       if (message.type === 'auth_result') {
         this.protocolSupported = false;
+        return;
+      }
+      if (message.type === 'browser_runtime_error') {
+        const error = new Error(safeError(message));
+        error.code = message.code;
+        if (!this.completeRequest(message.requestId, null, error)) this.lastError = error.message;
+        return;
+      }
+      if (message.type === 'browser_runtime_install_progress') {
+        this.installProgress[message.agentId] = {
+          downloadedBytes: Number(message.downloadedBytes) || 0,
+          totalBytes: Number(message.totalBytes) || 0,
+        };
+        return;
+      }
+      if (message.type === 'browser_runtime_status_result') {
+        this.runtimeStatus[message.agentId] = message;
+        this.completeRequest(message.requestId, message);
+        if (message.state !== 'installing') delete this.installProgress[message.agentId];
         return;
       }
       if (message.type === 'browser_session_error') {

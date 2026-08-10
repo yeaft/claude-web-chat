@@ -74,6 +74,20 @@ export async function handleAgentSync(agentId, agent, msg) {
       break;
     }
 
+    case 'agent_capabilities_updated': {
+      const capabilities = Array.isArray(msg.capabilities)
+        ? [...new Set(msg.capabilities.filter(value => (
+          typeof value === 'string' && value.length > 0 && value.length <= 128
+        )).slice(0, 128))]
+        : null;
+      if (!capabilities || capabilities.length === 0) break;
+      agent.capabilities = capabilities;
+      // Transport encryption negotiation is connection-scoped and immutable.
+      // A runtime capability refresh must never flip framing mid-connection.
+      await broadcastAgentList();
+      break;
+    }
+
     case 'agent_metrics': {
       agent.metrics = normalizeAgentMetrics(msg.metrics || {});
       agent.metricsUpdatedAt = Date.now();

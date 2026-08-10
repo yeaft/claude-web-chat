@@ -462,6 +462,36 @@
   line-height: 1.6;
 }
 
+.browser-setup-stage {
+  overflow-y: auto;
+}
+
+.browser-install-progress {
+  width: min(360px, 100%);
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border-color);
+}
+
+.browser-install-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-blue);
+  transition: width 0.2s ease;
+}
+
+.browser-stage-placeholder .browser-install-meta,
+.browser-stage-placeholder .browser-install-note {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.browser-stage-placeholder .browser-setup-error {
+  color: var(--error);
+}
+
 .browser-video {
   width: 100%;
   height: 100%;

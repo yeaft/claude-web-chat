@@ -6,7 +6,12 @@ import { authenticateRequest } from './auth/request-auth.js';
 import { encodeKey } from './encryption.js';
 import { userDb } from './database.js';
 import { agents, clearYeaftDebugRequestsForClient, webClients, isHeartbeatMessageType, trackRequest } from './context.js';
-import { applyClientHello, BROWSER_RUNTIME_PROTOCOL, WORKBENCH_ROUTE_PROTOCOL } from './client-protocol.js';
+import {
+  applyClientHello,
+  BROWSER_RUNTIME_PROTOCOL,
+  BROWSER_RUNTIME_SETUP_PROTOCOL,
+  WORKBENCH_ROUTE_PROTOCOL,
+} from './client-protocol.js';
 import { clearWorkbenchCorrelationsForClient } from './workbench-correlation.js';
 import { clearBrowserRuntimeForClient } from './browser-runtime-routes.js';
 import {
@@ -88,6 +93,7 @@ export function handleWebConnection(ws, url, req = {}) {
     // Explicit protocols have no omission-based downgrade for security fields.
     workbenchRouteProtocol: 0,
     browserRuntimeProtocol: 0,
+    browserRuntimeSetupProtocol: 0,
   });
 
   // 心跳响应处理
@@ -116,6 +122,7 @@ export function handleWebConnection(ws, url, req = {}) {
       yeaftSessionInventoryComplete: true,
       workbenchRouteProtocol: WORKBENCH_ROUTE_PROTOCOL,
       browserRuntimeProtocol: BROWSER_RUNTIME_PROTOCOL,
+      browserRuntimeSetupProtocol: BROWSER_RUNTIME_SETUP_PROTOCOL,
       browserRuntimeEnabled: CONFIG.browserRuntime.enabled,
     }));
     setTimeout(() => broadcastAgentList(), 100);
@@ -249,6 +256,7 @@ async function handleWebMessage(clientId, msg) {
       type: 'client_hello_ack',
       workbenchRouteProtocol: client.workbenchRouteProtocol,
       browserRuntimeProtocol: client.browserRuntimeProtocol,
+      browserRuntimeSetupProtocol: client.browserRuntimeSetupProtocol,
       browserRuntimeEnabled: CONFIG.browserRuntime.enabled,
     });
     return;
