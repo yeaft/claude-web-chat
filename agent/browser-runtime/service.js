@@ -1,12 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { normaliseBrowserRuntimeSection } from './config.js';
-import { defaultBrowserCacheDir } from './browser-install.js';
+import {
+  defaultBrowserCacheDir,
+  installManagedBrowser,
+  managedBrowserDownloadInfo,
+  resolveBrowserExecutable,
+} from './browser-install.js';
 import { probeBrowserRuntime } from './probe.js';
 import { BrowserRuntimeError } from './errors.js';
 import { BrowserExtensionBridge } from './local-bridge.js';
 import { launchBrowserSession } from './chromium.js';
 
 const REQUEST_TTL_MS = 10 * 60_000;
+const MAX_INSTALL_PROGRESS_LISTENERS = 8;
 
 function clean(value, max = 512) {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
@@ -89,47 +95,156 @@ export class BrowserRuntimeService {
     yeaftDir,
     config,
     probe = probeBrowserRuntime,
+    resolveBrowser = resolveBrowserExecutable,
+    installBrowser = installManagedBrowser,
+    downloadInfo = managedBrowserDownloadInfo,
+    saveSettings = null,
+    onCapabilitiesChanged = null,
     bridge = new BrowserExtensionBridge(),
     launchSession = launchBrowserSession,
     send = null,
     platform = process.platform,
+    arch = process.arch,
   } = {}) {
     if (!yeaftDir) throw new Error('yeaftDir required');
     this.yeaftDir = yeaftDir;
     this.config = normaliseBrowserRuntimeSection(config);
     this.config.cacheDir ||= defaultBrowserCacheDir(yeaftDir);
     this.probe = probe;
+    this.resolveBrowser = resolveBrowser;
+    this.installBrowser = installBrowser;
+    this.downloadInfo = downloadInfo;
+    this.saveSettings = typeof saveSettings === 'function' ? saveSettings : null;
+    this.onCapabilitiesChanged = typeof onCapabilitiesChanged === 'function' ? onCapabilitiesChanged : null;
     this.bridge = bridge;
     this.launchSession = launchSession;
     this.send = typeof send === 'function' ? send : () => 'dropped';
     this.platform = platform;
+    this.arch = arch;
+    const download = this.downloadInfo({ platform, arch });
+    this.setupInfo = Object.freeze({
+      ...download,
+      // Phase 1 advertises only the real Linux tab-capture data plane. The CLI
+      // may manage pinned binaries on more platforms, but Web must not offer an
+      // install that can never produce a ready capability.
+      supported: download.supported === true && platform === 'linux' && arch === 'x64',
+    });
     this.sessions = new Map();
     this.requests = new Map();
     this.probeResult = null;
+    this.installProgress = null;
+    this.lastSetupError = null;
     this.state = this.config.enabled ? 'unprobed' : 'disabled';
     this.#probePromise = null;
     this.#probeAbort = null;
+    this.#installPromise = null;
+    this.#installAbort = null;
+    this.#installListeners = new Set();
+    this.#lastInstallProgressAt = 0;
     this.#shutdownPromise = null;
   }
 
   #probePromise;
   #probeAbort;
+  #installPromise;
+  #installAbort;
+  #installListeners;
+  #lastInstallProgressAt;
   #shutdownPromise;
 
   get enabled() { return this.config.enabled === true; }
   get ready() { return this.state === 'ready' && this.probeResult?.ok === true; }
+
+  setupCapabilities() {
+    return this.setupInfo.supported ? ['browser_runtime_setup'] : [];
+  }
 
   capabilities() {
     if (!this.ready || this.platform !== 'linux' || this.probeResult?.captureMode !== 'tab') return [];
     return ['browser_runtime', 'browser_webrtc', 'browser_capture_tab'];
   }
 
-  async startupProbe() {
+  async #notifyCapabilitiesChanged() {
+    try {
+      await this.onCapabilitiesChanged?.();
+    } catch (error) {
+      console.warn(`[BrowserRuntime] capability refresh failed: ${error?.message || error}`);
+    }
+  }
+
+  async #persistEnabled({ managed = false } = {}) {
+    const update = {
+      enabled: true,
+      ...(managed ? { executablePath: null } : {}),
+    };
+    if (this.saveSettings) {
+      const saved = await this.saveSettings(update);
+      if (saved?.error) {
+        throw new BrowserRuntimeError('browser_config_update_failed', saved.error);
+      }
+      this.config = {
+        ...this.config,
+        ...normaliseBrowserRuntimeSection(saved),
+        cacheDir: this.config.cacheDir,
+      };
+    } else {
+      this.config = { ...this.config, ...update };
+    }
+    this.config.enabled = true;
+    if (managed) this.config.executablePath = null;
+  }
+
+  async setupStatus() {
+    let executablePath = null;
+    if (this.setupInfo.supported) {
+      try {
+        executablePath = await this.resolveBrowser({
+          executablePath: this.config.executablePath,
+          cacheDir: this.config.cacheDir,
+        });
+        if (this.lastSetupError?.source === 'status') this.lastSetupError = null;
+      } catch (error) {
+        if (!this.lastSetupError || this.lastSetupError.source === 'status') {
+          this.lastSetupError = {
+            source: 'status',
+            code: error?.code || 'browser_status_failed',
+            safeError: String(error?.message || error).slice(0, 500),
+          };
+        }
+      }
+    }
+    const installed = !!executablePath;
+    if (this.ready) this.lastSetupError = null;
+    const state = !this.setupInfo.supported ? 'unsupported'
+      : this.ready ? 'ready'
+        : this.#installPromise ? 'installing'
+          : this.state === 'probing' ? 'probing'
+            : this.probeResult && this.config.enabled ? 'unavailable'
+              : installed ? 'disabled'
+                : 'not_installed';
+    return Object.freeze({
+      supported: this.setupInfo.supported,
+      state,
+      installed,
+      enabled: this.enabled,
+      ready: this.ready,
+      buildId: this.setupInfo.buildId,
+      platform: this.setupInfo.platform,
+      downloadBytes: this.setupInfo.downloadBytes,
+      downloadedBytes: Number(this.installProgress?.downloadedBytes) || 0,
+      totalBytes: Number(this.installProgress?.totalBytes) || this.setupInfo.downloadBytes,
+      probeCode: this.probeResult?.code || null,
+      safeError: this.lastSetupError?.safeError || this.probeResult?.safeError || null,
+    });
+  }
+
+  async startupProbe({ force = false } = {}) {
     if (!this.enabled) return { ok: false, code: 'browser_runtime_disabled' };
     if (this.#probePromise) return this.#probePromise;
+    if (!force && this.ready) return this.probeResult;
     this.state = 'probing';
     this.#probeAbort = new AbortController();
-    this.#probePromise = this.probe({
+    const probePromise = this.probe({
       executablePath: this.config.executablePath,
       cacheDir: this.config.cacheDir,
       headless: this.config.headless,
@@ -148,8 +263,105 @@ export class BrowserRuntimeService {
       });
       this.state = 'unavailable';
       return this.probeResult;
+    }).finally(() => {
+      if (this.#probePromise === probePromise) this.#probePromise = null;
+      this.#probeAbort = null;
     });
-    return this.#probePromise;
+    this.#probePromise = probePromise;
+    return probePromise;
+  }
+
+  async enableAndProbe() {
+    if (!this.setupInfo.supported) throw new BrowserRuntimeError('browser_platform_unsupported');
+    this.lastSetupError = null;
+    try {
+      const executablePath = await this.resolveBrowser({
+        executablePath: this.config.executablePath,
+        cacheDir: this.config.cacheDir,
+      });
+      if (!executablePath) throw new BrowserRuntimeError('browser_executable_missing');
+      await this.#persistEnabled();
+      this.probeResult = null;
+      const probe = await this.startupProbe({ force: true });
+      await this.#notifyCapabilitiesChanged();
+      return { ...(await this.setupStatus()), probeCode: probe.code || null };
+    } catch (error) {
+      this.lastSetupError = {
+        source: 'enable',
+        code: error?.code || 'browser_enable_failed',
+        safeError: String(error?.message || error).slice(0, 500),
+      };
+      throw error;
+    }
+  }
+
+  async installAndEnable({ confirmedBuildId, confirmedDownloadBytes, onProgress = null } = {}) {
+    if (!this.setupInfo.supported) throw new BrowserRuntimeError('browser_platform_unsupported');
+    if (confirmedBuildId !== this.setupInfo.buildId
+        || Number(confirmedDownloadBytes) !== this.setupInfo.downloadBytes) {
+      throw new BrowserRuntimeError('browser_install_confirmation_stale');
+    }
+    if (typeof onProgress === 'function') {
+      if (this.#installListeners.size >= MAX_INSTALL_PROGRESS_LISTENERS) {
+        throw new BrowserRuntimeError('browser_install_observer_limit');
+      }
+      this.#installListeners.add(onProgress);
+    }
+    if (!this.#installPromise) {
+      this.state = 'installing';
+      this.lastSetupError = null;
+      this.installProgress = Object.freeze({
+        downloadedBytes: 0,
+        totalBytes: this.setupInfo.downloadBytes,
+      });
+      this.#installAbort = new AbortController();
+      const installPromise = (async () => {
+        await this.installBrowser({
+          cacheDir: this.config.cacheDir,
+          signal: this.#installAbort.signal,
+          onProgress: (downloadedBytes, totalBytes) => {
+            const total = Number(totalBytes) || this.setupInfo.downloadBytes;
+            this.installProgress = Object.freeze({
+              downloadedBytes: Number(downloadedBytes) || 0,
+              totalBytes: total,
+            });
+            const now = Date.now();
+            if (now - this.#lastInstallProgressAt < 250 && downloadedBytes < total) return;
+            this.#lastInstallProgressAt = now;
+            for (const listener of this.#installListeners) {
+              try {
+                Promise.resolve(listener(this.installProgress)).catch(() => {});
+              } catch {}
+            }
+          },
+        });
+        await this.#persistEnabled({ managed: true });
+        this.probeResult = null;
+        await this.startupProbe({ force: true });
+        await this.#notifyCapabilitiesChanged();
+        return this.setupStatus();
+      })().catch(error => {
+        this.lastSetupError = {
+          source: 'install',
+          code: error?.code || 'browser_install_failed',
+          safeError: String(error?.message || error).slice(0, 500),
+        };
+        this.state = 'unavailable';
+        throw error;
+      }).finally(() => {
+        if (this.#installPromise === installPromise) {
+          this.#installPromise = null;
+          this.#installAbort = null;
+        }
+        this.#installListeners.clear();
+      });
+      this.#installPromise = installPromise;
+    }
+    try {
+      return await this.#installPromise;
+    } finally {
+      if (typeof onProgress === 'function') this.#installListeners.delete(onProgress);
+    }
   }
 
   #emit(message) {
@@ -625,7 +837,11 @@ export class BrowserRuntimeService {
   async shutdown() {
     if (this.#shutdownPromise) return this.#shutdownPromise;
     this.#probeAbort?.abort(new BrowserRuntimeError('browser_runtime_shutdown'));
-    this.#shutdownPromise = Promise.resolve(this.#probePromise).catch(() => {}).then(async () => {
+    this.#installAbort?.abort(new BrowserRuntimeError('browser_runtime_shutdown'));
+    this.#shutdownPromise = Promise.allSettled([
+      Promise.resolve(this.#probePromise),
+      Promise.resolve(this.#installPromise),
+    ]).then(async () => {
       await Promise.allSettled([...this.sessions.values()]
         .map(session => this.closeSessionRecord(session, 'browser_runtime_shutdown', { emit: false })));
       await this.bridge.close();

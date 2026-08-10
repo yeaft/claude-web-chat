@@ -74,7 +74,9 @@ Browser is fail-closed at three layers. All three must be ready:
 
 1. Enable the Server rollout gate with `BROWSER_RUNTIME_ENABLED=true`.
 2. Configure ICE. `BROWSER_STUN_URLS` is optional for direct connectivity. Production deployments should configure `BROWSER_TURN_URLS` and `BROWSER_TURN_SECRET`; use `BROWSER_ICE_TRANSPORT_POLICY=relay` when direct candidates are not allowed.
-3. On the selected Agent instance, install and enable the pinned managed browser, then restart that Agent:
+3. Open **Workbench → Browser** on the selected Agent. Chrome is not bundled with the Agent package. If the pinned browser is missing, Workbench shows the exact build and platform download size and waits for an explicit **Download and install** action. The Agent then verifies the archive, installs it only in that Agent instance's data directory, enables Browser Runtime, and runs the full media probe. No download happens merely because the Agent was installed or upgraded.
+
+For unattended administration, the equivalent instance-scoped CLI remains available:
 
 ```bash
 yeaft-agent browser install --name <agent-instance>
@@ -82,7 +84,7 @@ yeaft-agent browser probe --name <agent-instance>
 yeaft-agent browser enable --name <agent-instance>
 ```
 
-After restart, a successful Linux tab-capture probe advertises `browser_runtime`, `browser_webrtc`, and `browser_capture_tab`. Workbench enables Browser only after the Web protocol handshake, Server rollout gate, and complete Agent capability combination all succeed.
+A successful Linux tab-capture probe dynamically advertises `browser_runtime`, `browser_webrtc`, and `browser_capture_tab`; the UI path does not require an Agent restart. Workbench enables the viewer only after the Web protocol handshake, Server rollout gate, and complete Agent capability combination all succeed. Older Agents that do not advertise `browser_runtime_setup` remain compatible when they already advertise the probe-ready viewer capabilities.
 
 A deployment without TURN may work over direct ICE, but it is a degraded direct-only setup and is not a production availability guarantee across NATs or restrictive networks.
 

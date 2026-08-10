@@ -10,6 +10,7 @@ export class MockAgent {
     this.agentId = null;
     this.conversations = new Map();
     this.browserSessions = new Map();
+    this.browserRuntimeInstallFailure = null;
     this._messageHandlers = [];
     this._receivedMessages = [];
     this._messageHistory = [];
@@ -23,6 +24,7 @@ export class MockAgent {
       'work_center',
       'work_center_message_v2',
       'work_item_attachments',
+      'browser_runtime_setup',
       'browser_runtime',
       'browser_webrtc',
       'browser_capture_tab',
@@ -79,6 +81,29 @@ export class MockAgent {
           });
         }
 
+        if (msg.type === 'browser_runtime_status') {
+          this.send({
+            type: 'browser_runtime_status_result',
+            requestId: msg.requestId,
+            supported: true,
+            state: 'not_installed',
+            installed: false,
+            enabled: false,
+            ready: false,
+            buildId: '151.0.7922.71',
+            platform: 'linux',
+            downloadBytes: 193_285_407,
+            safeError: null,
+          });
+        }
+        if (msg.type === 'browser_runtime_install' && this.browserRuntimeInstallFailure) {
+          this.send({
+            type: 'browser_runtime_error',
+            requestId: msg.requestId,
+            code: 'browser_install_failed',
+            safeError: this.browserRuntimeInstallFailure,
+          });
+        }
         if (msg.type === 'browser_session_list') {
           this.send({
             type: 'browser_session_list_result',
@@ -174,6 +199,10 @@ export class MockAgent {
 
   messages(type = null) {
     return this._messageHistory.filter(message => !type || message.type === type);
+  }
+
+  failBrowserRuntimeInstall(safeError) {
+    this.browserRuntimeInstallFailure = safeError;
   }
 
   waitForMessage(type, timeoutMs = 5000) {

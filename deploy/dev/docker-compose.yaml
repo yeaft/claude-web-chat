@@ -6,6 +6,9 @@ services:
       - ${WEBCHAT_ENV_FILE:?WEBCHAT_ENV_FILE must be set}
     environment:
       NODE_ENV: production
+      # Dev exposes the Browser setup/viewer protocol, but Agents still download
+      # nothing until a user explicitly confirms the per-instance install.
+      BROWSER_RUNTIME_ENABLED: ${BROWSER_RUNTIME_ENABLED:-true}
     volumes:
       - ${WEBCHAT_DATA_DIR:?WEBCHAT_DATA_DIR must be set}:/app/data
     networks:
@@ -20,6 +23,9 @@ services:
       - ${WEBCHAT_ENV_FILE:?WEBCHAT_ENV_FILE must be set}
     environment:
       NODE_ENV: production
+      # Dev exposes the Browser setup/viewer protocol, but Agents still download
+      # nothing until a user explicitly confirms the per-instance install.
+      BROWSER_RUNTIME_ENABLED: ${BROWSER_RUNTIME_ENABLED:-true}
     volumes:
       - ${WEBCHAT_DATA_DIR:?WEBCHAT_DATA_DIR must be set}:/app/data
     networks:

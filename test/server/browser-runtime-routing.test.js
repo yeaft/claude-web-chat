@@ -5,19 +5,22 @@ const {
   webClients,
   sendToAgent,
   sendToWebClient,
+  broadcastAgentList,
 } = vi.hoisted(() => ({
   agents: new Map(),
   webClients: new Map(),
   sendToAgent: vi.fn(async () => {}),
   sendToWebClient: vi.fn(async () => {}),
+  broadcastAgentList: vi.fn(async () => {}),
 }));
 
 vi.mock('../../server/context.js', () => ({ agents, webClients }));
-vi.mock('../../server/ws-utils.js', () => ({ sendToAgent, sendToWebClient }));
+vi.mock('../../server/ws-utils.js', () => ({ sendToAgent, sendToWebClient, broadcastAgentList }));
 
 const { CONFIG } = await import('../../server/config.js');
 const { handleClientBrowser } = await import('../../server/handlers/client-browser.js');
 const { handleAgentBrowser } = await import('../../server/handlers/agent-browser.js');
+const { handleAgentSync } = await import('../../server/handlers/agent-sync.js');
 const {
   __testResetBrowserRuntimeRoutes,
   browserPeers,
@@ -33,6 +36,7 @@ function client(id, userId = 'user-a') {
     role: 'pro',
     authenticated: true,
     browserRuntimeProtocol: 1,
+    browserRuntimeSetupProtocol: 1,
     connectionId: `connection-${id}`,
     connectionGeneration: `generation-${id}`,
   };
@@ -78,6 +82,7 @@ beforeEach(() => {
   webClients.clear();
   sendToAgent.mockClear();
   sendToWebClient.mockClear();
+  broadcastAgentList.mockClear();
   __testResetBrowserRuntimeRoutes();
   Object.assign(CONFIG.browserRuntime, {
     enabled: true,
@@ -95,6 +100,87 @@ afterEach(() => {
 });
 
 describe('Browser Runtime Server ownership and signaling', () => {
+  it('allows setup-capable Agents to report/install without ready capability and targets the exact socket', async () => {
+    const requester = client('client-a');
+    const sibling = client('client-b', 'user-a');
+    webClients.set(requester.id, requester);
+    webClients.set(sibling.id, sibling);
+    const setupAgent = {
+      ownerId: 'user-a',
+      capabilities: ['plaintext-ok', 'browser_runtime_setup'],
+      encryptOutbound: false,
+    };
+    agents.set('agent-a', setupAgent);
+
+    await handleClientBrowser(requester, {
+      type: 'browser_runtime_status', agentId: 'agent-a', requestId: 'status-a',
+    }, async () => true);
+    const statusRequest = sendToAgent.mock.calls.at(-1)[1];
+    expect(statusRequest).toMatchObject({
+      type: 'browser_runtime_status',
+      requestId: expect.any(String),
+      serverIdentity: expect.objectContaining({ clientId: 'client-a' }),
+    });
+    expect(statusRequest.requestId).not.toBe('status-a');
+    await handleAgentBrowser('agent-a', setupAgent, {
+      type: 'browser_runtime_status_result',
+      requestId: statusRequest.requestId,
+      supported: true,
+      state: 'not_installed',
+      installed: false,
+      enabled: false,
+      ready: false,
+      buildId: '151.0.7922.71',
+      platform: 'linux',
+      downloadBytes: 193_285_407,
+      credential: 'must-not-leak',
+    });
+    expect(sendToWebClient).toHaveBeenCalledWith(requester, expect.objectContaining({
+      type: 'browser_runtime_status_result',
+      requestId: 'status-a',
+      agentId: 'agent-a',
+      downloadBytes: 193_285_407,
+    }));
+    expect(sendToWebClient.mock.calls.at(-1)[1]).not.toHaveProperty('credential');
+    expect(sendToWebClient.mock.calls.at(-1)[0]).not.toBe(sibling);
+
+    sendToAgent.mockClear();
+    sendToWebClient.mockClear();
+    await handleClientBrowser(requester, {
+      type: 'browser_runtime_install',
+      agentId: 'agent-a',
+      requestId: 'install-a',
+      confirmedBuildId: '151.0.7922.71',
+      confirmedDownloadBytes: 193_285_407,
+    }, async () => true);
+    const installRequest = sendToAgent.mock.calls.at(-1)[1];
+    expect(installRequest).toMatchObject({
+      type: 'browser_runtime_install',
+      confirmedBuildId: '151.0.7922.71',
+      confirmedDownloadBytes: 193_285_407,
+    });
+    await handleAgentBrowser('agent-a', setupAgent, {
+      type: 'browser_runtime_install_progress',
+      requestId: installRequest.requestId,
+      downloadedBytes: 1024,
+      totalBytes: 193_285_407,
+    });
+    expect(sendToWebClient).toHaveBeenCalledWith(requester, expect.objectContaining({
+      type: 'browser_runtime_install_progress',
+      requestId: 'install-a',
+      downloadedBytes: 1024,
+    }));
+    expect(sendToWebClient.mock.calls.at(-1)[0]).not.toBe(sibling);
+
+    await handleAgentSync('agent-a', setupAgent, {
+      type: 'agent_capabilities_updated',
+      capabilities: ['plaintext-ok', 'browser_runtime_setup', 'browser_runtime', 'browser_webrtc', 'browser_capture_tab'],
+    });
+    expect(setupAgent.capabilities).toContain('browser_runtime');
+    expect(setupAgent.encryptOutbound).toBe(false);
+    expect(broadcastAgentList).toHaveBeenCalledOnce();
+  });
+
   it('uses opaque Server correlation and returns create only to the exact requesting socket', async () => {
     const clientA = client('client-a');
     const clientB = client('client-b');
@@ -283,9 +369,12 @@ describe('Browser Runtime Server ownership and signaling', () => {
     }));
   });
 
-  it('rejects omitted protocol support and a route-capable Agent cannot be downgraded', async () => {
-    const legacy = { ...client('legacy'), browserRuntimeProtocol: 0 };
-    agents.set('agent-a', agent());
+  it('rejects omitted viewer and setup protocols without downgrading either path', async () => {
+    const legacy = { ...client('legacy'), browserRuntimeProtocol: 0, browserRuntimeSetupProtocol: 0 };
+    agents.set('agent-a', {
+      ...agent(),
+      capabilities: ['browser_runtime_setup', 'browser_runtime', 'browser_webrtc', 'browser_capture_tab'],
+    });
     webClients.set(legacy.id, legacy);
     expect(await handleClientBrowser(legacy, {
       type: 'browser_session_create', agentId: 'agent-a', requestId: 'legacy-create',
@@ -293,6 +382,16 @@ describe('Browser Runtime Server ownership and signaling', () => {
     expect(sendToAgent).not.toHaveBeenCalled();
     expect(sendToWebClient).toHaveBeenCalledWith(legacy, expect.objectContaining({
       code: 'browser_protocol_required',
+    }));
+
+    sendToWebClient.mockClear();
+    expect(await handleClientBrowser(legacy, {
+      type: 'browser_runtime_status', agentId: 'agent-a', requestId: 'legacy-status',
+    }, async () => true)).toBe(true);
+    expect(sendToAgent).not.toHaveBeenCalled();
+    expect(sendToWebClient).toHaveBeenCalledWith(legacy, expect.objectContaining({
+      type: 'browser_runtime_error',
+      code: 'browser_setup_protocol_required',
     }));
   });
 });

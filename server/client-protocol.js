@@ -1,5 +1,6 @@
 export const WORKBENCH_ROUTE_PROTOCOL = 1;
 export const BROWSER_RUNTIME_PROTOCOL = 1;
+export const BROWSER_RUNTIME_SETUP_PROTOCOL = 1;
 
 /**
  * Apply the explicit browser protocol hello to one Server-owned client record.
@@ -13,6 +14,9 @@ export function applyClientHello(client, message) {
   }
   if (message.browserRuntimeProtocol === BROWSER_RUNTIME_PROTOCOL) {
     client.browserRuntimeProtocol = BROWSER_RUNTIME_PROTOCOL;
+  }
+  if (message.browserRuntimeSetupProtocol === BROWSER_RUNTIME_SETUP_PROTOCOL) {
+    client.browserRuntimeSetupProtocol = BROWSER_RUNTIME_SETUP_PROTOCOL;
   }
   return true;
 }

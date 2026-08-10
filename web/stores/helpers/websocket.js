@@ -149,6 +149,7 @@ export function connect(store) {
   store.yeaftSessionInventoryCompleteSupported = null;
   store.workbenchRouteProtocolSupported = null;
   store.browserRuntimeProtocolSupported = null;
+  store.browserRuntimeSetupProtocolSupported = null;
   store.browserRuntimeServerEnabled = false;
   notifyBrowserTransportReset();
   store.yeaftSessionHydrateRequestId = null;
@@ -238,6 +239,7 @@ export function connect(store) {
         plaintextOk: true,
         workbenchRouteProtocol: 1,
         browserRuntimeProtocol: 1,
+        browserRuntimeSetupProtocol: 1,
       }));
     } catch (e) {
       console.warn('[WS] Failed to send client_hello:', e);
@@ -270,6 +272,7 @@ export function connect(store) {
     store.yeaftSessionInventoryCompleteSupported = null;
     store.workbenchRouteProtocolSupported = null;
     store.browserRuntimeProtocolSupported = null;
+    store.browserRuntimeSetupProtocolSupported = null;
     store.browserRuntimeServerEnabled = false;
     notifyBrowserTransportReset();
     store.yeaftSessionHydrateRequestId = null;

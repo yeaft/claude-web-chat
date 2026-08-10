@@ -23,6 +23,7 @@ import { hostname } from 'node:os';
 import { generateSystemdUnit } from '../../agent/service/linux.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BrowserRuntimeService } from '../../agent/browser-runtime/service.js';
+import { handleBrowserRuntimeMessage } from '../../agent/browser-runtime/messages.js';
 import { BrowserExtensionBridge } from '../../agent/browser-runtime/local-bridge.js';
 import {
   BROWSER_RUNTIME_DEFAULTS,
@@ -44,6 +45,7 @@ import {
   BROWSER_RUNTIME_CHROME_BUILD,
   findManagedBrowser,
   installManagedBrowser,
+  managedBrowserDownloadInfo,
 } from '../../agent/browser-runtime/browser-install.js';
 
 const roots = [];
@@ -988,6 +990,164 @@ describe('Browser Runtime service containment', () => {
 });
 
 describe('Browser Runtime lifecycle', () => {
+  it('requires a Server-stamped owner identity before setup reads or writes execute', async () => {
+    const runtime = {
+      setupStatus: vi.fn(),
+      installAndEnable: vi.fn(),
+      enableAndProbe: vi.fn(),
+    };
+    const send = vi.fn();
+    for (const type of ['browser_runtime_status', 'browser_runtime_install', 'browser_runtime_enable']) {
+      expect(await handleBrowserRuntimeMessage({
+        type,
+        requestId: `request-${type}`,
+        confirmedBuildId: BROWSER_RUNTIME_CHROME_BUILD,
+        confirmedDownloadBytes: 193_285_407,
+      }, { runtime, send })).toBe(true);
+      expect(send).toHaveBeenLastCalledWith(expect.objectContaining({
+        type: 'browser_runtime_error',
+        requestId: `request-${type}`,
+        code: 'browser_identity_required',
+      }));
+    }
+    expect(runtime.setupStatus).not.toHaveBeenCalled();
+    expect(runtime.installAndEnable).not.toHaveBeenCalled();
+    expect(runtime.enableAndProbe).not.toHaveBeenCalled();
+  });
+
+  it('reports pinned download metadata without installing and rejects stale explicit confirmation', async () => {
+    expect(managedBrowserDownloadInfo({ platform: 'linux', arch: 'x64' })).toMatchObject({
+      supported: true,
+      buildId: BROWSER_RUNTIME_CHROME_BUILD,
+      platform: 'linux',
+      downloadBytes: 193_285_407,
+    });
+    expect(managedBrowserDownloadInfo({ platform: 'linux', arch: 'arm64' })).toMatchObject({
+      supported: false,
+      downloadBytes: 0,
+    });
+
+    const installBrowser = vi.fn();
+    const runtime = new BrowserRuntimeService({
+      yeaftDir: tempRoot(),
+      config: {},
+      findBrowser: vi.fn().mockResolvedValue(null),
+      resolveBrowser: vi.fn().mockResolvedValue(null),
+      installBrowser,
+      platform: 'linux',
+      arch: 'x64',
+    });
+    await expect(runtime.setupStatus()).resolves.toMatchObject({
+      state: 'not_installed', installed: false, enabled: false, ready: false,
+      downloadBytes: 193_285_407,
+    });
+    expect(installBrowser).not.toHaveBeenCalled();
+    await expect(runtime.installAndEnable({
+      confirmedBuildId: BROWSER_RUNTIME_CHROME_BUILD,
+      confirmedDownloadBytes: 1,
+    })).rejects.toMatchObject({ code: 'browser_install_confirmation_stale' });
+    expect(installBrowser).not.toHaveBeenCalled();
+    await runtime.shutdown();
+  });
+
+  it('keeps a failed install error through status refresh until an explicit retry supersedes it', async () => {
+    const checksumError = new Error('Managed Chrome archive checksum mismatch for chrome-linux64.zip');
+    let finishRetry;
+    let installed = false;
+    const installBrowser = vi.fn()
+      .mockRejectedValueOnce(checksumError)
+      .mockImplementationOnce(() => new Promise(resolve => {
+        finishRetry = () => {
+          installed = true;
+          resolve({ status: 'installed', executablePath: '/managed/chrome' });
+        };
+      }));
+    const runtime = new BrowserRuntimeService({
+      yeaftDir: tempRoot(),
+      config: {},
+      resolveBrowser: vi.fn().mockImplementation(async () => (
+        installed ? '/managed/chrome' : null
+      )),
+      installBrowser,
+      saveSettings: vi.fn().mockReturnValue({ enabled: true, executablePath: null }),
+      probe: vi.fn().mockResolvedValue({ ok: true, captureMode: 'tab' }),
+      platform: 'linux',
+      arch: 'x64',
+    });
+    const confirmation = {
+      confirmedBuildId: BROWSER_RUNTIME_CHROME_BUILD,
+      confirmedDownloadBytes: 193_285_407,
+    };
+
+    await expect(runtime.installAndEnable(confirmation)).rejects.toThrow(checksumError.message);
+    await expect(runtime.setupStatus()).resolves.toMatchObject({
+      state: 'not_installed',
+      installed: false,
+      safeError: checksumError.message,
+    });
+
+    const retry = runtime.installAndEnable(confirmation);
+    await vi.waitFor(() => expect(installBrowser).toHaveBeenCalledTimes(2));
+    await expect(runtime.setupStatus()).resolves.toMatchObject({
+      state: 'installing',
+      safeError: null,
+    });
+    finishRetry();
+    await expect(retry).resolves.toMatchObject({
+      state: 'ready',
+      installed: true,
+      ready: true,
+      safeError: null,
+    });
+    await runtime.shutdown();
+  });
+
+  it('single-flights an explicit install, persists enablement, probes, and refreshes capabilities', async () => {
+    let finishInstall;
+    const installBrowser = vi.fn(({ onProgress }) => new Promise(resolve => {
+      onProgress(96, 193_285_407);
+      finishInstall = () => resolve({ status: 'installed', executablePath: '/managed/chrome' });
+    }));
+    const saveSettings = vi.fn().mockReturnValue({ enabled: true, executablePath: null });
+    const onCapabilitiesChanged = vi.fn();
+    const probe = vi.fn().mockResolvedValue({ ok: true, captureMode: 'tab' });
+    const runtime = new BrowserRuntimeService({
+      yeaftDir: tempRoot(),
+      config: {},
+      findBrowser: vi.fn().mockResolvedValue(null),
+      resolveBrowser: vi.fn().mockResolvedValue('/managed/chrome'),
+      installBrowser,
+      saveSettings,
+      onCapabilitiesChanged,
+      probe,
+      platform: 'linux',
+      arch: 'x64',
+    });
+    const firstProgress = vi.fn();
+    const secondProgress = vi.fn();
+    const confirmation = {
+      confirmedBuildId: BROWSER_RUNTIME_CHROME_BUILD,
+      confirmedDownloadBytes: 193_285_407,
+    };
+    const first = runtime.installAndEnable({ ...confirmation, onProgress: firstProgress });
+    await vi.waitFor(() => expect(installBrowser).toHaveBeenCalledOnce());
+    const second = runtime.installAndEnable({ ...confirmation, onProgress: secondProgress });
+    expect(runtime.setupCapabilities()).toEqual(['browser_runtime_setup']);
+    expect(await runtime.setupStatus()).toMatchObject({ state: 'installing' });
+    finishInstall();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ state: 'ready', installed: true, ready: true }),
+      expect.objectContaining({ state: 'ready', installed: true, ready: true }),
+    ]);
+    expect(installBrowser).toHaveBeenCalledOnce();
+    expect(firstProgress).toHaveBeenCalledWith({ downloadedBytes: 96, totalBytes: 193_285_407 });
+    expect(saveSettings).toHaveBeenCalledWith({ enabled: true, executablePath: null });
+    expect(probe).toHaveBeenCalledOnce();
+    expect(onCapabilitiesChanged).toHaveBeenCalledOnce();
+    expect(runtime.capabilities()).toEqual(['browser_runtime', 'browser_webrtc', 'browser_capture_tab']);
+    await runtime.shutdown();
+  });
+
   it('does not run a probe while disabled', async () => {
     const probe = vi.fn();
     const runtime = new BrowserRuntimeService({ yeaftDir: tempRoot(), config: {}, probe });
