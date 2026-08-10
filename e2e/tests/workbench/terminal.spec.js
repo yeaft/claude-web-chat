@@ -250,6 +250,94 @@ test.describe('Workbench', () => {
     await expect(panel.locator('.workbench-launcher')).toBeVisible();
   });
 
+  test('offers an explicit optional Browser install without downloading on open', async ({ chatPage, mockAgent }) => {
+    await openYeaftWorkbench(chatPage, mockAgent);
+    await chatPage.evaluate(agentId => {
+      const store = window.Pinia.useChatStore();
+      const agent = store.agents.find(item => item.id === agentId);
+      agent.capabilities = [
+        ...new Set([
+          ...(agent.capabilities || []).filter(capability => ![
+            'browser_runtime', 'browser_webrtc', 'browser_capture_tab',
+          ].includes(capability)),
+          'browser_runtime_setup',
+        ]),
+      ];
+      store.currentAgentInfo = agent;
+    }, mockAgent.agentId);
+
+    const panel = chatPage.locator('.workbench-panel');
+    await expect(capability(panel, 'browser').locator('.workbench-capability-status')).toHaveText('Setup required');
+    const installsBefore = mockAgent.messages('browser_runtime_install').length;
+    await capability(panel, 'browser').click();
+    const status = await mockAgent.waitForMessage('browser_runtime_status');
+    expect(status).toMatchObject({
+      agentId: mockAgent.agentId,
+      requestId: expect.any(String),
+      serverIdentity: expect.objectContaining({ ownerUserId: expect.any(String) }),
+    });
+    await expect(panel.locator('.browser-setup-stage')).toBeVisible();
+    await expect(panel.locator('.browser-setup-stage')).toContainText('Chrome is not bundled with the Agent');
+    await expect(panel.locator('.browser-setup-stage')).toContainText('184.3 MiB');
+    expect(mockAgent.messages('browser_runtime_install')).toHaveLength(installsBefore);
+
+    for (const theme of ['light', 'dark']) {
+      await chatPage.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+      await chatPage.setViewportSize({ width: 320, height: 720 });
+      await expect(chatPage.locator('html')).toHaveAttribute('data-theme', theme);
+      const overflow = await panel.locator('.browser-setup-stage').evaluate(element => ({
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      }));
+      expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1);
+      await expect(panel.locator('.browser-setup-stage .btn-primary')).toBeVisible();
+    }
+
+    await panel.locator('.browser-setup-stage .btn-primary').click();
+    const install = await mockAgent.waitForMessage('browser_runtime_install');
+    expect(install).toMatchObject({
+      agentId: mockAgent.agentId,
+      confirmedBuildId: '151.0.7922.71',
+      confirmedDownloadBytes: 193_285_407,
+      serverIdentity: expect.objectContaining({ ownerUserId: expect.any(String) }),
+    });
+  });
+
+  test('keeps a failed Browser install visible after automatic status refresh and allows retry', async ({ chatPage, mockAgent }) => {
+    const checksumError = 'Managed Chrome archive checksum mismatch for chrome-linux64.zip';
+    mockAgent.failBrowserRuntimeInstall(checksumError);
+    await openYeaftWorkbench(chatPage, mockAgent);
+    await chatPage.evaluate(agentId => {
+      const store = window.Pinia.useChatStore();
+      const agent = store.agents.find(item => item.id === agentId);
+      agent.capabilities = [
+        ...new Set([
+          ...(agent.capabilities || []).filter(capability => ![
+            'browser_runtime', 'browser_webrtc', 'browser_capture_tab',
+          ].includes(capability)),
+          'browser_runtime_setup',
+        ]),
+      ];
+      store.currentAgentInfo = agent;
+    }, mockAgent.agentId);
+
+    const panel = chatPage.locator('.workbench-panel');
+    await capability(panel, 'browser').click();
+    await mockAgent.waitForMessage('browser_runtime_status');
+    const installButton = panel.locator('.browser-setup-stage .btn-primary');
+    await expect(installButton).toBeEnabled();
+    await installButton.click();
+    await mockAgent.waitForMessage('browser_runtime_install');
+    const refresh = await mockAgent.waitForMessage('browser_runtime_status');
+    expect(refresh).toMatchObject({ agentId: mockAgent.agentId, requestId: expect.any(String) });
+
+    await expect(panel.locator('.browser-setup-error')).toHaveText(checksumError);
+    await expect(installButton).toBeEnabled();
+    const attempts = mockAgent.messages('browser_runtime_install').length;
+    await installButton.click();
+    await expect.poll(() => mockAgent.messages('browser_runtime_install').length).toBe(attempts + 1);
+  });
+
   test('creates a Browser Session and mounts the generation-fenced WebRTC viewer', async ({ chatPage, mockAgent }) => {
     await openYeaftWorkbench(chatPage, mockAgent);
     await chatPage.evaluate(agentId => {

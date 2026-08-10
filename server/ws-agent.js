@@ -362,6 +362,7 @@ async function handleAgentMessage(agentId, msg, ws) {
     'file_content', 'file_saved', 'file_op_result', 'file_search_result',
     'git_status_result', 'git_diff_result', 'git_op_result',
     'terminal_created', 'terminal_output', 'terminal_closed', 'terminal_error',
+    'agent_capabilities_updated', 'browser_runtime_status_result', 'browser_runtime_install_progress', 'browser_runtime_error',
     'browser_session_created', 'browser_session_error', 'browser_session_snapshot', 'browser_session_list_result',
     'browser_peer_prepared', 'browser_peer_offer', 'browser_peer_ice_candidate', 'browser_peer_state', 'browser_peer_error'
   ]);

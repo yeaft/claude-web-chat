@@ -199,6 +199,7 @@ export function handleMessage(store, msg) {
     case 'client_hello_ack':
       store.workbenchRouteProtocolSupported = msg.workbenchRouteProtocol === 1;
       store.browserRuntimeProtocolSupported = msg.browserRuntimeProtocol === 1;
+      store.browserRuntimeSetupProtocolSupported = msg.browserRuntimeSetupProtocol === 1;
       store.browserRuntimeServerEnabled = msg.browserRuntimeEnabled === true;
       window.dispatchEvent(new CustomEvent('browser-runtime-message', { detail: msg }));
       break;
@@ -224,6 +225,7 @@ export function handleMessage(store, msg) {
         // only after Server confirms it processed our client_hello.
         store.workbenchRouteProtocolSupported = false;
         store.browserRuntimeProtocolSupported = false;
+        store.browserRuntimeSetupProtocolSupported = false;
         store.browserRuntimeServerEnabled = msg.browserRuntimeEnabled === true;
         window.dispatchEvent(new CustomEvent('browser-runtime-message', { detail: msg }));
         store.yeaftSessionHydrateSlices = [];
@@ -987,7 +989,10 @@ export function handleMessage(store, msg) {
       window.dispatchEvent(new CustomEvent('agent-upgrade-ack', { detail: { agentId: msg.agentId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version, reason: msg.reason, currentNode: msg.currentNode, requiredNode: msg.requiredNode, requiredCapability: msg.requiredCapability } }));
       break;
 
-    // Browser Runtime lifecycle/signaling belongs to the dedicated browser store.
+    // Browser Runtime setup/lifecycle/signaling belongs to the dedicated browser store.
+    case 'browser_runtime_status_result':
+    case 'browser_runtime_install_progress':
+    case 'browser_runtime_error':
     case 'browser_session_created':
     case 'browser_session_error':
     case 'browser_session_snapshot':

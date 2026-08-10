@@ -5,6 +5,7 @@ import {
   browserRoutes,
   completeBrowserRequest,
   deleteBrowserPeer,
+  findBrowserRequest,
   deleteBrowserRoute,
   getBrowserPeer,
   getBrowserRoute,
@@ -12,6 +13,9 @@ import {
 } from '../browser-runtime-routes.js';
 
 const AGENT_BROWSER_TYPES = new Set([
+  'browser_runtime_status_result',
+  'browser_runtime_install_progress',
+  'browser_runtime_error',
   'browser_session_created',
   'browser_session_error',
   'browser_session_snapshot',
@@ -56,6 +60,50 @@ function sessionSnapshot(msg) {
   };
 }
 
+function safeByteCount(value) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0) return 0;
+  return Math.min(number, 4 * 1024 * 1024 * 1024);
+}
+
+function publicRuntimeMessage(agentId, requestId, msg) {
+  if (msg?.type === 'browser_runtime_error') {
+    return {
+      type: msg.type,
+      agentId,
+      requestId,
+      code: clean(msg.code, 128) || 'browser_runtime_error',
+      safeError: clean(msg.safeError, 500) || null,
+    };
+  }
+  if (msg?.type === 'browser_runtime_install_progress') {
+    return {
+      type: msg.type,
+      agentId,
+      requestId,
+      downloadedBytes: safeByteCount(msg.downloadedBytes),
+      totalBytes: safeByteCount(msg.totalBytes),
+    };
+  }
+  return {
+    type: 'browser_runtime_status_result',
+    agentId,
+    requestId,
+    supported: msg?.supported === true,
+    state: clean(msg?.state, 32) || 'unknown',
+    installed: msg?.installed === true,
+    enabled: msg?.enabled === true,
+    ready: msg?.ready === true,
+    buildId: clean(msg?.buildId, 128) || null,
+    platform: clean(msg?.platform, 32) || null,
+    downloadBytes: safeByteCount(msg?.downloadBytes),
+    downloadedBytes: safeByteCount(msg?.downloadedBytes),
+    totalBytes: safeByteCount(msg?.totalBytes),
+    probeCode: clean(msg?.probeCode, 128) || null,
+    safeError: clean(msg?.safeError, 500) || null,
+  };
+}
+
 function publicSessionMessage(agentId, msg) {
   if (msg?.type === 'browser_session_error') {
     return {
@@ -84,7 +132,7 @@ function publicSessionMessage(agentId, msg) {
 }
 
 async function sendCreateResponse(agentId, msg) {
-  const request = completeBrowserRequest(agentId, msg);
+  const request = completeBrowserRequest(agentId, msg, { kinds: 'browser_session_create' });
   if (!request) return true;
   const client = browserClientForPeer({
     clientId: request.clientId,
@@ -130,13 +178,47 @@ async function sendCreateResponse(agentId, msg) {
 /** Agent-authenticated Browser events routed only through Server-owned ledgers. */
 export async function handleAgentBrowser(agentId, agent, msg) {
   if (!AGENT_BROWSER_TYPES.has(msg?.type)) return false;
+  if (msg.type === 'browser_runtime_install_progress') {
+    const request = findBrowserRequest(agentId, msg.requestId);
+    if (!request || request.state !== 'pending' || request.kind !== 'browser_runtime_install') return true;
+    const client = browserClientForPeer({
+      clientId: request.clientId,
+      webConnectionId: request.webConnectionId,
+      webConnectionGeneration: request.webConnectionGeneration,
+    });
+    if (client?.userId === request.ownerUserId) {
+      await sendToWebClient(client, publicRuntimeMessage(agentId, request.requestId, msg));
+    }
+    return true;
+  }
+  if (msg.type === 'browser_runtime_status_result' || msg.type === 'browser_runtime_error') {
+    const pendingRequest = findBrowserRequest(agentId, msg.requestId);
+    const request = completeBrowserRequest(agentId, msg, {
+      consume: pendingRequest?.kind === 'browser_runtime_status',
+      kinds: ['browser_runtime_status', 'browser_runtime_install', 'browser_runtime_enable'],
+    });
+    if (!request) return true;
+    const client = browserClientForPeer({
+      clientId: request.clientId,
+      webConnectionId: request.webConnectionId,
+      webConnectionGeneration: request.webConnectionGeneration,
+    });
+    if (client?.userId !== request.ownerUserId) return true;
+    const response = publicRuntimeMessage(agentId, request.requestId, msg);
+    request.response = response;
+    await sendToWebClient(client, response);
+    return true;
+  }
   if (msg.type === 'browser_session_created'
       || (msg.type === 'browser_session_error' && msg.requestId)) {
     return sendCreateResponse(agentId, msg);
   }
 
   if (msg.type === 'browser_session_list_result') {
-    const request = completeBrowserRequest(agentId, msg, { consume: true });
+    const request = completeBrowserRequest(agentId, msg, {
+      consume: true,
+      kinds: 'browser_session_list',
+    });
     if (!request) return true;
     for (const snapshot of Array.isArray(msg.sessions) ? msg.sessions : []) {
       if (!snapshot?.browserSessionId) continue;
@@ -154,7 +236,10 @@ export async function handleAgentBrowser(agentId, agent, msg) {
   }
 
   if (msg.type === 'browser_session_snapshot' && msg.requestId) {
-    const request = completeBrowserRequest(agentId, msg, { consume: true });
+    const request = completeBrowserRequest(agentId, msg, {
+      consume: true,
+      kinds: ['browser_session_get', 'browser_session_close'],
+    });
     if (!request) return true;
     const client = browserClientForPeer({
       clientId: request.clientId,

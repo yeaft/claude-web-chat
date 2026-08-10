@@ -57,6 +57,63 @@ afterEach(() => {
 });
 
 describe('Browser Runtime Web store', () => {
+  it('queries setup status and sends the exact explicit install confirmation with progress', async () => {
+    const store = useBrowserStore();
+    const statusPromise = store.getRuntimeStatus('agent-a');
+    const statusRequest = sent.at(-1);
+    expect(statusRequest).toMatchObject({
+      type: 'browser_runtime_status', agentId: 'agent-a', requestId: expect.any(String),
+    });
+    store.handleMessage({
+      type: 'browser_runtime_status_result',
+      requestId: statusRequest.requestId,
+      agentId: 'agent-a',
+      supported: true,
+      state: 'not_installed',
+      installed: false,
+      enabled: false,
+      ready: false,
+      buildId: '151.0.7922.71',
+      downloadBytes: 193_285_407,
+    });
+    const status = await statusPromise;
+    expect(store.runtimeStatus['agent-a']).toBe(status);
+
+    const installPromise = store.installRuntime('agent-a', status);
+    const installRequest = sent.at(-1);
+    expect(installRequest).toMatchObject({
+      type: 'browser_runtime_install',
+      agentId: 'agent-a',
+      confirmedBuildId: '151.0.7922.71',
+      confirmedDownloadBytes: 193_285_407,
+    });
+    store.handleMessage({
+      type: 'browser_runtime_install_progress',
+      requestId: installRequest.requestId,
+      agentId: 'agent-a',
+      downloadedBytes: 1024,
+      totalBytes: 193_285_407,
+    });
+    expect(store.installProgress['agent-a']).toEqual({
+      downloadedBytes: 1024,
+      totalBytes: 193_285_407,
+    });
+    store.handleMessage({
+      type: 'browser_runtime_status_result',
+      requestId: installRequest.requestId,
+      agentId: 'agent-a',
+      supported: true,
+      state: 'ready',
+      installed: true,
+      enabled: true,
+      ready: true,
+      buildId: '151.0.7922.71',
+      downloadBytes: 193_285_407,
+    });
+    await expect(installPromise).resolves.toMatchObject({ state: 'ready', ready: true });
+    expect(store.installProgress['agent-a']).toBeUndefined();
+  });
+
   it('creates a generation-fenced peer and answers only its exact offer', async () => {
     const store = useBrowserStore();
     store.installMessageListener();

@@ -73,6 +73,7 @@ function mountWorkbench() {
         TerminalTab: capabilityStub('terminal', 'terminal-tab-stub'),
         GitStatusTab: capabilityStub('git', 'git-tab-stub'),
         FilesTab: capabilityStub('files', 'files-tab-stub'),
+        BrowserPanel: capabilityStub('browser', 'browser-panel-stub'),
       },
     },
   });
@@ -92,6 +93,9 @@ describe('Workbench capability launcher', () => {
     workbenchStore.effectiveWorkDir = '/workspace/a';
     workbenchStore.capabilities = ['terminal', 'file_editor', 'workbench_session_routes'];
     workbenchStore.workbenchRouteProtocolSupported = true;
+    workbenchStore.browserRuntimeServerEnabled = false;
+    workbenchStore.browserRuntimeProtocolSupported = false;
+    workbenchStore.browserRuntimeSetupProtocolSupported = false;
     capabilityMounts.length = 0;
     workbenchStore.toggleWorkbench.mockClear();
     workbenchStore.toggleWorkbenchMaximized.mockClear();
@@ -209,14 +213,26 @@ describe('Workbench capability launcher', () => {
     }
   });
 
-  it('keeps Browser discoverable without pretending Phase 0 has a viewer', async () => {
-    const wrapper = mountWorkbench();
+  it('keeps Browser discoverable and distinguishes setup-required from unsupported', async () => {
+    const unsupported = mountWorkbench();
+    await unsupported.get('[data-workbench-capability="browser"]').trigger('click');
+    expect(unsupported.get('.workbench-browser-view').text()).toContain('workbench.browserUnavailable');
+    expect(unsupported.find('video').exists()).toBe(false);
+    expect(unsupported.find('iframe').exists()).toBe(false);
+    unsupported.unmount();
 
-    await wrapper.get('[data-workbench-capability="browser"]').trigger('click');
-    expect(wrapper.get('.workbench-browser-view').text()).toContain('workbench.browserUnavailable');
-    expect(wrapper.find('video').exists()).toBe(false);
-    expect(wrapper.find('iframe').exists()).toBe(false);
-    wrapper.unmount();
+    workbenchStore.browserRuntimeServerEnabled = true;
+    workbenchStore.browserRuntimeProtocolSupported = true;
+    workbenchStore.browserRuntimeSetupProtocolSupported = true;
+    workbenchStore.capabilities = ['terminal', 'file_editor', 'workbench_session_routes', 'browser_runtime_setup'];
+    const setup = mountWorkbench();
+    expect(setup.get('[data-workbench-capability="browser"] .workbench-capability-status').text())
+      .toBe('workbench.setupRequired');
+    await setup.get('[data-workbench-capability="browser"]').trigger('click');
+    expect(setup.find('.workbench-browser-view').exists()).toBe(false);
+    expect(setup.get('.browser-panel-stub').attributes('data-route-key'))
+      .toBe('yeaft:agent-1:session-a');
+    setup.unmount();
   });
 
   it('routes a message file-open event directly to Files and resets on reopen', async () => {

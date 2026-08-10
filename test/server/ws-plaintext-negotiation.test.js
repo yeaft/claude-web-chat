@@ -114,22 +114,27 @@ describe('server → web : encryptOutbound default + client_hello flip', () => {
     expect(client.encryptOutbound).toBe(false);
   });
 
-  it('records the Workbench route protocol only from explicit client hello', () => {
+  it('records Workbench and Browser setup protocols only from explicit client hello', () => {
     const client = createMockWebClient();
     client.workbenchRouteProtocol = 0;
+    client.browserRuntimeSetupProtocol = 0;
     const incoming = {
       type: 'client_hello',
       plaintextOk: true,
       workbenchRouteProtocol: 1,
+      browserRuntimeSetupProtocol: 1,
     };
     applyClientHello(client, incoming);
     expect(client.workbenchRouteProtocol).toBe(1);
+    expect(client.browserRuntimeSetupProtocol).toBe(1);
 
     const legacyClient = createMockWebClient();
     legacyClient.workbenchRouteProtocol = 0;
+    legacyClient.browserRuntimeSetupProtocol = 0;
     const legacyHello = { type: 'client_hello', plaintextOk: true };
     applyClientHello(legacyClient, legacyHello);
     expect(legacyClient.workbenchRouteProtocol).toBe(0);
+    expect(legacyClient.browserRuntimeSetupProtocol).toBe(0);
   });
 
   it('does NOT flip if client_hello omits plaintextOk', () => {

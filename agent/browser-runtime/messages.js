@@ -1,6 +1,10 @@
 import ctx from '../context.js';
+import { BrowserRuntimeError } from './errors.js';
 
 const BROWSER_MESSAGE_TYPES = new Set([
+  'browser_runtime_status',
+  'browser_runtime_install',
+  'browser_runtime_enable',
   'browser_session_create',
   'browser_session_get',
   'browser_session_list',
@@ -12,9 +16,11 @@ const BROWSER_MESSAGE_TYPES = new Set([
 ]);
 
 function errorMessage(msg, error) {
-  const peerScoped = String(msg?.type || '').startsWith('browser_peer_');
+  const type = String(msg?.type || '');
+  const peerScoped = type.startsWith('browser_peer_');
+  const setupScoped = type.startsWith('browser_runtime_');
   return {
-    type: peerScoped ? 'browser_peer_error' : 'browser_session_error',
+    type: peerScoped ? 'browser_peer_error' : setupScoped ? 'browser_runtime_error' : 'browser_session_error',
     requestId: msg?.requestId || null,
     browserSessionId: msg?.browserSessionId || null,
     ...(peerScoped ? {
@@ -24,6 +30,15 @@ function errorMessage(msg, error) {
     code: error?.code || 'browser_runtime_error',
     safeError: String(error?.message || error).slice(0, 500),
   };
+}
+
+function assertSetupIdentity(message) {
+  const identity = message?.serverIdentity;
+  if (!identity || typeof identity !== 'object'
+      || !identity.ownerUserId || !identity.clientId
+      || !identity.webConnectionId || !identity.webConnectionGeneration) {
+    throw new BrowserRuntimeError('browser_identity_required');
+  }
 }
 
 /** Route one authenticated Server command into the Agent-local Browser Runtime. */
@@ -37,6 +52,41 @@ export async function handleBrowserRuntimeMessage(msg, dependencies = {}) {
   }
   try {
     switch (msg.type) {
+      case 'browser_runtime_status':
+        assertSetupIdentity(msg);
+        await send?.({
+          type: 'browser_runtime_status_result',
+          requestId: msg.requestId || null,
+          ...(await runtime.setupStatus()),
+        });
+        break;
+      case 'browser_runtime_install': {
+        assertSetupIdentity(msg);
+        const progress = async value => send?.({
+          type: 'browser_runtime_install_progress',
+          requestId: msg.requestId || null,
+          ...value,
+        });
+        const result = await runtime.installAndEnable({
+          confirmedBuildId: msg.confirmedBuildId,
+          confirmedDownloadBytes: msg.confirmedDownloadBytes,
+          onProgress: progress,
+        });
+        await send?.({
+          type: 'browser_runtime_status_result',
+          requestId: msg.requestId || null,
+          ...result,
+        });
+        break;
+      }
+      case 'browser_runtime_enable':
+        assertSetupIdentity(msg);
+        await send?.({
+          type: 'browser_runtime_status_result',
+          requestId: msg.requestId || null,
+          ...(await runtime.enableAndProbe()),
+        });
+        break;
       case 'browser_session_create':
         await runtime.createSession(msg);
         break;

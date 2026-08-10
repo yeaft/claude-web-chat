@@ -81,8 +81,8 @@ export default {
                 </span>
                 <span
                   class="workbench-capability-status"
-                  :class="{ available: capability.available }"
-                >{{ $t(capability.available ? 'workbench.available' : 'workbench.unavailable') }}</span>
+                  :class="{ available: capability.ready }"
+                >{{ $t(capability.statusKey) }}</span>
               </button>
             </div>
           </section>
@@ -103,9 +103,10 @@ export default {
           </section>
 
           <BrowserPanel
-            v-if="activeCapability === 'browser' && hasBrowser"
+            v-if="activeCapability === 'browser' && canOpenBrowser"
             :key="'browser:' + workbenchContextKey"
             v-bind="routeProps"
+            :runtime-ready="hasBrowser"
           />
 
           <section v-else-if="activeCapability === 'browser'" class="workbench-capability-empty workbench-browser-view">
@@ -151,6 +152,12 @@ export default {
     ));
     const hasTerminal = Vue.computed(() => hasSessionRoutes.value && store.hasCapability('terminal'));
     const hasExplorer = Vue.computed(() => hasSessionRoutes.value && store.hasCapability('file_editor'));
+    const canSetupBrowser = Vue.computed(() => (
+      store.browserRuntimeServerEnabled === true
+      && store.browserRuntimeProtocolSupported === true
+      && store.browserRuntimeSetupProtocolSupported === true
+      && store.hasCapability('browser_runtime_setup')
+    ));
     const hasBrowser = Vue.computed(() => (
       store.browserRuntimeServerEnabled === true
       && store.browserRuntimeProtocolSupported === true
@@ -158,12 +165,29 @@ export default {
       && store.hasCapability('browser_webrtc')
       && (store.hasCapability('browser_capture_tab') || store.hasCapability('browser_capture_cdp'))
     ));
+    const canOpenBrowser = Vue.computed(() => hasBrowser.value || canSetupBrowser.value);
 
+    const capabilityCard = (id, titleKey, descriptionKey, available, ready = available) => ({
+      id,
+      titleKey,
+      descriptionKey,
+      available,
+      ready,
+      statusKey: !available ? 'workbench.unavailable'
+        : ready ? 'workbench.available'
+          : 'workbench.setupRequired',
+    });
     const capabilityCards = Vue.computed(() => [
-      { id: 'terminal', titleKey: 'workbench.terminal', descriptionKey: 'workbench.terminalDescription', available: hasTerminal.value },
-      { id: 'git', titleKey: 'workbench.git', descriptionKey: 'workbench.gitDescription', available: hasExplorer.value },
-      { id: 'files', titleKey: 'workbench.files', descriptionKey: 'workbench.filesDescription', available: hasExplorer.value },
-      { id: 'browser', titleKey: 'workbench.browser', descriptionKey: 'workbench.browserDescription', available: hasBrowser.value },
+      capabilityCard('terminal', 'workbench.terminal', 'workbench.terminalDescription', hasTerminal.value),
+      capabilityCard('git', 'workbench.git', 'workbench.gitDescription', hasExplorer.value),
+      capabilityCard('files', 'workbench.files', 'workbench.filesDescription', hasExplorer.value),
+      capabilityCard(
+        'browser',
+        'workbench.browser',
+        'workbench.browserDescription',
+        canOpenBrowser.value,
+        hasBrowser.value,
+      ),
     ]);
 
     const activeCapability = Vue.ref(null);
@@ -338,6 +362,7 @@ export default {
       isCapabilityActivated,
       hasTerminal,
       hasExplorer,
+      canOpenBrowser,
       hasBrowser,
       panelStyle,
       startResize,

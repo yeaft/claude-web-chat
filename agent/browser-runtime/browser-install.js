@@ -31,24 +31,63 @@ export const BROWSER_RUNTIME_CHROME_ARCHIVES = Object.freeze({
   linux: Object.freeze({
     fileName: 'chrome-linux64.zip',
     sha256: '6bd04aab53fba1544ce6027d9daddb24137295033124a61ecdf9840d785792e9',
+    downloadBytes: 193_285_407,
   }),
   mac: Object.freeze({
     fileName: 'chrome-mac-x64.zip',
     sha256: 'bedcd79ae533fed218c26232b74e73cffec2a7277fce42cafcf5ec7280e4f81c',
+    downloadBytes: 197_094_599,
   }),
   mac_arm: Object.freeze({
     fileName: 'chrome-mac-arm64.zip',
     sha256: '1c516b5d6c00a074034d5ce03dc1cc9bd2cde2a09293d9613244e0bc153cb80f',
+    downloadBytes: 187_099_652,
   }),
   win32: Object.freeze({
     fileName: 'chrome-win32.zip',
     sha256: '338f15dcf19d457f93f692c279843477a92324f0f91f78bf5380d3fe00a9796f',
+    downloadBytes: 175_083_534,
   }),
   win64: Object.freeze({
     fileName: 'chrome-win64.zip',
     sha256: '7ea2e94833ef710026c8cb08d0d2dafcb13f5d304d9c475ac07a3fa8c11d846c',
+    downloadBytes: 201_082_763,
   }),
 });
+
+function browserPlatformForRuntime(platform, arch) {
+  if (platform === 'linux' && arch === 'x64') return 'linux';
+  if (platform === 'darwin' && arch === 'x64') return 'mac';
+  if (platform === 'darwin' && arch === 'arm64') return 'mac_arm';
+  if (platform === 'win32' && arch === 'ia32') return 'win32';
+  if (platform === 'win32' && arch === 'x64') return 'win64';
+  return null;
+}
+
+/** Static, side-effect-free metadata shown before an explicit managed-browser install. */
+export function managedBrowserDownloadInfo({
+  platform = process.platform,
+  arch = process.arch,
+  archives = BROWSER_RUNTIME_CHROME_ARCHIVES,
+} = {}) {
+  const browserPlatform = browserPlatformForRuntime(platform, arch);
+  const archive = browserPlatform ? archives[browserPlatform] : null;
+  if (!archive) {
+    return Object.freeze({
+      supported: false,
+      buildId: BROWSER_RUNTIME_CHROME_BUILD,
+      platform: browserPlatform,
+      downloadBytes: 0,
+    });
+  }
+  return Object.freeze({
+    supported: true,
+    buildId: BROWSER_RUNTIME_CHROME_BUILD,
+    platform: browserPlatform,
+    fileName: archive.fileName,
+    downloadBytes: Number(archive.downloadBytes) || 0,
+  });
+}
 
 export function defaultBrowserCacheDir(yeaftDir) {
   if (!yeaftDir) throw new Error('yeaftDir required');

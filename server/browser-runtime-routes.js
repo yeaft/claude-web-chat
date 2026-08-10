@@ -6,6 +6,7 @@ const MAX_ROUTES = 2048;
 const MAX_PEERS = 4096;
 const MAX_CREATE_REQUESTS = 4096;
 const CREATE_REQUEST_TTL_MS = 10 * 60_000;
+const INSTALL_REQUEST_TTL_MS = 60 * 60_000;
 
 export const browserRoutes = new Map();
 export const browserPeers = new Map();
@@ -66,7 +67,13 @@ export function pruneBrowserRuntimeRoutes(now = Date.now()) {
   }
 }
 
-export function registerBrowserCreateRequest({ agentId, client, requestId, digest }) {
+export function registerBrowserCreateRequest({
+  agentId,
+  client,
+  requestId,
+  digest,
+  kind = 'browser_session_create',
+}) {
   pruneBrowserRuntimeRoutes();
   const requestKey = createKey(agentId, client.connectionId, requestId);
   const existing = browserRequests.get(requestKey);
@@ -84,17 +91,29 @@ export function registerBrowserCreateRequest({ agentId, client, requestId, diges
     webConnectionId: client.connectionId,
     webConnectionGeneration: client.connectionGeneration,
     digest,
+    kind,
     state: 'pending',
     response: null,
-    expiresAt: Date.now() + CREATE_REQUEST_TTL_MS,
+    expiresAt: Date.now() + (kind === 'browser_runtime_install'
+      ? INSTALL_REQUEST_TTL_MS
+      : CREATE_REQUEST_TTL_MS),
   };
   browserRequests.set(requestKey, request);
   return { request };
 }
 
-export function completeBrowserRequest(agentId, msg, { consume = false } = {}) {
+export function findBrowserRequest(agentId, serverRequestId) {
+  for (const request of browserRequests.values()) {
+    if (request.agentId === agentId && request.serverRequestId === serverRequestId) return request;
+  }
+  return null;
+}
+
+export function completeBrowserRequest(agentId, msg, { consume = false, kinds = null } = {}) {
+  const allowedKinds = kinds == null ? null : new Set(Array.isArray(kinds) ? kinds : [kinds]);
   for (const [requestKey, request] of browserRequests) {
     if (request.agentId !== agentId || request.serverRequestId !== msg.requestId || request.state !== 'pending') continue;
+    if (allowedKinds && !allowedKinds.has(request.kind)) continue;
     request.state = msg.type.endsWith('_error') ? 'failed' : 'completed';
     request.response = { ...msg, requestId: request.requestId };
     request.expiresAt = Date.now() + CREATE_REQUEST_TTL_MS;
