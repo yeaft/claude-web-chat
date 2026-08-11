@@ -4,6 +4,8 @@ Yeaft Browser 的 Agent 本地探测只验证 Chrome、tab capture、VP8 和本�
 
 此目录提供独立于 Server 蓝绿发布的 coturn 服务。它使用固定版本和 manifest digest 的镜像、host network、TURN REST API 短期凭证、私网 peer 拒绝、allocation/带宽上限、只读根文件系统和健康检查。它不提供 TLS；模板同时开放 `turn:` UDP/TCP 3478。需要 `turns:` 443 时应使用独立 IP/主机和证书，不能与现有 HTTPS nginx 抢占同一地址端口。
 
+首次部署、生产验证、回滚和 shared secret 轮换应按 [`DEPLOYMENT.md`](DEPLOYMENT.md) 的完整 runbook 执行。本文只保留模板的快速说明。
+
 ## 1. 准备 DNS、网络和 secret
 
 1. 将 TURN 域名的 A 记录指向 TURN 主机公网 IPv4。
