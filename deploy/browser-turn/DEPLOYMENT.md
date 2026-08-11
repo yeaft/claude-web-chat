@@ -227,9 +227,14 @@ secret=$(sudo cat "$TURN_SECRET_FILE" | tr -d '\r\n')
 env_secret=$(sudo awk -F= '
   /^BROWSER_TURN_SECRET=/{sub(/^[^=]*=/, ""); print; exit}
 ' "$SERVER_ENV_FILE")
-[ "$secret" = "$env_secret" ]
-unset secret env_secret
-printf '%s\n' 'Yeaft and coturn secrets match.'
+if [ -n "$secret" ] && [ "$secret" = "$env_secret" ]; then
+  unset secret env_secret
+  printf '%s\n' 'Yeaft and coturn secrets match.'
+else
+  unset secret env_secret
+  printf '%s\n' 'Yeaft and coturn secrets do not match.' >&2
+  exit 1
+fi
 ```
 
 ### 9.3 TURN REST 正负向鉴权
@@ -240,19 +245,7 @@ printf '%s\n' 'Yeaft and coturn secrets match.'
 npm run smoke:browser-turn
 ```
 
-生产实例还要通过实际 DNS 名称做一次认证 allocation。执行时避免 shell tracing，并在结束后立即 `unset`：
-
-```bash
-set +x
-secret=$(sudo cat "$TURN_SECRET_FILE" | tr -d '\r\n')
-docker exec yeaft-browser-turn turnutils_uclient \
-  -W "$secret" -I -Y alloc -n 1 -p 3478 "$TURN_HOST" \
-  >/tmp/turn-allocation.log 2>&1
-unset secret
-rm -f /tmp/turn-allocation.log
-```
-
-再用错误 secret 执行一次，命令必须失败。不要把真实 secret 或完整派生凭证保留在日志中。
+不要在生产主机调用 `turnutils_uclient -W "$secret"`。即使关闭 shell tracing，shell 展开后的长期 shared secret 仍会进入 host 或 container process argv。生产实例应通过 Yeaft 的真实 owner-scoped Browser attach 签发短期凭证并完成 authenticated allocation；验证时只观察 coturn 的成功/拒绝结果，不记录完整派生 username/password。错误 secret 的负向合同由隔离的仓库 smoke 使用非生产 secret 验证。
 
 ### 9.4 公网协议和 relay
 
