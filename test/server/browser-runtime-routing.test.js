@@ -237,6 +237,7 @@ describe('Browser Runtime Server ownership and signaling', () => {
     }, async () => true);
     expect(sendToAgent).not.toHaveBeenCalled();
     expect(sendToWebClient).toHaveBeenCalledWith(intruder, expect.objectContaining({
+      agentId: 'agent-a',
       code: 'browser_session_not_found',
     }));
 
@@ -275,6 +276,7 @@ describe('Browser Runtime Server ownership and signaling', () => {
     }, async () => true);
     expect(sendToAgent).not.toHaveBeenCalled();
     expect(sendToWebClient).toHaveBeenCalledWith(sibling, expect.objectContaining({
+      agentId: 'agent-a',
       code: 'browser_peer_stale',
     }));
   });
