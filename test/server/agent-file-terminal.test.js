@@ -136,6 +136,43 @@ describe('Agent file reference resolution', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('does not claim basename uniqueness when the entry budget truncates traversal', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-file-references-budget-'));
+    try {
+      const fs = await import('node:fs/promises');
+      await fs.mkdir(join(root, 'a'), { recursive: true });
+      await fs.mkdir(join(root, 'z'), { recursive: true });
+      await fs.writeFile(join(root, 'a', 'target.actions'), 'first');
+      await fs.writeFile(join(root, 'z', 'target.actions'), 'second');
+      await expect(resolveFileReferences(['wrong/target.actions'], root, {
+        maxScannedEntries: 2,
+      })).resolves.toEqual([]);
+      await expect(resolveFileReferences(['a/target.actions'], root, {
+        maxScannedEntries: 1,
+      })).resolves.toEqual([
+        { requestedPath: 'a/target.actions', resolvedPath: 'a/target.actions' },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not claim basename uniqueness when a matching subtree exceeds max depth', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-file-references-depth-'));
+    try {
+      const fs = await import('node:fs/promises');
+      await fs.mkdir(join(root, 'a'), { recursive: true });
+      await fs.mkdir(join(root, 'z', 'deep'), { recursive: true });
+      await fs.writeFile(join(root, 'a', 'target.actions'), 'first');
+      await fs.writeFile(join(root, 'z', 'deep', 'target.actions'), 'second');
+      await expect(resolveFileReferences(['wrong/target.actions'], root, {
+        maxDepth: 1,
+      })).resolves.toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Agent file terminal forwarding', () => {

@@ -19,18 +19,30 @@ function comparable(value) {
   return platform() === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
-async function findUniqueBasenames(workDir, requestedPaths) {
+async function findUniqueBasenames(workDir, requestedPaths, {
+  maxScannedEntries = MAX_SCANNED_ENTRIES,
+  maxDepth = MAX_DEPTH,
+} = {}) {
   const targets = new Set(requestedPaths.map(path => comparable(basename(path))).filter(Boolean));
   const matches = new Map([...targets].map(target => [target, []]));
-  if (targets.size === 0) return matches;
+  if (targets.size === 0) return { matches, complete: true };
   let scanned = 0;
+  let complete = true;
 
   async function walk(dir, depth) {
-    if (depth > MAX_DEPTH || scanned >= MAX_SCANNED_ENTRIES) return;
+    if (depth > maxDepth) {
+      complete = false;
+      return;
+    }
     let entries;
     try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+    entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
-      if (scanned++ >= MAX_SCANNED_ENTRIES) return;
+      if (scanned >= maxScannedEntries) {
+        complete = false;
+        return;
+      }
+      scanned += 1;
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name)) await walk(join(dir, entry.name), depth + 1);
       } else if (entry.isFile()) {
@@ -42,10 +54,10 @@ async function findUniqueBasenames(workDir, requestedPaths) {
   }
 
   await walk(resolve(workDir), 0);
-  return matches;
+  return { matches, complete };
 }
 
-export async function resolveFileReferences(references, workDir) {
+export async function resolveFileReferences(references, workDir, scanOptions) {
   const unique = [...new Set((Array.isArray(references) ? references : [])
     .map(value => typeof value === 'string' ? value.trim() : '')
     .filter(Boolean))].slice(0, MAX_REFERENCES);
@@ -54,12 +66,13 @@ export async function resolveFileReferences(references, workDir) {
     return await isFile(exactPath) ? exactPath : null;
   }));
   const unresolved = unique.filter((_path, index) => !exactMatches[index]);
-  const basenameMatches = await findUniqueBasenames(workDir, unresolved);
+  const basenameScan = await findUniqueBasenames(workDir, unresolved, scanOptions);
   const root = resolve(workDir);
 
   return unique.flatMap((requestedPath, index) => {
-    const matches = basenameMatches.get(comparable(basename(requestedPath))) || [];
-    const matchedPath = exactMatches[index] || (matches.length === 1 ? matches[0] : null);
+    const matches = basenameScan.matches.get(comparable(basename(requestedPath))) || [];
+    const fallbackPath = basenameScan.complete && matches.length === 1 ? matches[0] : null;
+    const matchedPath = exactMatches[index] || fallbackPath;
     if (!matchedPath) return [];
     return [{
       requestedPath,
