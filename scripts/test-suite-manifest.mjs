@@ -51,6 +51,7 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/web/history-sender-filter.test.js',
   'test/web/message-flow-regression.test.js',
   'test/web/message-file-preview.test.js',
+  'test/web/session-create-directory-picker.test.js',
   'test/web/message-virtualization-source.test.js',
   'test/web/session-message-quote-ui.test.js',
   'test/web/session-message-quote.test.js',

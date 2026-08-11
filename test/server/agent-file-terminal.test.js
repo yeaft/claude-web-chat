@@ -875,6 +875,106 @@ describe('Agent file terminal forwarding', () => {
     }
   });
 
+  it('routes pre-Session directory picker requests by Agent without weakening Workbench routes', async () => {
+    const agentId = 'directory-picker-agent';
+    const client = routeClient('directory-picker-user', { currentAgent: agentId });
+    const otherClient = routeClient('other-user', { currentAgent: agentId });
+    webClients.set('directory-picker-client', client);
+    webClients.set('other-client', otherClient);
+    agents.set(agentId, {
+      ownerId: 'directory-picker-user',
+      workDir: '/agent/default-workdir',
+      capabilities: ['workbench_session_routes'],
+      conversations: new Map(),
+      yeaftSessions: new Map(),
+    });
+    forwardToAgent.mockClear();
+    sendToWebClient.mockClear();
+
+    await handleClientWorkbench(
+      'directory-picker-client',
+      client,
+      {
+        type: 'list_directory',
+        agentId,
+        conversationId: '_workdir_picker',
+        directoryPickerScope: 'agent',
+        requestId: 'picker-request-1',
+        dirPath: '/projects',
+        workDir: '/browser/forged-workdir',
+      },
+      async () => true,
+    );
+
+    expect(forwardToAgent).toHaveBeenCalledTimes(1);
+    const outbound = forwardToAgent.mock.calls[0][1];
+    expect(outbound).toEqual(expect.objectContaining({
+      type: 'list_directory',
+      agentId,
+      conversationId: '_workdir_picker',
+      directoryPickerScope: 'agent',
+      dirPath: '/projects',
+      workDir: '/agent/default-workdir',
+      _workbenchRequestId: expect.any(String),
+    }));
+    expect(outbound).not.toHaveProperty('_requestClientId');
+    expect(outbound).not.toHaveProperty('_requestUserId');
+    expect(outbound).not.toHaveProperty('requestId');
+
+    await handleAgentFileTerminal(agentId, {}, {
+      type: 'directory_listing',
+      conversationId: '_workdir_picker',
+      _workbenchRequestId: outbound._workbenchRequestId,
+      _requestClientId: 'other-client',
+      _requestUserId: 'other-user',
+      dirPath: '/projects',
+      entries: [{ name: 'yeaft', type: 'directory', size: 0 }],
+    });
+
+    expect(sendToWebClient).toHaveBeenCalledTimes(1);
+    expect(sendToWebClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      type: 'directory_listing',
+      agentId,
+      conversationId: '_workdir_picker',
+      requestId: 'picker-request-1',
+      dirPath: '/projects',
+    }));
+    expect(sendToWebClient).not.toHaveBeenCalledWith(otherClient, expect.anything());
+  });
+
+  it('still rejects route-less directory listing without the pre-Session picker scope', async () => {
+    const agentId = 'directory-picker-denied-agent';
+    const client = routeClient('directory-picker-user', { currentAgent: agentId });
+    agents.set(agentId, {
+      ownerId: 'directory-picker-user',
+      workDir: '/agent/default-workdir',
+      capabilities: ['workbench_session_routes'],
+      conversations: new Map(),
+      yeaftSessions: new Map(),
+    });
+    forwardToAgent.mockClear();
+    sendToWebClient.mockClear();
+
+    await handleClientWorkbench(
+      'directory-picker-client',
+      client,
+      {
+        type: 'list_directory',
+        agentId,
+        conversationId: '_workdir_picker',
+        requestId: 'picker-request-2',
+        dirPath: '/projects',
+      },
+      async () => true,
+    );
+
+    expect(forwardToAgent).not.toHaveBeenCalled();
+    expect(sendToWebClient).toHaveBeenCalledWith(client, {
+      type: 'error',
+      message: 'Invalid Workbench Session route',
+    });
+  });
+
   it('uses Server-owned correlation and ignores Agent-forged browser ownership', async () => {
     const { outbound, client } = await registerRouteRequest({
       type: 'list_directory',
