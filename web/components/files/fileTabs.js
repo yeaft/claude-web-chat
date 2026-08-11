@@ -1,3 +1,4 @@
+import { confirmDialog } from '../../utils/dialog.js';
 /**
  * fileTabs — Tab management composable for FilesTab.
  * Manages open files, active tab, switching, closing, saving, tab state persistence.
@@ -148,10 +149,10 @@ export function createFileTabs(store, {
     });
   };
 
-  const closeFileTab = (index) => {
+  const closeFileTab = async (index) => {
     const file = openFiles.value[index];
     if (file?.isDirty) {
-      if (!confirm(t('files.unsavedConfirm', { name: file.name }))) return;
+      if (!await confirmDialog(t('files.unsavedConfirm', { name: file.name }), { destructive: true })) return;
     }
     cleanupUndoHistory(store.currentConversation, file.path);
     if (file.blobUrl) URL.revokeObjectURL(file.blobUrl);

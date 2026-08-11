@@ -1,3 +1,4 @@
+import { confirmDialog } from '../utils/dialog.js';
 import WorkCenterActionDetail from './WorkCenterActionDetail.js';
 import WorkCenterSettingsModal from './WorkCenterSettingsModal.js';
 import MessageComposer from './MessageComposer.js';
@@ -1286,7 +1287,7 @@ export default {
     async deleteWorkItem(item) {
       if (!item || this.workItemDeleting(item)) return;
       const prompt = this.tr('workCenter.deleteConfirm', 'Permanently delete this Work Item, its execution history, and attachments?');
-      if (typeof confirm === 'function' && !confirm(prompt)) return;
+      if (!await confirmDialog(prompt, { destructive: true })) return;
       this.deleteWorkItemError = '';
       this.deletingWorkItemIds = { ...this.deletingWorkItemIds, [item.id]: true };
       try {
@@ -1306,7 +1307,7 @@ export default {
     async cancelSelected() {
       if (!this.selected || ['done', 'cancelled'].includes(this.selected.status)) return;
       const prompt = this.tr('workCenter.cancelConfirm', 'Stop this work item and its unfinished Actions?');
-      if (typeof confirm === 'function' && !confirm(prompt)) return;
+      if (!await confirmDialog(prompt, { destructive: true })) return;
       await this.store.cancelWorkItem(this.selected.id, this.agentId);
     },
     async resumeSelected() {

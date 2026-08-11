@@ -1016,20 +1016,24 @@ describe('message flow regressions', () => {
         { id: 'agent-b', name: 'Agent B', online: false },
       ],
     });
-    const originalPrompt = window.prompt;
-    const originalConfirm = window.confirm;
-    window.prompt = vi.fn();
-    window.confirm = vi.fn();
-    UnifiedSessionList.methods.renameProject.call(sidebar.vm, { id: 'project-shared', name: 'Shared project' });
-    expect(window.prompt).toHaveBeenCalledTimes(1);
-    UnifiedSessionList.methods.deleteProject.call(sidebar.vm, { id: 'project-shared', name: 'Shared project' });
-    expect(window.confirm).toHaveBeenCalledTimes(1);
-    UnifiedSessionList.methods.runAction.call(sidebar.vm, 'rename', catalogRows[1]);
-    expect(window.prompt).toHaveBeenCalledTimes(1);
-    if (originalPrompt) window.prompt = originalPrompt;
-    else delete window.prompt;
-    if (originalConfirm) window.confirm = originalConfirm;
-    else delete window.confirm;
+    globalThis.Vue = Vue;
+    const dialogModule = await import('../../web/utils/dialog.js');
+    const { default: AppDialog } = await import('../../web/components/AppDialog.js');
+    const dialog = mount(AppDialog, {
+      attachTo: document.body,
+      global: { mocks: { $t: key => ({ 'common.confirm': 'OK', 'common.cancel': 'Cancel' })[key] || key } },
+    });
+    const dialogElement = selector => document.body.querySelector(selector);
+    const renamePromise = UnifiedSessionList.methods.renameProject.call(sidebar.vm, { id: 'project-shared', name: 'Shared project' });
+    await Vue.nextTick();
+    expect(dialogElement('.app-dialog-input').value).toBe('Shared project');
+    dialogElement('.app-dialog-confirm').click();
+    await renamePromise;
+    const deletePromise = UnifiedSessionList.methods.deleteProject.call(sidebar.vm, { id: 'project-shared', name: 'Shared project' });
+    await Vue.nextTick();
+    expect(dialogElement('.app-dialog-body').textContent).toContain('sidebar.projects.deleteConfirm');
+    dialogElement('.btn-secondary').click();
+    await deletePromise;
     await sidebar.setProps({ processingConversations: {}, isYeaftSessionProcessing: () => false });
     expect(sidebar.findAll('.processing-dot')).toHaveLength(0);
     expect(UnifiedSessionList.template).toContain(':key="row.catalogKey"');
@@ -1323,8 +1327,6 @@ describe('message flow regressions', () => {
       projectId: 'project-shared',
     }, 'agent-a');
     expect(chatPage.vm.unifiedSessionCreateProject).toBeNull();
-    const alertSpy = vi.fn();
-    vi.stubGlobal('alert', alertSpy);
     let upgradeAckDetail = null;
     window.addEventListener('agent-upgrade-ack', event => { upgradeAckDetail = event.detail; }, { once: true });
     handleMessage(parentStore, {
@@ -1340,11 +1342,16 @@ describe('message flow regressions', () => {
       version: '1.0.337',
       minimumVersion: '1.0.342',
     });
-    expect(alertSpy).toHaveBeenLastCalledWith('chat.agent.manualUpgradeRequired');
+    await Vue.nextTick();
+    expect(dialogModule.useDialogState().message).toBe('chat.agent.manualUpgradeRequired');
+    dialogElement('.app-dialog-confirm').click();
     parentStore.mutateProject.mockResolvedValueOnce({ ok: false, error: { code: 'timeout' } });
     chatPage.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });
-    await chatPage.vm.onUnifiedSessionCreated({ id: 'unassigned-session', agentId: 'agent-a' });
-    expect(alertSpy).toHaveBeenLastCalledWith('sidebar.projects.assignFailed');
+    const assignmentPromise = chatPage.vm.onUnifiedSessionCreated({ id: 'unassigned-session', agentId: 'agent-a' });
+    await Vue.nextTick();
+    expect(dialogModule.useDialogState().message).toBe('sidebar.projects.assignFailed');
+    dialogModule.resolveDialog(true);
+    await assignmentPromise;
     chatPage.vm.hideSessionFromSidebar({
       id: 'legacy-chat',
       provider: 'copilot',
@@ -1385,7 +1392,6 @@ describe('message flow regressions', () => {
         },
       },
     });
-    alertSpy.mockClear();
     window.dispatchEvent(new CustomEvent('agent-upgrade-ack', {
       detail: {
         agentId: 'agent-a',
@@ -1395,7 +1401,9 @@ describe('message flow regressions', () => {
         minimumVersion: '1.0.342',
       },
     }));
-    expect(alertSpy).toHaveBeenLastCalledWith('chat.agent.manualUpgradeRequired');
+    await Vue.nextTick();
+    expect(dialogModule.useDialogState().message).toBe('chat.agent.manualUpgradeRequired');
+    dialogElement('.app-dialog-confirm').click();
     await yeaftSidebar.get('.sidebar-primary-action').trigger('click');
     expect(yeaftSidebar.vm.sessionCreateOpen).toBe(true);
     yeaftSidebar.vm.closeSessionCreate();
@@ -1409,9 +1417,11 @@ describe('message flow regressions', () => {
     expect(yeaftSidebar.vm.sessionCreateProject).toBeNull();
     parentStore.mutateProject.mockResolvedValueOnce({ ok: false, error: { message: 'denied' } });
     yeaftSidebar.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });
-    await yeaftSidebar.vm.onSessionCreated({ id: 'unassigned-from-yeaft', agentId: 'agent-a' });
-    expect(alertSpy).toHaveBeenLastCalledWith('sidebar.projects.assignFailed');
-    vi.unstubAllGlobals();
+    const yeaftAssignmentPromise = yeaftSidebar.vm.onSessionCreated({ id: 'unassigned-from-yeaft', agentId: 'agent-a' });
+    await Vue.nextTick();
+    expect(dialogModule.useDialogState().message).toBe('sidebar.projects.assignFailed');
+    dialogModule.resolveDialog(true);
+    await yeaftAssignmentPromise;
     yeaftSidebar.vm.onRemoveFromList({
       id: 'legacy-yeaft',
       name: 'Legacy Yeaft',
@@ -1428,6 +1438,7 @@ describe('message flow regressions', () => {
       },
     }));
     yeaftSidebar.unmount();
+    dialog.unmount();
     globalThis.fetch = originalFetch;
     delete globalThis.Pinia.useChatStore;
     storeFactories.clear();

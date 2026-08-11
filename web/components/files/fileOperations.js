@@ -1,3 +1,5 @@
+import { confirmDialog } from '../../utils/dialog.js';
+
 /**
  * fileOperations — file CRUD operations composable for FilesTab.
  */
@@ -89,9 +91,9 @@ export function createFileOperations(store, refs) {
     });
   };
 
-  const deleteSingleFile = (entry, t) => {
+  const deleteSingleFile = async (entry, t) => {
     const name = entry.path.split('/').pop();
-    if (!confirm(t('files.deleteConfirm', { name }) + (entry.type === 'directory' ? t('files.deleteDirHint') : ''))) return;
+    if (!await confirmDialog(t('files.deleteConfirm', { name }) + (entry.type === 'directory' ? t('files.deleteDirHint') : ''), { destructive: true })) return;
 
     startFileOp();
     store.sendWsMessage({
@@ -104,10 +106,10 @@ export function createFileOperations(store, refs) {
     });
   };
 
-  const deleteSelected = (t) => {
+  const deleteSelected = async (t) => {
     const count = selectedPaths.size;
     if (count === 0) return;
-    if (!confirm(t('files.deleteSelectedConfirm', { count }))) return;
+    if (!await confirmDialog(t('files.deleteSelectedConfirm', { count }), { destructive: true })) return;
 
     startFileOp();
     store.sendWsMessage({

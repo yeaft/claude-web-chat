@@ -1,3 +1,5 @@
+import { confirmDialog } from '../../utils/dialog.js';
+
 /**
  * gitOperations — git command helpers for GitStatusTab.
  */
@@ -49,8 +51,8 @@ export function createGitOperations(store, refs) {
 
   const stageFile = (filePath) => gitOp('git_add', { filePath });
   const unstageFile = (filePath) => gitOp('git_reset', { filePath });
-  const discardFile = (filePath) => {
-    if (!confirm('Discard changes to ' + filePath + '?')) return;
+  const discardFile = async (filePath) => {
+    if (!await confirmDialog('Discard changes to ' + filePath + '?', { destructive: true })) return;
     gitOp('git_restore', { filePath });
   };
   const stageAll = () => gitOp('git_add', { addAll: true });

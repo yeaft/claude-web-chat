@@ -1,3 +1,5 @@
+import { confirmDialog } from '../utils/dialog.js';
+
 /**
  * McpTab.js — Yeaft Settings → MCP tab.
  *
@@ -241,7 +243,7 @@ export default {
 
     async function removeOne(name) {
       if (!name) return;
-      if (!confirm($t('settings.mcp.confirmRemove').replace('{name}', name))) return;
+      if (!await confirmDialog($t('settings.mcp.confirmRemove').replace('{name}', name), { destructive: true })) return;
       const res = await store.removeYeaftMcpServer(name);
       if (res?.error) {
         emit('message', res.error, true);

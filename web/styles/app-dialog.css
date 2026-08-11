@@ -1,0 +1,78 @@
+.app-dialog-overlay {
+  z-index: 3000;
+  padding: 20px;
+  background: var(--modal-overlay-bg);
+}
+
+.app-dialog {
+  width: min(100%, 440px);
+  overflow: hidden;
+}
+
+.app-dialog-header {
+  padding: 20px 20px 0;
+}
+
+.app-dialog-header h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.app-dialog-body {
+  padding: 14px 20px 20px;
+}
+
+.app-dialog-body p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.app-dialog-input {
+  width: 100%;
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.app-dialog-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.app-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 0 20px 20px;
+}
+
+.app-dialog-footer .btn {
+  min-width: 80px;
+}
+
+.app-dialog-destructive {
+  background: var(--error);
+  color: var(--bg-main);
+}
+
+@media (max-width: 480px) {
+  .app-dialog-overlay {
+    align-items: flex-end;
+    padding: 12px;
+  }
+
+  .app-dialog {
+    width: 100%;
+  }
+}
