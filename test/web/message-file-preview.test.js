@@ -460,6 +460,8 @@ describe('message file preview', () => {
     expect(browserPanel).toContain("['installing', 'probing'].includes(status.state)");
     expect(browserPanel).toContain('<template v-if="setupError">');
     expect(browserPanel).toContain('class="browser-install-percent">{{ progressPercent }}%</strong>');
+    expect(browserPanel).toContain("code === 'browser_ice_servers_missing'");
+    expect(browserPanel).toContain("t('workbench.browserIceConnectionFailed')");
     expect(capabilityHost).toContain("files: 'FilesTab'");
     expect(capabilityHost).toContain(':tree-initially-visible="activeCapability === \'files\' ? false : undefined"');
     expect(workbench).toContain('class="workbench-header-action workbench-maximize-btn"');

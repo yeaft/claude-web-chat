@@ -285,6 +285,7 @@ describe('message flow regressions', () => {
   });
 
   it('keeps the active Agent selection intact when another Agent save resolves late', async () => {
+    const configRequests = [];
     const saveRequests = [];
     const pluginStore = Vue.reactive({
       agents: [
@@ -295,14 +296,15 @@ describe('message flow regressions', () => {
       pluginCenterAgentId: 'agent-a',
       pluginConfigByAgent: {
         'agent-a': { loaded: true, plugins: { tools: ['A'] } },
-        'agent-b': { loaded: true, plugins: { tools: ['B'] } },
       },
       pluginCatalogByKey: {
         'agent-a:': { loading: false, catalog: { tools: [], skills: [], mcpServers: [] } },
         'agent-b:': { loading: false, catalog: { tools: [], skills: [], mcpServers: [] } },
       },
       pluginCatalogKey: (agentId, workDir = '') => `${agentId}:${workDir}`,
-      loadPluginConfig: vi.fn(agentId => Promise.resolve(pluginStore.pluginConfigByAgent[agentId])),
+      loadPluginConfig: vi.fn(agentId => new Promise(resolve => {
+        configRequests.push({ agentId, resolve });
+      })),
       loadPluginCatalog: vi.fn(() => Promise.resolve()),
       savePluginConfig: vi.fn((plugins, agentId) => new Promise(resolve => {
         saveRequests.push({ plugins, agentId, resolve });
@@ -322,9 +324,16 @@ describe('message flow regressions', () => {
 
     pluginStore.pluginCenterAgentId = 'agent-b';
     await Vue.nextTick();
+    expect(pluginCenter.vm.selection).toBeNull();
+    expect(pluginCenter.vm.savedSelection).toBeNull();
+    expect(pluginCenter.vm.saving).toBe(false);
+    expect(configRequests).toHaveLength(1);
+    expect(configRequests[0].agentId).toBe('agent-b');
+
+    configRequests[0].resolve({ plugins: { tools: ['B'] } });
+    await vi.waitFor(() => expect(pluginCenter.vm.configReady).toBe(true));
     expect(pluginCenter.vm.selection).toEqual({ tools: ['B'] });
     expect(pluginCenter.vm.savedSelection).toEqual({ tools: ['B'] });
-    expect(pluginCenter.vm.saving).toBe(false);
 
     pluginCenter.vm.selection = { tools: ['B-draft'] };
     expect(pluginCenter.vm.isDirty).toBe(true);

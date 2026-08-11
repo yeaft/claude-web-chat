@@ -75,8 +75,8 @@ Viewer 数据面目前**只支持 Linux x64 Agent**。其他平台可能可以�
 Server 默认开放浏览器路由。所选 Agent 仍保持未启用状态，只有用户明确操作后才会下载浏览器：
 
 1. 选择 Linux x64 Agent，打开 **Workbench → 浏览器**。浏览器未就绪时，能力卡显示**需要启用**，设置面板会显示准确的固定构建号和当前平台下载大小。仅打开面板不会开始下载。
-2. 点击一次**启用浏览器**。Workbench 会显示真实字节数和百分比；Agent 下载并校验归档，只安装到该 Agent instance 的数据目录，持久化启用配置，执行完整媒体链路探测，刷新 capability，然后自动打开 Viewer。UI 路径没有第二个启用按钮，也不需要重启 Agent。
-3. 为部署配置 ICE。`BROWSER_STUN_URLS` 可用于直连；生产部署应配置 `BROWSER_TURN_URLS` 和 `BROWSER_TURN_SECRET`。禁止直连候选时设置 `BROWSER_ICE_TRANSPORT_POLICY=relay`。多个 URL 使用英文逗号分隔。
+2. 点击一次**启用浏览器**。Workbench 会显示真实字节数和百分比；Agent 下载并校验归档，只安装到该 Agent instance 的数据目录，持久化启用配置，执行本机媒体 probe，刷新 capability，然后自动开始连接 Viewer。UI 路径没有第二个启用按钮，也不需要重启 Agent。
+3. 为部署配置 ICE。Agent probe 会验证 Chrome、tab capture、VP8 和同机 WebRTC 回环，但无法验证远程 Web 到 Agent 的网络路径。`BROWSER_STUN_URLS` 可用于直连；跨 NAT 或受限网络的生产部署应部署 TURN，并配置 `BROWSER_TURN_URLS` 和 `BROWSER_TURN_SECRET`。禁止直连候选时设置 `BROWSER_ICE_TRANSPORT_POLICY=relay`。多个 URL 使用英文逗号分隔。自托管模板位于仓库的 `deploy/browser-turn/` 目录。
 
 管理员可以设置 `BROWSER_RUNTIME_ENABLED=false` 并重启 Server，从而全局关闭 Browser setup、信令和 viewer route。这是管理员停用开关，不是普通用户设置步骤。
 

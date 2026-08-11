@@ -53,6 +53,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -170,6 +171,156 @@ describe('Browser Runtime Web store', () => {
       type: 'browser_peer_answer', peerId: 'peer-a', connectionGeneration: peer.connectionGeneration,
       description: { type: 'answer', sdp: 'v=0\no=web-answer' },
     })));
+  });
+
+  it('reports missing ICE infrastructure instead of a generic peer failure', async () => {
+    const store = useBrowserStore();
+    const peer = await store.attach({
+      agentId: 'agent-a', browserSessionId: 'browser-a',
+      videoElement: { srcObject: null, play: vi.fn() },
+    });
+    await store.preparePeer(peer, {
+      peerId: 'peer-a', connectionGeneration: peer.connectionGeneration,
+      iceServers: [], iceTransportPolicy: 'all',
+    });
+
+    const connection = peerConnections[0];
+    connection.connectionState = 'failed';
+    connection.onconnectionstatechange();
+
+    expect(store.peers['agent-a\0browser-a']).toBeUndefined();
+    expect(store.errorCodes['agent-a\0browser-a']).toBe('browser_ice_servers_missing');
+  });
+
+  it('cleans up a locally disconnected peer after a bounded recovery grace', async () => {
+    vi.useFakeTimers();
+    const store = useBrowserStore();
+    const video = {
+      srcObject: { id: 'remote-stream' },
+      play: vi.fn().mockResolvedValue(undefined),
+    };
+    const peer = await store.attach({
+      agentId: 'agent-a', browserSessionId: 'browser-a', videoElement: video,
+    });
+    await store.preparePeer(peer, {
+      peerId: 'peer-a', connectionGeneration: peer.connectionGeneration,
+      iceServers: [{ urls: ['turns:turn.example.test:443'] }], iceTransportPolicy: 'relay',
+    });
+
+    const connection = peerConnections[0];
+    connection.connectionState = 'connected';
+    connection.onconnectionstatechange();
+    connection.connectionState = 'disconnected';
+    connection.onconnectionstatechange();
+
+    expect(store.peers['agent-a\0browser-a']).toBe(peer);
+    expect(connection.connectionState).toBe('disconnected');
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(store.peers['agent-a\0browser-a']).toBe(peer);
+    connection.connectionState = 'connecting';
+    connection.onconnectionstatechange();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(store.peers['agent-a\0browser-a']).toBeUndefined();
+    expect(store.errorCodes['agent-a\0browser-a']).toBe('browser_ice_connection_failed');
+    expect(connection.connectionState).toBe('closed');
+    expect(video.srcObject).toBeNull();
+    expect(peer.attachTimer).toBeNull();
+    expect(peer.disconnectedTimer).toBeNull();
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: 'browser_peer_detach', peerId: 'peer-a',
+      connectionGeneration: peer.connectionGeneration,
+    }));
+  });
+
+  it('cancels the disconnected grace when the local peer reconnects', async () => {
+    vi.useFakeTimers();
+    const store = useBrowserStore();
+    const peer = await store.attach({
+      agentId: 'agent-a', browserSessionId: 'browser-a',
+      videoElement: { srcObject: null, play: vi.fn() },
+    });
+    await store.preparePeer(peer, {
+      peerId: 'peer-a', connectionGeneration: peer.connectionGeneration,
+      iceServers: [{ urls: ['turns:turn.example.test:443'] }], iceTransportPolicy: 'relay',
+    });
+
+    const connection = peerConnections[0];
+    connection.connectionState = 'connected';
+    connection.onconnectionstatechange();
+    connection.connectionState = 'disconnected';
+    connection.onconnectionstatechange();
+    connection.connectionState = 'connected';
+    connection.onconnectionstatechange();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(store.peers['agent-a\0browser-a']).toBe(peer);
+    expect(peer.state).toBe('connected');
+    expect(store.errorCodes['agent-a\0browser-a']).toBeUndefined();
+  });
+
+  it('does not let an Agent connected frame mask a local disconnected timeout', async () => {
+    vi.useFakeTimers();
+    const store = useBrowserStore();
+    const video = {
+      srcObject: { id: 'remote-stream' },
+      play: vi.fn().mockResolvedValue(undefined),
+    };
+    const peer = await store.attach({
+      agentId: 'agent-a', browserSessionId: 'browser-a', videoElement: video,
+    });
+    await store.preparePeer(peer, {
+      peerId: 'peer-a', connectionGeneration: peer.connectionGeneration,
+      iceServers: [{ urls: ['turns:turn.example.test:443'] }], iceTransportPolicy: 'relay',
+    });
+
+    const connection = peerConnections[0];
+    connection.connectionState = 'connected';
+    connection.onconnectionstatechange();
+    connection.connectionState = 'disconnected';
+    connection.onconnectionstatechange();
+    store.handleMessage({
+      type: 'browser_peer_state', agentId: 'agent-a', browserSessionId: 'browser-a',
+      peerId: 'peer-a', connectionGeneration: peer.connectionGeneration, state: 'connected',
+    });
+
+    expect(connection.connectionState).toBe('disconnected');
+    expect(peer.state).toBe('disconnected');
+    expect(peer.remoteState).toBe('connected');
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(store.peers['agent-a\0browser-a']).toBeUndefined();
+    expect(store.errorCodes['agent-a\0browser-a']).toBe('browser_ice_connection_failed');
+    expect(connection.connectionState).toBe('closed');
+    expect(video.srcObject).toBeNull();
+    expect(peer.attachTimer).toBeNull();
+    expect(peer.disconnectedTimer).toBeNull();
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: 'browser_peer_detach', peerId: 'peer-a',
+      connectionGeneration: peer.connectionGeneration,
+    }));
+  });
+
+  it('turns Agent-side terminal peer state into an actionable ICE failure', async () => {
+    const store = useBrowserStore();
+    const peer = await store.attach({
+      agentId: 'agent-a', browserSessionId: 'browser-a',
+      videoElement: { srcObject: null, play: vi.fn() },
+    });
+    store.handleMessage({
+      type: 'browser_peer_prepared', agentId: 'agent-a', browserSessionId: 'browser-a',
+      peerId: 'peer-a', connectionGeneration: peer.connectionGeneration,
+      iceServers: [{ urls: ['turns:turn.example.test:443'] }], iceTransportPolicy: 'relay',
+    });
+    await vi.waitFor(() => expect(peerConnections).toHaveLength(1));
+
+    store.handleMessage({
+      type: 'browser_peer_state', agentId: 'agent-a', browserSessionId: 'browser-a',
+      peerId: 'peer-a', connectionGeneration: peer.connectionGeneration, state: 'failed',
+    });
+
+    expect(store.peers['agent-a\0browser-a']).toBeUndefined();
+    expect(store.errorCodes['agent-a\0browser-a']).toBe('browser_ice_connection_failed');
   });
 
   it('buffers early ICE until the offer and drops a stale peer after transport reset', async () => {
