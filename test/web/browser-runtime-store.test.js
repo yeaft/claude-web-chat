@@ -3,6 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 const stores = new Map();
 let useBrowserStore;
+let browserSessionMatchesSource;
 let sent;
 let peerConnections;
 
@@ -38,6 +39,7 @@ beforeAll(async () => {
   globalThis.RTCPeerConnection = FakePeerConnection;
   globalThis.MediaStream = class MediaStream { constructor(tracks = []) { this.tracks = tracks; } };
   ({ useBrowserStore } = await import('../../web/stores/browser.js'));
+  ({ browserSessionMatchesSource } = await import('../../web/components/BrowserPanel.js'));
 });
 
 beforeEach(() => {
@@ -58,6 +60,24 @@ afterEach(() => {
 });
 
 describe('Browser Runtime Web store', () => {
+  it('matches reusable Browser sessions to the exact Workbench Session source', () => {
+    const yeaftSource = { kind: 'yeaft-session', sessionId: 'session-a' };
+    expect(browserSessionMatchesSource({ sourceRef: yeaftSource }, yeaftSource)).toBe(true);
+    expect(browserSessionMatchesSource({
+      sourceRef: { kind: 'yeaft-session', sessionId: 'session-b' },
+    }, yeaftSource)).toBe(false);
+    expect(browserSessionMatchesSource({
+      sourceRef: { kind: 'chat-conversation', conversationId: 'session-a' },
+    }, yeaftSource)).toBe(false);
+    expect(browserSessionMatchesSource({ sourceRef: null }, yeaftSource)).toBe(false);
+
+    const chatSource = { kind: 'chat-conversation', conversationId: 'conversation-a' };
+    expect(browserSessionMatchesSource({ sourceRef: chatSource }, chatSource)).toBe(true);
+    expect(browserSessionMatchesSource({
+      sourceRef: { kind: 'chat-conversation', conversationId: 'conversation-b' },
+    }, chatSource)).toBe(false);
+  });
+
   it('queries setup status and sends the exact explicit install confirmation with progress', async () => {
     const store = useBrowserStore();
     const statusPromise = store.getRuntimeStatus('agent-a');
