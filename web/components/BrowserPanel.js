@@ -37,6 +37,59 @@ export function browserPointerPosition(event, element, viewport) {
   return { x: Math.round(x), y: Math.round(y) };
 }
 
+export function createBrowserInputController(sendControl) {
+  const pressedButtons = new Set();
+  const pressedModifiers = new Set();
+  let composing = false;
+  const send = action => sendControl(action) === true;
+  return {
+    pointerDown(button, position) {
+      if (!position || !send({ type: 'mouse', event: 'down', button, ...position })) return false;
+      pressedButtons.add(button);
+      return true;
+    },
+    pointerUp(button, position) {
+      if (!pressedButtons.has(button)) return false;
+      const sent = send({ type: 'mouse', event: 'up', button, ...(position || {}) });
+      if (sent) pressedButtons.delete(button);
+      return sent;
+    },
+    keyDown(event) {
+      if (composing || event.isComposing) return false;
+      if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        return send({ type: 'text', text: event.key });
+      }
+      const modifier = ['Alt', 'Control', 'Meta', 'Shift'].includes(event.key);
+      const sent = send({ type: 'key', event: modifier ? 'down' : 'press', key: event.key });
+      if (sent && modifier) pressedModifiers.add(event.key);
+      return sent;
+    },
+    keyUp(key) {
+      if (!pressedModifiers.has(key)) return false;
+      const sent = send({ type: 'key', event: 'up', key });
+      if (sent) pressedModifiers.delete(key);
+      return sent;
+    },
+    compositionStart() { composing = true; },
+    compositionEnd(text) {
+      composing = false;
+      return typeof text === 'string' && text ? send({ type: 'text', text }) : false;
+    },
+    reset() {
+      if (pressedButtons.size === 0 && pressedModifiers.size === 0) return false;
+      const sent = send({ type: 'resetInput' });
+      if (sent) {
+        pressedButtons.clear();
+        pressedModifiers.clear();
+      }
+      return sent;
+    },
+    snapshot() {
+      return { buttons: [...pressedButtons], modifiers: [...pressedModifiers], composing };
+    },
+  };
+}
+
 export function browserSessionMatchesSource(snapshot, expected) {
   const actual = snapshot?.sourceRef;
   if (!actual || !expected || actual.kind !== expected.kind) return false;
@@ -203,10 +256,13 @@ export default {
           @pointermove="onPointerMove"
           @pointerdown="onPointerDown"
           @pointerup="onPointerUp"
+          @pointercancel="releaseInput"
+          @lostpointercapture="releaseInput"
           @wheel.prevent="onWheel"
-          @keydown.prevent="onKeyDown"
-          @keyup.prevent="onKeyUp"
-          @beforeinput.prevent="onBeforeInput"
+          @keydown="onKeyDown"
+          @keyup="onKeyUp"
+          @compositionstart="onCompositionStart"
+          @compositionend="onCompositionEnd"
           @contextmenu.prevent
         ></video>
         <div v-if="!connected" class="browser-video-overlay" aria-live="polite">
@@ -231,6 +287,9 @@ export default {
     const browserSessionId = Vue.ref(null);
     let statusPollTimer = null;
     let disposed = false;
+    const input = createBrowserInputController(action => (
+      browser.sendControl(props.agentId, browserSessionId.value, action)
+    ));
 
     browser.installMessageListener();
 
@@ -394,41 +453,29 @@ export default {
       const position = pointerPosition(event);
       if (position) browser.sendPointer(props.agentId, browserSessionId.value, { type: 'pointerMove', ...position });
     };
+    const buttonName = button => ['left', 'middle', 'right'][button] || 'left';
     const onPointerDown = event => {
       const position = pointerPosition(event);
       if (!position) return;
       video.value?.focus?.();
       video.value?.setPointerCapture?.(event.pointerId);
-      browser.sendControl(props.agentId, browserSessionId.value, {
-        type: 'mouse', event: 'down', button: ['left', 'middle', 'right'][event.button] || 'left', ...position,
-      });
+      input.pointerDown(buttonName(event.button), position);
     };
     const onPointerUp = event => {
-      const position = pointerPosition(event);
-      if (!position) return;
-      browser.sendControl(props.agentId, browserSessionId.value, {
-        type: 'mouse', event: 'up', button: ['left', 'middle', 'right'][event.button] || 'left', ...position,
-      });
+      input.pointerUp(buttonName(event.button), pointerPosition(event));
     };
     const onWheel = event => browser.sendControl(props.agentId, browserSessionId.value, {
       type: 'wheel', deltaX: event.deltaX, deltaY: event.deltaY,
     });
     const onKeyDown = event => {
-      if (event.isComposing) return;
-      if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
-        browser.sendControl(props.agentId, browserSessionId.value, { type: 'text', text: event.key });
-        return;
-      }
-      const modifier = ['Alt', 'Control', 'Meta', 'Shift'].includes(event.key);
-      browser.sendControl(props.agentId, browserSessionId.value, {
-        type: 'key', event: modifier ? 'down' : 'press', key: event.key,
-      });
+      if (input.keyDown(event)) event.preventDefault();
     };
     const onKeyUp = event => {
-      if (!['Alt', 'Control', 'Meta', 'Shift'].includes(event.key)) return;
-      browser.sendControl(props.agentId, browserSessionId.value, { type: 'key', event: 'up', key: event.key });
+      if (input.keyUp(event.key)) event.preventDefault();
     };
-    const onBeforeInput = () => {};
+    const onCompositionStart = () => input.compositionStart();
+    const onCompositionEnd = event => input.compositionEnd(event.data);
+    const releaseInput = () => input.reset();
 
     const refreshRuntime = async ({ startWhenReady = false, preserveError = false } = {}) => {
       if (runtimeLoading.value || !props.agentId || browser.protocolSupported !== true) return;
@@ -485,7 +532,14 @@ export default {
       }
     };
 
+    const onWindowBlur = () => releaseInput();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') releaseInput();
+    };
+
     Vue.onMounted(() => {
+      window.addEventListener('blur', onWindowBlur);
+      document.addEventListener('visibilitychange', onVisibilityChange);
       if (browser.protocolSupported !== true) return;
       void refreshRuntime();
     });
@@ -515,6 +569,9 @@ export default {
     Vue.onUnmounted(() => {
       disposed = true;
       clearStatusPoll();
+      window.removeEventListener('blur', onWindowBlur);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      releaseInput();
       if (browserSessionId.value) browser.detach(props.agentId, browserSessionId.value, { notify: true });
     });
 
@@ -551,7 +608,9 @@ export default {
       onWheel,
       onKeyDown,
       onKeyUp,
-      onBeforeInput,
+      onCompositionStart,
+      onCompositionEnd,
+      releaseInput,
       closeBrowser,
     };
   },

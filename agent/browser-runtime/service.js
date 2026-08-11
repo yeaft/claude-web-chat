@@ -619,7 +619,9 @@ export class BrowserRuntimeService {
       agentCandidateCount: 0,
       sequences: new ProducerSequenceState({ producerId: peerId, producerGeneration: connectionGeneration }),
       actionChain: Promise.resolve(),
-      pendingActionCount: 0,
+      pendingControlCount: 0,
+      pendingPointer: null,
+      pointerDrainScheduled: false,
       expiresAt: Number(message?.routeExpiresAt) || Date.now() + 10 * 60_000,
       expiryTimer: null,
     };
@@ -791,10 +793,11 @@ export class BrowserRuntimeService {
       const url = safeInitialUrl(action.url);
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: this.config.maxActionRuntimeMs });
     } else if (action.type === 'mouse') {
+      const hasPosition = Number.isFinite(Number(action.x)) && Number.isFinite(Number(action.y));
       const x = Math.min(session.viewport?.width || 1920, Math.max(0, Number(action.x) || 0));
       const y = Math.min(session.viewport?.height || 1080, Math.max(0, Number(action.y) || 0));
       const button = ['left', 'middle', 'right'].includes(action.button) ? action.button : 'left';
-      await page.mouse.move(x, y);
+      if (hasPosition) await page.mouse.move(x, y);
       if (action.event === 'down') await page.mouse.down({ button });
       else if (action.event === 'up') await page.mouse.up({ button });
       else if (action.event === 'click') await page.mouse.click(x, y, { button, clickCount: Math.min(3, Math.max(1, Number(action.clickCount) || 1)) });
@@ -812,6 +815,13 @@ export class BrowserRuntimeService {
     } else if (action.type === 'text') {
       const text = typeof action.text === 'string' ? action.text.slice(0, 16 * 1024) : '';
       if (text) await page.keyboard.type(text);
+    } else if (action.type === 'resetInput') {
+      for (const key of ['Alt', 'Control', 'Meta', 'Shift']) {
+        try { await page.keyboard.up(key); } catch {}
+      }
+      for (const button of ['left', 'middle', 'right']) {
+        try { await page.mouse.up({ button }); } catch {}
+      }
     }
   }
 
@@ -820,13 +830,36 @@ export class BrowserRuntimeService {
     if (message.type === 'peer_input') {
       const peer = session.peers.get(clean(message.peerId));
       if (!peer || peer.connectionGeneration !== Number(message.connectionGeneration)) return;
+      if (message.channel === 'pointer') {
+        peer.pendingPointer = message.envelope;
+        if (peer.pointerDrainScheduled) return;
+        peer.pointerDrainScheduled = true;
+        peer.actionChain = peer.actionChain.then(async () => {
+          const envelope = peer.pendingPointer;
+          peer.pendingPointer = null;
+          if (envelope) await this.#executeInteractiveAction(session, peer, envelope, true);
+        }).catch(() => {}).finally(() => { peer.pointerDrainScheduled = false; });
+        return;
+      }
       const maxPending = Math.max(1, Number(this.config.maxQueuedActionsPerProducer) || 32);
-      if (peer.pendingActionCount >= maxPending) return;
-      peer.pendingActionCount += 1;
+      if (peer.pendingControlCount >= maxPending) {
+        this.#dropPeer(session, peer, 'control_queue_saturated');
+        void this.#emit({
+          type: 'browser_peer_error',
+          browserSessionId: session.browserSessionId,
+          peerId: peer.peerId,
+          connectionGeneration: peer.connectionGeneration,
+          code: 'browser_control_queue_saturated',
+          safeError: 'Browser input queue saturated; reconnect required',
+        });
+        void this.#emitSnapshot(session);
+        return;
+      }
+      peer.pendingControlCount += 1;
       peer.actionChain = peer.actionChain
-        .then(() => this.#executeInteractiveAction(session, peer, message.envelope, message.channel === 'pointer'))
+        .then(() => this.#executeInteractiveAction(session, peer, message.envelope, false))
         .catch(() => {})
-        .finally(() => { peer.pendingActionCount = Math.max(0, peer.pendingActionCount - 1); });
+        .finally(() => { peer.pendingControlCount = Math.max(0, peer.pendingControlCount - 1); });
       return;
     }
     if (message.type === 'peer_prepared' || message.type === 'peer_offer'

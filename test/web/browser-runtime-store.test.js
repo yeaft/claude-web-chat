@@ -6,6 +6,7 @@ let useBrowserStore;
 let browserSessionMatchesSource;
 let normalizeBrowserAddress;
 let browserPointerPosition;
+let createBrowserInputController;
 let sent;
 let peerConnections;
 
@@ -42,7 +43,7 @@ beforeAll(async () => {
   globalThis.RTCPeerConnection = FakePeerConnection;
   globalThis.MediaStream = class MediaStream { constructor(tracks = []) { this.tracks = tracks; } };
   ({ useBrowserStore } = await import('../../web/stores/browser.js'));
-  ({ browserSessionMatchesSource, normalizeBrowserAddress, browserPointerPosition }
+  ({ browserSessionMatchesSource, normalizeBrowserAddress, browserPointerPosition, createBrowserInputController }
     = await import('../../web/components/BrowserPanel.js'));
 });
 
@@ -96,6 +97,35 @@ describe('Browser Runtime Web store', () => {
     expect(browserPointerPosition({ clientX: 500, clientY: 100 }, element, {
       width: 1280, height: 720,
     })).toBeNull();
+  });
+
+  it('releases pressed input on cancellation and commits IME text exactly once', () => {
+    const actions = [];
+    const input = createBrowserInputController(action => { actions.push(action); return true; });
+    expect(input.pointerDown('left', { x: 12, y: 34 })).toBe(true);
+    expect(input.keyDown({ key: 'Shift', isComposing: false })).toBe(true);
+    input.compositionStart();
+    const composingEvent = { key: 'Process', isComposing: true, preventDefault: vi.fn() };
+    expect(input.keyDown(composingEvent)).toBe(false);
+    expect(composingEvent.preventDefault).not.toHaveBeenCalled();
+    expect(input.compositionEnd('中文')).toBe(true);
+    expect(input.reset()).toBe(true);
+    expect(actions).toEqual([
+      { type: 'mouse', event: 'down', button: 'left', x: 12, y: 34 },
+      { type: 'key', event: 'down', key: 'Shift' },
+      { type: 'text', text: '中文' },
+      { type: 'resetInput' },
+    ]);
+    expect(input.snapshot()).toEqual({ buttons: [], modifiers: [], composing: false });
+  });
+
+  it('sends mouse-up even when a captured pointer leaves the rendered video', () => {
+    const actions = [];
+    const input = createBrowserInputController(action => { actions.push(action); return true; });
+    input.pointerDown('left', { x: 10, y: 20 });
+    expect(input.pointerUp('left', null)).toBe(true);
+    expect(actions.at(-1)).toEqual({ type: 'mouse', event: 'up', button: 'left' });
+    expect(input.reset()).toBe(false);
   });
 
   it('queries setup status and sends the exact explicit install confirmation with progress', async () => {

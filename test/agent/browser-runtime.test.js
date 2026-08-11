@@ -1369,6 +1369,76 @@ describe('Browser Runtime lifecycle', () => {
       browserSessionId: created.browserSessionId, peerId: 'peer-b', connectionGeneration: 2,
       role: 'interactive', serverIdentity: owner,
     })).rejects.toMatchObject({ code: 'browser_interactive_peer_limit' });
+    bridgeHandlers.onMessage({
+      type: 'peer_input', peerId: 'peer-a', connectionGeneration: 1, channel: 'control',
+      envelope: { controlSeq: 2, action: { type: 'resetInput' } },
+    });
+    await vi.waitFor(() => expect(page.keyboard.up).toHaveBeenCalledWith('Shift'));
+    expect(page.mouse.up).toHaveBeenCalledWith({ button: 'left' });
+    page.mouse.move.mockClear();
+    bridgeHandlers.onMessage({
+      type: 'peer_input', peerId: 'peer-a', connectionGeneration: 1, channel: 'control',
+      envelope: { controlSeq: 3, action: { type: 'mouse', event: 'up', button: 'left' } },
+    });
+    await vi.waitFor(() => expect(page.mouse.up).toHaveBeenCalled());
+    expect(page.mouse.move).not.toHaveBeenCalled();
+    await runtime.shutdown();
+  });
+
+  it('coalesces pointer pressure without consuming reliable control capacity and drops saturated peers', async () => {
+    let bridgeHandlers;
+    let releaseMove;
+    const blockedMove = new Promise(resolve => { releaseMove = resolve; });
+    const page = Object.assign(new EventEmitter(), {
+      url: vi.fn(() => 'about:blank'), title: vi.fn().mockResolvedValue(''), mainFrame: vi.fn(() => null),
+      mouse: { move: vi.fn(() => blockedMove), up: vi.fn(), wheel: vi.fn(), down: vi.fn(), click: vi.fn() },
+      keyboard: { down: vi.fn(), up: vi.fn(), press: vi.fn(), type: vi.fn() },
+    });
+    const bridge = {
+      registerSession: vi.fn(async (_id, handlers) => {
+        bridgeHandlers = handlers;
+        return { bridgeUrl: 'ws://127.0.0.1:1/browser-runtime/token', waitUntilReady: vi.fn() };
+      }),
+      send: vi.fn(() => true), unregisterSession: vi.fn(), close: vi.fn(),
+    };
+    bridge.registerSession.mockImplementation(async (_id, handlers) => {
+      bridgeHandlers = handlers;
+      return { bridgeUrl: 'ws://127.0.0.1:1/browser-runtime/token', waitUntilReady: vi.fn().mockResolvedValue({}) };
+    });
+    const send = vi.fn();
+    const runtime = new BrowserRuntimeService({
+      yeaftDir: tempRoot(), config: { enabled: true, maxQueuedActionsPerProducer: 1 }, platform: 'linux', bridge,
+      probe: vi.fn().mockResolvedValue({ ok: true, captureMode: 'tab' }),
+      launchSession: vi.fn().mockResolvedValue({
+        page, viewport: { width: 1280, height: 720, deviceScaleFactor: 1 }, captureMode: 'tab', close: vi.fn(),
+      }),
+      send,
+    });
+    await runtime.startupProbe();
+    const owner = { ownerUserId: 'owner', clientId: 'client', webConnectionId: 'socket', webConnectionGeneration: 'one' };
+    const created = await runtime.createSession({ requestId: 'queue-create', serverIdentity: owner });
+    await runtime.preparePeer({
+      browserSessionId: created.browserSessionId, peerId: 'peer-q', connectionGeneration: 1,
+      role: 'interactive', serverIdentity: owner,
+    });
+    bridgeHandlers.onMessage({ type: 'peer_state', peerId: 'peer-q', connectionGeneration: 1, state: 'connected' });
+    for (let seq = 1; seq <= 100; seq += 1) {
+      bridgeHandlers.onMessage({
+        type: 'peer_input', peerId: 'peer-q', connectionGeneration: 1, channel: 'pointer',
+        envelope: { pointerSeq: seq, action: { type: 'pointerMove', x: seq, y: seq } },
+      });
+    }
+    bridgeHandlers.onMessage({
+      type: 'peer_input', peerId: 'peer-q', connectionGeneration: 1, channel: 'control',
+      envelope: { controlSeq: 1, action: { type: 'text', text: 'kept' } },
+    });
+    bridgeHandlers.onMessage({
+      type: 'peer_input', peerId: 'peer-q', connectionGeneration: 1, channel: 'control',
+      envelope: { controlSeq: 2, action: { type: 'text', text: 'overflow' } },
+    });
+    expect(runtime.sessions.get(created.browserSessionId)?.peers.has('peer-q')).toBe(false);
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ code: 'browser_control_queue_saturated' }));
+    releaseMove();
     await runtime.shutdown();
   });
 
