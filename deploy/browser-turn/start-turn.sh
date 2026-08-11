@@ -45,10 +45,7 @@ done
 
 runtime_dir=/run/yeaft-turn
 config=$runtime_dir/turnserver.conf
-binary=$runtime_dir/turnserver
 umask 077
-cp /usr/bin/turnserver "$binary"
-chmod 755 "$binary"
 cat > "$config" <<EOF
 listening-port=$listen_port
 listening-ip=0.0.0.0
@@ -85,10 +82,4 @@ denied-peer-ip=198.18.0.0-198.19.255.255
 EOF
 
 unset secret
-chmod 600 "$config"
-chown 65534:65534 "$config"
-exec setpriv \
-  --reuid=65534 --regid=65534 --clear-groups \
-  --inh-caps=-all --ambient-caps=-all --bounding-set=-all \
-  --no-new-privs \
-  "$binary" -c "$config"
+exec /usr/local/bin/yeaft-turnserver -c "$config"

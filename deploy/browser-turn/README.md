@@ -10,21 +10,21 @@ Yeaft Browser 的 Agent 本地探测只验证 Chrome、tab capture、VP8 和本�
 2. 在云安全组和主机防火墙开放：
    - `3478/udp` 和 `3478/tcp`；
    - `49160-49200/udp` relay 端口范围。
-3. 生成只包含 hex 的共享 secret，并限制文件权限：
+3. 为 TURN 选择一个专用宿主 GID（示例为 `10001`），生成只包含 hex 的共享 secret，并只授权 root 与该组读取：
 
 ```bash
-install -d -m 700 /etc/yeaft
-openssl rand -hex 32 | install -m 600 /dev/stdin /etc/yeaft/browser-turn.secret
+install -d -o root -g 10001 -m 750 /etc/yeaft
+openssl rand -hex 32 | install -o root -g 10001 -m 640 /dev/stdin /etc/yeaft/browser-turn.secret
 ```
 
-同一 secret 必须配置给 coturn 和 Yeaft Server。不要提交 secret，不要把它写入命令行参数。
+将 `.env` 的 `BROWSER_TURN_SECRET_GID` 设为该数字 GID。Compose 只把这个组作为 supplementary group 加给固定的非 root UID/GID `10001:10001`；服务和 Docker healthcheck 都以该用户、空 capability sets 和 `no-new-privileges` 运行。同一 secret 必须配置给 coturn 和 Yeaft Server。不要提交 secret，不要把它写入命令行参数。
 
 ## 2. 启动 TURN
 
 ```bash
 cd deploy/browser-turn
 cp .env.example .env
-# 编辑公网 IPv4、主机 relay IPv4、realm 和 secret 绝对路径
+# 编辑公网 IPv4、主机 relay IPv4、realm、secret 绝对路径和 secret 文件 GID
 docker compose --env-file .env config --quiet
 docker compose --env-file .env up -d
 docker compose --env-file .env ps
@@ -49,7 +49,7 @@ BROWSER_ICE_TRANSPORT_POLICY=relay
 
 ## 4. 验证
 
-提交或发布模板改动前，在仓库根目录运行 `npm run smoke:browser-turn`。该 smoke 会启动隔离端口上的临时 coturn，验证健康检查、最终进程 UID/capability fence 和 secret 不进入 argv，然后自动清理。
+提交或发布模板改动前，在仓库根目录运行 `npm run smoke:browser-turn`。该 smoke 会构建固定 digest 的派生镜像，在隔离端口启动临时 coturn，验证 REST-authenticated allocation、服务与 Docker healthcheck 自身的 UID/GID 和全部 capability sets，以及 secret 不进入容器配置，然后自动清理。
 
 - `docker compose --env-file .env ps` 必须显示 `healthy`。
 - 从 Web 浏览器和 Agent 所在网络分别确认 TURN 域名的 `3478/tcp` 可达；UDP 和 relay range 还必须在云安全组/防火墙开放。

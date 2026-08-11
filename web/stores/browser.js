@@ -3,6 +3,7 @@ const { defineStore } = Pinia;
 const REQUEST_TIMEOUT_MS = 30_000;
 const INSTALL_TIMEOUT_MS = 60 * 60_000;
 const PEER_ATTACH_TIMEOUT_MS = 20_000;
+const PEER_DISCONNECTED_GRACE_MS = 5_000;
 const CANCELLED_PEER_TTL_MS = 60 * 60_000;
 const MAX_CANCELLED_PEERS = 256;
 
@@ -226,9 +227,11 @@ export const useBrowserStore = defineStore('browser', {
         pendingCandidates: [],
         iceServerCount: null,
         attachTimer: null,
+        disconnectedTimer: null,
       };
       this.peers[localKey] = peer;
       peer.attachTimer = setTimeout(() => {
+        peer.attachTimer = null;
         if (this.peers[localKey] !== peer || peer.state === 'connected') return;
         const code = peer.iceServerCount === 0
           ? 'browser_ice_servers_missing'
@@ -288,7 +291,26 @@ export const useBrowserStore = defineStore('browser', {
       connection.onconnectionstatechange = () => {
         if (this.peers[peer.localKey] !== peer) return;
         peer.state = connection.connectionState;
-        if (connection.connectionState === 'connected') clearTimeout(peer.attachTimer);
+        if (connection.connectionState === 'connected') {
+          clearTimeout(peer.attachTimer);
+          peer.attachTimer = null;
+          clearTimeout(peer.disconnectedTimer);
+          peer.disconnectedTimer = null;
+          return;
+        }
+        if (connection.connectionState === 'disconnected') {
+          if (!peer.disconnectedTimer) {
+            peer.disconnectedTimer = setTimeout(() => {
+              peer.disconnectedTimer = null;
+              if (this.peers[peer.localKey] !== peer || peer.state === 'connected') return;
+              const code = peer.iceServerCount === 0
+                ? 'browser_ice_servers_missing'
+                : 'browser_ice_connection_failed';
+              this.failPeer(peer, new Error(code), code);
+            }, PEER_DISCONNECTED_GRACE_MS);
+          }
+          return;
+        }
         if (['failed', 'closed'].includes(connection.connectionState)) {
           const code = peer.iceServerCount === 0
             ? 'browser_ice_servers_missing'
@@ -329,6 +351,9 @@ export const useBrowserStore = defineStore('browser', {
       if (!peer) return;
       delete this.peers[localKey];
       clearTimeout(peer.attachTimer);
+      peer.attachTimer = null;
+      clearTimeout(peer.disconnectedTimer);
+      peer.disconnectedTimer = null;
       if (notify && !peer.peerId) this.rememberCancelledPeer(peer);
       if (notify && peer.peerId) {
         try {
