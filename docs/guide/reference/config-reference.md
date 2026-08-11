@@ -2,7 +2,7 @@
 
 This chapter is the **field-by-field** reference for an Agent instance's Yeaft `config.json` plus Agent/Server environment variables. The default instance uses `~/.yeaft/config.json`; named instances use `~/.yeaft/instances/<name>/config.json` unless overridden. For day-to-day filling, see [Yeaft Engine Configuration](../yeaft-config.md); this chapter is a lookup table.
 
-> The schema documented here is what the code actually reads at the time of writing — extracted from `agent/yeaft/config.js`, `agent/index.js`, `server/config.js`. Fields the code does not consume are intentionally omitted; if you remember a field that used to be here and is now gone, it almost certainly never had a code path.
+> The schema documented here is what the code actually reads at the time of writing — extracted from `agent/yeaft/config.js`, `agent/browser-runtime/config.js`, `agent/index.js`, and `server/config.js`. Fields the code does not consume are intentionally omitted; if you remember a field that used to be here and is now gone, it almost certainly never had a code path.
 
 ---
 
@@ -24,6 +24,7 @@ This chapter is the **field-by-field** reference for an Agent instance's Yeaft `
 | `maxContinueTurns` | `number` | `3` | Auto-continue turns after `max_tokens` stop |
 | `projectDocMaxBytes` | `number` | `32768` | CLAUDE.md / AGENTS.md injection cap (0 = disabled) |
 | `yeaft` | `YeaftSection` | see below | Engine runtime caps and feature flags |
+| `browserRuntime` | `BrowserRuntimeSection` | see below | Agent-instance Browser Runtime enablement, executable, and resource limits |
 | `mcpServers` | `MCPServer[]` | `[]` | MCP server configs (falls back to `~/.yeaft/mcp.json`) |
 
 ### Provider Object
@@ -73,6 +74,52 @@ Anything else on a model entry is silently ignored. UI affordances like display 
 | `dream.*` | object | see [dream/limits.js](https://github.com/yeaft/yeaft-web-code-agent/blob/main/agent/yeaft/dream/limits.js) | — | Overrides any UPPER_CASE constant in `DEFAULT_LIMITS` |
 
 Out-of-range numeric values are **clamped** to the valid range rather than silently reset (so a hand-edit of `maxConcurrentThreads: 100` loads as `50`, not the default `6`).
+
+### `browserRuntime` Section
+
+Prefer **Workbench → Browser** for interactive setup, or `yeaft-agent browser ... --name <instance>` for unattended setup. Manual JSON editing is supported but does not refresh a running Agent process.
+
+```json
+"browserRuntime": {
+  "enabled": false,
+  "executablePath": null,
+  "cacheDir": null,
+  "headless": true,
+  "maxSessions": 2,
+  "maxPeersPerSession": 2,
+  "maxWidth": 1920,
+  "maxHeight": 1080,
+  "maxFps": 30,
+  "maxBitrate": 4000000,
+  "noViewerIdleMs": 120000,
+  "interactiveIdleMs": 2100000,
+  "startupProbeTimeoutMs": 20000
+}
+```
+
+| Field | Default | Clamp / behavior | Description |
+| --- | --- | --- | --- |
+| `enabled` | `false` | only literal `true` enables | Enables startup probing for this Agent instance |
+| `executablePath` | `null` | compatible pinned Chrome required | Explicit Chrome for Testing executable; `null` resolves the managed install |
+| `cacheDir` | `null` | runtime default: `<yeaftDir>/managed-browser` | Managed Chrome cache root |
+| `headless` | `true` | boolean | Launch probe and Browser Sessions headless |
+| `maxSessions` | `2` | `1–4` | Concurrent Browser Sessions |
+| `maxPeersPerSession` | `2` | `1–4` | Concurrent viewers per Browser Session |
+| `maxWidth` / `maxHeight` | `1920` / `1080` | `320–3840` / `240–2160` | Captured viewport bounds |
+| `maxFps` | `30` | `1–60` | Capture frame-rate ceiling |
+| `maxBitrate` | `4000000` | `100000–8000000` | Video bitrate ceiling in bits/s |
+| `maxQueuedActionsPerSession` | `128` | `1–256` | Per-Session action queue item cap |
+| `maxQueuedActionsPerProducer` | `32` | `1–64` | Per-producer action queue item cap |
+| `maxActionQueueBytes` | `1048576` | `65536–4194304` | Per-Session action queue byte cap |
+| `maxActionRuntimeMs` | `30000` | `1000–120000` | Single Browser action deadline |
+| `producerCreditBurst` | `16` | `1–64` | Producer action-rate burst credits |
+| `producerCreditRefillPerSecond` | `8` | `1–64` | Producer action-rate refill |
+| `noViewerIdleMs` | `120000` | `10000–1800000` | Reclaim delay after the last viewer detaches |
+| `interactiveIdleMs` | `2100000` | `60000–28800000` | Interactive Browser Session idle limit |
+| `maxDownloadsBytes` | `536870912` | `0–2147483648` | Per-Session download byte limit; `0` disables downloads |
+| `startupProbeTimeoutMs` | `20000` | `5000–60000` | Total startup media-probe deadline |
+
+Hand-edited numeric values are clamped on read. UI/API writes reject unknown or out-of-range fields. The ready viewer data plane currently requires a Linux x64 Agent and a successful tab-capture probe; `enabled: true` alone is not readiness.
 
 ### `mcpServers`
 
@@ -138,6 +185,13 @@ The Agent reads environment variables on startup. Most values can also be set in
 | `TEMP_TOKEN_EXPIRES_IN` | — | `'10m'` | Lifetime for short-lived tokens (e.g. email-verification handoff) |
 | `AGENT_SECRET` | ✓ | `'agent-shared-secret'` | Must match the Agent `AGENT_SECRET` |
 | `AUTH_USERS` | — | — | `username:passwordHash:email,...` for bootstrap user list |
+| `BROWSER_RUNTIME_ENABLED` | — | `false` | Server rollout gate for Browser setup, signaling, and viewer routes |
+| `BROWSER_STUN_URLS` | — | — | Comma-separated STUN URLs used by Browser WebRTC peers |
+| `BROWSER_TURN_URLS` | — | — | Comma-separated TURN URLs; requires `BROWSER_TURN_SECRET` |
+| `BROWSER_TURN_SECRET` | required with TURN URLs | — | coturn REST API shared secret for short-lived endpoint credentials |
+| `BROWSER_TURN_TTL_SECONDS` | — | `600` | TURN credential TTL, clamped to `60–3600` seconds |
+| `BROWSER_ICE_TRANSPORT_POLICY` | — | `all` | `all` or `relay`; `relay` requires at least one TURN URL |
+| `BROWSER_ROUTE_TTL_MS` | — | `900000` | Browser peer route TTL, clamped to `60000–3600000` ms |
 | `MAX_FILE_SIZE` | — | `52428800` (50 MB) | Single-upload byte cap |
 | `FILE_CLEANUP_INTERVAL` | — | `600000` (10 min) | Temporary-file sweep interval (ms) |
 

@@ -2,7 +2,7 @@
 
 本章是 Agent instance Yeaft `config.json` 与 Agent/Server 环境变量的**全字段**参考。Default instance 使用 `~/.yeaft/config.json`；named instance 默认使用 `~/.yeaft/instances/<name>/config.json`。日常配怎么填看 [Yeaft 引擎配置](../yeaft-config.md)；本章供查阅。
 
-> 这里记录的 schema 是代码**当前**实际会读的字段（来自 `agent/yeaft/config.js`、`agent/index.js`、`server/config.js`）。代码不消费的字段一律不列；如果你印象中某个字段曾经存在却没出现在这里，几乎可以确定它从来没接进 codepath。
+> 这里记录的 schema 是代码**当前**实际会读的字段（来自 `agent/yeaft/config.js`、`agent/browser-runtime/config.js`、`agent/index.js` 和 `server/config.js`）。代码不消费的字段一律不列；如果你印象中某个字段曾经存在却没出现在这里，几乎可以确定它从来没接进 codepath。
 
 ---
 
@@ -24,6 +24,7 @@
 | `maxContinueTurns` | `number` | `3` | `max_tokens` 后自动续写的最多次数 |
 | `projectDocMaxBytes` | `number` | `32768` | CLAUDE.md / AGENTS.md 注入上限字节数（0 = 关闭） |
 | `yeaft` | `YeaftSection` | 见下 | 引擎运行时上限 / feature flag |
+| `browserRuntime` | `BrowserRuntimeSection` | 见下 | Agent instance 的 Browser Runtime 开关、可执行文件与资源上限 |
 | `mcpServers` | `MCPServer[]` | `[]` | MCP server 配置（缺省时回落到 `~/.yeaft/mcp.json`） |
 
 ### Provider 对象
@@ -73,6 +74,52 @@ model 项可以是裸字符串（`"gpt-5"`），也可以是对象：
 | `dream.*` | object | 见 [dream/limits.js](https://github.com/yeaft/yeaft-web-code-agent/blob/main/agent/yeaft/dream/limits.js) | — | 任何 `DEFAULT_LIMITS` 里的 UPPER_CASE 常量都可覆盖 |
 
 数值超范围会被**钳制**到合法范围（而不是悄悄回落默认），所以手写一个 `maxConcurrentThreads: 100` 会被读成 `50`，不是默认的 `6`。
+
+### `browserRuntime` 段
+
+交互式设置优先使用 **Workbench → 浏览器**；无人值守设置使用 `yeaft-agent browser ... --name <instance>`。也可以手改 JSON，但这不会刷新已经运行的 Agent 进程。
+
+```json
+"browserRuntime": {
+  "enabled": false,
+  "executablePath": null,
+  "cacheDir": null,
+  "headless": true,
+  "maxSessions": 2,
+  "maxPeersPerSession": 2,
+  "maxWidth": 1920,
+  "maxHeight": 1080,
+  "maxFps": 30,
+  "maxBitrate": 4000000,
+  "noViewerIdleMs": 120000,
+  "interactiveIdleMs": 2100000,
+  "startupProbeTimeoutMs": 20000
+}
+```
+
+| 字段 | 默认 | 范围 / 行为 | 说明 |
+| --- | --- | --- | --- |
+| `enabled` | `false` | 只有字面量 `true` 才启用 | 为当前 Agent instance 启用启动探测 |
+| `executablePath` | `null` | 必须是兼容的固定 Chrome build | 显式 Chrome for Testing 路径；`null` 使用 managed install |
+| `cacheDir` | `null` | runtime 默认：`<yeaftDir>/managed-browser` | managed Chrome cache 根目录 |
+| `headless` | `true` | boolean | 以 headless 方式运行探测和 Browser Session |
+| `maxSessions` | `2` | `1–4` | Browser Session 并发数 |
+| `maxPeersPerSession` | `2` | `1–4` | 每个 Browser Session 的 viewer 并发数 |
+| `maxWidth` / `maxHeight` | `1920` / `1080` | `320–3840` / `240–2160` | capture viewport 上限 |
+| `maxFps` | `30` | `1–60` | capture 帧率上限 |
+| `maxBitrate` | `4000000` | `100000–8000000` | 视频 bitrate 上限（bit/s） |
+| `maxQueuedActionsPerSession` | `128` | `1–256` | 每个 Session 的 action queue 条数上限 |
+| `maxQueuedActionsPerProducer` | `32` | `1–64` | 每个 producer 的 action queue 条数上限 |
+| `maxActionQueueBytes` | `1048576` | `65536–4194304` | 每个 Session 的 action queue 字节上限 |
+| `maxActionRuntimeMs` | `30000` | `1000–120000` | 单次 Browser action deadline |
+| `producerCreditBurst` | `16` | `1–64` | producer action rate burst credit |
+| `producerCreditRefillPerSecond` | `8` | `1–64` | producer action rate credit 恢复速度 |
+| `noViewerIdleMs` | `120000` | `10000–1800000` | 最后一个 viewer detach 后的回收延迟 |
+| `interactiveIdleMs` | `2100000` | `60000–28800000` | 交互式 Browser Session 空闲上限 |
+| `maxDownloadsBytes` | `536870912` | `0–2147483648` | 每个 Session 的下载字节上限；`0` 禁止下载 |
+| `startupProbeTimeoutMs` | `20000` | `5000–60000` | 启动媒体探测总 deadline |
+
+手改的数值会在读取时钳制；UI/API 写入则会拒绝未知或超范围字段。Ready viewer 数据面目前要求 Linux x64 Agent 且 tab-capture probe 成功；仅有 `enabled: true` 不代表 ready。
 
 ### `mcpServers`
 
@@ -138,6 +185,13 @@ Agent 启动时读环境变量。多数值也可以写在 Agent 的 `config.json
 | `TEMP_TOKEN_EXPIRES_IN` | — | `'10m'` | 临时 token 寿命（如邮箱验证 handoff） |
 | `AGENT_SECRET` | ✓ | `'agent-shared-secret'` | 必须和 Agent 端的 `AGENT_SECRET` 一致 |
 | `AUTH_USERS` | — | — | `username:passwordHash:email,...` 启动期 bootstrap 用户列表 |
+| `BROWSER_RUNTIME_ENABLED` | — | `false` | Browser setup、信令和 viewer route 的 Server rollout gate |
+| `BROWSER_STUN_URLS` | — | — | Browser WebRTC peer 使用的 STUN URL，英文逗号分隔 |
+| `BROWSER_TURN_URLS` | — | — | TURN URL，英文逗号分隔；配置后必须同时设置 `BROWSER_TURN_SECRET` |
+| `BROWSER_TURN_SECRET` | 配置 TURN URL 时必填 | — | coturn REST API shared secret，用于生成短期 endpoint credential |
+| `BROWSER_TURN_TTL_SECONDS` | — | `600` | TURN credential TTL，钳制到 `60–3600` 秒 |
+| `BROWSER_ICE_TRANSPORT_POLICY` | — | `all` | `all` 或 `relay`；`relay` 至少需要一个 TURN URL |
+| `BROWSER_ROUTE_TTL_MS` | — | `900000` | Browser peer route TTL，钳制到 `60000–3600000` ms |
 | `MAX_FILE_SIZE` | — | `52428800`（50 MB） | 单次上传字节上限 |
 | `FILE_CLEANUP_INTERVAL` | — | `600000`（10 分钟） | 临时文件清扫间隔 ms |
 
