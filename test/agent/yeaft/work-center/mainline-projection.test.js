@@ -26,6 +26,22 @@ function detail(overrides = {}) {
 }
 
 describe('Mainline projection', () => {
+  it('retains the canonical terminal Run error', () => {
+    const action = {
+      id: 'action-1', stageId: 'implement', type: 'implement', sequence: 1,
+      generation: 1, specHash: 'hash', status: 'failed', dependsOnStageIds: [], resultRunId: 'run-1',
+    };
+    const projection = buildMainlineProjection(detail({
+      actions: [action],
+      runs: [{
+        id: 'run-1', actionId: action.id, actionGeneration: 1, actionSpecHash: 'hash',
+        status: 'failed', error: 'sanitized assignment diagnostic', endedAt: 1,
+      }],
+    }));
+
+    expect(projection.canonicalActionResults[action.id].error)
+      .toBe('sanitized assignment diagnostic');
+  });
 
 
 

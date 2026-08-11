@@ -314,6 +314,7 @@ export function buildMainlineProjection(detail) {
       outputs: normalizeOutputs(run.outputs),
       reviewDecision: run.reviewDecision || null,
       waitingReason: run.waitingReason || null,
+      error: run.error || null,
       endedAt: run.endedAt || null,
     };
   }
