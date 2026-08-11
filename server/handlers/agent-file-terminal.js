@@ -137,6 +137,17 @@ async function handleTerminalResponse(agentId, msg, routeKey) {
   }
 }
 
+async function handleAgentDirectoryPickerResponse(agentId, msg) {
+  const pending = consumeWorkbenchRequest({
+    agentId,
+    requestId: msg._workbenchRequestId,
+    responseType: msg.type,
+    routeKey: `agent-directory-picker:${agentId}`,
+  });
+  if (!pending || pending.requestType !== 'agent_directory_picker') return;
+  await sendToPendingClient(agentId, msg, pending);
+}
+
 async function handleOneShotResponse(agentId, msg, routeKey) {
   const pending = consumeWorkbenchRequest({
     agentId,
@@ -183,6 +194,13 @@ export async function handleAgentFileTerminal(agentId, agent, rawMsg) {
   if (routeKey) {
     if (terminalTypes.has(msg.type)) await handleTerminalResponse(agentId, msg, routeKey);
     else await handleOneShotResponse(agentId, msg, routeKey);
+    return true;
+  }
+
+  if (msg.type === 'directory_listing'
+      && msg.conversationId === '_workdir_picker'
+      && msg._workbenchRequestId) {
+    await handleAgentDirectoryPickerResponse(agentId, msg);
     return true;
   }
 

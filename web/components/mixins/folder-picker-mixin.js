@@ -24,7 +24,7 @@
  *  - method   `folderPickerSetWorkDir(path)` — called when user confirms a path.
  *
  * The wire shape is pinned by folder-picker tests:
- *  - sends `{ type:'list_directory', conversationId:'_workdir_picker', requestId, agentId, dirPath, workDir }`
+ *  - sends `{ type:'list_directory', conversationId:'_workdir_picker', directoryPickerScope:'agent', requestId, agentId, dirPath }`
  *  - listens to `workbench-message` window events; reducer accepts only the
  *    current requestId while the picker is open and still targets the same agent.
  * Do not rename `requestFolderPickerDir` / `handleFolderPickerMessage`.
@@ -97,10 +97,10 @@ export const folderPickerMethods = {
     this.chat.sendWsMessage({
       type: 'list_directory',
       conversationId: '_workdir_picker',
+      directoryPickerScope: 'agent',
       requestId,
       agentId,
       dirPath,
-      workDir: this.defaultWorkDir || '',
     });
     if (this._folderPickerTimer) clearTimeout(this._folderPickerTimer);
     this._folderPickerTimer = setTimeout(() => {
