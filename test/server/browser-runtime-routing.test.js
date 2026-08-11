@@ -369,6 +369,27 @@ describe('Browser Runtime Server ownership and signaling', () => {
     }));
   });
 
+  it('honors the explicit Server-wide Browser off switch before routing', async () => {
+    CONFIG.browserRuntime.enabled = false;
+    const requester = client('client-a');
+    webClients.set(requester.id, requester);
+    agents.set('agent-a', {
+      ...agent(),
+      capabilities: ['browser_runtime_setup', 'browser_runtime', 'browser_webrtc', 'browser_capture_tab'],
+    });
+
+    await handleClientBrowser(requester, {
+      type: 'browser_runtime_status', agentId: 'agent-a', requestId: 'disabled-status',
+    }, async () => true);
+
+    expect(sendToAgent).not.toHaveBeenCalled();
+    expect(sendToWebClient).toHaveBeenCalledWith(requester, expect.objectContaining({
+      type: 'browser_runtime_error',
+      requestId: 'disabled-status',
+      code: 'browser_runtime_disabled',
+    }));
+  });
+
   it('rejects omitted viewer and setup protocols without downgrading either path', async () => {
     const legacy = { ...client('legacy'), browserRuntimeProtocol: 0, browserRuntimeSetupProtocol: 0 };
     agents.set('agent-a', {

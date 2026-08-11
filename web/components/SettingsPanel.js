@@ -18,6 +18,7 @@ import VpCrudPanel from './VpCrudPanel.js';
 import SearchSettingsTab from './SearchSettingsTab.js';
 import McpTab from './McpTab.js';
 import { loadSandboxState } from '../utils/sandbox-api.js';
+import { confirmDialog } from '../utils/dialog.js';
 
 export default {
   name: 'SettingsPanel',
@@ -869,8 +870,8 @@ export default {
       }
     },
 
-    confirmRemoveSandbox() {
-      if (window.confirm(this.$t('settings.sandbox.removeConfirm'))) {
+    async confirmRemoveSandbox() {
+      if (await confirmDialog(this.$t('settings.sandbox.removeConfirm'), { destructive: true })) {
         this.requestSandboxAction('remove');
       }
     },

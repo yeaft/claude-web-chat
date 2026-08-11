@@ -466,8 +466,16 @@
   overflow-y: auto;
 }
 
+.browser-install-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(400px, 100%);
+}
+
 .browser-install-progress {
-  width: min(360px, 100%);
+  flex: 1;
+  min-width: 0;
   height: 8px;
   overflow: hidden;
   border-radius: 999px;
@@ -480,6 +488,14 @@
   border-radius: inherit;
   background: var(--accent-blue);
   transition: width 0.2s ease;
+}
+
+.browser-install-percent {
+  min-width: 3ch;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .browser-stage-placeholder .browser-install-meta,

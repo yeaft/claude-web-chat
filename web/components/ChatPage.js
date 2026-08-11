@@ -1,3 +1,4 @@
+import { alertDialog, confirmDialog } from '../utils/dialog.js';
 import ChatHeader from './ChatHeader.js';
 import MessageList from './MessageList.js';
 import ChatInput from './ChatInput.js';
@@ -638,7 +639,7 @@ export default {
       }, agentId);
       if (!result?.ok) {
         const message = result?.error?.message || result?.error?.code || 'unknown';
-        alert(this.$t('sidebar.projects.assignFailed', { name: project.name, message }));
+        await alertDialog(this.$t('sidebar.projects.assignFailed', { name: project.name, message }));
       }
     },
     openWorkCenter(agentId = null) {
@@ -836,8 +837,8 @@ export default {
     closeSession(conversationId, agentId) {
       this.store.closeSession(conversationId, agentId);
     },
-    deleteConversation(conversationId, agentId) {
-      if (confirm(this.$t('chat.delete.confirm'))) {
+    async deleteConversation(conversationId, agentId) {
+      if (await confirmDialog(this.$t('chat.delete.confirm'), { destructive: true })) {
         this.store.deleteConversation(conversationId, agentId);
       }
     },
@@ -931,19 +932,19 @@ export default {
     handleResize() {
       this.windowWidth = window.innerWidth;
     },
-    restartAgent(agentId) {
+    async restartAgent(agentId) {
       const agent = this.store.agents.find(a => a.id === agentId);
       const name = agent?.name || agentId;
-      if (!confirm(this.$t('chat.agent.restartConfirm', { name }))) return;
+      if (!await confirmDialog(this.$t('chat.agent.restartConfirm', { name }))) return;
       this.restartingAgents[agentId] = true;
       // 2 分钟后强制清除重启状态（兜底）
       setTimeout(() => { delete this.restartingAgents[agentId]; }, 120000);
       this.store.restartAgent(agentId);
     },
-    upgradeAgent(agentId) {
+    async upgradeAgent(agentId) {
       const agent = this.store.agents.find(a => a.id === agentId);
       const name = agent?.name || agentId;
-      if (!confirm(this.$t('chat.agent.upgradeConfirm', { name }))) return;
+      if (!await confirmDialog(this.$t('chat.agent.upgradeConfirm', { name }))) return;
       this.upgradingAgents[agentId] = { since: Date.now(), oldVersion: agent?.version || null };
       // 2 分钟后强制清除升级状态（兜底）
       setTimeout(() => { delete this.upgradingAgents[agentId]; }, 120000);
@@ -1109,23 +1110,23 @@ export default {
       if (!success) {
         delete this.upgradingAgents[agentId];
         if (reason === 'node_incompatible') {
-          alert(this.$t('chat.agent.nodeIncompatible', {
+          alertDialog(this.$t('chat.agent.nodeIncompatible', {
             current: currentNode || '?',
             required: requiredNode || '?',
             version: version || '',
           }));
         } else {
           if (reason === 'manual_upgrade_required') {
-            alert(this.$t('chat.agent.manualUpgradeRequired', {
+            alertDialog(this.$t('chat.agent.manualUpgradeRequired', {
               version: version || '?',
             }));
           } else {
-            alert(`Agent upgrade failed: ${error || 'Unknown error'}`);
+            alertDialog(`Agent upgrade failed: ${error || 'Unknown error'}`);
           }
         }
       } else if (alreadyLatest) {
         delete this.upgradingAgents[agentId];
-        alert(this.$t('chat.agent.alreadyLatest', { version: version || '' }));
+        alertDialog(this.$t('chat.agent.alreadyLatest', { version: version || '' }));
       }
       // success && !alreadyLatest 时 agent 会重启，等上线后由 watcher 清除状态
     };

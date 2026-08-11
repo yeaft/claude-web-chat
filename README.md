@@ -127,6 +127,27 @@ yeaft-agent install --server wss://your-server.example --name my-worker --secret
 yeaft-agent status --name my-worker
 ```
 
+### Enable Browser Runtime (Linux x64)
+
+The Workbench Browser viewer currently supports Linux x64 Agents. Browser routes are available on the Server by default, while the browser binary remains an explicit per-Agent install:
+
+1. Select the Agent in Yeaft and open **Workbench → Browser**. If Browser is not ready, the card says **Enable required** and the panel shows the pinned Chrome for Testing download size.
+2. Click **Enable Browser** once. Yeaft displays the real download percentage, verifies and installs the browser in that Agent instance's data directory, persists enablement, runs the media probe, refreshes capabilities, and opens the viewer automatically. No Agent restart or second enable action is required.
+
+Nothing downloads merely because Yeaft or the Agent was installed. Administrators can disable the entire Browser surface with `BROWSER_RUNTIME_ENABLED=false`. `BROWSER_STUN_URLS` is optional for direct ICE. For production across NATs or restrictive networks, configure `BROWSER_TURN_URLS` and `BROWSER_TURN_SECRET`; set `BROWSER_ICE_TRANSPORT_POLICY=relay` when direct candidates are forbidden.
+
+For unattended setup, use the same named instance throughout:
+
+```bash
+yeaft-agent browser install --name my-worker
+yeaft-agent browser probe --name my-worker
+yeaft-agent browser enable --name my-worker
+yeaft-agent restart --name my-worker   # managed Agent service
+yeaft-agent browser status --name my-worker
+```
+
+`browser probe` is the readiness check; `browser status` only reports configuration and installation state. Foreground Agents must be stopped and started again after CLI enablement. See [Workbench: Enable Browser Runtime](docs/guide/user/workbench.md#enable-browser-runtime) for ICE/TURN settings, lifecycle, and troubleshooting.
+
 ### Run from source
 
 ```bash

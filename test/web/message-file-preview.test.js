@@ -8,7 +8,11 @@ import {
   workbenchWorkspaceGeneration,
 } from '../../web/utils/workbench-route.js';
 import * as Vue from 'vue';
-import { decorateMessageFileReferences, resolveMessageFileReference } from '../../web/utils/message-file-reference.js';
+import {
+  collectMessageFileReferences,
+  decorateMessageFileReferences,
+  resolveMessageFileReference,
+} from '../../web/utils/message-file-reference.js';
 
 const readWeb = path => readFileSync(resolve(process.cwd(), 'web', path), 'utf8');
 
@@ -227,7 +231,7 @@ describe('Workbench capability launcher', () => {
     workbenchStore.capabilities = ['terminal', 'file_editor', 'workbench_session_routes', 'browser_runtime_setup'];
     const setup = mountWorkbench();
     expect(setup.get('[data-workbench-capability="browser"] .workbench-capability-status').text())
-      .toBe('workbench.setupRequired');
+      .toBe('workbench.enableRequired');
     await setup.get('[data-workbench-capability="browser"]').trigger('click');
     expect(setup.find('.workbench-browser-view').exists()).toBe(false);
     expect(setup.get('.browser-panel-stub').attributes('data-route-key'))
@@ -338,7 +342,7 @@ describe('message file preview', () => {
   });
 
   it('decorates file links and standalone inline-code references without touching code blocks', () => {
-    const html = decorateMessageFileReferences([
+    const source = [
       '<a href="docs/design-doc.md#L119">design doc</a>',
       '<a class="existing" href="docs/notes.md">notes</a>',
       '<a href="https://example.test">web</a>',
@@ -347,12 +351,19 @@ describe('message file preview', () => {
       '<code>v1.0.403</code>',
       '<code>artifact.7z</code>',
       '<pre><code>web/components/FilesTab.js:17</code></pre>',
-    ].join(' '));
+    ].join(' ');
+    expect(collectMessageFileReferences(source)).toEqual([
+      'docs/design-doc.md', 'docs/notes.md', 'web/components/WorkbenchPanel.js',
+    ]);
+    const html = decorateMessageFileReferences(source, new Map([
+      ['docs/design-doc.md', 'docs/design-doc.md'],
+      ['web/components/WorkbenchPanel.js', 'web/components/WorkbenchPanel.js'],
+    ]));
 
-    expect(html).toContain('href="docs/design-doc.md#L119" class="message-file-reference"');
-    expect(html).toContain('class="existing message-file-reference" href="docs/notes.md"');
-    expect(html).not.toMatch(/<a[^>]*\bclass=[^>]*\bclass=/);
-    expect(html).toContain('<a href="web/components/WorkbenchPanel.js:1" class="message-file-reference"');
+    expect(html).toContain('data-resolved-file-path="docs/design-doc.md" class="message-file-reference"');
+    expect(html).toContain('notes');
+    expect(html).not.toContain('href="docs/notes.md"');
+    expect(html).toContain('data-resolved-file-path="web/components/WorkbenchPanel.js" class="message-file-reference"');
     expect(html).toContain('<code>origin/main</code>');
     expect(html).toContain('<code>v1.0.403</code>');
     expect(html).not.toContain('href="origin/main"');
@@ -365,6 +376,7 @@ describe('message file preview', () => {
 
   it('opens a local Markdown link in the message file panel without intercepting external links', async () => {
     const openFileInExplorer = vi.fn();
+    const resolveMessageFileReferences = vi.fn(() => 'file-refs-request');
     globalThis.Vue = Vue;
     globalThis.Pinia = {
       defineStore: () => () => ({}),
@@ -372,6 +384,7 @@ describe('message file preview', () => {
         answerUserQuestion: vi.fn(),
         cancelVpTurn: vi.fn(),
         openFileInExplorer,
+        resolveMessageFileReferences,
       }),
     };
     globalThis.marked = {
@@ -396,8 +409,16 @@ describe('message file preview', () => {
       },
     });
 
+    expect(resolveMessageFileReferences).toHaveBeenCalledWith(['docs/design-doc.md']);
+    expect(wrapper.find('a[href="docs/design-doc.md#L119"]').exists()).toBe(false);
+    window.dispatchEvent(new CustomEvent('workbench-message', { detail: {
+      type: 'file_references_resolved',
+      requestId: 'file-refs-request',
+      references: [{ requestedPath: 'docs/design-doc.md', resolvedPath: 'src/docs/design-doc.md' }],
+    } }));
+    await Vue.nextTick();
     await wrapper.get('a[href="docs/design-doc.md#L119"]').trigger('click');
-    expect(openFileInExplorer).toHaveBeenCalledWith('docs/design-doc.md', { hideTree: true, line: 119 });
+    expect(openFileInExplorer).toHaveBeenCalledWith('src/docs/design-doc.md', { hideTree: true, line: 119 });
 
     await wrapper.get('a[href="https://example.test"]').trigger('click');
     expect(openFileInExplorer).toHaveBeenCalledTimes(1);
@@ -407,6 +428,7 @@ describe('message file preview', () => {
   it('wires the right panel to the complete Files experience with a collapsed tree by default', () => {
     const filesTab = readWeb('components/FilesTab.js');
     const workbench = readWeb('components/WorkbenchPanel.js');
+    const browserPanel = readWeb('components/BrowserPanel.js');
     const capabilityHost = readWeb('components/WorkbenchCapabilityHost.js');
     const chatPage = readWeb('components/ChatPage.js');
     const chatHeader = readWeb('components/ChatHeader.js');
@@ -435,6 +457,9 @@ describe('message file preview', () => {
     expect(filesCss).toMatch(/\.file-tree-splitter\s*\{[^}]*order:\s*2;/s);
     expect(filesTab).toContain('startWidth - (clientX - startX)');
     expect(workbench).toContain('<WorkbenchCapabilityHost');
+    expect(browserPanel).toContain("['installing', 'probing'].includes(status.state)");
+    expect(browserPanel).toContain('<template v-if="setupError">');
+    expect(browserPanel).toContain('class="browser-install-percent">{{ progressPercent }}%</strong>');
     expect(capabilityHost).toContain("files: 'FilesTab'");
     expect(capabilityHost).toContain(':tree-initially-visible="activeCapability === \'files\' ? false : undefined"');
     expect(workbench).toContain('class="workbench-header-action workbench-maximize-btn"');

@@ -14,6 +14,14 @@ describe('Server production image runtime closure', () => {
     expect(dockerfile).toContain('COPY agent/container-manager.js ./agent/container-manager.js');
   });
 
+  it('enables Browser setup routes by default while preserving an explicit global off switch', () => {
+    const config = readFileSync(resolve(root, 'server/config.js'), 'utf8');
+    const example = readFileSync(resolve(root, 'server/.env.example'), 'utf8');
+
+    expect(config).toContain("enabled: process.env.BROWSER_RUNTIME_ENABLED !== 'false'");
+    expect(example).toContain('set false to disable them globally');
+  });
+
   it('keeps Docker socket access opt-in with an explicit Sandbox compose override', () => {
     const baseCompose = readFileSync(resolve(root, 'docker-compose.yml'), 'utf8');
     const sandboxCompose = readFileSync(resolve(root, 'docker-compose.sandbox.yml'), 'utf8');

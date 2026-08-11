@@ -1,3 +1,5 @@
+import { confirmDialog } from '../utils/dialog.js';
+
 /**
  * VpCrudPanel — task-343.
  *
@@ -483,7 +485,7 @@ export default {
       if (vp && vp.isStock) return;
       const label = vp.displayName || vp.vpId;
       const prompt = this.$t('yeaft.vp.crud.deleteConfirm').replace('{name}', label);
-      if (typeof window !== 'undefined' && window.confirm && !window.confirm(prompt)) return;
+      if (!await confirmDialog(prompt, { destructive: true })) return;
       this.busy = true;
       try {
         const res = await this.chatStore().vpCrudRequest('delete', vp.vpId);

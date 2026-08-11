@@ -1,3 +1,5 @@
+import { confirmDialog } from '../utils/dialog.js';
+
 export default {
   name: 'ChatHeader',
   emits: ['toggle-sidebar', 'close-pane'],
@@ -277,9 +279,9 @@ export default {
       window.location.reload();
     };
 
-    const clearMessages = () => {
+    const clearMessages = async () => {
       if (isClearing.value) return;
-      if (!confirm(t('chatHeader.confirmClear'))) return;
+      if (!await confirmDialog(t('chatHeader.confirmClear'), { destructive: true })) return;
       store.clearStatus = {
         conversationId: effectiveConvId.value,
         status: 'clearing'

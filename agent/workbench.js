@@ -16,5 +16,6 @@ export {
 } from './workbench/git-ops.js';
 
 export { handleFileSearch } from './workbench/file-search.js';
+export { handleResolveFileReferences } from './workbench/file-reference-resolver.js';
 
 export { handleTransferFiles } from './workbench/transfer.js';

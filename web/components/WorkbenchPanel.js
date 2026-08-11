@@ -175,7 +175,7 @@ export default {
       ready,
       statusKey: !available ? 'workbench.unavailable'
         : ready ? 'workbench.available'
-          : 'workbench.setupRequired',
+          : 'workbench.enableRequired',
     });
     const capabilityCards = Vue.computed(() => [
       capabilityCard('terminal', 'workbench.terminal', 'workbench.terminalDescription', hasTerminal.value),

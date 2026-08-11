@@ -164,6 +164,11 @@ export const useBrowserStore = defineStore('browser', {
       return result;
     },
 
+    async setupRuntime(agentId, status) {
+      if (!status?.installed) return this.installRuntime(agentId, status);
+      return this.enableRuntime(agentId);
+    },
+
     async createSession({ agentId, sourceRef = null, initialUrl = 'about:blank', viewport = null, locale = 'en-US' }) {
       const result = await this.beginRequest('browser_session_create', {
         agentId,

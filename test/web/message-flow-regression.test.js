@@ -154,6 +154,78 @@ function makeStore() {
   };
 }
 
+describe('app dialog contracts', () => {
+  it('queues requests FIFO and resolves each request exactly once', async () => {
+    globalThis.Vue = Vue;
+    const dialogModule = await import('../../web/utils/dialog.js');
+    const first = dialogModule.confirmDialog('first');
+    const second = dialogModule.promptDialog('second', 'seed');
+    expect(dialogModule.useDialogState()).toMatchObject({ type: 'confirm', message: 'first' });
+
+    dialogModule.resolveDialog(true);
+    dialogModule.resolveDialog(false);
+    await expect(first).resolves.toBe(true);
+    await Vue.nextTick();
+    expect(dialogModule.useDialogState()).toMatchObject({ type: 'prompt', message: 'second', value: 'seed' });
+    dialogModule.resolveDialog(true, 'edited');
+    await expect(second).resolves.toBe('edited');
+    await Vue.nextTick();
+    expect(dialogModule.useDialogState().open).toBe(false);
+  });
+
+  it('enforces keyboard, overlay, focus trap, inert background, and focus restoration', async () => {
+    globalThis.Vue = Vue;
+    const dialogModule = await import('../../web/utils/dialog.js');
+    const { default: AppDialog } = await import('../../web/components/AppDialog.js');
+    const trigger = document.createElement('button');
+    trigger.textContent = 'trigger';
+    document.body.appendChild(trigger);
+    trigger.focus();
+    const wrapper = mount(AppDialog, {
+      attachTo: document.body,
+      global: { mocks: { $t: key => key } },
+    });
+    const element = selector => document.body.querySelector(selector);
+
+    const confirm = dialogModule.confirmDialog('confirm');
+    await Vue.nextTick();
+    await Vue.nextTick();
+    expect(trigger.inert).toBe(true);
+    expect(document.activeElement).toBe(element('.app-dialog-confirm'));
+    element('.app-dialog-confirm').dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    expect(document.activeElement).toBe(element('.btn-secondary'));
+    element('.btn-secondary').dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
+    expect(document.activeElement).toBe(element('.app-dialog-confirm'));
+    element('.app-dialog-overlay').click();
+    await expect(confirm).resolves.toBe(false);
+    await Vue.nextTick();
+    await Vue.nextTick();
+    expect(trigger.inert).toBe(false);
+    expect(document.activeElement).toBe(trigger);
+
+    const prompt = dialogModule.promptDialog('prompt', 'seed');
+    await Vue.nextTick();
+    await Vue.nextTick();
+    expect(document.activeElement).toBe(element('.app-dialog-input'));
+    element('.app-dialog-input').value = 'edited';
+    element('.app-dialog-input').dispatchEvent(new Event('input', { bubbles: true }));
+    element('.app-dialog-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await expect(prompt).resolves.toBe('edited');
+
+    const escapedPrompt = dialogModule.promptDialog('escape');
+    await Vue.nextTick();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await expect(escapedPrompt).resolves.toBeNull();
+    const alert = dialogModule.alertDialog('alert');
+    await Vue.nextTick();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await expect(alert).resolves.toBeUndefined();
+
+    wrapper.unmount();
+    trigger.remove();
+  });
+});
+
 describe('message flow regressions', () => {
   it('preserves the configured MCP cache when an error broadcast omits servers', () => {
     const store = useChatStore();
@@ -1527,20 +1599,24 @@ describe('message flow regressions', () => {
         { id: 'agent-b', name: 'Agent B', online: false },
       ],
     });
-    const originalPrompt = window.prompt;
-    const originalConfirm = window.confirm;
-    window.prompt = vi.fn();
-    window.confirm = vi.fn();
-    UnifiedSessionList.methods.renameProject.call(sidebar.vm, { id: 'project-shared', name: 'Shared project' });
-    expect(window.prompt).toHaveBeenCalledTimes(1);
-    UnifiedSessionList.methods.deleteProject.call(sidebar.vm, { id: 'project-shared', name: 'Shared project' });
-    expect(window.confirm).toHaveBeenCalledTimes(1);
-    UnifiedSessionList.methods.runAction.call(sidebar.vm, 'rename', catalogRows[1]);
-    expect(window.prompt).toHaveBeenCalledTimes(1);
-    if (originalPrompt) window.prompt = originalPrompt;
-    else delete window.prompt;
-    if (originalConfirm) window.confirm = originalConfirm;
-    else delete window.confirm;
+    globalThis.Vue = Vue;
+    const dialogModule = await import('../../web/utils/dialog.js');
+    const { default: AppDialog } = await import('../../web/components/AppDialog.js');
+    const dialog = mount(AppDialog, {
+      attachTo: document.body,
+      global: { mocks: { $t: key => ({ 'common.confirm': 'OK', 'common.cancel': 'Cancel' })[key] || key } },
+    });
+    const dialogElement = selector => document.body.querySelector(selector);
+    const renamePromise = UnifiedSessionList.methods.renameProject.call(sidebar.vm, { id: 'project-shared', name: 'Shared project' });
+    await Vue.nextTick();
+    expect(dialogElement('.app-dialog-input').value).toBe('Shared project');
+    dialogElement('.app-dialog-confirm').click();
+    await renamePromise;
+    const deletePromise = UnifiedSessionList.methods.deleteProject.call(sidebar.vm, { id: 'project-shared', name: 'Shared project' });
+    await Vue.nextTick();
+    expect(dialogElement('.app-dialog-body').textContent).toContain('sidebar.projects.deleteConfirm');
+    dialogElement('.btn-secondary').click();
+    await deletePromise;
     await sidebar.setProps({ processingConversations: {}, isYeaftSessionProcessing: () => false });
     expect(sidebar.findAll('.processing-dot')).toHaveLength(0);
     expect(UnifiedSessionList.template).toContain(':key="row.catalogKey"');
@@ -1834,8 +1910,6 @@ describe('message flow regressions', () => {
       projectId: 'project-shared',
     }, 'agent-a');
     expect(chatPage.vm.unifiedSessionCreateProject).toBeNull();
-    const alertSpy = vi.fn();
-    vi.stubGlobal('alert', alertSpy);
     let upgradeAckDetail = null;
     window.addEventListener('agent-upgrade-ack', event => { upgradeAckDetail = event.detail; }, { once: true });
     handleMessage(parentStore, {
@@ -1851,11 +1925,16 @@ describe('message flow regressions', () => {
       version: '1.0.369',
       requiredCapability: 'remote_upgrade_safe',
     });
-    expect(alertSpy).toHaveBeenLastCalledWith('chat.agent.manualUpgradeRequired');
+    await Vue.nextTick();
+    expect(dialogModule.useDialogState().message).toBe('chat.agent.manualUpgradeRequired');
+    dialogElement('.app-dialog-confirm').click();
     parentStore.mutateProject.mockResolvedValueOnce({ ok: false, error: { code: 'timeout' } });
     chatPage.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });
-    await chatPage.vm.onUnifiedSessionCreated({ id: 'unassigned-session', agentId: 'agent-a' });
-    expect(alertSpy).toHaveBeenLastCalledWith('sidebar.projects.assignFailed');
+    const assignmentPromise = chatPage.vm.onUnifiedSessionCreated({ id: 'unassigned-session', agentId: 'agent-a' });
+    await Vue.nextTick();
+    expect(dialogModule.useDialogState().message).toBe('sidebar.projects.assignFailed');
+    dialogModule.resolveDialog(true);
+    await assignmentPromise;
     chatPage.vm.hideSessionFromSidebar({
       id: 'legacy-chat',
       provider: 'copilot',
@@ -1896,7 +1975,6 @@ describe('message flow regressions', () => {
         },
       },
     });
-    alertSpy.mockClear();
     window.dispatchEvent(new CustomEvent('agent-upgrade-ack', {
       detail: {
         agentId: 'agent-a',
@@ -1906,7 +1984,9 @@ describe('message flow regressions', () => {
         requiredCapability: 'remote_upgrade_safe',
       },
     }));
-    expect(alertSpy).toHaveBeenLastCalledWith('chat.agent.manualUpgradeRequired');
+    await Vue.nextTick();
+    expect(dialogModule.useDialogState().message).toBe('chat.agent.manualUpgradeRequired');
+    dialogElement('.app-dialog-confirm').click();
     await yeaftSidebar.get('.sidebar-primary-action').trigger('click');
     expect(yeaftSidebar.vm.sessionCreateOpen).toBe(true);
     yeaftSidebar.vm.closeSessionCreate();
@@ -1920,9 +2000,11 @@ describe('message flow regressions', () => {
     expect(yeaftSidebar.vm.sessionCreateProject).toBeNull();
     parentStore.mutateProject.mockResolvedValueOnce({ ok: false, error: { message: 'denied' } });
     yeaftSidebar.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });
-    await yeaftSidebar.vm.onSessionCreated({ id: 'unassigned-from-yeaft', agentId: 'agent-a' });
-    expect(alertSpy).toHaveBeenLastCalledWith('sidebar.projects.assignFailed');
-    vi.unstubAllGlobals();
+    const yeaftAssignmentPromise = yeaftSidebar.vm.onSessionCreated({ id: 'unassigned-from-yeaft', agentId: 'agent-a' });
+    await Vue.nextTick();
+    expect(dialogModule.useDialogState().message).toBe('sidebar.projects.assignFailed');
+    dialogModule.resolveDialog(true);
+    await yeaftAssignmentPromise;
     yeaftSidebar.vm.onRemoveFromList({
       id: 'legacy-yeaft',
       name: 'Legacy Yeaft',
@@ -1939,6 +2021,7 @@ describe('message flow regressions', () => {
       },
     }));
     yeaftSidebar.unmount();
+    dialog.unmount();
     globalThis.fetch = originalFetch;
     delete globalThis.Pinia.useChatStore;
     storeFactories.clear();
