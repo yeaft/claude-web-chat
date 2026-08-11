@@ -143,7 +143,7 @@ export function resolveWorkItemModel(config, vp, rawPolicy) {
     throw policyError(`Configured Work Center model is unavailable: ${model}`);
   }
   const effortOptions = Array.isArray(available?.effortOptions) ? available.effortOptions : [];
-  const effortOrder = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  const effortOrder = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
   const requestedIndex = effortOrder.indexOf(policy.effort);
   const effort = !policy.effort || effortOptions.length === 0
     ? null

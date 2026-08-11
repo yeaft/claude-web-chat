@@ -364,6 +364,7 @@ export default {
   'yeaft.modelMenu.effort.high': '高',
   'yeaft.modelMenu.effort.xhigh': '超高',
   'yeaft.modelMenu.effort.max': '最高',
+  'yeaft.modelMenu.effort.ultra': '极致',
   'yeaft.modelMenu.noEffort': '当前模型没有可兼容映射的推理强度控制。',
   'yeaft.modelMenu.configureHint': 'Provider、密钥、模型列表',
   'yeaft.settings.title': '设置',

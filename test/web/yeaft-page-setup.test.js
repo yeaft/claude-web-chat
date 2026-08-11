@@ -72,7 +72,7 @@ beforeEach(() => {
   chatStore.yeaftModel = 'provider/fallback-model';
   chatStore.yeaftModelEffort = 'medium';
   chatStore.yeaftAvailableModels = [
-    { id: 'session-model', provider: 'provider', ref: 'provider/session-model', effortOptions: ['low', 'medium', 'high'] },
+    { id: 'session-model', provider: 'provider', ref: 'provider/session-model', effortOptions: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] },
     { id: 'next-model', provider: 'provider', ref: 'provider/next-model', effortOptions: ['medium', 'high'] },
   ];
   chatStore.switchYeaftModel = vi.fn();
@@ -146,12 +146,12 @@ describe('YeaftPage setup', () => {
     expect(page.topbarEffort.value).toBe('high');
 
     expect(page.topbarModelLabel.value).toBe('session-model');
-    expect(page.topbarEffortOptions.value).toEqual(['medium', 'high']);
+    expect(page.topbarEffortOptions.value).toEqual(['medium', 'high', 'xhigh', 'max', 'ultra']);
 
     page.selectModel('provider/next-model', 'medium');
     expect(chatStore.switchYeaftModel).toHaveBeenCalledWith('provider/next-model', 'session-1', 'medium');
-    page.selectEffort('medium');
-    expect(chatStore.switchYeaftModel).toHaveBeenLastCalledWith('provider/session-model', 'session-1', 'medium');
+    page.selectEffort('ultra');
+    expect(chatStore.switchYeaftModel).toHaveBeenLastCalledWith('provider/session-model', 'session-1', 'ultra');
 
     const source = YeaftPage.template;
     const topbarStart = source.indexOf('<div class="yeaft-topbar">');
@@ -173,6 +173,10 @@ describe('YeaftPage setup', () => {
     expect(source).not.toContain('@mouseleave=');
     expect(source).not.toContain('@focusin=');
     expect(source).toContain("$t('yeaft.modelMenu.effort.' + topbarEffort)");
+    const enSource = readFileSync(resolve(import.meta.dirname, '../../web/i18n/en.js'), 'utf8');
+    const zhSource = readFileSync(resolve(import.meta.dirname, '../../web/i18n/zh-CN.js'), 'utf8');
+    expect(enSource).toContain("'yeaft.modelMenu.effort.ultra': 'Ultra'");
+    expect(zhSource).toContain("'yeaft.modelMenu.effort.ultra': '极致'");
     expect(source).toContain('class="yeaft-model-option-provider"');
     expect(source).toContain('class="yeaft-model-option-ctx"');
     expect(source).toContain('class="yeaft-model-config-option"');
