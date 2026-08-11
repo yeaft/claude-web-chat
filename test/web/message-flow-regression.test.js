@@ -512,6 +512,160 @@ describe('message flow regressions', () => {
     globalThis.Pinia.useChatStore = priorStore;
   });
 
+  it('keeps the latest same-key Plugin catalog cache when replies arrive out of order', async () => {
+    const store = useChatStore();
+    const key = store.pluginCatalogKey('agent-a');
+    store.agents = [{
+      id: 'agent-a', name: 'Agent A', online: true,
+      capabilities: ['yeaft_plugins'], capabilityMetadataProvided: true,
+    }];
+    store.currentAgent = 'agent-a';
+    store.pluginCenterAgentId = 'agent-a';
+    store.pluginCatalogByKey = {
+      [key]: {
+        catalog: { tools: [{ id: 'seed-tool' }], skills: [], mcpServers: [] },
+        loading: false,
+        error: null,
+        loaded: true,
+      },
+    };
+    store.pluginCatalogRequestByKey = {};
+    store._pluginPending = {};
+    store.sendWsMessage = vi.fn(() => true);
+
+    const older = store.loadPluginCatalog('agent-a');
+    const olderRequest = store.sendWsMessage.mock.calls.at(-1)[0];
+    const newer = store.loadPluginCatalog('agent-a');
+    const newerRequest = store.sendWsMessage.mock.calls.at(-1)[0];
+    expect(olderRequest.requestId).not.toBe(newerRequest.requestId);
+    expect(store.pluginCatalogRequestByKey[key]).toBe(newerRequest.requestId);
+
+    handleMessage(store, {
+      type: 'yeaft_plugin_catalog_result',
+      agentId: 'agent-a',
+      requestId: newerRequest.requestId,
+      catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+      error: null,
+    });
+    await expect(newer).resolves.toEqual({
+      catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+      error: null,
+    });
+    expect(store.pluginCatalogByKey[key]).toMatchObject({
+      catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+      loading: false,
+      error: null,
+    });
+
+    handleMessage(store, {
+      type: 'yeaft_plugin_catalog_result',
+      agentId: 'agent-a',
+      requestId: olderRequest.requestId,
+      catalog: { tools: [{ id: 'old-tool' }], skills: [], mcpServers: [] },
+      error: 'old request failed late',
+    });
+    await expect(older).resolves.toEqual({
+      catalog: { tools: [{ id: 'old-tool' }], skills: [], mcpServers: [] },
+      error: 'old request failed late',
+    });
+    expect(store.pluginCatalogRequestByKey[key]).toBe(newerRequest.requestId);
+    expect(store.pluginCatalogByKey[key]).toMatchObject({
+      catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+      loading: false,
+      error: null,
+    });
+    expect(store._pluginPending).toEqual({});
+  });
+
+  it('keeps a newer Plugin catalog cache after an older request times out and replies late', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = useChatStore();
+      const key = store.pluginCatalogKey('agent-a');
+      store.agents = [{
+        id: 'agent-a', name: 'Agent A', online: true,
+        capabilities: ['yeaft_plugins'], capabilityMetadataProvided: true,
+      }];
+      store.currentAgent = 'agent-a';
+      store.pluginCenterAgentId = 'agent-a';
+      store.pluginCatalogByKey = {
+        [key]: {
+          catalog: { tools: [{ id: 'seed-tool' }], skills: [], mcpServers: [] },
+          loading: false,
+          error: null,
+          loaded: true,
+        },
+      };
+      store.pluginCatalogRequestByKey = {};
+      store._pluginPending = {};
+      store.sendWsMessage = vi.fn(() => true);
+
+      const older = store.loadPluginCatalog('agent-a');
+      const olderRequest = store.sendWsMessage.mock.calls.at(-1)[0];
+      await vi.advanceTimersByTimeAsync(1);
+      const newer = store.loadPluginCatalog('agent-a');
+      const newerRequest = store.sendWsMessage.mock.calls.at(-1)[0];
+      expect(store.pluginCatalogRequestByKey[key]).toBe(newerRequest.requestId);
+
+      await vi.advanceTimersByTimeAsync(9_999);
+      await expect(older).resolves.toEqual({
+        catalog: { tools: [], skills: [], mcpServers: [] },
+        error: 'timeout',
+      });
+      expect(store.pluginCatalogByKey[key]).toMatchObject({
+        catalog: { tools: [{ id: 'seed-tool' }], skills: [], mcpServers: [] },
+        loading: true,
+        error: null,
+      });
+
+      handleMessage(store, {
+        type: 'yeaft_plugin_catalog_result',
+        agentId: 'agent-a',
+        requestId: 'unknown-catalog-result',
+        catalog: { tools: [{ id: 'unknown-tool' }], skills: [], mcpServers: [] },
+        error: 'unknown request error',
+      });
+      expect(store.pluginCatalogByKey[key]).toMatchObject({
+        catalog: { tools: [{ id: 'seed-tool' }], skills: [], mcpServers: [] },
+        loading: true,
+        error: null,
+      });
+
+      handleMessage(store, {
+        type: 'yeaft_plugin_catalog_result',
+        agentId: 'agent-a',
+        requestId: olderRequest.requestId,
+        catalog: { tools: [{ id: 'old-tool' }], skills: [], mcpServers: [] },
+        error: 'late old error',
+      });
+      expect(store.pluginCatalogByKey[key]).toMatchObject({
+        catalog: { tools: [{ id: 'seed-tool' }], skills: [], mcpServers: [] },
+        loading: true,
+        error: null,
+      });
+
+      handleMessage(store, {
+        type: 'yeaft_plugin_catalog_result',
+        agentId: 'agent-a',
+        requestId: newerRequest.requestId,
+        catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+        error: null,
+      });
+      await expect(newer).resolves.toEqual({
+        catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+        error: null,
+      });
+      expect(store.pluginCatalogByKey[key]).toMatchObject({
+        catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+        loading: false,
+        error: null,
+      });
+      expect(store._pluginPending).toEqual({});
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('distinguishes explicit Plugin incompatibility from missing capability metadata', async () => {
     const store = useChatStore();
     store.agents = [{

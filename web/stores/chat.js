@@ -729,6 +729,7 @@ export const useChatStore = defineStore('chat', {
     pluginCenterAgentId: null,
     pluginConfigByAgent: {},
     pluginCatalogByKey: {},
+    pluginCatalogRequestByKey: {},
     _pluginPending: {},
     // Yeaft 分页状态 (parallel to the Chat-mode flags above):
     //  - yeaftHasMoreHistory: server told us there's at least one earlier
@@ -1754,6 +1755,7 @@ export const useChatStore = defineStore('chat', {
       }
       const key = this.pluginCatalogKey(agentId, workDir);
       const requestId = `plugins-catalog-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      this.pluginCatalogRequestByKey = { ...this.pluginCatalogRequestByKey, [key]: requestId };
       this.pluginCatalogByKey = {
         ...this.pluginCatalogByKey,
         [key]: { ...(this.pluginCatalogByKey[key] || {}), loading: true, error: null },
@@ -1763,10 +1765,12 @@ export const useChatStore = defineStore('chat', {
           const pending = this._pluginPending?.[requestId];
           if (!pending) return;
           delete this._pluginPending[requestId];
-          this.pluginCatalogByKey = {
-            ...this.pluginCatalogByKey,
-            [key]: { ...(this.pluginCatalogByKey[key] || {}), loading: false, error: 'timeout' },
-          };
+          if (this.pluginCatalogRequestByKey?.[key] === requestId) {
+            this.pluginCatalogByKey = {
+              ...this.pluginCatalogByKey,
+              [key]: { ...(this.pluginCatalogByKey[key] || {}), loading: false, error: 'timeout' },
+            };
+          }
           resolve({ catalog: { tools: [], skills: [], mcpServers: [] }, error: 'timeout' });
         }, 10_000);
         this._pluginPending[requestId] = { resolve, timer, kind: 'catalog', agentId, key };
