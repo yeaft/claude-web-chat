@@ -185,7 +185,7 @@ The Agent reads environment variables on startup. Most values can also be set in
 | `TEMP_TOKEN_EXPIRES_IN` | — | `'10m'` | Lifetime for short-lived tokens (e.g. email-verification handoff) |
 | `AGENT_SECRET` | ✓ | `'agent-shared-secret'` | Must match the Agent `AGENT_SECRET` |
 | `AUTH_USERS` | — | — | `username:passwordHash:email,...` for bootstrap user list |
-| `BROWSER_RUNTIME_ENABLED` | — | `false` | Server rollout gate for Browser setup, signaling, and viewer routes |
+| `BROWSER_RUNTIME_ENABLED` | — | `true` | Set to `false` to disable Browser setup, signaling, and viewer routes globally |
 | `BROWSER_STUN_URLS` | — | — | Comma-separated STUN URLs used by Browser WebRTC peers |
 | `BROWSER_TURN_URLS` | — | — | Comma-separated TURN URLs; requires `BROWSER_TURN_SECRET` |
 | `BROWSER_TURN_SECRET` | required with TURN URLs | — | coturn REST API shared secret for short-lived endpoint credentials |

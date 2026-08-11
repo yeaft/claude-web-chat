@@ -129,16 +129,12 @@ yeaft-agent status --name my-worker
 
 ### Enable Browser Runtime (Linux x64)
 
-The Workbench Browser viewer is disabled by default and currently supported only by Linux x64 Agents. Both the Server gate and the selected Agent instance must be ready:
+The Workbench Browser viewer currently supports Linux x64 Agents. Browser routes are available on the Server by default, while the browser binary remains an explicit per-Agent install:
 
-1. Set `BROWSER_RUNTIME_ENABLED=true` in the Server environment and restart the Server. `BROWSER_STUN_URLS` is optional for direct ICE. For production across NATs or restrictive networks, configure `BROWSER_TURN_URLS` and `BROWSER_TURN_SECRET`; set `BROWSER_ICE_TRANSPORT_POLICY=relay` when direct candidates are forbidden.
-2. Select the Agent in Yeaft, open **Workbench → Browser**, then confirm **Download and install**. Yeaft downloads the pinned Chrome for Testing build only after this confirmation, stores it under that Agent instance's Yeaft data directory, enables the runtime, and runs the media probe. This UI path refreshes capabilities without restarting the Agent.
+1. Select the Agent in Yeaft and open **Workbench → Browser**. If Browser is not ready, the card says **Enable required** and the panel shows the pinned Chrome for Testing download size.
+2. Click **Enable Browser** once. Yeaft displays the real download percentage, verifies and installs the browser in that Agent instance's data directory, persists enablement, runs the media probe, refreshes capabilities, and opens the viewer automatically. No Agent restart or second enable action is required.
 
-For local mode, set the Server gate when starting it:
-
-```bash
-BROWSER_RUNTIME_ENABLED=true yeaft-agent local --name local
-```
+Nothing downloads merely because Yeaft or the Agent was installed. Administrators can disable the entire Browser surface with `BROWSER_RUNTIME_ENABLED=false`. `BROWSER_STUN_URLS` is optional for direct ICE. For production across NATs or restrictive networks, configure `BROWSER_TURN_URLS` and `BROWSER_TURN_SECRET`; set `BROWSER_ICE_TRANSPORT_POLICY=relay` when direct candidates are forbidden.
 
 For unattended setup, use the same named instance throughout:
 

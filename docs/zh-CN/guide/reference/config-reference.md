@@ -185,7 +185,7 @@ Agent 启动时读环境变量。多数值也可以写在 Agent 的 `config.json
 | `TEMP_TOKEN_EXPIRES_IN` | — | `'10m'` | 临时 token 寿命（如邮箱验证 handoff） |
 | `AGENT_SECRET` | ✓ | `'agent-shared-secret'` | 必须和 Agent 端的 `AGENT_SECRET` 一致 |
 | `AUTH_USERS` | — | — | `username:passwordHash:email,...` 启动期 bootstrap 用户列表 |
-| `BROWSER_RUNTIME_ENABLED` | — | `false` | Browser setup、信令和 viewer route 的 Server rollout gate |
+| `BROWSER_RUNTIME_ENABLED` | — | `true` | 设置为 `false` 时全局关闭 Browser setup、信令和 viewer route |
 | `BROWSER_STUN_URLS` | — | — | Browser WebRTC peer 使用的 STUN URL，英文逗号分隔 |
 | `BROWSER_TURN_URLS` | — | — | TURN URL，英文逗号分隔；配置后必须同时设置 `BROWSER_TURN_SECRET` |
 | `BROWSER_TURN_SECRET` | 配置 TURN URL 时必填 | — | coturn REST API shared secret，用于生成短期 endpoint credential |

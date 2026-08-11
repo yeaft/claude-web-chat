@@ -231,7 +231,7 @@ describe('Workbench capability launcher', () => {
     workbenchStore.capabilities = ['terminal', 'file_editor', 'workbench_session_routes', 'browser_runtime_setup'];
     const setup = mountWorkbench();
     expect(setup.get('[data-workbench-capability="browser"] .workbench-capability-status').text())
-      .toBe('workbench.setupRequired');
+      .toBe('workbench.enableRequired');
     await setup.get('[data-workbench-capability="browser"]').trigger('click');
     expect(setup.find('.workbench-browser-view').exists()).toBe(false);
     expect(setup.get('.browser-panel-stub').attributes('data-route-key'))
@@ -428,6 +428,7 @@ describe('message file preview', () => {
   it('wires the right panel to the complete Files experience with a collapsed tree by default', () => {
     const filesTab = readWeb('components/FilesTab.js');
     const workbench = readWeb('components/WorkbenchPanel.js');
+    const browserPanel = readWeb('components/BrowserPanel.js');
     const capabilityHost = readWeb('components/WorkbenchCapabilityHost.js');
     const chatPage = readWeb('components/ChatPage.js');
     const chatHeader = readWeb('components/ChatHeader.js');
@@ -456,6 +457,9 @@ describe('message file preview', () => {
     expect(filesCss).toMatch(/\.file-tree-splitter\s*\{[^}]*order:\s*2;/s);
     expect(filesTab).toContain('startWidth - (clientX - startX)');
     expect(workbench).toContain('<WorkbenchCapabilityHost');
+    expect(browserPanel).toContain("['installing', 'probing'].includes(status.state)");
+    expect(browserPanel).toContain('<template v-if="setupError">');
+    expect(browserPanel).toContain('class="browser-install-percent">{{ progressPercent }}%</strong>');
     expect(capabilityHost).toContain("files: 'FilesTab'");
     expect(capabilityHost).toContain(':tree-initially-visible="activeCapability === \'files\' ? false : undefined"');
     expect(workbench).toContain('class="workbench-header-action workbench-maximize-btn"');

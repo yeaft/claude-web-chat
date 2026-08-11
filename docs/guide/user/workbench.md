@@ -72,18 +72,13 @@ The current viewer is read-only. Navigation, keyboard, pointer, and scroll contr
 
 The viewer data plane currently supports **Linux x64 Agents only**. Other platforms may be able to run CLI install/status commands, but they do not advertise a ready viewer capability.
 
-Browser is fail-closed at three layers. All three must be ready:
+Browser routes are available on the Server by default. The selected Agent still stays disabled and downloads nothing until the user explicitly enables Browser:
 
-1. Enable the Server rollout gate with `BROWSER_RUNTIME_ENABLED=true`, then restart the Server. For local mode, set the variable on the process that starts the bundled Server:
+1. Select the Linux x64 Agent and open **Workbench → Browser**. If Browser is not ready, the launcher says **Enable required** and the setup panel shows the exact pinned build and platform download size. Opening the panel does not start a download.
+2. Click **Enable Browser** once. Workbench shows the real byte count and percentage while the Agent downloads and verifies the archive. The Agent installs it only in that Agent instance's data directory, persists enablement, runs the full media probe, refreshes capabilities, and automatically opens the Viewer. There is no second enable button and no Agent restart on this UI path.
+3. Configure ICE for the deployment. `BROWSER_STUN_URLS` is optional for direct connectivity. Production deployments should configure `BROWSER_TURN_URLS` and `BROWSER_TURN_SECRET`; use `BROWSER_ICE_TRANSPORT_POLICY=relay` when direct candidates are not allowed. The URLs are comma-separated.
 
-   ```bash
-   BROWSER_RUNTIME_ENABLED=true yeaft-agent local --name local
-   ```
-
-2. Configure ICE. `BROWSER_STUN_URLS` is optional for direct connectivity. Production deployments should configure `BROWSER_TURN_URLS` and `BROWSER_TURN_SECRET`; use `BROWSER_ICE_TRANSPORT_POLICY=relay` when direct candidates are not allowed. The URLs are comma-separated.
-3. Select the Linux x64 Agent and open **Workbench → Browser**. Chrome is not bundled with the Agent package. If the pinned browser is missing, Workbench shows the exact build and platform download size and waits for an explicit **Download and install** action. The Agent verifies the archive, installs it only in that Agent instance's data directory, enables Browser Runtime, and runs the full media probe. No download happens merely because the Agent was installed or upgraded.
-
-The UI setup path is the recommended interactive path. After a successful install and probe it refreshes Agent capabilities without an Agent restart.
+Administrators can set `BROWSER_RUNTIME_ENABLED=false` and restart the Server to disable Browser setup, signaling, and viewer routes globally. This is an administrative off switch, not a normal user setup step.
 
 For unattended administration, use the equivalent instance-scoped CLI. Every command must select the same `--name` or `--yeaft-dir` as the running Agent:
 
@@ -97,7 +92,7 @@ yeaft-agent browser status --name <agent-instance>
 
 The CLI `enable` command persists `browserRuntime.enabled=true`; it does not refresh an already running Agent process. Restart a managed service, or stop and start a foreground Agent, after CLI enablement. `browser probe` exercises the pinned Chrome build, extension, tab capture, offscreen runtime, and WebRTC media path. `browser status` only reports selected-instance configuration and managed-browser installation state, so `installed: true` by itself does not mean the viewer is ready.
 
-A successful Linux tab-capture probe advertises `browser_runtime`, `browser_webrtc`, and `browser_capture_tab`. Workbench enables the viewer only after the Web protocol handshake, Server rollout gate, and complete Agent capability combination all succeed. Older Agents that do not advertise `browser_runtime_setup` remain compatible when they already advertise the probe-ready viewer capabilities.
+A successful Linux tab-capture probe advertises `browser_runtime`, `browser_webrtc`, and `browser_capture_tab`. Workbench enables the viewer only after Web protocol negotiation, the Server's administrative off switch, and the complete Agent capability combination all allow it. Older Agents that do not advertise `browser_runtime_setup` remain compatible when they already advertise the probe-ready viewer capabilities.
 
 A deployment without TURN may work over direct ICE, but it is a degraded direct-only setup and is not a production availability guarantee across NATs or restrictive networks.
 
@@ -115,7 +110,7 @@ A deployment without TURN may work over direct ICE, but it is a degraded direct-
 
 - for Browser, first run `yeaft-agent browser status --name <agent-instance>` and confirm that the command reports the same `yeaftDir` as the running Agent
 - run `yeaft-agent browser probe --name <agent-instance>`; a nonzero exit or `ok: false` means the Chrome/media path is not ready
-- confirm the Agent is Linux x64, the Server was restarted with `BROWSER_RUNTIME_ENABLED=true`, and the Agent advertises `browser_runtime`, `browser_webrtc`, and `browser_capture_tab`
+- confirm the Agent is Linux x64, the Server was not explicitly started with `BROWSER_RUNTIME_ENABLED=false`, and the Agent advertises `browser_runtime`, `browser_webrtc`, and `browser_capture_tab`
 - for other capabilities, verify that the selected Agent advertises the required capability, including `workbench_session_routes` for route-scoped tools
 - upgrade the Agent if necessary and check its startup logs
 

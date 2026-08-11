@@ -242,7 +242,7 @@ test.describe('Workbench', () => {
     const panel = chatPage.locator('.workbench-panel');
     await capability(panel, 'browser').click();
     await expect(panel.locator('.workbench-browser-view')).toBeVisible();
-    await expect(panel.locator('.workbench-browser-view')).toContainText('Browser Runtime requires Server rollout');
+    await expect(panel.locator('.workbench-browser-view')).toContainText('Browser is disabled by the administrator');
     await expect(panel.locator('video')).toHaveCount(0);
     await expect(panel.locator('iframe')).toHaveCount(0);
 
@@ -250,7 +250,8 @@ test.describe('Workbench', () => {
     await expect(panel.locator('.workbench-launcher')).toBeVisible();
   });
 
-  test('offers an explicit optional Browser install without downloading on open', async ({ chatPage, mockAgent }) => {
+  test('enables Browser once with real progress and opens the viewer automatically', async ({ chatPage, mockAgent }) => {
+    mockAgent.pauseBrowserRuntimeInstall();
     await openYeaftWorkbench(chatPage, mockAgent);
     await chatPage.evaluate(agentId => {
       const store = window.Pinia.useChatStore();
@@ -267,7 +268,7 @@ test.describe('Workbench', () => {
     }, mockAgent.agentId);
 
     const panel = chatPage.locator('.workbench-panel');
-    await expect(capability(panel, 'browser').locator('.workbench-capability-status')).toHaveText('Setup required');
+    await expect(capability(panel, 'browser').locator('.workbench-capability-status')).toHaveText('Enable required');
     const installsBefore = mockAgent.messages('browser_runtime_install').length;
     await capability(panel, 'browser').click();
     const status = await mockAgent.waitForMessage('browser_runtime_status');
@@ -277,8 +278,9 @@ test.describe('Workbench', () => {
       serverIdentity: expect.objectContaining({ ownerUserId: expect.any(String) }),
     });
     await expect(panel.locator('.browser-setup-stage')).toBeVisible();
-    await expect(panel.locator('.browser-setup-stage')).toContainText('Chrome is not bundled with the Agent');
+    await expect(panel.locator('.browser-setup-stage')).toContainText('Browser needs a pinned Chrome for Testing');
     await expect(panel.locator('.browser-setup-stage')).toContainText('184.3 MiB');
+    await expect(panel.locator('.browser-setup-stage .btn-primary')).toContainText('Enable Browser');
     expect(mockAgent.messages('browser_runtime_install')).toHaveLength(installsBefore);
 
     for (const theme of ['light', 'dark']) {
@@ -301,6 +303,17 @@ test.describe('Workbench', () => {
       confirmedDownloadBytes: 193_285_407,
       serverIdentity: expect.objectContaining({ ownerUserId: expect.any(String) }),
     });
+    const progress = panel.locator('.browser-install-progress');
+    await expect(progress).toHaveAttribute('aria-valuenow', '50');
+    await expect(progress).toHaveAttribute('aria-valuetext', '92.2 MiB of 184.3 MiB');
+    await expect(panel.locator('.browser-install-percent')).toHaveText('50%');
+
+    mockAgent.completeBrowserRuntimeInstall();
+    await expect(panel.locator('.browser-video')).toBeVisible();
+    await expect(panel.locator('.browser-setup-stage')).toHaveCount(0);
+    expect(mockAgent.messages('browser_runtime_install')).toHaveLength(installsBefore + 1);
+    expect(mockAgent.messages('browser_runtime_enable')).toHaveLength(0);
+    await mockAgent.waitForMessage('browser_session_create');
   });
 
   test('keeps a failed Browser install visible after automatic status refresh and allows retry', async ({ chatPage, mockAgent }) => {

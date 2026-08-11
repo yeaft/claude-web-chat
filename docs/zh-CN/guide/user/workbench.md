@@ -72,18 +72,13 @@ Git 显示当前 Session 所选仓库的状态：
 
 Viewer 数据面目前**只支持 Linux x64 Agent**。其他平台可能可以执行 CLI install/status，但不会声明 ready viewer capability。
 
-Browser Runtime 在三层均为 fail-closed，必须全部就绪：
+Server 默认开放浏览器路由。所选 Agent 仍保持未启用状态，只有用户明确操作后才会下载浏览器：
 
-1. 在 Server 设置 `BROWSER_RUNTIME_ENABLED=true`，然后重启 Server。Local mode 应把变量设置在启动内置 Server 的进程上：
+1. 选择 Linux x64 Agent，打开 **Workbench → 浏览器**。浏览器未就绪时，能力卡显示**需要启用**，设置面板会显示准确的固定构建号和当前平台下载大小。仅打开面板不会开始下载。
+2. 点击一次**启用浏览器**。Workbench 会显示真实字节数和百分比；Agent 下载并校验归档，只安装到该 Agent instance 的数据目录，持久化启用配置，执行完整媒体链路探测，刷新 capability，然后自动打开 Viewer。UI 路径没有第二个启用按钮，也不需要重启 Agent。
+3. 为部署配置 ICE。`BROWSER_STUN_URLS` 可用于直连；生产部署应配置 `BROWSER_TURN_URLS` 和 `BROWSER_TURN_SECRET`。禁止直连候选时设置 `BROWSER_ICE_TRANSPORT_POLICY=relay`。多个 URL 使用英文逗号分隔。
 
-   ```bash
-   BROWSER_RUNTIME_ENABLED=true yeaft-agent local --name local
-   ```
-
-2. 配置 ICE。`BROWSER_STUN_URLS` 可用于直连；生产部署应配置 `BROWSER_TURN_URLS` 和 `BROWSER_TURN_SECRET`。禁止直连候选时设置 `BROWSER_ICE_TRANSPORT_POLICY=relay`。多个 URL 使用英文逗号分隔。
-3. 选择 Linux x64 Agent，打开 **Workbench → 浏览器**。Chrome 不会打包进 Agent。缺少固定版本浏览器时，Workbench 会显示准确的构建号和当前平台下载大小，并等待用户明确点击**下载并安装**。Agent 随后校验归档，只安装到该 Agent instance 的数据目录，启用 Browser Runtime 并执行完整媒体链路探测。仅安装或升级 Agent 不会触发任何 Chrome 下载。
-
-UI setup 是推荐的交互路径。安装和探测成功后，它会动态刷新 Agent capability，不需要重启 Agent。
+管理员可以设置 `BROWSER_RUNTIME_ENABLED=false` 并重启 Server，从而全局关闭 Browser setup、信令和 viewer route。这是管理员停用开关，不是普通用户设置步骤。
 
 无人值守运维可使用等价的 instance-scoped CLI。每条命令都必须选择与运行中 Agent 相同的 `--name` 或 `--yeaft-dir`：
 
@@ -97,7 +92,7 @@ yeaft-agent browser status --name <agent-instance>
 
 CLI `enable` 会持久化 `browserRuntime.enabled=true`，但不会刷新已经运行的 Agent 进程。CLI enable 后应重启 managed service；前台 Agent 则要停止后重新启动。`browser probe` 会实际检查固定 Chrome build、扩展、tab capture、offscreen runtime 和 WebRTC 媒体链路。`browser status` 只报告所选 instance 的配置和 managed browser 安装状态，因此仅有 `installed: true` 不代表 viewer 已 ready。
 
-Linux tab-capture probe 成功后会声明 `browser_runtime`、`browser_webrtc` 和 `browser_capture_tab`。只有 Web 协议握手、Server gate 和完整 Agent capability 组合同时通过，Workbench 才会启用 viewer。未声明 `browser_runtime_setup` 的旧 Agent 若已经声明 probe-ready viewer capabilities，仍保持兼容。
+Linux tab-capture probe 成功后会声明 `browser_runtime`、`browser_webrtc` 和 `browser_capture_tab`。只有 Web 协议协商、Server 管理员停用开关和完整 Agent capability 组合都允许时，Workbench 才会启用 viewer。未声明 `browser_runtime_setup` 的旧 Agent 若已经声明 probe-ready viewer capabilities，仍保持兼容。
 
 未配置 TURN 时可能通过 direct ICE 工作，但这只是降级的 direct-only 部署，不能保证跨 NAT 或受限网络的生产可用性。
 
@@ -115,7 +110,7 @@ Linux tab-capture probe 成功后会声明 `browser_runtime`、`browser_webrtc` 
 
 - Browser 应先执行 `yeaft-agent browser status --name <agent-instance>`，确认输出的 `yeaftDir` 与运行中的 Agent 相同
 - 执行 `yeaft-agent browser probe --name <agent-instance>`；非零退出或 `ok: false` 都表示 Chrome/媒体链路未 ready
-- 确认 Agent 是 Linux x64、Server 已带 `BROWSER_RUNTIME_ENABLED=true` 重启，并且 Agent 声明了 `browser_runtime`、`browser_webrtc` 和 `browser_capture_tab`
+- 确认 Agent 是 Linux x64、Server 没有显式设置 `BROWSER_RUNTIME_ENABLED=false`，并且 Agent 声明了 `browser_runtime`、`browser_webrtc` 和 `browser_capture_tab`
 - 其他能力应确认所选 Agent 声明了对应 capability；route-scoped 工具还需要 `workbench_session_routes`
 - 必要时升级 Agent，并检查启动日志
 
