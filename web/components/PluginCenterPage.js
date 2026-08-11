@@ -15,6 +15,7 @@ export default {
       configLoadError: '',
       configLoadedAgentId: null,
       configLoadGeneration: 0,
+      saveGeneration: 0,
     };
   },
   computed: {
@@ -124,6 +125,8 @@ export default {
       immediate: true,
       handler(next) {
         ++this.configLoadGeneration;
+        ++this.saveGeneration;
+        this.saving = false;
         this.error = '';
         if (!next) {
           this.selection = null;
@@ -152,6 +155,8 @@ export default {
   methods: {
     loadConfig(agentId = this.agentId, generation = ++this.configLoadGeneration) {
       if (!agentId) return;
+      ++this.saveGeneration;
+      this.saving = false;
       this.selection = null;
       this.savedSelection = null;
       this.configLoadedAgentId = null;
@@ -209,7 +214,7 @@ export default {
       return this.selection[field].includes(id);
     },
     toggle(field, id, checked) {
-      if (!this.configReady) return;
+      if (!this.configReady || this.saving) return;
       const selection = this.selection || {};
       const current = new Set(Array.isArray(selection[field])
         ? selection[field]
@@ -219,7 +224,7 @@ export default {
       this.selection = { ...selection, [field]: [...current] };
     },
     useAll() {
-      if (!this.configReady) return;
+      if (!this.configReady || this.saving) return;
       this.selection = {};
       this.error = '';
     },
@@ -231,19 +236,30 @@ export default {
     },
     async save() {
       if (this.saving || !this.agentId || !this.agentSupportsPlugins || !this.configReady) return;
+      const targetAgentId = this.agentId;
+      const targetLoadGeneration = this.configLoadGeneration;
+      const targetSaveGeneration = ++this.saveGeneration;
+      const submittedSelection = this.copySelection(this.selection || {});
+      const isCurrentSave = () => (
+        targetAgentId === this.agentId
+        && targetLoadGeneration === this.configLoadGeneration
+        && targetSaveGeneration === this.saveGeneration
+      );
       this.saving = true;
       this.error = '';
       try {
-        const result = await this.store?.savePluginConfig?.(this.selection || {}, this.agentId);
+        const result = await this.store?.savePluginConfig?.(submittedSelection, targetAgentId);
+        if (!isCurrentSave()) return;
         if (result?.error) this.error = result.error;
         else {
-          this.selection = this.copySelection(result?.plugins ?? this.selection ?? {});
-          this.savedSelection = this.copySelection(this.selection);
+          const savedSelection = this.copySelection(result?.plugins ?? submittedSelection);
+          this.selection = savedSelection;
+          this.savedSelection = this.copySelection(savedSelection);
         }
       } catch (err) {
-        this.error = err?.message || String(err);
+        if (isCurrentSave()) this.error = err?.message || String(err);
       } finally {
-        this.saving = false;
+        if (isCurrentSave()) this.saving = false;
       }
     },
     selectAgent(agentId) {
@@ -301,7 +317,7 @@ export default {
               <span class="plugin-center-enabled-count"><strong>{{ enabledCount }}</strong> / {{ totalCount }}</span>
               <span>{{ $t('yeaft.plugins.enabledLabel') }}</span>
             </div>
-            <button type="button" class="btn-secondary plugin-center-use-all" @click="useAll" :disabled="!configReady || !hasExplicitSelection">
+            <button type="button" class="btn-secondary plugin-center-use-all" @click="useAll" :disabled="!configReady || !hasExplicitSelection || saving">
               {{ $t('yeaft.plugins.useAll') }}
             </button>
           </section>
@@ -368,8 +384,8 @@ export default {
                   <span>{{ filteredCatalog.tools.length }}</span>
                 </div>
                 <div class="plugin-center-card-grid">
-                  <label v-for="item in filteredCatalog.tools" :key="item.id" class="plugin-center-card" :class="{ 'is-disabled': !configReady || !enabled('tools', item.id) }">
-                    <input type="checkbox" :checked="enabled('tools', item.id)" :disabled="!configReady" @change="toggle('tools', item.id, $event.target.checked)">
+                  <label v-for="item in filteredCatalog.tools" :key="item.id" class="plugin-center-card" :class="{ 'is-disabled': !configReady || saving || !enabled('tools', item.id) }">
+                    <input type="checkbox" :checked="enabled('tools', item.id)" :disabled="!configReady || saving" @change="toggle('tools', item.id, $event.target.checked)">
                     <span class="plugin-center-card-icon" aria-hidden="true">⌘</span>
                     <span class="plugin-center-card-copy">
                       <strong>{{ item.label }}</strong>
@@ -388,8 +404,8 @@ export default {
                   <span>{{ filteredCatalog.skills.length }}</span>
                 </div>
                 <div class="plugin-center-card-grid">
-                  <label v-for="item in filteredCatalog.skills" :key="item.id" class="plugin-center-card" :class="{ 'is-disabled': !configReady || !enabled('skills', item.id) }">
-                    <input type="checkbox" :checked="enabled('skills', item.id)" :disabled="!configReady" @change="toggle('skills', item.id, $event.target.checked)">
+                  <label v-for="item in filteredCatalog.skills" :key="item.id" class="plugin-center-card" :class="{ 'is-disabled': !configReady || saving || !enabled('skills', item.id) }">
+                    <input type="checkbox" :checked="enabled('skills', item.id)" :disabled="!configReady || saving" @change="toggle('skills', item.id, $event.target.checked)">
                     <span class="plugin-center-card-icon" aria-hidden="true">✦</span>
                     <span class="plugin-center-card-copy">
                       <strong>{{ item.label }}</strong>
@@ -408,8 +424,8 @@ export default {
                   <span>{{ filteredCatalog.mcpServers.length }}</span>
                 </div>
                 <div class="plugin-center-card-grid">
-                  <label v-for="item in filteredCatalog.mcpServers" :key="item.id" class="plugin-center-card" :class="{ 'is-disabled': !configReady || !enabled('mcpServers', item.id) }">
-                    <input type="checkbox" :checked="enabled('mcpServers', item.id)" :disabled="!configReady" @change="toggle('mcpServers', item.id, $event.target.checked)">
+                  <label v-for="item in filteredCatalog.mcpServers" :key="item.id" class="plugin-center-card" :class="{ 'is-disabled': !configReady || saving || !enabled('mcpServers', item.id) }">
+                    <input type="checkbox" :checked="enabled('mcpServers', item.id)" :disabled="!configReady || saving" @change="toggle('mcpServers', item.id, $event.target.checked)">
                     <span class="plugin-center-card-icon" aria-hidden="true">◌</span>
                     <span class="plugin-center-card-copy">
                       <strong>{{ item.label }}</strong>
