@@ -10,6 +10,7 @@ import { probeBrowserRuntime } from './probe.js';
 import { BrowserRuntimeError } from './errors.js';
 import { BrowserExtensionBridge } from './local-bridge.js';
 import { launchBrowserSession } from './chromium.js';
+import { ProducerSequenceState } from './protocol.js';
 
 const REQUEST_TTL_MS = 10 * 60_000;
 const MAX_INSTALL_PROGRESS_LISTENERS = 8;
@@ -389,8 +390,10 @@ export class BrowserRuntimeService {
       captureMode: session.captureMode,
       viewport: session.viewport,
       viewerCount: session.peers.size,
-      interactivePeerCount: 0,
-      authorizedProducerCount: 0,
+      interactivePeerCount: [...session.peers.values()].filter(peer => peer.role === 'interactive').length,
+      authorizedProducerCount: [...session.peers.values()].filter(peer => (
+        peer.role === 'interactive' && peer.state === 'connected'
+      )).length,
       expiresAt: session.expiresAt,
       terminalReason: session.terminalReason || null,
       safeError: session.safeError || null,
@@ -405,6 +408,17 @@ export class BrowserRuntimeService {
 
   #dropPeer(session, peer, reason = 'peer_closed') {
     if (!peer || session.peers.get(peer.peerId) !== peer) return false;
+    if (peer.role === 'interactive') {
+      void peer.actionChain.finally(async () => {
+        const page = session.runtime?.page;
+        for (const key of ['Alt', 'Control', 'Meta', 'Shift']) {
+          try { await page?.keyboard?.up?.(key); } catch {}
+        }
+        for (const button of ['left', 'middle', 'right']) {
+          try { await page?.mouse?.up?.({ button }); } catch {}
+        }
+      });
+    }
     clearTimeout(peer.expiryTimer);
     peer.expiryTimer = null;
     session.peers.delete(peer.peerId);
@@ -591,13 +605,21 @@ export class BrowserRuntimeService {
       return true;
     }
     if (session.peers.size >= this.config.maxPeersPerSession) throw new BrowserRuntimeError('browser_peer_limit');
+    const role = message?.role === 'interactive' ? 'interactive' : 'viewer';
+    if (role === 'interactive' && [...session.peers.values()].some(item => item.role === 'interactive')) {
+      throw new BrowserRuntimeError('browser_interactive_peer_limit');
+    }
     const peer = {
       peerId,
       connectionGeneration,
       identity,
+      role,
       state: 'preparing',
       webCandidateCount: 0,
       agentCandidateCount: 0,
+      sequences: new ProducerSequenceState({ producerId: peerId, producerGeneration: connectionGeneration }),
+      actionChain: Promise.resolve(),
+      pendingActionCount: 0,
       expiresAt: Number(message?.routeExpiresAt) || Date.now() + 10 * 60_000,
       expiryTimer: null,
     };
@@ -613,6 +635,7 @@ export class BrowserRuntimeService {
       type: 'peer_prepare',
       peerId,
       connectionGeneration,
+      role: peer.role,
       iceServers: publicIceServers(message?.agentIceServers),
       iceTransportPolicy: message?.iceTransportPolicy === 'relay' ? 'relay' : 'all',
       maxBitrate: this.config.maxBitrate,
@@ -743,8 +766,69 @@ export class BrowserRuntimeService {
     });
   }
 
+  async #executeInteractiveAction(session, peer, envelope, pointer = false) {
+    if (session.state !== 'ready' || peer.role !== 'interactive' || peer.state !== 'connected') return;
+    const sequenceEnvelope = {
+      producerId: peer.peerId,
+      producerGeneration: peer.connectionGeneration,
+      ...(pointer ? { pointerSeq: Number(envelope?.pointerSeq) } : { controlSeq: Number(envelope?.controlSeq) }),
+    };
+    const accepted = pointer
+      ? peer.sequences.acceptPointer(sequenceEnvelope)
+      : peer.sequences.acceptControl(sequenceEnvelope);
+    if (!accepted.accepted) return;
+    const action = envelope?.action;
+    if (!action || typeof action !== 'object') return;
+    const page = session.runtime?.page;
+    if (!page) return;
+    if (pointer) {
+      const x = Math.min(session.viewport?.width || 1920, Math.max(0, Number(action.x) || 0));
+      const y = Math.min(session.viewport?.height || 1080, Math.max(0, Number(action.y) || 0));
+      if (action.type === 'pointerMove') await page.mouse.move(x, y);
+      return;
+    }
+    if (action.type === 'navigate') {
+      const url = safeInitialUrl(action.url);
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: this.config.maxActionRuntimeMs });
+    } else if (action.type === 'mouse') {
+      const x = Math.min(session.viewport?.width || 1920, Math.max(0, Number(action.x) || 0));
+      const y = Math.min(session.viewport?.height || 1080, Math.max(0, Number(action.y) || 0));
+      const button = ['left', 'middle', 'right'].includes(action.button) ? action.button : 'left';
+      await page.mouse.move(x, y);
+      if (action.event === 'down') await page.mouse.down({ button });
+      else if (action.event === 'up') await page.mouse.up({ button });
+      else if (action.event === 'click') await page.mouse.click(x, y, { button, clickCount: Math.min(3, Math.max(1, Number(action.clickCount) || 1)) });
+    } else if (action.type === 'wheel') {
+      await page.mouse.wheel({
+        deltaX: Math.max(-4000, Math.min(4000, Number(action.deltaX) || 0)),
+        deltaY: Math.max(-4000, Math.min(4000, Number(action.deltaY) || 0)),
+      });
+    } else if (action.type === 'key') {
+      const key = clean(action.key, 128);
+      if (!key) return;
+      if (action.event === 'down') await page.keyboard.down(key);
+      else if (action.event === 'up') await page.keyboard.up(key);
+      else await page.keyboard.press(key);
+    } else if (action.type === 'text') {
+      const text = typeof action.text === 'string' ? action.text.slice(0, 16 * 1024) : '';
+      if (text) await page.keyboard.type(text);
+    }
+  }
+
   #handleBridgeMessage(session, message) {
     if (this.sessions.get(session.browserSessionId) !== session) return;
+    if (message.type === 'peer_input') {
+      const peer = session.peers.get(clean(message.peerId));
+      if (!peer || peer.connectionGeneration !== Number(message.connectionGeneration)) return;
+      const maxPending = Math.max(1, Number(this.config.maxQueuedActionsPerProducer) || 32);
+      if (peer.pendingActionCount >= maxPending) return;
+      peer.pendingActionCount += 1;
+      peer.actionChain = peer.actionChain
+        .then(() => this.#executeInteractiveAction(session, peer, message.envelope, message.channel === 'pointer'))
+        .catch(() => {})
+        .finally(() => { peer.pendingActionCount = Math.max(0, peer.pendingActionCount - 1); });
+      return;
+    }
     if (message.type === 'peer_prepared' || message.type === 'peer_offer'
         || message.type === 'peer_ice_candidate' || message.type === 'peer_state'
         || message.type === 'peer_error') {

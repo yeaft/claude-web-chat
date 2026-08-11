@@ -205,7 +205,7 @@ export async function handleClientBrowser(client, msg, checkAgentAccess) {
       client,
       requestId,
       connectionGeneration,
-      role: 'viewer',
+      role: msg.role === 'interactive' ? 'interactive' : 'viewer',
     });
     if (reserved.error) return fail(client, msg, reserved.error);
     const peer = reserved.peer;
@@ -243,6 +243,7 @@ export async function handleClientBrowser(client, msg, checkAgentAccess) {
         connectionGeneration: peer.connectionGeneration,
         serverIdentity: identity,
         routeExpiresAt: peer.expiresAt,
+        role: peer.role,
         iceTransportPolicy: CONFIG.browserRuntime.iceTransportPolicy,
         agentIceServers: mintBrowserIceServers({ ...commonScope, endpointRole: 'agent' }),
       });

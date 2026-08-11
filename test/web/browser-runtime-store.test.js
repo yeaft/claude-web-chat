@@ -4,6 +4,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 const stores = new Map();
 let useBrowserStore;
 let browserSessionMatchesSource;
+let normalizeBrowserAddress;
+let browserPointerPosition;
 let sent;
 let peerConnections;
 
@@ -31,6 +33,7 @@ class FakePeerConnection {
   async setLocalDescription(description) { this.localDescription = description; }
   async addIceCandidate(candidate) { this.addedCandidates.push(candidate); }
   close() { this.connectionState = 'closed'; }
+  emitDataChannel(channel) { this.ondatachannel?.({ channel }); }
 }
 
 beforeAll(async () => {
@@ -39,7 +42,8 @@ beforeAll(async () => {
   globalThis.RTCPeerConnection = FakePeerConnection;
   globalThis.MediaStream = class MediaStream { constructor(tracks = []) { this.tracks = tracks; } };
   ({ useBrowserStore } = await import('../../web/stores/browser.js'));
-  ({ browserSessionMatchesSource } = await import('../../web/components/BrowserPanel.js'));
+  ({ browserSessionMatchesSource, normalizeBrowserAddress, browserPointerPosition }
+    = await import('../../web/components/BrowserPanel.js'));
 });
 
 beforeEach(() => {
@@ -76,6 +80,22 @@ describe('Browser Runtime Web store', () => {
     expect(browserSessionMatchesSource({
       sourceRef: { kind: 'chat-conversation', conversationId: 'conversation-b' },
     }, chatSource)).toBe(false);
+  });
+
+  it('normalizes safe browser addresses and maps contained video coordinates', () => {
+    expect(normalizeBrowserAddress('example.com/docs')).toBe('https://example.com/docs');
+    expect(normalizeBrowserAddress('http://example.com')).toBe('http://example.com/');
+    expect(normalizeBrowserAddress('file:///etc/passwd')).toBeNull();
+    expect(normalizeBrowserAddress('https://user:pass@example.com')).toBeNull();
+    const element = {
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 1000 }),
+    };
+    expect(browserPointerPosition({ clientX: 500, clientY: 500 }, element, {
+      width: 1280, height: 720,
+    })).toEqual({ x: 640, y: 360 });
+    expect(browserPointerPosition({ clientX: 500, clientY: 100 }, element, {
+      width: 1280, height: 720,
+    })).toBeNull();
   });
 
   it('queries setup status and sends the exact explicit install confirmation with progress', async () => {
@@ -163,7 +183,7 @@ describe('Browser Runtime Web store', () => {
     });
     expect(sent[0]).toMatchObject({
       type: 'browser_peer_attach', agentId: 'agent-a', browserSessionId: 'browser-a',
-      connectionGeneration: peer.connectionGeneration,
+      connectionGeneration: peer.connectionGeneration, role: 'interactive',
     });
 
     store.handleMessage({
@@ -191,6 +211,41 @@ describe('Browser Runtime Web store', () => {
       type: 'browser_peer_answer', peerId: 'peer-a', connectionGeneration: peer.connectionGeneration,
       description: { type: 'answer', sdp: 'v=0\no=web-answer' },
     })));
+  });
+
+  it('uses independent ordered control and lossy pointer channels after interactive attach', async () => {
+    const store = useBrowserStore();
+    const peer = await store.attach({
+      agentId: 'agent-a', browserSessionId: 'browser-a',
+      videoElement: { srcObject: null, play: vi.fn() },
+    });
+    await store.preparePeer(peer, {
+      peerId: 'peer-a', connectionGeneration: peer.connectionGeneration,
+      iceServers: [], iceTransportPolicy: 'all',
+    });
+    const connection = peerConnections[0];
+    connection.connectionState = 'connected';
+    connection.onconnectionstatechange();
+    const control = { label: 'browser.control.v1', readyState: 'open', send: vi.fn(), close: vi.fn() };
+    const pointer = { label: 'browser.pointer.v1', readyState: 'open', send: vi.fn(), close: vi.fn() };
+    connection.emitDataChannel(control);
+    connection.emitDataChannel(pointer);
+
+    expect(store.interactiveReady('agent-a', 'browser-a')).toBe(true);
+    expect(store.sendPointer('agent-a', 'browser-a', { type: 'pointerMove', x: 12, y: 34 })).toBe(true);
+    expect(store.sendControl('agent-a', 'browser-a', { type: 'navigate', url: 'https://example.com/' })).toBe(true);
+    expect(JSON.parse(pointer.send.mock.calls[0][0])).toMatchObject({
+      version: 1, connectionGeneration: peer.connectionGeneration, pointerSeq: 1,
+      action: { type: 'pointerMove', x: 12, y: 34 },
+    });
+    expect(JSON.parse(control.send.mock.calls[0][0])).toMatchObject({
+      version: 1, connectionGeneration: peer.connectionGeneration, controlSeq: 1,
+      action: { type: 'navigate', url: 'https://example.com/' },
+    });
+    store.detach('agent-a', 'browser-a', { notify: false });
+    expect(control.close).toHaveBeenCalledOnce();
+    expect(pointer.close).toHaveBeenCalledOnce();
+    expect(store.sendControl('agent-a', 'browser-a', { type: 'key', key: 'Enter' })).toBe(false);
   });
 
   it('reports missing ICE infrastructure instead of a generic peer failure', async () => {

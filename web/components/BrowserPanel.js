@@ -8,6 +8,35 @@ function formatBytes(value) {
   return `${bytes} B`;
 }
 
+export function normalizeBrowserAddress(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const candidate = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const url = new URL(candidate);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+export function browserPointerPosition(event, element, viewport) {
+  const rect = element?.getBoundingClientRect?.();
+  const width = Number(viewport?.width) || 1280;
+  const height = Number(viewport?.height) || 720;
+  if (!rect?.width || !rect?.height) return null;
+  const scale = Math.min(rect.width / width, rect.height / height);
+  const renderedWidth = width * scale;
+  const renderedHeight = height * scale;
+  const left = rect.left + (rect.width - renderedWidth) / 2;
+  const top = rect.top + (rect.height - renderedHeight) / 2;
+  const x = (Number(event.clientX) - left) / scale;
+  const y = (Number(event.clientY) - top) / scale;
+  if (x < 0 || y < 0 || x > width || y > height) return null;
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
 export function browserSessionMatchesSource(snapshot, expected) {
   const actual = snapshot?.sourceRef;
   if (!actual || !expected || actual.kind !== expected.kind) return false;
@@ -28,10 +57,21 @@ export default {
   template: `
     <section class="browser-panel" aria-labelledby="browser-panel-title">
       <div class="browser-toolbar">
-        <div class="browser-location" :title="snapshot?.activeUrl || ''">
+        <form class="browser-location" @submit.prevent="navigate">
           <span class="browser-connection-dot" :class="connectionClass" aria-hidden="true"></span>
-          <span>{{ displayUrl }}</span>
-        </div>
+          <input
+            v-model="address"
+            type="text"
+            inputmode="url"
+            autocomplete="url"
+            spellcheck="false"
+            :aria-label="$t('workbench.browserAddressLabel')"
+            :placeholder="$t('workbench.browserAddressPlaceholder')"
+          >
+          <button type="submit" class="btn-ghost browser-go-button" :disabled="navigating">
+            {{ $t('workbench.browserGo') }}
+          </button>
+        </form>
         <span class="browser-status" role="status">{{ statusText }}</span>
         <button
           v-if="snapshot"
@@ -128,7 +168,7 @@ export default {
 
       <div v-else-if="displayError" class="browser-stage browser-stage-placeholder" role="alert">
         <p>{{ displayError }}</p>
-        <button type="button" class="btn-secondary" @click="startViewer">{{ $t('common.retry') }}</button>
+        <button type="button" class="btn-secondary" @click="snapshot ? attach() : navigate()">{{ $t('common.retry') }}</button>
       </div>
 
       <div v-else-if="!snapshot" class="browser-stage browser-stage-placeholder">
@@ -137,7 +177,18 @@ export default {
         </span>
         <h2 id="browser-panel-title">{{ $t('workbench.browser') }}</h2>
         <p>{{ $t('workbench.browserReadyHint') }}</p>
-        <button type="button" class="btn-primary" @click="startViewer">{{ $t('workbench.browserStart') }}</button>
+        <form class="browser-start-form" @submit.prevent="navigate">
+          <input
+            v-model="address"
+            type="text"
+            inputmode="url"
+            autocomplete="url"
+            spellcheck="false"
+            :aria-label="$t('workbench.browserAddressLabel')"
+            :placeholder="$t('workbench.browserAddressPlaceholder')"
+          >
+          <button type="submit" class="btn-primary">{{ $t('workbench.browserStart') }}</button>
+        </form>
       </div>
 
       <div v-else class="browser-stage">
@@ -147,7 +198,16 @@ export default {
           autoplay
           muted
           playsinline
+          tabindex="0"
           :aria-label="$t('workbench.browserVideoLabel')"
+          @pointermove="onPointerMove"
+          @pointerdown="onPointerDown"
+          @pointerup="onPointerUp"
+          @wheel.prevent="onWheel"
+          @keydown.prevent="onKeyDown"
+          @keyup.prevent="onKeyUp"
+          @beforeinput.prevent="onBeforeInput"
+          @contextmenu.prevent
         ></video>
         <div v-if="!connected" class="browser-video-overlay" aria-live="polite">
           <span class="session-loading-spinner"></span>
@@ -164,6 +224,8 @@ export default {
     const enabling = Vue.ref(false);
     const viewerLoading = Vue.ref(false);
     const closing = Vue.ref(false);
+    const navigating = Vue.ref(false);
+    const address = Vue.ref('');
     const setupError = Vue.ref('');
     const viewerError = Vue.ref('');
     const browserSessionId = Vue.ref(null);
@@ -222,7 +284,7 @@ export default {
         : (displayError.value || setupError.value || runtimeStatus.value?.safeError) ? 'failed'
           : 'connecting'
     ));
-    const displayUrl = Vue.computed(() => snapshot.value?.activeUrl || 'about:blank');
+    const displayUrl = Vue.computed(() => snapshot.value?.activeUrl || '');
     const statusText = Vue.computed(() => {
       if (runtimeInstalling.value) return t('workbench.browserStatusInstalling');
       if (enabling.value || runtimeStatus.value?.state === 'probing') return t('workbench.browserStatusProbing');
@@ -264,7 +326,7 @@ export default {
       });
     };
 
-    const startViewer = async () => {
+    const startViewer = async (initialUrl = null) => {
       if (viewerLoading.value || !props.agentId || runtimeStatus.value?.ready !== true) return;
       viewerLoading.value = true;
       viewerError.value = '';
@@ -278,20 +340,95 @@ export default {
           selected = await browser.createSession({
             agentId: props.agentId,
             sourceRef: expectedSource,
+            initialUrl: initialUrl || 'about:blank',
             locale: document.documentElement.lang || 'en-US',
             viewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
           });
         }
         browserSessionId.value = selected.browserSessionId;
+        address.value = initialUrl || (selected.activeUrl === 'about:blank' ? '' : selected.activeUrl);
         viewerLoading.value = false;
         await Vue.nextTick();
         await attach();
+        if (initialUrl && selected.activeUrl !== initialUrl) {
+          const deadline = Date.now() + 10_000;
+          while (!browser.interactiveReady(props.agentId, selected.browserSessionId)) {
+            if (Date.now() >= deadline) throw new Error(t('workbench.browserInteractionUnavailable'));
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+          browser.sendControl(props.agentId, selected.browserSessionId, { type: 'navigate', url: initialUrl });
+        }
       } catch (cause) {
         viewerError.value = cause?.message || String(cause);
       } finally {
         viewerLoading.value = false;
       }
     };
+
+    const navigate = async () => {
+      const url = normalizeBrowserAddress(address.value);
+      if (!url) {
+        viewerError.value = t('workbench.browserAddressInvalid');
+        return;
+      }
+      viewerError.value = '';
+      if (!snapshot.value) {
+        await startViewer(url);
+        return;
+      }
+      navigating.value = true;
+      try {
+        if (!browser.sendControl(props.agentId, browserSessionId.value, { type: 'navigate', url })) {
+          throw new Error(t('workbench.browserInteractionUnavailable'));
+        }
+        address.value = url;
+      } catch (cause) {
+        viewerError.value = cause?.message || String(cause);
+      } finally {
+        navigating.value = false;
+      }
+    };
+
+    const pointerPosition = event => browserPointerPosition(event, video.value, snapshot.value?.viewport);
+    const onPointerMove = event => {
+      const position = pointerPosition(event);
+      if (position) browser.sendPointer(props.agentId, browserSessionId.value, { type: 'pointerMove', ...position });
+    };
+    const onPointerDown = event => {
+      const position = pointerPosition(event);
+      if (!position) return;
+      video.value?.focus?.();
+      video.value?.setPointerCapture?.(event.pointerId);
+      browser.sendControl(props.agentId, browserSessionId.value, {
+        type: 'mouse', event: 'down', button: ['left', 'middle', 'right'][event.button] || 'left', ...position,
+      });
+    };
+    const onPointerUp = event => {
+      const position = pointerPosition(event);
+      if (!position) return;
+      browser.sendControl(props.agentId, browserSessionId.value, {
+        type: 'mouse', event: 'up', button: ['left', 'middle', 'right'][event.button] || 'left', ...position,
+      });
+    };
+    const onWheel = event => browser.sendControl(props.agentId, browserSessionId.value, {
+      type: 'wheel', deltaX: event.deltaX, deltaY: event.deltaY,
+    });
+    const onKeyDown = event => {
+      if (event.isComposing) return;
+      if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        browser.sendControl(props.agentId, browserSessionId.value, { type: 'text', text: event.key });
+        return;
+      }
+      const modifier = ['Alt', 'Control', 'Meta', 'Shift'].includes(event.key);
+      browser.sendControl(props.agentId, browserSessionId.value, {
+        type: 'key', event: modifier ? 'down' : 'press', key: event.key,
+      });
+    };
+    const onKeyUp = event => {
+      if (!['Alt', 'Control', 'Meta', 'Shift'].includes(event.key)) return;
+      browser.sendControl(props.agentId, browserSessionId.value, { type: 'key', event: 'up', key: event.key });
+    };
+    const onBeforeInput = () => {};
 
     const refreshRuntime = async ({ startWhenReady = false, preserveError = false } = {}) => {
       if (runtimeLoading.value || !props.agentId || browser.protocolSupported !== true) return;
@@ -302,7 +439,7 @@ export default {
         if (disposed) return;
         if (['installing', 'probing'].includes(status.state)) scheduleStatusPoll();
         else clearStatusPoll();
-        if (startWhenReady && status.ready === true && !snapshot.value) await startViewer();
+        if (startWhenReady && status.ready === true && snapshot.value) await attach();
       } catch (cause) {
         if (!preserveError || !setupError.value) {
           setupError.value = cause?.message || String(cause);
@@ -321,8 +458,7 @@ export default {
       setupError.value = '';
       clearStatusPoll();
       try {
-        const status = await browser.setupRuntime(props.agentId, current);
-        if (!disposed && status.ready === true) await startViewer();
+        await browser.setupRuntime(props.agentId, current);
       } catch (cause) {
         setupError.value = cause?.message || String(cause);
         await refreshRuntime({ preserveError: true });
@@ -351,27 +487,29 @@ export default {
 
     Vue.onMounted(() => {
       if (browser.protocolSupported !== true) return;
-      if (props.runtimeReady && !browser.runtimeStatus[props.agentId]) void startViewer();
-      else void refreshRuntime({ startWhenReady: true });
+      void refreshRuntime();
     });
 
     Vue.watch(() => browser.protocolSupported, (supported, previous) => {
-      if (supported === true && previous !== true) {
-        if (props.runtimeReady && !browser.runtimeStatus[props.agentId]) void startViewer();
-        else void refreshRuntime({ startWhenReady: true });
-      }
+      if (supported === true && previous !== true) void refreshRuntime();
       if (supported === false) setupError.value = t('workbench.browserProtocolUnavailable');
     });
 
     Vue.watch(() => props.runtimeReady, (ready, previous) => {
       if (!ready || previous === true || disposed) return;
       delete browser.runtimeStatus[props.agentId];
-      void startViewer();
+      void refreshRuntime();
     });
 
     Vue.watch(() => runtimeStatus.value?.state, state => {
       if (['installing', 'probing'].includes(state)) scheduleStatusPoll();
       else clearStatusPoll();
+    });
+
+    Vue.watch(displayUrl, url => {
+      if (url && url !== 'about:blank' && document.activeElement?.closest?.('.browser-location') == null) {
+        address.value = url;
+      }
     });
 
     Vue.onUnmounted(() => {
@@ -387,6 +525,8 @@ export default {
       enabling,
       viewerLoading,
       closing,
+      navigating,
+      address,
       setupError,
       displayError,
       runtimeStatus,
@@ -402,7 +542,16 @@ export default {
       statusText,
       refreshRuntime,
       setupRuntime,
+      attach,
       startViewer,
+      navigate,
+      onPointerMove,
+      onPointerDown,
+      onPointerUp,
+      onWheel,
+      onKeyDown,
+      onKeyUp,
+      onBeforeInput,
       closeBrowser,
     };
   },
