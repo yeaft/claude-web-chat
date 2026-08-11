@@ -120,6 +120,7 @@ export async function handleWriteFile(msg) {
 
 export async function handleListDirectory(msg) {
   const { conversationId, requestId, dirPath, _requestUserId, _requestClientId } = msg;
+  const directoryPickerScope = msg.directoryPickerScope === 'agent' ? 'agent' : undefined;
   const conv = ctx.conversations.get(conversationId);
   const workDir = msg.workDir || conv?.workDir || ctx.CONFIG.workDir;
 
@@ -137,6 +138,7 @@ export async function handleListDirectory(msg) {
         sendWorkbenchResult(ctx, msg, {
           type: 'directory_listing',
           conversationId,
+          ...(directoryPickerScope ? { directoryPickerScope } : {}),
           requestId,
           _requestUserId,
           _requestClientId,
@@ -154,6 +156,7 @@ export async function handleListDirectory(msg) {
         sendWorkbenchResult(ctx, msg, {
           type: 'directory_listing',
           conversationId,
+          ...(directoryPickerScope ? { directoryPickerScope } : {}),
           requestId,
           _requestUserId,
           _requestClientId,
@@ -165,6 +168,7 @@ export async function handleListDirectory(msg) {
       sendWorkbenchResult(ctx, msg, {
         type: 'directory_listing',
         conversationId,
+        ...(directoryPickerScope ? { directoryPickerScope } : {}),
         requestId,
         _requestUserId,
         _requestClientId,
@@ -213,6 +217,7 @@ export async function handleListDirectory(msg) {
     sendWorkbenchResult(ctx, msg, {
       type: 'directory_listing',
       conversationId,
+      ...(directoryPickerScope ? { directoryPickerScope } : {}),
       requestId,
       _requestUserId,
       _requestClientId,
@@ -223,6 +228,7 @@ export async function handleListDirectory(msg) {
     sendWorkbenchResult(ctx, msg, {
       type: 'directory_listing',
       conversationId,
+      ...(directoryPickerScope ? { directoryPickerScope } : {}),
       requestId,
       _requestUserId,
       _requestClientId,

@@ -2046,9 +2046,9 @@ export class Engine {
    * @param {string} params.prompt - The user prompt (required, non-empty).
    * @param {Array} [params.messages] - Prior conversation messages.
    * @param {AbortSignal} [params.signal] - Abort signal.
-   * @param {'low'|'medium'|'high'|'max'|null} [params.userEffort] -
+   * @param {'low'|'medium'|'high'|'xhigh'|'max'|'ultra'|null} [params.userEffort] -
    *   task-327b: explicit per-query effort override (from Settings or
-   *   API caller). `/max`/`/high`/`/medium`/`/low` prefixes in prompt
+   *   API caller). `/ultra`/`/max`/`/high`/`/medium`/`/low` prefixes in prompt
    *   also set this. Null/invalid → scenario decision tree decides.
    * @param {string} [params.scenario='chat'] - task-327b: scenario tag
    *   forwarded to the effort decision tree. See effort.js
@@ -3031,10 +3031,11 @@ export class Engine {
             allowRouterEscalate: thinkingCfg.allowRouterEscalate !== false,
           });
           // Only adopt the chain's choice when it strengthens the
-          // baseline. We never weaken below pickEffort (e.g. consolidate
-          // = 'max' must not be downgraded to 'high' just because the VP
-          // default is 'high').
-          if (resolved.value === 'max' || (resolved.value === 'high' && resolvedEffort === 'low')) {
+          // baseline. We never weaken below pickEffort (e.g. explicit
+          // 'ultra' or consolidate='max' must not be downgraded by a VP
+          // default or router plan).
+          if (resolvedEffort !== 'ultra'
+            && (resolved.value === 'max' || (resolved.value === 'high' && resolvedEffort === 'low'))) {
             resolvedEffort = resolved.value;
           }
         }

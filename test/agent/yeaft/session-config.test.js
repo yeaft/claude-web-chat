@@ -1264,7 +1264,7 @@ describe('Yeaft session-scoped model config', () => {
 
     mkdirSync(join(root, 'sessions', 'session-a'), { recursive: true });
     mkdirSync(join(root, 'sessions', 'session-b'), { recursive: true });
-    saveSessionConfig(root, 'session-a', { model: 'github-copilot/gpt-5.5', modelEffort: 'minimal' });
+    saveSessionConfig(root, 'session-a', { model: 'github-copilot/gpt-5.5', modelEffort: 'ultra' });
     saveSessionConfig(root, 'session-b', { model: 'github-copilot/claude-opus-4.8', modelEffort: 'max' });
 
     const configA = resolveSessionConfig(userConfig, loadSessionConfig(root, 'session-a'));
@@ -1272,7 +1272,7 @@ describe('Yeaft session-scoped model config', () => {
 
     expect(configA.model).toBe('github-copilot/gpt-5.5');
     expect(configA.primaryModel).toBe('github-copilot/gpt-5.5');
-    expect(configA.modelEffort).toBe('minimal');
+    expect(configA.modelEffort).toBe('ultra');
     expect(configB.model).toBe('github-copilot/claude-opus-4.8');
     expect(configB.primaryModel).toBe('github-copilot/claude-opus-4.8');
     expect(configB.modelEffort).toBe('max');

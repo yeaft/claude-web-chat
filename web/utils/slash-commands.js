@@ -38,6 +38,7 @@ export const YEAFT_BUILTIN_DESCRIPTIONS = {
   '/high': 'Use high reasoning effort for this turn',
   '/xhigh': 'Use extra-high reasoning effort for this turn',
   '/max': 'Use maximum reasoning effort for this turn',
+  '/ultra': 'Use ultra reasoning effort for this turn',
 };
 
 export const YEAFT_DEFAULT_SLASH_COMMANDS = Object.keys(YEAFT_BUILTIN_DESCRIPTIONS);

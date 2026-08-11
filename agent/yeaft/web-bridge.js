@@ -1163,7 +1163,7 @@ const ASK_USER_TIMEOUT_MS = 10 * 60_000;
 
 function isHighReasoningEffort(effort) {
   const value = typeof effort === 'string' ? effort.trim().toLowerCase() : '';
-  return value === 'high' || value === 'xhigh' || value === 'max';
+  return value === 'high' || value === 'xhigh' || value === 'max' || value === 'ultra';
 }
 
 function queryTimeoutMsForSessionConfig(config = null) {

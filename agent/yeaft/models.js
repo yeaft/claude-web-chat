@@ -34,9 +34,9 @@ import { lookupModelLimitSync } from './llm/models-dev.js';
  * @property {'anthropic' | 'anthropic-adaptive' | 'openai-reasoning' | 'none'} [thinkingProtocol] — task-327a:
  *   'anthropic' → thinking:{type:'enabled', budget_tokens:N}
  *   'anthropic-adaptive' → thinking:{type:'adaptive'} + output_config:{effort}
- *   'openai-reasoning' → reasoning:{effort:'minimal'|'low'|'medium'|'high'|'xhigh'|'max'}
+ *   'openai-reasoning' → reasoning:{effort:'minimal'|'low'|'medium'|'high'|'xhigh'|'max'|'ultra'}
  *   'none' (default) → parameter silently dropped by router
- * @property {'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null} [defaultEffort] — adapter-level default
+ * @property {'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | null} [defaultEffort] — adapter-level default
  *   when caller doesn't specify effort (null = no default / decision-tree decides).
  * @property {number} [maxBudgetTokens] — task-327a: for anthropic protocol, the cap used when
  *   effort='max' (e.g. Opus 4 = 64K, Sonnet 4 = 32K). For openai-reasoning this field is unused
@@ -146,6 +146,7 @@ export const MODEL_REGISTRY = new Map([
     supportsThinking: true,
     thinkingProtocol: 'openai-reasoning',
     defaultEffort: null,
+    effortOptions: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   }],
   ['gpt-4.1', {
     provider: 'openai',
@@ -386,7 +387,7 @@ export function parseModelRef(ref) {
 
 /**
  * Valid effort levels accepted by Yeaft adapters.
- * @typedef {'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'} Effort
+ * @typedef {'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'} Effort
  */
 
 /**
@@ -410,7 +411,7 @@ export const ANTHROPIC_THINKING_BUDGETS = {
  * translation. Unsupported values are dropped; the adapter MUST NOT error.
  *
  * @param {Effort} effort
- * @returns {'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null}
+ * @returns {'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | null}
  */
 export function mapEffortToOpenAIReasoning(effort) {
   if (!effort) return null;
@@ -421,12 +422,14 @@ export function mapEffortToOpenAIReasoning(effort) {
     case 'high': return 'high';
     case 'xhigh': return 'xhigh';
     case 'max': return 'max';
+    case 'ultra': return 'ultra';
     default: return null;
   }
 }
 
 export const OPENAI_REASONING_EFFORT_OPTIONS = ['minimal', 'low', 'medium', 'high', 'xhigh'];
 export const OPENAI_MAX_REASONING_EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh', 'max'];
+export const OPENAI_ULTRA_REASONING_EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 export const ANTHROPIC_MANUAL_EFFORT_OPTIONS = ['low', 'medium', 'high'];
 export const ANTHROPIC_ADAPTIVE_EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh', 'max'];
 export const ANTHROPIC_ADAPTIVE_MAX_EFFORT_OPTIONS = ['low', 'medium', 'high', 'max'];
@@ -442,7 +445,25 @@ export const ANTHROPIC_ADAPTIVE_MAX_EFFORT_OPTIONS = ['low', 'medium', 'high', '
 //     compatibility table explicitly supports `output_config` effort).
 export const DEEPSEEK_REASONING_EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
-const VALID_EFFORT_OPTIONS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const VALID_EFFORT_OPTIONS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+
+/**
+ * GPT models expose the provider-specific `ultra` tier starting at 5.5.
+ * Numeric comparison matters here: 5.10 is newer than 5.5.
+ */
+export function modelSupportsUltraEffort(model) {
+  const id = parseModelRef(model).modelId.toLowerCase();
+  const match = id.match(/^gpt-(\d+)(?:\.(\d+))?(?=$|[-.]|\[)/);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2] || 0);
+  return major > 5 || (major === 5 && minor >= 5);
+}
+
+function fenceUltraEffortOptions(model, options) {
+  if (!Array.isArray(options) || modelSupportsUltraEffort(model)) return options;
+  return options.filter(effort => effort !== 'ultra');
+}
 
 export function normalizeEffortOptions(options) {
   if (!Array.isArray(options)) return null;
@@ -460,16 +481,14 @@ function inferThinkingCapability(model) {
   const id = parseModelRef(model).modelId.toLowerCase();
   if (!id) return null;
 
-  // GPT-5.6 adds the model-specific `max` tier. Keep this ahead of the generic
-  // GPT inference so older OpenAI models do not advertise a value they reject.
-  // Provider suffixes such as gpt-5.6-sol are variants of the same model family.
-  if (/^gpt-5\.6($|[-.])/.test(id)) {
+  // Provider suffixes are variants of the same GPT model family.
+  if (modelSupportsUltraEffort(model)) {
     return {
       supportsThinking: true,
       thinkingProtocol: 'openai-reasoning',
       defaultEffort: null,
       maxBudgetTokens: null,
-      effortOptions: OPENAI_MAX_REASONING_EFFORT_OPTIONS,
+      effortOptions: OPENAI_ULTRA_REASONING_EFFORT_OPTIONS,
     };
   }
 
@@ -557,23 +576,24 @@ export function thinkingBudgetForEffort(model, effort) {
 export function getThinkingCapability(model, context = {}) {
   const info = MODEL_REGISTRY.get(model);
   const modelId = parseModelRef(model).modelId;
-  const overrideOptions = normalizeEffortOptions(context.effortOptions);
+  const overrideOptions = fenceUltraEffortOptions(model, normalizeEffortOptions(context.effortOptions));
   const overrideProtocol = context.thinkingProtocol || (
     context.protocol === 'anthropic'
       ? (/^deepseek/i.test(modelId) ? 'anthropic-adaptive' : 'anthropic')
       : context.protocol === 'openai-responses' ? 'openai-reasoning' : null
   );
+  const hasExplicitThinking = info && Object.prototype.hasOwnProperty.call(info, 'supportsThinking');
+  const familyInferred = inferThinkingCapability(model);
   if (context.supportsEffort === true || overrideOptions) {
     return {
       supportsThinking: true,
-      thinkingProtocol: overrideProtocol || 'openai-reasoning',
-      defaultEffort: context.defaultEffort ?? null,
-      maxBudgetTokens: context.maxBudgetTokens ?? null,
-      effortOptions: overrideOptions,
+      thinkingProtocol: overrideProtocol || info?.thinkingProtocol || familyInferred?.thinkingProtocol || 'openai-reasoning',
+      defaultEffort: context.defaultEffort ?? info?.defaultEffort ?? familyInferred?.defaultEffort ?? null,
+      maxBudgetTokens: context.maxBudgetTokens ?? info?.maxBudgetTokens ?? familyInferred?.maxBudgetTokens ?? null,
+      effortOptions: overrideOptions || info?.effortOptions || familyInferred?.effortOptions || null,
     };
   }
-  const hasExplicitThinking = info && Object.prototype.hasOwnProperty.call(info, 'supportsThinking');
-  let inferred = hasExplicitThinking ? null : inferThinkingCapability(model);
+  let inferred = hasExplicitThinking ? null : familyInferred;
   if (context.protocol === 'openai-responses' && !inferred && /^deepseek/i.test(parseModelRef(model).modelId)) {
     inferred = {
       supportsThinking: true,
@@ -608,7 +628,7 @@ export function getThinkingCapability(model, context = {}) {
     thinkingProtocol: info?.thinkingProtocol || inferred?.thinkingProtocol || 'none',
     defaultEffort: info?.defaultEffort ?? inferred?.defaultEffort ?? null,
     maxBudgetTokens: info?.maxBudgetTokens ?? inferred?.maxBudgetTokens ?? null,
-    effortOptions: (info?.effortOptions || inferred?.effortOptions || null),
+    effortOptions: fenceUltraEffortOptions(model, info?.effortOptions || inferred?.effortOptions || null),
   };
 }
 
@@ -633,7 +653,7 @@ export function modelSupportsEffort(model, context = {}) {
  * @returns {Effort | null}
  */
 export function normalizeEffort(effort) {
-  if (effort === 'minimal' || effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'xhigh' || effort === 'max') {
+  if (effort === 'minimal' || effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'xhigh' || effort === 'max' || effort === 'ultra') {
     return effort;
   }
   return null;

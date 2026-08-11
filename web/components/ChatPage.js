@@ -447,11 +447,11 @@ export default {
       <!-- Settings Panel -->
 
       <!-- Folder Picker Dialog -->
-      <div class="folder-picker-overlay" v-if="folderPickerOpen" @click.self="folderPickerOpen = false">
+      <div class="folder-picker-overlay" v-if="folderPickerOpen" @click.self="closeFolderPicker">
         <div class="folder-picker-dialog">
           <div class="folder-picker-header">
             <span>{{ $t('modal.folderPicker.title') }}</span>
-            <button class="wb-btn-sm" @click="folderPickerOpen = false">&times;</button>
+            <button class="wb-btn-sm" @click="closeFolderPicker">&times;</button>
           </div>
           <div class="folder-picker-path">
             <button class="wb-btn-sm" @click="folderPickerNavigateUp" :disabled="!folderPickerPath" :title="$t('modal.folderPicker.parentDir')">
@@ -507,6 +507,8 @@ export default {
       folderPickerLoading: false,
       folderPickerSelected: '',
       folderPickerTarget: '', // 'convModal'
+      _folderPickerRequestId: null,
+      _folderPickerRequestAgentId: null,
       serverVersion: '',
       chatGroupCollapsed: false,
       sidebarTab: 'chat',
@@ -951,6 +953,15 @@ export default {
       this.store.upgradeAgent(agentId);
     },
     // Folder picker methods
+    closeFolderPicker() {
+      this.folderPickerOpen = false;
+      this._folderPickerRequestId = null;
+      this._folderPickerRequestAgentId = null;
+      if (this._folderPickerTimer) {
+        clearTimeout(this._folderPickerTimer);
+        this._folderPickerTimer = null;
+      }
+    },
     openFolderPicker(target) {
       const agentId = this.convModalAgent;
       if (!agentId) return;
@@ -963,13 +974,17 @@ export default {
       const defaultDir = currentWorkDir || agent?.workDir || '';
       this.folderPickerPath = defaultDir;
       this.folderPickerEntries = [];
+      const requestId = `folder-picker-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      this._folderPickerRequestId = requestId;
+      this._folderPickerRequestAgentId = agentId;
       const sendRequest = () => {
         this.store.sendWsMessage({
           type: 'list_directory',
           conversationId: '_workdir_picker',
-          agentId: agentId,
+          directoryPickerScope: 'agent',
+          requestId,
+          agentId,
           dirPath: defaultDir,
-          workDir: agent?.workDir || ''
         });
       };
       sendRequest();
@@ -987,14 +1002,17 @@ export default {
       this.folderPickerLoading = true;
       this.folderPickerSelected = '';
       this.folderPickerEntries = [];
-      const agent = this.store.agents.find(a => a.id === agentId);
+      const requestId = `folder-picker-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      this._folderPickerRequestId = requestId;
+      this._folderPickerRequestAgentId = agentId;
       const sendRequest = () => {
         this.store.sendWsMessage({
           type: 'list_directory',
           conversationId: '_workdir_picker',
-          agentId: agentId,
-          dirPath: dirPath,
-          workDir: agent?.workDir || ''
+          directoryPickerScope: 'agent',
+          requestId,
+          agentId,
+          dirPath,
         });
       };
       sendRequest();
@@ -1058,15 +1076,21 @@ export default {
         this.store.listHistorySessionsForAgent(this.convModalAgent, path, this.convModalProvider);
         this.historyLoaded = true;
       }
-      this.folderPickerOpen = false;
+      this.closeFolderPicker();
     },
     handleFolderPickerMessage(event) {
       const msg = event.detail;
       if (!msg || msg.type !== 'directory_listing' || msg.conversationId !== '_workdir_picker') return;
+      if (!this.folderPickerOpen
+          || !this._folderPickerRequestId
+          || msg.requestId !== this._folderPickerRequestId
+          || this.convModalAgent !== this._folderPickerRequestAgentId) return;
       if (this._folderPickerTimer) {
         clearTimeout(this._folderPickerTimer);
         this._folderPickerTimer = null;
       }
+      this._folderPickerRequestId = null;
+      this._folderPickerRequestAgentId = null;
       this.folderPickerLoading = false;
       this.folderPickerEntries = (msg.entries || [])
         .filter(e => e.type === 'directory')

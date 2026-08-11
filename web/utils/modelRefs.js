@@ -25,6 +25,7 @@ const EFFORT_RANK = Object.freeze({
   high: 3,
   xhigh: 4,
   max: 5,
+  ultra: 6,
 });
 
 function normalizeEffortList(options) {
@@ -47,6 +48,7 @@ export function getDefaultModelEffort(options) {
   const values = normalizeEffortList(options);
   if (!values.length) return '';
   if (values.length === 1) return values[0];
+  if (values.includes('ultra') && values.includes('max')) return 'max';
   return values[values.length - 2];
 }
 

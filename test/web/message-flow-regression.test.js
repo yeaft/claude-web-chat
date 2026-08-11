@@ -2295,7 +2295,11 @@ describe('message flow regressions', () => {
     expect(pluginCenterCss).toContain('background: var(--bg-sidebar);');
     expect(pluginCenterCss).toContain('background: var(--session-active);');
     expect(pluginCenterCss).toContain('background: var(--sidebar-hover);');
+    expect(pluginCenterCss).toContain('border-radius: var(--plugin-center-radius-lg);');
+    expect(pluginCenterCss).toContain('gap: var(--plugin-center-space-8);');
+    expect(pluginCenterCss).toContain('font-size: var(--plugin-center-font-size-md);');
     expect(pluginCenterCss).not.toMatch(/#[0-9a-f]{3,8}|rgba?\(/i);
+    expect(pluginCenterCss).not.toMatch(/(?:^|[;{])\s*(?:gap|margin(?:-[a-z]+)?|padding(?:-[a-z]+)?|font-size|min-(?:width|height)|max-width|width|height|border(?:-(?:top|right|bottom|left))?|outline(?:-offset)?|border-radius)\s*:\s*-?\d+(?:\.\d+)?(?:px|rem|em)/im);
     const workCenterStore = {
       workCenterAgentId: 'agent-a',
       currentAgent: 'agent-a',

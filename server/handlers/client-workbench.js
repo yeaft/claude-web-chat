@@ -1,4 +1,5 @@
 import { CONFIG } from '../config.js';
+import { agents } from '../context.js';
 import {
   sendToWebClient, forwardToAgent,
   verifyConversationOwnership, getCachedDir
@@ -36,6 +37,8 @@ async function denyWorkbenchRoute(client, msg) {
   console.warn(`[Security] Invalid Workbench route for ${msg?.type || 'unknown'}`);
   await sendToWebClient(client, { type: 'error', message: 'Invalid Workbench Session route' });
 }
+
+const AGENT_DIRECTORY_PICKER_CONVERSATION = '_workdir_picker';
 
 const RESPONSE_TYPES = Object.freeze({
   terminal_create: ['terminal_created', 'terminal_error'],
@@ -247,6 +250,47 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
       const dirAgentId = msg.agentId || client.currentAgent;
       if (!dirAgentId) return;
       if (!await checkAgentAccess(dirAgentId)) return;
+
+      const isAgentDirectoryPicker = msg.directoryPickerScope === 'agent'
+        && msg.conversationId === AGENT_DIRECTORY_PICKER_CONVERSATION
+        && !msg.workbenchRoute
+        && typeof msg.requestId === 'string'
+        && msg.requestId.length > 0;
+      if (isAgentDirectoryPicker) {
+        const agent = agents.get(dirAgentId);
+        const defaultWorkDir = typeof agent?.workDir === 'string' ? agent.workDir : '';
+        const correlationKey = `agent-directory-picker:${dirAgentId}`;
+        const internalRequestId = registerWorkbenchRequest({
+          agentId: dirAgentId,
+          clientId,
+          userId: client.userId,
+          routeKey: correlationKey,
+          conversationId: AGENT_DIRECTORY_PICKER_CONVERSATION,
+          workspaceGeneration: correlationKey,
+          route: null,
+          role: client.role,
+          requestType: 'agent_directory_picker',
+          expectedResponseTypes: ['directory_listing'],
+          publicRequestId: msg.requestId,
+        });
+        if (!internalRequestId) return;
+        const canonical = {
+          type: 'list_directory',
+          agentId: dirAgentId,
+          conversationId: AGENT_DIRECTORY_PICKER_CONVERSATION,
+          directoryPickerScope: 'agent',
+          dirPath: typeof msg.dirPath === 'string' ? msg.dirPath : defaultWorkDir,
+          workDir: defaultWorkDir,
+          _workbenchRequestId: internalRequestId,
+        };
+        try {
+          await forwardToAgent(dirAgentId, canonical);
+        } catch (error) {
+          deleteWorkbenchRequest({ agentId: dirAgentId, requestId: internalRequestId });
+          throw error;
+        }
+        return;
+      }
 
       const resolved = resolveWorkbenchRequest(client, msg, dirAgentId);
       if (!resolved) {
