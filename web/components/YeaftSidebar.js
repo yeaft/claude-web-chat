@@ -1,3 +1,4 @@
+import { alertDialog, confirmDialog } from '../utils/dialog.js';
 /**
  * YeaftSidebar — H2.f.6 trimmed.
  *
@@ -270,23 +271,23 @@ export default {
       if (!success) {
         delete this.upgradingAgents[agentId];
         if (reason === 'node_incompatible') {
-          alert(this.$t('chat.agent.nodeIncompatible', {
+          alertDialog(this.$t('chat.agent.nodeIncompatible', {
             current: currentNode || '?',
             required: requiredNode || '?',
             version: version || '',
           }));
         } else {
           if (reason === 'manual_upgrade_required') {
-            alert(this.$t('chat.agent.manualUpgradeRequired', {
+            alertDialog(this.$t('chat.agent.manualUpgradeRequired', {
               version: version || '?',
             }));
           } else {
-            alert(`Agent upgrade failed: ${error || 'Unknown error'}`);
+            alertDialog(`Agent upgrade failed: ${error || 'Unknown error'}`);
           }
         }
       } else if (alreadyLatest) {
         delete this.upgradingAgents[agentId];
-        alert(this.$t('chat.agent.alreadyLatest', { version: version || '' }));
+        alertDialog(this.$t('chat.agent.alreadyLatest', { version: version || '' }));
       }
       // success && !alreadyLatest means the agent process will restart. Keep
       // the upgrading marker until the next agent_list shows it is back.
@@ -508,7 +509,7 @@ export default {
       }, agentId);
       if (!result?.ok) {
         const message = result?.error?.message || result?.error?.code || 'unknown';
-        alert(this.$t('sidebar.projects.assignFailed', { name: project.name, message }));
+        await alertDialog(this.$t('sidebar.projects.assignFailed', { name: project.name, message }));
       }
     },
     onSelectGroup(g) {
@@ -719,12 +720,12 @@ export default {
       setTimeout(() => window.addEventListener('click', close, true), 0);
       if (evt && typeof evt.stopPropagation === 'function') evt.stopPropagation();
     },
-    restartAgent(agentId) {
+    async restartAgent(agentId) {
       const s = this.chatStore || this.store;
       if (!s || !Array.isArray(s.agents) || typeof s.restartAgent !== 'function') return;
       const agent = s.agents.find(a => a && a.id === agentId);
       const name = agent?.name || agentId;
-      if (!confirm(this.$t('chat.agent.restartConfirm', { name }))) return;
+      if (!await confirmDialog(this.$t('chat.agent.restartConfirm', { name }))) return;
       this.restartingAgents[agentId] = true;
       setTimeout(() => { delete this.restartingAgents[agentId]; }, 120000);
       s.restartAgent(agentId);
@@ -760,12 +761,12 @@ export default {
         }
       }
     },
-    upgradeAgent(agentId) {
+    async upgradeAgent(agentId) {
       const s = this.chatStore || this.store;
       if (!s || !Array.isArray(s.agents) || typeof s.upgradeAgent !== 'function') return;
       const agent = s.agents.find(a => a && a.id === agentId);
       const name = agent?.name || agentId;
-      if (!confirm(this.$t('chat.agent.upgradeConfirm', { name }))) return;
+      if (!await confirmDialog(this.$t('chat.agent.upgradeConfirm', { name }))) return;
       this.upgradingAgents[agentId] = { since: Date.now(), oldVersion: agent?.version || null };
       setTimeout(() => { delete this.upgradingAgents[agentId]; }, 120000);
       s.upgradeAgent(agentId);

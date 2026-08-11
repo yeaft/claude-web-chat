@@ -1,3 +1,5 @@
+import { confirmDialog, promptDialog } from '../utils/dialog.js';
+
 function timestampValue(value) {
   const parsed = typeof value === 'number' ? value : Date.parse(value || '');
   return Number.isFinite(parsed) ? parsed : 0;
@@ -469,11 +471,11 @@ export default {
       event.preventDefault();
       this.selectRow(row, event);
     },
-    runAction(action, row) {
+    async runAction(action, row) {
       this.closeMenus();
       if (!this.canEditRow(row)) return;
       if (action === 'rename') {
-        const title = window.prompt(this.$t('yeaft.session.renamePrompt', { name: row.title }), row.title);
+        const title = await promptDialog(this.$t('yeaft.session.renamePrompt', { name: row.title }), row.title);
         if (!title?.trim() || title.trim() === row.title) return;
         this.$emit('action', { action, row, title: title.trim() });
         return;
@@ -554,18 +556,18 @@ export default {
         this.projectCreateSubmitting = false;
       }
     },
-    renameProject(project) {
+    async renameProject(project) {
       if (!this.canEditProject(project)) return;
-      const name = window.prompt(this.$t('sidebar.projects.renamePrompt'), project.name);
+      const name = await promptDialog(this.$t('sidebar.projects.renamePrompt'), project.name);
       this.closeMenus();
       if (name?.trim() && name.trim() !== project.name) {
         this.dispatchProjectAction({ action: 'rename', project, name: name.trim() });
       }
     },
-    deleteProject(project) {
+    async deleteProject(project) {
       if (!this.canEditProject(project)) return;
       this.closeMenus();
-      if (window.confirm(this.$t('sidebar.projects.deleteConfirm', { name: project.name }))) {
+      if (await confirmDialog(this.$t('sidebar.projects.deleteConfirm', { name: project.name }), { destructive: true })) {
         this.dispatchProjectAction({ action: 'delete', project });
       }
     },
