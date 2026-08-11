@@ -9,6 +9,7 @@ import ctx from '../../agent/context.js';
 import { CONFIG } from '../../server/config.js';
 import { userDb, yeaftSessionDb } from '../../server/database.js';
 import { handleWriteFile } from '../../agent/workbench/file-ops.js';
+import { resolveFileReferences } from '../../agent/workbench/file-reference-resolver.js';
 
 const {
   forwardToClients,
@@ -112,6 +113,95 @@ async function registerRouteRequest({
   const outbound = forwardToAgent.mock.calls.at(-1)?.[1] || null;
   return { handled, route, client, outbound };
 }
+
+describe('Agent file reference resolution', () => {
+  it('confirms exact files, repairs only unique basename matches, and rejects ambiguity', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-file-references-'));
+    try {
+      const fs = await import('node:fs/promises');
+      await fs.mkdir(join(root, 'src', 'nested'), { recursive: true });
+      await fs.mkdir(join(root, 'other'), { recursive: true });
+      await fs.writeFile(join(root, 'README.md'), 'readme');
+      await fs.writeFile(join(root, 'src', 'nested', 'plugins.actions'), 'actions');
+      await fs.writeFile(join(root, 'src', 'duplicate.json'), '{}');
+      await fs.writeFile(join(root, 'other', 'duplicate.json'), '{}');
+
+      await expect(resolveFileReferences([
+        'README.md', 'plugins.actions', 'wrong/duplicate.json', 'missing.md',
+      ], root)).resolves.toEqual([
+        { requestedPath: 'README.md', resolvedPath: 'README.md' },
+        { requestedPath: 'plugins.actions', resolvedPath: 'src/nested/plugins.actions' },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not claim basename uniqueness when the entry budget truncates traversal', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-file-references-budget-'));
+    try {
+      const fs = await import('node:fs/promises');
+      await fs.mkdir(join(root, 'a'), { recursive: true });
+      await fs.mkdir(join(root, 'z'), { recursive: true });
+      await fs.writeFile(join(root, 'a', 'target.actions'), 'first');
+      await fs.writeFile(join(root, 'z', 'target.actions'), 'second');
+      await expect(resolveFileReferences(['wrong/target.actions'], root, {
+        maxScannedEntries: 2,
+      })).resolves.toEqual([]);
+      await expect(resolveFileReferences(['a/target.actions'], root, {
+        maxScannedEntries: 1,
+      })).resolves.toEqual([
+        { requestedPath: 'a/target.actions', resolvedPath: 'a/target.actions' },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not claim basename uniqueness when a directory read fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-file-references-read-error-'));
+    try {
+      const fs = await import('node:fs/promises');
+      const unreadableDir = join(root, 'z-unreadable');
+      await fs.mkdir(join(root, 'a'), { recursive: true });
+      await fs.mkdir(unreadableDir, { recursive: true });
+      await fs.writeFile(join(root, 'a', 'target.actions'), 'first');
+      await fs.writeFile(join(unreadableDir, 'target.actions'), 'second');
+      const readDirectory = vi.fn(async (dir, options) => {
+        if (dir === unreadableDir) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+        return fs.readdir(dir, options);
+      });
+
+      await expect(resolveFileReferences(['wrong/target.actions'], root, {
+        readDirectory,
+      })).resolves.toEqual([]);
+      await expect(resolveFileReferences(['a/target.actions'], root, {
+        readDirectory,
+      })).resolves.toEqual([
+        { requestedPath: 'a/target.actions', resolvedPath: 'a/target.actions' },
+      ]);
+      expect(readDirectory).toHaveBeenCalledWith(unreadableDir, { withFileTypes: true });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not claim basename uniqueness when a matching subtree exceeds max depth', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-file-references-depth-'));
+    try {
+      const fs = await import('node:fs/promises');
+      await fs.mkdir(join(root, 'a'), { recursive: true });
+      await fs.mkdir(join(root, 'z', 'deep'), { recursive: true });
+      await fs.writeFile(join(root, 'a', 'target.actions'), 'first');
+      await fs.writeFile(join(root, 'z', 'deep', 'target.actions'), 'second');
+      await expect(resolveFileReferences(['wrong/target.actions'], root, {
+        maxDepth: 1,
+      })).resolves.toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('Agent file terminal forwarding', () => {
   const createdUsers = [];
@@ -1008,6 +1098,47 @@ describe('Agent file terminal forwarding', () => {
     }));
     expect(sendToWebClient.mock.calls[0][0]).toBe(second.client);
     expect(sendToWebClient.mock.calls[0][0]).not.toBe(first.client);
+  });
+
+  it('keeps resolved file references correlated to the requesting browser and route', async () => {
+    const { outbound, client } = await registerRouteRequest({
+      type: 'resolve_file_references',
+      requestId: 'file-refs-public',
+      extra: { references: ['plugins.actions'] },
+    });
+    expect(outbound).toMatchObject({
+      type: 'resolve_file_references',
+      references: ['plugins.actions'],
+      _workbenchRequestId: expect.any(String),
+    });
+    sendToWebClient.mockClear();
+    await handleAgentFileTerminal('agent-1', {}, {
+      type: 'file_references_resolved',
+      conversationId: outbound.conversationId,
+      _workbenchRequestId: outbound._workbenchRequestId,
+      references: [{ requestedPath: 'plugins.actions', resolvedPath: 'src/plugins.actions' }],
+    });
+    expect(sendToWebClient).toHaveBeenCalledOnce();
+    expect(sendToWebClient.mock.calls[0][0]).toBe(client);
+    expect(sendToWebClient.mock.calls[0][1]).toMatchObject({
+      type: 'file_references_resolved',
+      agentId: 'agent-1',
+      requestId: 'file-refs-public',
+      conversationId: outbound.conversationId,
+      references: [{ requestedPath: 'plugins.actions', resolvedPath: 'src/plugins.actions' }],
+      workbenchRouteKey: workbenchRouteKey({
+        runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-1',
+      }),
+    });
+
+    sendToWebClient.mockClear();
+    await handleAgentFileTerminal('agent-1', {}, {
+      type: 'file_references_resolved',
+      conversationId: outbound.conversationId,
+      _workbenchRequestId: outbound._workbenchRequestId,
+      references: [],
+    });
+    expect(sendToWebClient).not.toHaveBeenCalled();
   });
 
   it('preserves the requested path when projecting a correlated binary file response', async () => {

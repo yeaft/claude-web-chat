@@ -169,7 +169,7 @@ export async function handleAgentFileTerminal(agentId, agent, rawMsg) {
     'terminal_created', 'terminal_output', 'terminal_closed', 'terminal_error',
   ]);
   const oneShotTypes = new Set([
-    'file_content', 'file_saved', 'directory_listing', 'file_op_result',
+    'file_content', 'file_references_resolved', 'file_saved', 'directory_listing', 'file_op_result',
     'git_status_result', 'git_diff_result', 'git_op_result', 'file_search_result',
   ]);
   if (!terminalTypes.has(msg.type) && !oneShotTypes.has(msg.type)) return false;

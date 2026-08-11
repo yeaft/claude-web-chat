@@ -8201,6 +8201,62 @@ export const useChatStore = defineStore('chat', {
       });
     },
 
+    resolveMessageFileReferences(references) {
+      const route = this.activeSessionRoute;
+      const agentId = route?.agentId || this.currentAgent || null;
+      const conversationId = route?.runtimeProvider === 'yeaft'
+        ? resolveYeaftConversationIdForSession(this, route.sessionId, agentId)
+        : this.currentConversation;
+      const supported = agentId && conversationId
+        && (agentId === this.currentAgent
+          ? this.hasCapability('file_reference_resolution')
+          : agentHasCapability(this, agentId, 'file_reference_resolution'));
+      const paths = [...new Set((Array.isArray(references) ? references : [])
+        .filter(path => typeof path === 'string' && path.trim())
+        .map(path => path.trim()))].slice(0, 32);
+      if (!supported || paths.length === 0) return null;
+      const workDir = this.effectiveWorkDir || '';
+      const workbenchRoute = route ? {
+        runtimeProvider: route.runtimeProvider,
+        agentId: route.agentId,
+        sessionId: route.sessionId,
+      } : null;
+      const batchKey = [agentId, conversationId, workDir, route?.sessionId || ''].join('\u0000');
+      if (!(this._messageFileReferenceBatches instanceof Map)) {
+        this._messageFileReferenceBatches = new Map();
+      }
+      let batch = this._messageFileReferenceBatches.get(batchKey);
+      if (!batch) {
+        batch = {
+          requestId: `file_refs_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+          references: new Set(),
+          agentId,
+          conversationId,
+          workDir,
+          workbenchRoute,
+        };
+        this._messageFileReferenceBatches.set(batchKey, batch);
+        queueMicrotask(() => {
+          if (this._messageFileReferenceBatches.get(batchKey) !== batch) return;
+          this._messageFileReferenceBatches.delete(batchKey);
+          this.sendWsMessage({
+            type: 'resolve_file_references',
+            requestId: batch.requestId,
+            references: [...batch.references].slice(0, 32),
+            agentId: batch.agentId,
+            conversationId: batch.conversationId,
+            workDir: batch.workDir,
+            workbenchRoute: batch.workbenchRoute,
+          });
+        });
+      }
+      for (const path of paths) {
+        if (batch.references.size >= 32) break;
+        batch.references.add(path);
+      }
+      return batch.requestId;
+    },
+
     openFileInExplorer(filePath, { hideTree = false, line = null } = {}) {
       const route = this.activeSessionRoute;
       const agentId = route?.agentId || this.currentAgent || null;

@@ -12,7 +12,7 @@ import { handleProxyHttpRequest, handleProxyWsOpen, handleProxyWsMessage, handle
 import {
   handleReadFile, handleWriteFile, handleListDirectory,
   handleGitStatus, handleGitDiff, handleGitAdd, handleGitReset, handleGitRestore, handleGitCommit, handleGitPush,
-  handleFileSearch, handleCreateFile, handleDeleteFiles, handleMoveFiles, handleCopyFiles, handleUploadToDir, handleTransferFiles
+  handleFileSearch, handleResolveFileReferences, handleCreateFile, handleDeleteFiles, handleMoveFiles, handleCopyFiles, handleUploadToDir, handleTransferFiles
 } from '../workbench.js';
 import { handleListHistorySessions, handleListFolders, handleListModels } from '../history.js';
 import {
@@ -286,6 +286,10 @@ export async function handleMessage(msg) {
 
     case 'file_search':
       await handleFileSearch(msg);
+      break;
+
+    case 'resolve_file_references':
+      await handleResolveFileReferences(msg);
       break;
 
     case 'create_file':

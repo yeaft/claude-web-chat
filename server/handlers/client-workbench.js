@@ -40,6 +40,7 @@ async function denyWorkbenchRoute(client, msg) {
 const RESPONSE_TYPES = Object.freeze({
   terminal_create: ['terminal_created', 'terminal_error'],
   read_file: ['file_content'],
+  resolve_file_references: ['file_references_resolved'],
   write_file: ['file_saved'],
   list_directory: ['directory_listing'],
   git_status: ['git_status_result'],
@@ -190,6 +191,7 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
       break;
     }
 
+    case 'resolve_file_references':
     case 'read_file': {
       const fileAgentId = msg.agentId || client.currentAgent;
       if (!fileAgentId) { console.warn('[Server] read_file: no agentId'); return; }
@@ -200,7 +202,7 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
         return;
       }
       const fileConvId = resolved.conversationId || msg.conversationId || client.currentConversation || '_explorer';
-      console.log(`[Server] Forwarding read_file to agent ${fileAgentId}, conv=${fileConvId}, path=${msg.filePath}`);
+      console.log(`[Server] Forwarding ${msg.type} to agent ${fileAgentId}, conv=${fileConvId}${msg.filePath ? `, path=${msg.filePath}` : ''}`);
       await forwardCorrelatedWorkbenchRequest({
         agentId: fileAgentId,
         clientId,
