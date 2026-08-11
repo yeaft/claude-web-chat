@@ -7,6 +7,28 @@ function policyError(message) {
   return error;
 }
 
+function diagnosticValue(value) {
+  return String(value ?? '')
+    .replace(/[^a-zA-Z0-9._:-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 128) || 'none';
+}
+
+function assignmentError(message, {
+  policy, stageType, candidates = [], excluded = [], fallback = 'not-attempted',
+}) {
+  const context = [
+    `mode=${diagnosticValue(policy.mode)}`,
+    `capability=${diagnosticValue(policy.capability || stageType)}`,
+    `fallback=${diagnosticValue(fallback)}`,
+    `candidates=${candidates.length
+      ? candidates.map(vp => diagnosticValue(vp?.id || vp)).sort().join(',')
+      : 'none'}`,
+    `excluded=${excluded.size ? [...excluded].map(diagnosticValue).sort().join(',') : 'none'}`,
+  ].join('; ');
+  return policyError(`${message} (${context})`);
+}
+
 const CAPABILITY_TERMS = Object.freeze({
   triage: ['triage', 'requirement', 'flow', 'product', 'strategy', 'cross-domain', 'analysis'],
   implement: ['implement', 'engineer', 'developer', 'engineering', 'systems', 'code', 'execution'],
@@ -60,23 +82,46 @@ function priorVpIdsForSeparation(policy, priorRuns) {
 export function selectWorkItemVp({ policy: rawPolicy, stageType, vps, priorRuns = [] }) {
   const policy = normalizeAssignmentPolicy(rawPolicy, stageType);
   const all = Array.isArray(vps) ? vps.filter(vp => vp?.id) : [];
-  if (all.length === 0) throw policyError('Work Center has no available VPs');
-  const byId = new Map(all.map(vp => [vp.id, vp]));
   const excluded = priorVpIdsForSeparation(policy, priorRuns);
+  if (all.length === 0) {
+    throw assignmentError('Work Center has no available VPs', {
+      policy, stageType, candidates: [], excluded,
+    });
+  }
+  const byId = new Map(all.map(vp => [vp.id, vp]));
 
   if (policy.mode === 'fixed') {
     const fixed = byId.get(policy.fixedVpId);
-    if (!fixed) throw policyError(`Fixed Work Center VP is unavailable: ${policy.fixedVpId}`);
-    if (excluded.has(fixed.id)) throw policyError(`Work Center separation policy excludes VP: ${fixed.id}`);
+    if (!fixed) {
+      throw assignmentError(`Fixed Work Center VP is unavailable: ${diagnosticValue(policy.fixedVpId)}`, {
+        policy, stageType, candidates: [policy.fixedVpId], excluded,
+      });
+    }
+    if (excluded.has(fixed.id)) {
+      throw assignmentError(`Work Center separation policy excludes VP: ${diagnosticValue(fixed.id)}`, {
+        policy, stageType, candidates: [fixed], excluded,
+      });
+    }
     return { vp: fixed, reason: `fixed:${fixed.id}`, policy };
   }
 
+  const configuredCandidates = ['pool', 'planned'].includes(policy.mode)
+    ? policy.candidateVpIds
+    : all;
   const pool = ['pool', 'planned'].includes(policy.mode)
     ? policy.candidateVpIds.map(id => byId.get(id)).filter(Boolean)
     : all;
-  if (pool.length === 0) throw policyError('No configured Work Center VP candidates are available');
+  if (pool.length === 0) {
+    throw assignmentError('No configured Work Center VP candidates are available', {
+      policy, stageType, candidates: configuredCandidates, excluded,
+    });
+  }
   const eligible = pool.filter(vp => !excluded.has(vp.id));
-  if (eligible.length === 0) throw policyError('No Work Center VP satisfies the stage separation policy');
+  if (eligible.length === 0) {
+    throw assignmentError('No Work Center VP satisfies the stage separation policy', {
+      policy, stageType, candidates: pool, excluded,
+    });
+  }
   if (policy.mode === 'planned') {
     return {
       vp: eligible[0],
@@ -99,7 +144,11 @@ export function selectWorkItemVp({ policy: rawPolicy, stageType, vps, priorRuns 
         policy,
       };
     }
-    throw policyError(`No Work Center VP matches capability: ${policy.capability || stageType}`);
+    return {
+      vp: fallback[0].vp,
+      reason: `${policy.mode}:${policy.capability || stageType}:fallback=${stageType}:eligible-id:score=0`,
+      policy,
+    };
   }
   return {
     vp: ranked[0].vp,
