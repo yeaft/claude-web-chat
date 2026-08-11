@@ -7,7 +7,11 @@ import { getTodoDisplayState } from '../utils/todo-display-state.js';
 import { renderMermaidIn } from '../utils/markdown.js';
 import { openImagePreview } from '../utils/imagePreview.js';
 import { formatSessionMessageDateTime, quoteFromAssistantTurn } from '../utils/session-message-quote.js';
-import { decorateMessageFileReferences, resolveMessageFileReference } from '../utils/message-file-reference.js';
+import {
+  collectMessageFileReferences,
+  decorateMessageFileReferences,
+  resolveMessageFileReference,
+} from '../utils/message-file-reference.js';
 
 export default {
   name: 'AssistantTurn',
@@ -267,6 +271,8 @@ export default {
     const screenshotting = Vue.ref(false);
     const turnRef = Vue.ref(null);
     const failedImages = Vue.reactive(new Set());
+    const resolvedFileReferences = Vue.reactive(new Map());
+    let fileReferenceRequestId = null;
     const t = Vue.inject('t');
 
     // AskUserQuestion — delegate to AskCard component
@@ -367,7 +373,10 @@ export default {
       try {
         if (typeof marked !== 'undefined') {
           const html = marked.parse(content);
-          return decorateMessageFileReferences(wrapTables(addCodeBlockCopyButtons(html)));
+          return decorateMessageFileReferences(
+            wrapTables(addCodeBlockCopyButtons(html)),
+            resolvedFileReferences,
+          );
         }
       } catch (e) {
         console.error('Markdown parsing error:', e);
@@ -379,10 +388,11 @@ export default {
       const anchor = event.target?.closest?.('a[href]');
       if (!anchor || !event.currentTarget?.contains?.(anchor)) return;
       const reference = resolveMessageFileReference(anchor.getAttribute('href'));
-      if (!reference) return;
+      const resolvedPath = anchor.dataset?.resolvedFilePath;
+      if (!reference || !resolvedPath) return;
       event.preventDefault();
       event.stopPropagation();
-      store.openFileInExplorer(reference.path, { hideTree: true, line: reference.line });
+      store.openFileInExplorer(resolvedPath, { hideTree: true, line: reference.line });
     };
 
     const textSegments = Vue.computed(() => {
@@ -395,6 +405,39 @@ export default {
     });
     const progressSegments = Vue.computed(() => textSegments.value.filter(segment => segment.kind !== 'result'));
     const resultSegments = Vue.computed(() => textSegments.value.filter(segment => segment.kind === 'result'));
+
+    const requestFileReferenceResolution = () => {
+      if (props.turn?.isStreaming) return;
+      const references = new Set();
+      for (const segment of textSegments.value) {
+        if (!segment?.content || typeof marked === 'undefined') continue;
+        try {
+          const html = marked.parse(typeof segment.content === 'string' ? segment.content : String(segment.content));
+          for (const path of collectMessageFileReferences(html)) references.add(path);
+        } catch (_) {}
+      }
+      fileReferenceRequestId = store.resolveMessageFileReferences?.([...references]) || null;
+    };
+    const handleFileReferenceResolution = event => {
+      const msg = event.detail;
+      if (!fileReferenceRequestId || msg?.type !== 'file_references_resolved'
+          || msg.requestId !== fileReferenceRequestId) return;
+      fileReferenceRequestId = null;
+      resolvedFileReferences.clear();
+      for (const entry of msg.references || []) {
+        if (entry?.requestedPath && entry?.resolvedPath) {
+          resolvedFileReferences.set(entry.requestedPath, entry.resolvedPath);
+        }
+      }
+    };
+    Vue.onMounted(() => {
+      window.addEventListener('workbench-message', handleFileReferenceResolution);
+      requestFileReferenceResolution();
+    });
+    Vue.onBeforeUnmount(() => window.removeEventListener('workbench-message', handleFileReferenceResolution));
+    Vue.watch(() => props.turn?.isStreaming, (streaming, previous) => {
+      if (previous && !streaming) requestFileReferenceResolution();
+    });
 
     const addCodeBlockCopyButtons = (html) => {
       return html.replace(/<pre><code([^>]*)>([\s\S]*?)<\/code><\/pre>/g,
