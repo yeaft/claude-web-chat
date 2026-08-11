@@ -71,9 +71,11 @@ export function createBrowserInputController(sendControl) {
       return sent;
     },
     compositionStart() { composing = true; },
-    compositionEnd(text) {
+    compositionEnd() { composing = false; },
+    inputText(text, isComposing = false) {
+      if (isComposing || typeof text !== 'string' || !text) return false;
       composing = false;
-      return typeof text === 'string' && text ? send({ type: 'text', text }) : false;
+      return send({ type: 'text', text });
     },
     reset() {
       if (pressedButtons.size === 0 && pressedModifiers.size === 0) return false;
@@ -86,6 +88,18 @@ export function createBrowserInputController(sendControl) {
     },
     snapshot() {
       return { buttons: [...pressedButtons], modifiers: [...pressedModifiers], composing };
+    },
+  };
+}
+
+export function createBrowserInputSinkHandlers(input) {
+  return {
+    compositionstart: () => input.compositionStart(),
+    compositionend: () => input.compositionEnd(),
+    input: event => {
+      const target = event.currentTarget;
+      const text = target?.value || '';
+      if (input.inputText(text, event.isComposing === true) && target) target.value = '';
     },
   };
 }
@@ -251,7 +265,7 @@ export default {
           autoplay
           muted
           playsinline
-          tabindex="0"
+          tabindex="-1"
           :aria-label="$t('workbench.browserVideoLabel')"
           @pointermove="onPointerMove"
           @pointerdown="onPointerDown"
@@ -259,12 +273,22 @@ export default {
           @pointercancel="releaseInput"
           @lostpointercapture="releaseInput"
           @wheel.prevent="onWheel"
+          @contextmenu.prevent
+        ></video>
+        <textarea
+          ref="inputSink"
+          class="browser-input-sink"
+          rows="1"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          :aria-label="$t('workbench.browserInputLabel')"
           @keydown="onKeyDown"
           @keyup="onKeyUp"
           @compositionstart="onCompositionStart"
           @compositionend="onCompositionEnd"
-          @contextmenu.prevent
-        ></video>
+          @input="onTextInput"
+        ></textarea>
         <div v-if="!connected" class="browser-video-overlay" aria-live="polite">
           <span class="session-loading-spinner"></span>
           <span>{{ $t('workbench.browserConnecting') }}</span>
@@ -275,6 +299,7 @@ export default {
   setup(props) {
     const browser = useBrowserStore();
     const video = Vue.ref(null);
+    const inputSink = Vue.ref(null);
     const runtimeLoading = Vue.ref(false);
     const installing = Vue.ref(false);
     const enabling = Vue.ref(false);
@@ -290,6 +315,7 @@ export default {
     const input = createBrowserInputController(action => (
       browser.sendControl(props.agentId, browserSessionId.value, action)
     ));
+    const inputSinkHandlers = createBrowserInputSinkHandlers(input);
 
     browser.installMessageListener();
 
@@ -457,7 +483,7 @@ export default {
     const onPointerDown = event => {
       const position = pointerPosition(event);
       if (!position) return;
-      video.value?.focus?.();
+      inputSink.value?.focus?.({ preventScroll: true });
       video.value?.setPointerCapture?.(event.pointerId);
       input.pointerDown(buttonName(event.button), position);
     };
@@ -473,8 +499,9 @@ export default {
     const onKeyUp = event => {
       if (input.keyUp(event.key)) event.preventDefault();
     };
-    const onCompositionStart = () => input.compositionStart();
-    const onCompositionEnd = event => input.compositionEnd(event.data);
+    const onCompositionStart = inputSinkHandlers.compositionstart;
+    const onCompositionEnd = inputSinkHandlers.compositionend;
+    const onTextInput = inputSinkHandlers.input;
     const releaseInput = () => input.reset();
 
     const refreshRuntime = async ({ startWhenReady = false, preserveError = false } = {}) => {
@@ -577,6 +604,7 @@ export default {
 
     return {
       video,
+      inputSink,
       runtimeLoading,
       installing,
       enabling,
@@ -610,6 +638,7 @@ export default {
       onKeyUp,
       onCompositionStart,
       onCompositionEnd,
+      onTextInput,
       releaseInput,
       closeBrowser,
     };

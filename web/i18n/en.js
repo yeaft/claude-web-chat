@@ -1065,6 +1065,7 @@ export default {
   'workbench.browserPeerAttachTimeout': 'The Browser viewer timed out while establishing WebRTC. Check Browser ICE/TURN connectivity, then retry.',
   'workbench.browserEnd': 'End browser',
   'workbench.browserVideoLabel': 'Live Agent browser view',
+  'workbench.browserInputLabel': 'Browser keyboard input',
   'workbench.browserStatusConnecting': 'Connecting',
   'workbench.browserProtocolUnavailable': 'Browser Runtime protocol is unavailable on this Server connection.',
   'workbench.browserChecking': 'Checking Browser Runtime on the selected Agent…',

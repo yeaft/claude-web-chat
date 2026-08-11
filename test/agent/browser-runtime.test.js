@@ -1385,6 +1385,57 @@ describe('Browser Runtime lifecycle', () => {
     await runtime.shutdown();
   });
 
+  it('drains a pointer event that arrives while the previous move is in flight', async () => {
+    let bridgeHandlers;
+    let releaseFirstMove;
+    const blockedMove = new Promise(resolve => { releaseFirstMove = resolve; });
+    const mouseMove = vi.fn()
+      .mockImplementationOnce(() => blockedMove)
+      .mockResolvedValue(undefined);
+    const page = Object.assign(new EventEmitter(), {
+      url: vi.fn(() => 'about:blank'), title: vi.fn().mockResolvedValue(''), mainFrame: vi.fn(() => null),
+      mouse: { move: mouseMove, up: vi.fn(), wheel: vi.fn(), down: vi.fn(), click: vi.fn() },
+      keyboard: { down: vi.fn(), up: vi.fn(), press: vi.fn(), type: vi.fn() },
+    });
+    const bridge = {
+      registerSession: vi.fn(async (_id, handlers) => {
+        bridgeHandlers = handlers;
+        return { bridgeUrl: 'ws://127.0.0.1:1/browser-runtime/token', waitUntilReady: vi.fn().mockResolvedValue({}) };
+      }),
+      send: vi.fn(() => true), unregisterSession: vi.fn(), close: vi.fn(),
+    };
+    const runtime = new BrowserRuntimeService({
+      yeaftDir: tempRoot(), config: { enabled: true }, platform: 'linux', bridge,
+      probe: vi.fn().mockResolvedValue({ ok: true, captureMode: 'tab' }),
+      launchSession: vi.fn().mockResolvedValue({
+        page, viewport: { width: 1280, height: 720, deviceScaleFactor: 1 }, captureMode: 'tab', close: vi.fn(),
+      }),
+      send: vi.fn(),
+    });
+    await runtime.startupProbe();
+    const owner = { ownerUserId: 'owner', clientId: 'client', webConnectionId: 'socket', webConnectionGeneration: 'one' };
+    const created = await runtime.createSession({ requestId: 'pointer-drain-create', serverIdentity: owner });
+    await runtime.preparePeer({
+      browserSessionId: created.browserSessionId, peerId: 'peer-p', connectionGeneration: 1,
+      role: 'interactive', serverIdentity: owner,
+    });
+    bridgeHandlers.onMessage({ type: 'peer_state', peerId: 'peer-p', connectionGeneration: 1, state: 'connected' });
+    bridgeHandlers.onMessage({
+      type: 'peer_input', peerId: 'peer-p', connectionGeneration: 1, channel: 'pointer',
+      envelope: { pointerSeq: 1, action: { type: 'pointerMove', x: 10, y: 20 } },
+    });
+    await vi.waitFor(() => expect(mouseMove).toHaveBeenCalledWith(10, 20));
+    bridgeHandlers.onMessage({
+      type: 'peer_input', peerId: 'peer-p', connectionGeneration: 1, channel: 'pointer',
+      envelope: { pointerSeq: 2, action: { type: 'pointerMove', x: 30, y: 40 } },
+    });
+    expect(mouseMove).toHaveBeenCalledTimes(1);
+    releaseFirstMove();
+    await vi.waitFor(() => expect(mouseMove).toHaveBeenCalledWith(30, 40));
+    expect(mouseMove).toHaveBeenCalledTimes(2);
+    await runtime.shutdown();
+  });
+
   it('coalesces pointer pressure without consuming reliable control capacity and drops saturated peers', async () => {
     let bridgeHandlers;
     let releaseMove;

@@ -1063,6 +1063,7 @@ export default {
   'workbench.browserPeerAttachTimeout': '连接浏览器 WebRTC 画面超时。请检查 Browser ICE/TURN 连通性，然后重试。',
   'workbench.browserEnd': '结束浏览器',
   'workbench.browserVideoLabel': 'Agent 浏览器实时画面',
+  'workbench.browserInputLabel': '浏览器键盘输入',
   'workbench.browserStatusConnecting': '连接中',
   'workbench.browserProtocolUnavailable': '当前 Server 连接不支持 Browser Runtime 协议。',
   'workbench.browserChecking': '正在检查所选 Agent 的 Browser Runtime…',

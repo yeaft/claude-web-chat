@@ -835,9 +835,11 @@ export class BrowserRuntimeService {
         if (peer.pointerDrainScheduled) return;
         peer.pointerDrainScheduled = true;
         peer.actionChain = peer.actionChain.then(async () => {
-          const envelope = peer.pendingPointer;
-          peer.pendingPointer = null;
-          if (envelope) await this.#executeInteractiveAction(session, peer, envelope, true);
+          while (peer.pendingPointer && session.peers.get(peer.peerId) === peer) {
+            const envelope = peer.pendingPointer;
+            peer.pendingPointer = null;
+            await this.#executeInteractiveAction(session, peer, envelope, true);
+          }
         }).catch(() => {}).finally(() => { peer.pointerDrainScheduled = false; });
         return;
       }

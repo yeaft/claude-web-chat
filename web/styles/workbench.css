@@ -540,8 +540,19 @@
   outline: none;
 }
 
-.browser-video:focus-visible {
+.browser-stage:focus-within .browser-video {
   box-shadow: inset 0 0 0 2px var(--accent-blue);
+}
+
+.browser-input-sink {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+  resize: none;
 }
 
 .browser-video-overlay {

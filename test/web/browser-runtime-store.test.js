@@ -7,6 +7,7 @@ let browserSessionMatchesSource;
 let normalizeBrowserAddress;
 let browserPointerPosition;
 let createBrowserInputController;
+let createBrowserInputSinkHandlers;
 let sent;
 let peerConnections;
 
@@ -43,8 +44,10 @@ beforeAll(async () => {
   globalThis.RTCPeerConnection = FakePeerConnection;
   globalThis.MediaStream = class MediaStream { constructor(tracks = []) { this.tracks = tracks; } };
   ({ useBrowserStore } = await import('../../web/stores/browser.js'));
-  ({ browserSessionMatchesSource, normalizeBrowserAddress, browserPointerPosition, createBrowserInputController }
-    = await import('../../web/components/BrowserPanel.js'));
+  ({
+    browserSessionMatchesSource, normalizeBrowserAddress, browserPointerPosition,
+    createBrowserInputController, createBrowserInputSinkHandlers,
+  } = await import('../../web/components/BrowserPanel.js'));
 });
 
 beforeEach(() => {
@@ -99,21 +102,44 @@ describe('Browser Runtime Web store', () => {
     })).toBeNull();
   });
 
-  it('releases pressed input on cancellation and commits IME text exactly once', () => {
+  it('uses an editable textarea event path to commit IME text exactly once', () => {
+    const actions = [];
+    const input = createBrowserInputController(action => { actions.push(action); return true; });
+    const handlers = createBrowserInputSinkHandlers(input);
+    const sink = document.createElement('textarea');
+    for (const [type, handler] of Object.entries(handlers)) sink.addEventListener(type, handler);
+    document.body.appendChild(sink);
+    sink.focus();
+
+    sink.dispatchEvent(new CompositionEvent('compositionstart', { data: '', bubbles: true }));
+    const composingEvent = new KeyboardEvent('keydown', { key: 'Process', isComposing: true, bubbles: true, cancelable: true });
+    sink.addEventListener('keydown', event => {
+      if (input.keyDown(event)) event.preventDefault();
+    });
+    sink.dispatchEvent(composingEvent);
+    expect(composingEvent.defaultPrevented).toBe(false);
+    sink.value = '中文';
+    sink.dispatchEvent(new InputEvent('input', { data: '中文', inputType: 'insertCompositionText', isComposing: true, bubbles: true }));
+    expect(actions).toEqual([]);
+    expect(sink.value).toBe('中文');
+    sink.dispatchEvent(new CompositionEvent('compositionend', { data: '中文', bubbles: true }));
+    sink.dispatchEvent(new InputEvent('input', { data: '中文', inputType: 'insertText', bubbles: true }));
+
+    expect(actions).toEqual([{ type: 'text', text: '中文' }]);
+    expect(sink.value).toBe('');
+    expect(document.activeElement).toBe(sink);
+    sink.remove();
+  });
+
+  it('releases pressed input on cancellation', () => {
     const actions = [];
     const input = createBrowserInputController(action => { actions.push(action); return true; });
     expect(input.pointerDown('left', { x: 12, y: 34 })).toBe(true);
     expect(input.keyDown({ key: 'Shift', isComposing: false })).toBe(true);
-    input.compositionStart();
-    const composingEvent = { key: 'Process', isComposing: true, preventDefault: vi.fn() };
-    expect(input.keyDown(composingEvent)).toBe(false);
-    expect(composingEvent.preventDefault).not.toHaveBeenCalled();
-    expect(input.compositionEnd('中文')).toBe(true);
     expect(input.reset()).toBe(true);
     expect(actions).toEqual([
       { type: 'mouse', event: 'down', button: 'left', x: 12, y: 34 },
       { type: 'key', event: 'down', key: 'Shift' },
-      { type: 'text', text: '中文' },
       { type: 'resetInput' },
     ]);
     expect(input.snapshot()).toEqual({ buttons: [], modifiers: [], composing: false });
