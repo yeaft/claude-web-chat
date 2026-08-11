@@ -26,7 +26,7 @@ function detail(overrides = {}) {
 }
 
 describe('Mainline projection', () => {
-  it('retains the canonical terminal Run error', () => {
+  it('retains a bounded assignment diagnostic in canonical results', () => {
     const action = {
       id: 'action-1', stageId: 'implement', type: 'implement', sequence: 1,
       generation: 1, specHash: 'hash', status: 'failed', dependsOnStageIds: [], resultRunId: 'run-1',
@@ -35,26 +35,85 @@ describe('Mainline projection', () => {
       actions: [action],
       runs: [{
         id: 'run-1', actionId: action.id, actionGeneration: 1, actionSpecHash: 'hash',
-        status: 'failed', error: 'sanitized assignment diagnostic', endedAt: 1,
+        status: 'failed', error: 'No eligible VP remained after availability and stage separation checks.', endedAt: 1,
       }],
     }));
 
     expect(projection.canonicalActionResults[action.id].error)
-      .toBe('sanitized assignment diagnostic');
+      .toBe('No eligible VP remained after availability and stage separation checks.');
   });
 
+  it('redacts sensitive Run errors before dependency and sibling model context', () => {
+    const dependency = {
+      id: 'dependency', stageId: 'research', type: 'research', sequence: 1,
+      generation: 1, specHash: 'dependency-hash', status: 'failed', dependsOnStageIds: [], resultRunId: 'run-dependency',
+    };
+    const sibling = {
+      id: 'sibling', stageId: 'test', type: 'test', sequence: 2,
+      generation: 1, specHash: 'sibling-hash', status: 'failed', dependsOnStageIds: [], resultRunId: 'run-sibling',
+    };
+    const current = {
+      id: 'current', stageId: 'deliver', type: 'deliver', sequence: 3,
+      generation: 1, specHash: 'current-hash', status: 'ready', dependsOnStageIds: ['research'],
+    };
+    const input = detail({
+      actions: [dependency, sibling, current],
+      runs: [
+        {
+          id: 'run-dependency', actionId: dependency.id, actionGeneration: 1,
+          actionSpecHash: dependency.specHash, status: 'failed',
+          error: 'Authorization: Bearer TOP-SECRET-TOKEN', endedAt: 2,
+        },
+        {
+          id: 'run-sibling', actionId: sibling.id, actionGeneration: 1,
+          actionSpecHash: sibling.specHash, status: 'failed',
+          error: 'cwd=C:\\Users\\secret\\project token Abcdefghijklmnopqrstuvwxyz1234567890', endedAt: 3,
+        },
+      ],
+    });
 
+    const projection = buildMainlineProjection(input);
+    const snapshot = buildMainlineContextSnapshot(input, current).contextSnapshot;
+    const serialized = JSON.stringify(snapshot);
 
+    expect(projection.canonicalActionResults[dependency.id].error)
+      .toBe('Authorization: ***');
+    expect(projection.canonicalActionResults[sibling.id].error)
+      .toBe('The Action failed. Sensitive details were omitted.');
+    expect(snapshot.directDependencies[0].result.error).toBe('Authorization: ***');
+    expect(snapshot.siblingResults[sibling.id].error)
+      .toBe('The Action failed. Sensitive details were omitted.');
+    expect(serialized).not.toContain('TOP-SECRET-TOKEN');
+    expect(serialized).not.toContain('Users\\\\secret');
+    expect(serialized).not.toContain('Abcdefghijklmnopqrstuvwxyz1234567890');
+  });
 
+  it('redacts and bounds failed source results for dynamic model context', () => {
+    const source = {
+      id: 'source', stageId: 'source', type: 'research', sequence: 1,
+      generation: 1, specHash: 'source-hash', status: 'failed', sourceActionIds: [], resultRunId: 'run-source',
+    };
+    const current = {
+      id: 'current', stageId: 'current', type: 'implement', sequence: 2,
+      generation: 1, specHash: 'current-hash', status: 'ready', sourceActionIds: [source.id],
+    };
+    const input = detail({
+      coordinationMode: 'dynamic',
+      actions: [source, current],
+      runs: [{
+        id: 'run-source', actionId: source.id, actionGeneration: 1,
+        actionSpecHash: source.specHash, status: 'failed',
+        error: `Provider failed safely ${'界'.repeat(3_000)}`, endedAt: 4,
+      }],
+    });
 
+    const snapshot = buildMainlineContextSnapshot(input, current).contextSnapshot;
+    const diagnostic = snapshot.sourceResults[0].result.error;
 
-
-
-
-
-
-
-
+    expect(snapshot).not.toHaveProperty('directDependencies');
+    expect(diagnostic).toMatch(/^Provider failed safely /);
+    expect(Buffer.byteLength(diagnostic, 'utf8')).toBeLessThanOrEqual(2_000);
+  });
 
   it('keeps Coordinator conversation out of executor prompts while isolating Action-scoped input', () => {
     const actionA = {

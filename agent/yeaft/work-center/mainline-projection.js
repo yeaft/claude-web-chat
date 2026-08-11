@@ -8,6 +8,7 @@ import {
 } from './action-identity.js';
 import { sessionMessageQuotePrompt } from '../session-message-quote.js';
 import { normalizeSessionContextSnapshot } from './session-context.js';
+import { sanitizeModelFailureDiagnostic } from './failure-diagnostic.js';
 
 export const MAINLINE_CONTEXT_HARD_LIMIT_BYTES = 64 * 1024;
 export const MAINLINE_CONTEXT_TARGET_MIN_BYTES = 16 * 1024;
@@ -314,7 +315,7 @@ export function buildMainlineProjection(detail) {
       outputs: normalizeOutputs(run.outputs),
       reviewDecision: run.reviewDecision || null,
       waitingReason: run.waitingReason || null,
-      error: run.error || null,
+      error: sanitizeModelFailureDiagnostic(run.error),
       endedAt: run.endedAt || null,
     };
   }
