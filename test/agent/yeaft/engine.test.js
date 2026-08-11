@@ -147,19 +147,20 @@ describe('active tool exposure and scoped prompts', () => {
     const toolNames = registry.getToolNames();
     const baseline = resolveActiveToolNames({ toolNames, prompt: 'Explain this code.' });
 
+    expect(toolNames).toContain('StartPlan');
     expect([...baseline]).toEqual(expect.arrayContaining([
       'WebSearch',
       'WebFetch',
       'ViewImage',
       'EnterWorktree',
       'ExitWorktree',
-      'StartPlan',
       'TodoWrite',
       'FileRead',
       'FileEdit',
       'Bash',
     ]));
     expect([...baseline]).not.toEqual(expect.arrayContaining([
+      'StartPlan',
       'HistorySearch',
       'DiskUsage',
       'SpawnAgent',
@@ -7889,15 +7890,20 @@ describe('Engine', () => {
       })).toContain('当前 Session 隶属于当前 Project。当前 Project 的统一 instruction 是：');
       expect(buildSystemPrompt({ language: 'en', projectInstruction: '   ' }))
         .not.toContain('[Project Instruction]');
-      expect(enSystem).toContain('use `StartPlan` before execution');
-      expect(enSystem).toContain('keep the visible `TodoWrite` checklist current');
+      expect(enSystem).toContain('write a brief visible plan');
+      expect(enSystem).toContain('same assistant response as the first independent work tools');
+      expect(enSystem).toContain('Do not spend a separate model round entering planning mode');
       expect(enSystem).toContain('do not stop after planning');
       expect(zhSystem).toContain('当前 Session 隶属于 Project Yeaft（project-123）。当前 Project 的统一 instruction 是：');
       expect(zhSystem).toContain('发布前执行统一验证。');
-      expect(zhSystem).toContain('使用 `StartPlan`');
-      expect(zhSystem).toContain('持续更新可见的 `TodoWrite` checklist');
+      expect(zhSystem).toContain('先写简短可见计划');
+      expect(zhSystem).toContain('不要用单独的模型回合进入规划模式');
       expect(zhSystem).toContain('只有用户信息确实阻塞第一步时才在规划后停下');
 
+      expect(todoWriteTool.description.en).toContain('PLAN WITHOUT AN EXTRA MODEL ROUND');
+      expect(todoWriteTool.description.en).toContain('do not call a separate planning-mode tool first');
+      expect(todoWriteTool.description.zh).toContain('不要浪费额外模型回合进入规划模式');
+      expect(todoWriteTool.description.zh).toContain('不要先调用单独的规划模式工具');
       expect(todoWriteTool.description.en).toContain('BATCH WITH WORK');
       expect(todoWriteTool.description.en).toContain('same assistant response');
       expect(todoWriteTool.description.en).toContain('only after evidence');

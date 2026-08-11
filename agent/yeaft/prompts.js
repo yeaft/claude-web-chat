@@ -472,9 +472,9 @@ const TOOL_GUIDANCE_GROUPS = Object.freeze([
     zh: 'Shell 命令保持非交互、确定性并设置合理 timeout；包含空格的路径要引用，未经授权不要执行破坏性操作。',
   },
   {
-    tools: ['StartPlan', 'TodoWrite'],
-    en: 'For non-trivial multi-step work, use `StartPlan` before execution and keep the visible `TodoWrite` checklist current; do not stop after planning unless user input genuinely blocks the first step.',
-    zh: '非平凡多步骤任务在执行前使用 `StartPlan`，并持续更新可见的 `TodoWrite` checklist；只有用户信息确实阻塞第一步时才在规划后停下。',
+    tools: ['TodoWrite'],
+    en: 'For non-trivial multi-step work, write a brief visible plan and call `TodoWrite` in the same assistant response as the first independent work tools. Do not spend a separate model round entering planning mode, and do not stop after planning unless user input genuinely blocks the first step.',
+    zh: '非平凡多步骤任务先写简短可见计划，并在同一个 assistant response 中把 `TodoWrite` 与第一批独立工作工具一起发出。不要用单独的模型回合进入规划模式；只有用户信息确实阻塞第一步时才在规划后停下。',
   },
   {
     tools: ['SpawnAgent', 'PromptAgent', 'WaitAgent', 'CloseAgent', 'ListAgents'],
