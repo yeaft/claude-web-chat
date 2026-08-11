@@ -582,17 +582,18 @@ export function getThinkingCapability(model, context = {}) {
       ? (/^deepseek/i.test(modelId) ? 'anthropic-adaptive' : 'anthropic')
       : context.protocol === 'openai-responses' ? 'openai-reasoning' : null
   );
+  const hasExplicitThinking = info && Object.prototype.hasOwnProperty.call(info, 'supportsThinking');
+  const familyInferred = inferThinkingCapability(model);
   if (context.supportsEffort === true || overrideOptions) {
     return {
       supportsThinking: true,
-      thinkingProtocol: overrideProtocol || 'openai-reasoning',
-      defaultEffort: context.defaultEffort ?? null,
-      maxBudgetTokens: context.maxBudgetTokens ?? null,
-      effortOptions: overrideOptions,
+      thinkingProtocol: overrideProtocol || info?.thinkingProtocol || familyInferred?.thinkingProtocol || 'openai-reasoning',
+      defaultEffort: context.defaultEffort ?? info?.defaultEffort ?? familyInferred?.defaultEffort ?? null,
+      maxBudgetTokens: context.maxBudgetTokens ?? info?.maxBudgetTokens ?? familyInferred?.maxBudgetTokens ?? null,
+      effortOptions: overrideOptions || info?.effortOptions || familyInferred?.effortOptions || null,
     };
   }
-  const hasExplicitThinking = info && Object.prototype.hasOwnProperty.call(info, 'supportsThinking');
-  let inferred = hasExplicitThinking ? null : inferThinkingCapability(model);
+  let inferred = hasExplicitThinking ? null : familyInferred;
   if (context.protocol === 'openai-responses' && !inferred && /^deepseek/i.test(parseModelRef(model).modelId)) {
     inferred = {
       supportsThinking: true,

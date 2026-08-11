@@ -138,6 +138,62 @@ describe('GPT-5.5+ ultra effort', () => {
     }
   });
 
+  it('preserves inferred ultra metadata for eligible supportsEffort-only provider entries', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-gpt-ultra-marker-'));
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({
+      providers: [{
+        name: 'openai',
+        protocol: 'openai-responses',
+        apiKey: 'x',
+        models: [
+          { id: 'gpt-5.5', supportsEffort: true },
+          { id: 'gpt-5.10-pro', supportsEffort: true },
+          { id: 'gpt-6', supportsEffort: true },
+        ],
+      }],
+      primaryModel: 'openai/gpt-5.5',
+    }));
+    try {
+      const config = loadConfig({ dir });
+      const byRef = Object.fromEntries(config.availableModels.map((m) => [m.ref, m]));
+      const ultraOptions = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+      for (const ref of ['openai/gpt-5.5', 'openai/gpt-5.10-pro', 'openai/gpt-6']) {
+        expect(byRef[ref].effortOptions).toEqual(ultraOptions);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('sends ultra through real Router dispatch for eligible supportsEffort-only entries', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ output_text: 'ok', usage: {} }));
+    const router = new AdapterRouter({
+      providers: [{
+        name: 'openai',
+        baseUrl: 'https://api.openai.test/v1',
+        apiKey: 'test',
+        protocol: 'openai-responses',
+        models: [
+          { id: 'gpt-5.5', supportsEffort: true },
+          { id: 'gpt-5.10-pro', supportsEffort: true },
+          { id: 'gpt-6', supportsEffort: true },
+        ],
+      }],
+    });
+
+    for (const model of ['openai/gpt-5.5', 'openai/gpt-5.10-pro', 'openai/gpt-6']) {
+      await router.call({
+        model,
+        system: 's',
+        messages: [{ role: 'user', content: 'hi' }],
+        effort: 'ultra',
+        effortSource: 'user',
+      });
+      const body = JSON.parse(fetchMock.mock.calls.at(-1)[1].body);
+      expect(body.reasoning).toEqual({ effort: 'ultra' });
+    }
+  });
+
   it('drops provider-declared ultra before real Router dispatch for ineligible models', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ output_text: 'ok', usage: {} }));
     const router = new AdapterRouter({
