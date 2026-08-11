@@ -22,6 +22,7 @@ function comparable(value) {
 async function findUniqueBasenames(workDir, requestedPaths, {
   maxScannedEntries = MAX_SCANNED_ENTRIES,
   maxDepth = MAX_DEPTH,
+  readDirectory = readdir,
 } = {}) {
   const targets = new Set(requestedPaths.map(path => comparable(basename(path))).filter(Boolean));
   const matches = new Map([...targets].map(target => [target, []]));
@@ -35,7 +36,12 @@ async function findUniqueBasenames(workDir, requestedPaths, {
       return;
     }
     let entries;
-    try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+    try {
+      entries = await readDirectory(dir, { withFileTypes: true });
+    } catch {
+      complete = false;
+      return;
+    }
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
       if (scanned >= maxScannedEntries) {

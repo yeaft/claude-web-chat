@@ -158,6 +158,34 @@ describe('Agent file reference resolution', () => {
     }
   });
 
+  it('does not claim basename uniqueness when a directory read fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-file-references-read-error-'));
+    try {
+      const fs = await import('node:fs/promises');
+      const unreadableDir = join(root, 'z-unreadable');
+      await fs.mkdir(join(root, 'a'), { recursive: true });
+      await fs.mkdir(unreadableDir, { recursive: true });
+      await fs.writeFile(join(root, 'a', 'target.actions'), 'first');
+      await fs.writeFile(join(unreadableDir, 'target.actions'), 'second');
+      const readDirectory = vi.fn(async (dir, options) => {
+        if (dir === unreadableDir) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+        return fs.readdir(dir, options);
+      });
+
+      await expect(resolveFileReferences(['wrong/target.actions'], root, {
+        readDirectory,
+      })).resolves.toEqual([]);
+      await expect(resolveFileReferences(['a/target.actions'], root, {
+        readDirectory,
+      })).resolves.toEqual([
+        { requestedPath: 'a/target.actions', resolvedPath: 'a/target.actions' },
+      ]);
+      expect(readDirectory).toHaveBeenCalledWith(unreadableDir, { withFileTypes: true });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('does not claim basename uniqueness when a matching subtree exceeds max depth', async () => {
     const root = mkdtempSync(join(tmpdir(), 'yeaft-file-references-depth-'));
     try {
