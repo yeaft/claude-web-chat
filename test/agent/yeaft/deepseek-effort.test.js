@@ -45,6 +45,19 @@ describe('GPT-5.5+ ultra effort', () => {
     expect(getModelEffortOptions('o4-mini')).not.toContain('ultra');
   });
 
+  it('rejects provider-declared ultra outside the GPT-5.5+ family', () => {
+    expect(getModelEffortOptions('gpt-5.4', {
+      protocol: 'openai-responses',
+      supportsEffort: true,
+      effortOptions: ['ultra'],
+    })).not.toContain('ultra');
+    expect(getModelEffortOptions('custom-model', {
+      protocol: 'openai-responses',
+      supportsEffort: true,
+      effortOptions: ['ultra'],
+    })).not.toContain('ultra');
+  });
+
   it('normalizes and maps ultra through the OpenAI reasoning wire enum', () => {
     expect(normalizeEffort('ultra')).toBe('ultra');
     expect(mapEffortToOpenAIReasoning('ultra')).toBe('ultra');
@@ -93,20 +106,63 @@ describe('GPT-5.5+ ultra effort', () => {
     expect(body.reasoning).toEqual({ effort: 'ultra' });
   });
 
-  it('derives ultra effort metadata for GPT-5.5 provider entries', () => {
+  it('fences provider-declared ultra metadata and lets eligible entries narrow options', () => {
     const dir = mkdtempSync(join(tmpdir(), 'yeaft-gpt-ultra-effort-'));
     writeFileSync(join(dir, 'config.json'), JSON.stringify({
-      providers: [{ name: 'openai', protocol: 'openai-responses', apiKey: 'x', models: ['gpt-5.4', 'gpt-5.5', 'gpt-6'] }],
+      providers: [{
+        name: 'openai',
+        protocol: 'openai-responses',
+        apiKey: 'x',
+        models: [
+          { id: 'gpt-5.4', effortOptions: ['low', 'ultra'] },
+          { id: 'custom-model', supportsEffort: true, effortOptions: ['ultra'] },
+          { id: 'gpt-5.5', effortOptions: ['medium', 'ultra'] },
+          { id: 'gpt-5.10-pro', effortOptions: ['low', 'ultra'] },
+          'gpt-6',
+          { id: 'gpt-6-narrow', effortOptions: ['low', 'high'] },
+        ],
+      }],
       primaryModel: 'openai/gpt-5.5',
     }));
     try {
       const config = loadConfig({ dir });
       const byRef = Object.fromEntries(config.availableModels.map((m) => [m.ref, m]));
-      expect(byRef['openai/gpt-5.4'].effortOptions).not.toContain('ultra');
-      expect(byRef['openai/gpt-5.5'].effortOptions).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+      expect(byRef['openai/gpt-5.4'].effortOptions).toEqual(['low']);
+      expect(byRef['openai/custom-model'].effortOptions).toBeUndefined();
+      expect(byRef['openai/gpt-5.5'].effortOptions).toEqual(['medium', 'ultra']);
+      expect(byRef['openai/gpt-5.10-pro'].effortOptions).toEqual(['low', 'ultra']);
       expect(byRef['openai/gpt-6'].effortOptions).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+      expect(byRef['openai/gpt-6-narrow'].effortOptions).toEqual(['low', 'high']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('drops provider-declared ultra before real Router dispatch for ineligible models', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ output_text: 'ok', usage: {} }));
+    const router = new AdapterRouter({
+      providers: [{
+        name: 'openai',
+        baseUrl: 'https://api.openai.test/v1',
+        apiKey: 'test',
+        protocol: 'openai-responses',
+        models: [
+          { id: 'gpt-5.4', effortOptions: ['low', 'ultra'] },
+          { id: 'custom-model', supportsEffort: true, effortOptions: ['ultra'] },
+        ],
+      }],
+    });
+
+    for (const model of ['openai/gpt-5.4', 'openai/custom-model']) {
+      await router.call({
+        model,
+        system: 's',
+        messages: [{ role: 'user', content: 'hi' }],
+        effort: 'ultra',
+        effortSource: 'user',
+      });
+      const body = JSON.parse(fetchMock.mock.calls.at(-1)[1].body);
+      expect(body.reasoning).toBeUndefined();
     }
   });
 });

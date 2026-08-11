@@ -447,6 +447,24 @@ export const DEEPSEEK_REASONING_EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhig
 
 const VALID_EFFORT_OPTIONS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 
+/**
+ * GPT models expose the provider-specific `ultra` tier starting at 5.5.
+ * Numeric comparison matters here: 5.10 is newer than 5.5.
+ */
+export function modelSupportsUltraEffort(model) {
+  const id = parseModelRef(model).modelId.toLowerCase();
+  const match = id.match(/^gpt-(\d+)(?:\.(\d+))?(?=$|[-.]|\[)/);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2] || 0);
+  return major > 5 || (major === 5 && minor >= 5);
+}
+
+function fenceUltraEffortOptions(model, options) {
+  if (!Array.isArray(options) || modelSupportsUltraEffort(model)) return options;
+  return options.filter(effort => effort !== 'ultra');
+}
+
 export function normalizeEffortOptions(options) {
   if (!Array.isArray(options)) return null;
   const out = [];
@@ -463,13 +481,8 @@ function inferThinkingCapability(model) {
   const id = parseModelRef(model).modelId.toLowerCase();
   if (!id) return null;
 
-  // GPT-5.5 and later expose the model-specific `ultra` tier above `max`.
-  // Compare numeric components instead of model strings so gpt-5.10 remains
-  // newer than gpt-5.5. Provider suffixes are variants of the same family.
-  const gptVersion = id.match(/^gpt-(\d+)(?:\.(\d+))?(?=$|[-.]|\[)/);
-  const gptMajor = gptVersion ? Number(gptVersion[1]) : null;
-  const gptMinor = gptVersion ? Number(gptVersion[2] || 0) : null;
-  if (gptVersion && (gptMajor > 5 || (gptMajor === 5 && gptMinor >= 5))) {
+  // Provider suffixes are variants of the same GPT model family.
+  if (modelSupportsUltraEffort(model)) {
     return {
       supportsThinking: true,
       thinkingProtocol: 'openai-reasoning',
@@ -563,7 +576,7 @@ export function thinkingBudgetForEffort(model, effort) {
 export function getThinkingCapability(model, context = {}) {
   const info = MODEL_REGISTRY.get(model);
   const modelId = parseModelRef(model).modelId;
-  const overrideOptions = normalizeEffortOptions(context.effortOptions);
+  const overrideOptions = fenceUltraEffortOptions(model, normalizeEffortOptions(context.effortOptions));
   const overrideProtocol = context.thinkingProtocol || (
     context.protocol === 'anthropic'
       ? (/^deepseek/i.test(modelId) ? 'anthropic-adaptive' : 'anthropic')
@@ -614,7 +627,7 @@ export function getThinkingCapability(model, context = {}) {
     thinkingProtocol: info?.thinkingProtocol || inferred?.thinkingProtocol || 'none',
     defaultEffort: info?.defaultEffort ?? inferred?.defaultEffort ?? null,
     maxBudgetTokens: info?.maxBudgetTokens ?? inferred?.maxBudgetTokens ?? null,
-    effortOptions: (info?.effortOptions || inferred?.effortOptions || null),
+    effortOptions: fenceUltraEffortOptions(model, info?.effortOptions || inferred?.effortOptions || null),
   };
 }
 
