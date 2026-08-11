@@ -33,6 +33,11 @@ WHEN TO USE:
 - The user gave you a list of things to do (numbered/comma-separated), or
 - You're about to start a non-trivial, multi-file change.
 
+FIRST CALL — PLAN WITHOUT AN EXTRA MODEL ROUND:
+- Write a short visible prose plan in the same assistant response: problem, approach, and risks.
+- Call TodoWrite directly; do not call a separate planning-mode tool first.
+- If the first work tools and arguments are known, emit them beside TodoWrite in that same response.
+
 HOW TO USE:
 - First call: enumerate all the todos with status "pending", set exactly one to "in_progress".
 - Each subsequent call: rewrite the FULL list — mark the just-finished item "completed", mark the next item "in_progress".
@@ -52,6 +57,11 @@ WHEN NOT TO USE:
 - 任务有 3 步或以上有意义步骤，或
 - 用户给了你一份待办列表（编号/逗号分隔），或
 - 你即将开始一个非平凡的多文件改动。
+
+首次调用——不要浪费额外模型回合进入规划模式：
+- 在同一个 assistant response 中先写简短可见计划：问题、方案和风险。
+- 直接调用 TodoWrite，不要先调用单独的规划模式工具。
+- 如果第一批工作工具及参数已经确定，把它们和 TodoWrite 在同一响应中发出。
 
 如何使用：
 - 首次调用：枚举所有 todo，状态为 "pending"，将其中恰好一个设为 "in_progress"。

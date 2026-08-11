@@ -8,6 +8,14 @@ function formatBytes(value) {
   return `${bytes} B`;
 }
 
+export function browserSessionMatchesSource(snapshot, expected) {
+  const actual = snapshot?.sourceRef;
+  if (!actual || !expected || actual.kind !== expected.kind) return false;
+  if (expected.kind === 'yeaft-session') return actual.sessionId === expected.sessionId;
+  if (expected.kind === 'chat-conversation') return actual.conversationId === expected.conversationId;
+  return false;
+}
+
 export default {
   name: 'BrowserPanel',
   props: {
@@ -261,12 +269,15 @@ export default {
       viewerLoading.value = true;
       viewerError.value = '';
       try {
+        const expectedSource = sourceRef();
         const sessions = await browser.listSessions(props.agentId);
-        let selected = sessions.find(item => item.state === 'ready') || null;
+        let selected = sessions.find(item => (
+          item.state === 'ready' && browserSessionMatchesSource(item, expectedSource)
+        )) || null;
         if (!selected) {
           selected = await browser.createSession({
             agentId: props.agentId,
-            sourceRef: sourceRef(),
+            sourceRef: expectedSource,
             locale: document.documentElement.lang || 'en-US',
             viewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
           });
