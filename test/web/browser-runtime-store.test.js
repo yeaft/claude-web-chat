@@ -79,7 +79,7 @@ describe('Browser Runtime Web store', () => {
     const status = await statusPromise;
     expect(store.runtimeStatus['agent-a']).toBe(status);
 
-    const installPromise = store.installRuntime('agent-a', status);
+    const installPromise = store.setupRuntime('agent-a', status);
     const installRequest = sent.at(-1);
     expect(installRequest).toMatchObject({
       type: 'browser_runtime_install',
@@ -112,6 +112,25 @@ describe('Browser Runtime Web store', () => {
     });
     await expect(installPromise).resolves.toMatchObject({ state: 'ready', ready: true });
     expect(store.installProgress['agent-a']).toBeUndefined();
+
+    const disabled = { ...status, state: 'disabled', installed: true };
+    const enablePromise = store.setupRuntime('agent-a', disabled);
+    const enableRequest = sent.at(-1);
+    expect(enableRequest).toMatchObject({
+      type: 'browser_runtime_enable', agentId: 'agent-a', requestId: expect.any(String),
+    });
+    expect(enableRequest).not.toHaveProperty('confirmedBuildId');
+    store.handleMessage({
+      type: 'browser_runtime_status_result',
+      requestId: enableRequest.requestId,
+      agentId: 'agent-a',
+      supported: true,
+      state: 'ready',
+      installed: true,
+      enabled: true,
+      ready: true,
+    });
+    await expect(enablePromise).resolves.toMatchObject({ state: 'ready', ready: true });
   });
 
   it('creates a generation-fenced peer and answers only its exact offer', async () => {

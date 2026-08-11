@@ -60,41 +60,56 @@ export default {
 
         <template v-if="runtimeInstalling">
           <p>{{ $t('workbench.browserInstalling', { build: runtimeStatus.buildId || '' }) }}</p>
-          <div class="browser-install-progress" role="progressbar" :aria-valuenow="progressPercent" aria-valuemin="0" aria-valuemax="100">
-            <span :style="{ width: progressPercent + '%' }"></span>
+          <div class="browser-install-progress-row">
+            <div
+              class="browser-install-progress"
+              role="progressbar"
+              :aria-label="$t('workbench.browserInstallProgressLabel')"
+              :aria-valuenow="progressPercent"
+              :aria-valuetext="progressText"
+              aria-valuemin="0"
+              aria-valuemax="100"
+            >
+              <span :style="{ width: progressPercent + '%' }"></span>
+            </div>
+            <strong class="browser-install-percent">{{ progressPercent }}%</strong>
           </div>
           <p class="browser-install-meta">{{ progressText }}</p>
           <p class="browser-install-note">{{ $t('workbench.browserInstallKeepOpen') }}</p>
         </template>
 
-        <template v-else-if="!runtimeStatus.installed">
-          <p>{{ $t('workbench.browserOptionalInstall', {
-            build: runtimeStatus.buildId || '',
-            size: downloadSize,
-          }) }}</p>
-          <p class="browser-install-note">{{ $t('workbench.browserInstallDiskNote') }}</p>
-          <p v-if="setupError || runtimeStatus.safeError" class="browser-setup-error" role="alert">
-            {{ setupError || runtimeStatus.safeError }}
-          </p>
-          <button
-            type="button"
-            class="btn-primary"
-            :disabled="installing || runtimeLoading"
-            @click="install"
-          >{{ $t('workbench.browserInstallAction', { size: downloadSize }) }}</button>
+        <template v-else-if="enabling || runtimeStatus.state === 'probing'">
+          <template v-if="setupError">
+            <p class="browser-setup-error" role="alert">{{ setupError }}</p>
+            <button type="button" class="btn-secondary" @click="refreshRuntime">{{ $t('common.retry') }}</button>
+          </template>
+          <template v-else>
+            <span class="session-loading-spinner"></span>
+            <p>{{ $t('workbench.browserEnabling') }}</p>
+          </template>
         </template>
 
         <template v-else>
-          <p>{{ $t('workbench.browserInstalledEnable', { build: runtimeStatus.buildId || '' }) }}</p>
+          <p>{{ $t(runtimeStatus.installed
+            ? 'workbench.browserInstalledEnable'
+            : 'workbench.browserOptionalInstall', {
+              build: runtimeStatus.buildId || '',
+              size: downloadSize,
+            }) }}</p>
+          <p v-if="!runtimeStatus.installed" class="browser-install-note">
+            {{ $t('workbench.browserInstallDiskNote') }}
+          </p>
           <p v-if="setupError || runtimeStatus.safeError" class="browser-setup-error" role="alert">
             {{ setupError || runtimeStatus.safeError }}
           </p>
           <button
             type="button"
             class="btn-primary"
-            :disabled="enabling || runtimeLoading"
-            @click="enable"
-          >{{ $t(enabling ? 'workbench.browserEnabling' : 'workbench.browserEnableAction') }}</button>
+            :disabled="setupInProgress || runtimeLoading"
+            @click="setupRuntime"
+          >{{ $t(runtimeStatus.installed
+            ? 'workbench.browserEnableAction'
+            : 'workbench.browserInstallAction', { size: downloadSize }) }}</button>
         </template>
       </div>
 
@@ -157,6 +172,9 @@ export default {
     const runtimeInstalling = Vue.computed(() => (
       installing.value || runtimeStatus.value?.state === 'installing'
     ));
+    const setupInProgress = Vue.computed(() => (
+      runtimeInstalling.value || enabling.value || runtimeStatus.value?.state === 'probing'
+    ));
     const downloadSize = Vue.computed(() => formatBytes(runtimeStatus.value?.downloadBytes));
     const progressPercent = Vue.computed(() => {
       const downloaded = Number(installProgress.value?.downloadedBytes
@@ -215,7 +233,8 @@ export default {
 
     const scheduleStatusPoll = () => {
       clearStatusPoll();
-      if (disposed || installing.value || runtimeStatus.value?.state !== 'installing') return;
+      if (disposed || installing.value
+          || !['installing', 'probing'].includes(runtimeStatus.value?.state)) return;
       statusPollTimer = setTimeout(() => {
         void refreshRuntime({ startWhenReady: true });
       }, 2_000);
@@ -264,7 +283,7 @@ export default {
       try {
         const status = await browser.getRuntimeStatus(props.agentId);
         if (disposed) return;
-        if (status.state === 'installing') scheduleStatusPoll();
+        if (['installing', 'probing'].includes(status.state)) scheduleStatusPoll();
         else clearStatusPoll();
         if (startWhenReady && status.ready === true && !snapshot.value) await startViewer();
       } catch (cause) {
@@ -276,35 +295,24 @@ export default {
       }
     };
 
-    const install = async () => {
-      if (installing.value || !runtimeStatus.value) return;
-      installing.value = true;
+    const setupRuntime = async () => {
+      const current = runtimeStatus.value;
+      if (setupInProgress.value || !current) return;
+      const needsInstall = !current.installed;
+      if (needsInstall) installing.value = true;
+      else enabling.value = true;
       setupError.value = '';
       clearStatusPoll();
       try {
-        const status = await browser.installRuntime(props.agentId, runtimeStatus.value);
+        const status = await browser.setupRuntime(props.agentId, current);
         if (!disposed && status.ready === true) await startViewer();
       } catch (cause) {
         setupError.value = cause?.message || String(cause);
         await refreshRuntime({ preserveError: true });
       } finally {
         installing.value = false;
-        scheduleStatusPoll();
-      }
-    };
-
-    const enable = async () => {
-      if (enabling.value) return;
-      enabling.value = true;
-      setupError.value = '';
-      try {
-        const status = await browser.enableRuntime(props.agentId);
-        if (!disposed && status.ready === true) await startViewer();
-      } catch (cause) {
-        setupError.value = cause?.message || String(cause);
-        await refreshRuntime({ preserveError: true });
-      } finally {
         enabling.value = false;
+        scheduleStatusPoll();
       }
     };
 
@@ -345,7 +353,7 @@ export default {
     });
 
     Vue.watch(() => runtimeStatus.value?.state, state => {
-      if (state === 'installing') scheduleStatusPoll();
+      if (['installing', 'probing'].includes(state)) scheduleStatusPoll();
       else clearStatusPoll();
     });
 
@@ -366,6 +374,7 @@ export default {
       displayError,
       runtimeStatus,
       runtimeInstalling,
+      setupInProgress,
       downloadSize,
       progressPercent,
       progressText,
@@ -375,8 +384,7 @@ export default {
       displayUrl,
       statusText,
       refreshRuntime,
-      install,
-      enable,
+      setupRuntime,
       startViewer,
       closeBrowser,
     };

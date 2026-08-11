@@ -119,11 +119,13 @@ export const CONFIG = {
   // Agent authentication (global fallback — per-user agent_secret is preferred)
   agentSecret: process.env.AGENT_SECRET || DEFAULT_AGENT_SECRET,
 
-  // Browser Runtime stays fail-closed until the Server rollout gate is enabled.
+  // Browser setup/viewer routes are available by default; an administrator can
+  // still disable the entire surface explicitly. Downloads remain opt-in in the
+  // Workbench and all lifecycle/signaling routes stay owner-scoped.
   // TURN credentials use the standard time-limited HMAC username scheme; Web and
   // Agent endpoints receive separately scoped usernames from the route ledger.
   browserRuntime: {
-    enabled: process.env.BROWSER_RUNTIME_ENABLED === 'true',
+    enabled: process.env.BROWSER_RUNTIME_ENABLED !== 'false',
     iceTransportPolicy: process.env.BROWSER_ICE_TRANSPORT_POLICY === 'relay' ? 'relay' : 'all',
     stunUrls: commaList(process.env.BROWSER_STUN_URLS),
     turnUrls: commaList(process.env.BROWSER_TURN_URLS),
