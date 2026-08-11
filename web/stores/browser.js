@@ -226,6 +226,9 @@ export const useBrowserStore = defineStore('browser', {
         state: 'preparing',
         remoteState: null,
         pendingCandidates: [],
+        channels: {},
+        controlSeq: 0,
+        pointerSeq: 0,
         iceServerCount: null,
         attachTimer: null,
         disconnectedTimer: null,
@@ -245,7 +248,7 @@ export const useBrowserStore = defineStore('browser', {
         browserSessionId,
         requestId,
         connectionGeneration,
-        role: 'viewer',
+        role: 'interactive',
         clientCapabilities: {
           codecs: ['video/VP8'],
           maxWidth: 1920,
@@ -271,6 +274,18 @@ export const useBrowserStore = defineStore('browser', {
       }));
       peer.connection = connection;
       peer.state = 'prepared';
+      connection.ondatachannel = event => {
+        if (this.peers[peer.localKey] !== peer) return;
+        const channel = event.channel;
+        if (!['browser.control.v1', 'browser.pointer.v1', 'browser.state.v1'].includes(channel?.label)) {
+          channel?.close?.();
+          return;
+        }
+        peer.channels[channel.label] = nonReactive(channel);
+        channel.onclose = () => {
+          if (peer.channels[channel.label] === channel) delete peer.channels[channel.label];
+        };
+      };
       connection.ontrack = event => {
         if (this.peers[peer.localKey] !== peer) return;
         peer.videoElement.srcObject = event.streams[0] || new MediaStream([event.track]);
@@ -346,6 +361,39 @@ export const useBrowserStore = defineStore('browser', {
       else await peer.connection.addIceCandidate(message.candidate);
     },
 
+    interactiveReady(agentId, browserSessionId) {
+      const peer = this.peers[sessionKey(agentId, browserSessionId)];
+      return peer?.state === 'connected'
+        && peer.channels['browser.control.v1']?.readyState === 'open'
+        && peer.channels['browser.pointer.v1']?.readyState === 'open';
+    },
+
+    sendControl(agentId, browserSessionId, action) {
+      const peer = this.peers[sessionKey(agentId, browserSessionId)];
+      const channel = peer?.channels['browser.control.v1'];
+      if (!peer || peer.state !== 'connected' || channel?.readyState !== 'open') return false;
+      channel.send(JSON.stringify({
+        version: 1,
+        connectionGeneration: peer.connectionGeneration,
+        controlSeq: ++peer.controlSeq,
+        action,
+      }));
+      return true;
+    },
+
+    sendPointer(agentId, browserSessionId, action) {
+      const peer = this.peers[sessionKey(agentId, browserSessionId)];
+      const channel = peer?.channels['browser.pointer.v1'];
+      if (!peer || peer.state !== 'connected' || channel?.readyState !== 'open') return false;
+      channel.send(JSON.stringify({
+        version: 1,
+        connectionGeneration: peer.connectionGeneration,
+        pointerSeq: ++peer.pointerSeq,
+        action,
+      }));
+      return true;
+    },
+
     detach(agentId, browserSessionId, { notify = true } = {}) {
       const localKey = sessionKey(agentId, browserSessionId);
       const peer = this.peers[localKey];
@@ -368,6 +416,10 @@ export const useBrowserStore = defineStore('browser', {
           });
         } catch {}
       }
+      for (const channel of Object.values(peer.channels || {})) {
+        try { channel?.close?.(); } catch {}
+      }
+      peer.channels = {};
       try { peer.connection?.close(); } catch {}
       if (peer.videoElement) peer.videoElement.srcObject = null;
     },

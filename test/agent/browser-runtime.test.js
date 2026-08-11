@@ -1298,6 +1298,201 @@ describe('Browser Runtime lifecycle', () => {
     await runtime.shutdown();
   });
 
+  it('executes only generation-fenced interactive input against the owned page', async () => {
+    let bridgeHandlers;
+    const page = Object.assign(new EventEmitter(), {
+      url: vi.fn(() => 'about:blank'), title: vi.fn().mockResolvedValue(''), mainFrame: vi.fn(() => null),
+      goto: vi.fn().mockResolvedValue(undefined),
+      mouse: {
+        move: vi.fn().mockResolvedValue(undefined),
+        down: vi.fn().mockResolvedValue(undefined),
+        up: vi.fn().mockResolvedValue(undefined),
+        click: vi.fn().mockResolvedValue(undefined),
+        wheel: vi.fn().mockResolvedValue(undefined),
+      },
+      keyboard: {
+        down: vi.fn().mockResolvedValue(undefined),
+        up: vi.fn().mockResolvedValue(undefined),
+        press: vi.fn().mockResolvedValue(undefined),
+        type: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    const bridge = {
+      registerSession: vi.fn(async (_id, handlers) => {
+        bridgeHandlers = handlers;
+        return {
+          bridgeUrl: 'ws://127.0.0.1:1/browser-runtime/token',
+          waitUntilReady: vi.fn().mockResolvedValue({ type: 'runtime_ready' }),
+        };
+      }),
+      send: vi.fn(() => true), unregisterSession: vi.fn(() => true), close: vi.fn(),
+    };
+    const runtime = new BrowserRuntimeService({
+      yeaftDir: tempRoot(), config: { enabled: true }, platform: 'linux', bridge,
+      probe: vi.fn().mockResolvedValue({ ok: true, captureMode: 'tab' }),
+      launchSession: vi.fn().mockResolvedValue({
+        page, viewport: { width: 1280, height: 720, deviceScaleFactor: 1 }, captureMode: 'tab', close: vi.fn(),
+      }),
+      send: vi.fn(() => 'sent'),
+    });
+    await runtime.startupProbe();
+    const owner = {
+      ownerUserId: 'owner-1', clientId: 'client-a',
+      webConnectionId: 'connection-a', webConnectionGeneration: 'generation-a',
+    };
+    const created = await runtime.createSession({ requestId: 'interactive-create', serverIdentity: owner });
+    await runtime.preparePeer({
+      browserSessionId: created.browserSessionId, peerId: 'peer-a', connectionGeneration: 1,
+      role: 'interactive', serverIdentity: owner,
+    });
+    bridgeHandlers.onMessage({ type: 'peer_state', peerId: 'peer-a', connectionGeneration: 1, state: 'connected' });
+    bridgeHandlers.onMessage({
+      type: 'peer_input', peerId: 'peer-a', connectionGeneration: 1, channel: 'control',
+      envelope: { controlSeq: 1, action: { type: 'navigate', url: 'https://example.com/' } },
+    });
+    bridgeHandlers.onMessage({
+      type: 'peer_input', peerId: 'peer-a', connectionGeneration: 1, channel: 'pointer',
+      envelope: { pointerSeq: 5, action: { type: 'pointerMove', x: 2000, y: -2 } },
+    });
+    bridgeHandlers.onMessage({
+      type: 'peer_input', peerId: 'peer-a', connectionGeneration: 1, channel: 'control',
+      envelope: { controlSeq: 3, action: { type: 'text', text: 'must-not-run' } },
+    });
+    await vi.waitFor(() => expect(page.goto).toHaveBeenCalledWith('https://example.com/', expect.objectContaining({
+      waitUntil: 'domcontentloaded',
+    })));
+    await vi.waitFor(() => expect(page.mouse.move).toHaveBeenCalledWith(1280, 0));
+    expect(page.keyboard.type).not.toHaveBeenCalled();
+    expect(runtime.sessions.get(created.browserSessionId)?.peers.get('peer-a')?.sequences.snapshot())
+      .toMatchObject({ lastAcceptedControlSeq: 1, lastAcceptedPointerSeq: 5 });
+    await expect(runtime.preparePeer({
+      browserSessionId: created.browserSessionId, peerId: 'peer-b', connectionGeneration: 2,
+      role: 'interactive', serverIdentity: owner,
+    })).rejects.toMatchObject({ code: 'browser_interactive_peer_limit' });
+    bridgeHandlers.onMessage({
+      type: 'peer_input', peerId: 'peer-a', connectionGeneration: 1, channel: 'control',
+      envelope: { controlSeq: 2, action: { type: 'resetInput' } },
+    });
+    await vi.waitFor(() => expect(page.keyboard.up).toHaveBeenCalledWith('Shift'));
+    expect(page.mouse.up).toHaveBeenCalledWith({ button: 'left' });
+    page.mouse.move.mockClear();
+    bridgeHandlers.onMessage({
+      type: 'peer_input', peerId: 'peer-a', connectionGeneration: 1, channel: 'control',
+      envelope: { controlSeq: 3, action: { type: 'mouse', event: 'up', button: 'left' } },
+    });
+    await vi.waitFor(() => expect(page.mouse.up).toHaveBeenCalled());
+    expect(page.mouse.move).not.toHaveBeenCalled();
+    await runtime.shutdown();
+  });
+
+  it('drains a pointer event that arrives while the previous move is in flight', async () => {
+    let bridgeHandlers;
+    let releaseFirstMove;
+    const blockedMove = new Promise(resolve => { releaseFirstMove = resolve; });
+    const mouseMove = vi.fn()
+      .mockImplementationOnce(() => blockedMove)
+      .mockResolvedValue(undefined);
+    const page = Object.assign(new EventEmitter(), {
+      url: vi.fn(() => 'about:blank'), title: vi.fn().mockResolvedValue(''), mainFrame: vi.fn(() => null),
+      mouse: { move: mouseMove, up: vi.fn(), wheel: vi.fn(), down: vi.fn(), click: vi.fn() },
+      keyboard: { down: vi.fn(), up: vi.fn(), press: vi.fn(), type: vi.fn() },
+    });
+    const bridge = {
+      registerSession: vi.fn(async (_id, handlers) => {
+        bridgeHandlers = handlers;
+        return { bridgeUrl: 'ws://127.0.0.1:1/browser-runtime/token', waitUntilReady: vi.fn().mockResolvedValue({}) };
+      }),
+      send: vi.fn(() => true), unregisterSession: vi.fn(), close: vi.fn(),
+    };
+    const runtime = new BrowserRuntimeService({
+      yeaftDir: tempRoot(), config: { enabled: true }, platform: 'linux', bridge,
+      probe: vi.fn().mockResolvedValue({ ok: true, captureMode: 'tab' }),
+      launchSession: vi.fn().mockResolvedValue({
+        page, viewport: { width: 1280, height: 720, deviceScaleFactor: 1 }, captureMode: 'tab', close: vi.fn(),
+      }),
+      send: vi.fn(),
+    });
+    await runtime.startupProbe();
+    const owner = { ownerUserId: 'owner', clientId: 'client', webConnectionId: 'socket', webConnectionGeneration: 'one' };
+    const created = await runtime.createSession({ requestId: 'pointer-drain-create', serverIdentity: owner });
+    await runtime.preparePeer({
+      browserSessionId: created.browserSessionId, peerId: 'peer-p', connectionGeneration: 1,
+      role: 'interactive', serverIdentity: owner,
+    });
+    bridgeHandlers.onMessage({ type: 'peer_state', peerId: 'peer-p', connectionGeneration: 1, state: 'connected' });
+    bridgeHandlers.onMessage({
+      type: 'peer_input', peerId: 'peer-p', connectionGeneration: 1, channel: 'pointer',
+      envelope: { pointerSeq: 1, action: { type: 'pointerMove', x: 10, y: 20 } },
+    });
+    await vi.waitFor(() => expect(mouseMove).toHaveBeenCalledWith(10, 20));
+    bridgeHandlers.onMessage({
+      type: 'peer_input', peerId: 'peer-p', connectionGeneration: 1, channel: 'pointer',
+      envelope: { pointerSeq: 2, action: { type: 'pointerMove', x: 30, y: 40 } },
+    });
+    expect(mouseMove).toHaveBeenCalledTimes(1);
+    releaseFirstMove();
+    await vi.waitFor(() => expect(mouseMove).toHaveBeenCalledWith(30, 40));
+    expect(mouseMove).toHaveBeenCalledTimes(2);
+    await runtime.shutdown();
+  });
+
+  it('coalesces pointer pressure without consuming reliable control capacity and drops saturated peers', async () => {
+    let bridgeHandlers;
+    let releaseMove;
+    const blockedMove = new Promise(resolve => { releaseMove = resolve; });
+    const page = Object.assign(new EventEmitter(), {
+      url: vi.fn(() => 'about:blank'), title: vi.fn().mockResolvedValue(''), mainFrame: vi.fn(() => null),
+      mouse: { move: vi.fn(() => blockedMove), up: vi.fn(), wheel: vi.fn(), down: vi.fn(), click: vi.fn() },
+      keyboard: { down: vi.fn(), up: vi.fn(), press: vi.fn(), type: vi.fn() },
+    });
+    const bridge = {
+      registerSession: vi.fn(async (_id, handlers) => {
+        bridgeHandlers = handlers;
+        return { bridgeUrl: 'ws://127.0.0.1:1/browser-runtime/token', waitUntilReady: vi.fn() };
+      }),
+      send: vi.fn(() => true), unregisterSession: vi.fn(), close: vi.fn(),
+    };
+    bridge.registerSession.mockImplementation(async (_id, handlers) => {
+      bridgeHandlers = handlers;
+      return { bridgeUrl: 'ws://127.0.0.1:1/browser-runtime/token', waitUntilReady: vi.fn().mockResolvedValue({}) };
+    });
+    const send = vi.fn();
+    const runtime = new BrowserRuntimeService({
+      yeaftDir: tempRoot(), config: { enabled: true, maxQueuedActionsPerProducer: 1 }, platform: 'linux', bridge,
+      probe: vi.fn().mockResolvedValue({ ok: true, captureMode: 'tab' }),
+      launchSession: vi.fn().mockResolvedValue({
+        page, viewport: { width: 1280, height: 720, deviceScaleFactor: 1 }, captureMode: 'tab', close: vi.fn(),
+      }),
+      send,
+    });
+    await runtime.startupProbe();
+    const owner = { ownerUserId: 'owner', clientId: 'client', webConnectionId: 'socket', webConnectionGeneration: 'one' };
+    const created = await runtime.createSession({ requestId: 'queue-create', serverIdentity: owner });
+    await runtime.preparePeer({
+      browserSessionId: created.browserSessionId, peerId: 'peer-q', connectionGeneration: 1,
+      role: 'interactive', serverIdentity: owner,
+    });
+    bridgeHandlers.onMessage({ type: 'peer_state', peerId: 'peer-q', connectionGeneration: 1, state: 'connected' });
+    for (let seq = 1; seq <= 100; seq += 1) {
+      bridgeHandlers.onMessage({
+        type: 'peer_input', peerId: 'peer-q', connectionGeneration: 1, channel: 'pointer',
+        envelope: { pointerSeq: seq, action: { type: 'pointerMove', x: seq, y: seq } },
+      });
+    }
+    bridgeHandlers.onMessage({
+      type: 'peer_input', peerId: 'peer-q', connectionGeneration: 1, channel: 'control',
+      envelope: { controlSeq: 1, action: { type: 'text', text: 'kept' } },
+    });
+    bridgeHandlers.onMessage({
+      type: 'peer_input', peerId: 'peer-q', connectionGeneration: 1, channel: 'control',
+      envelope: { controlSeq: 2, action: { type: 'text', text: 'overflow' } },
+    });
+    expect(runtime.sessions.get(created.browserSessionId)?.peers.has('peer-q')).toBe(false);
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ code: 'browser_control_queue_saturated' }));
+    releaseMove();
+    await runtime.shutdown();
+  });
+
   it('contains peer errors to the exact peer generation without closing single or multi-viewer Sessions', async () => {
     let bridgeHandlers;
     const page = Object.assign(new EventEmitter(), {
