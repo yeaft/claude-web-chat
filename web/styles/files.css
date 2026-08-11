@@ -608,9 +608,45 @@
 /* File browser - Two column horizontal layout */
 .file-two-col {
   flex-direction: row !important;
+  position: relative;
+}
+
+.file-tree-collapsed-rail {
+  order: 4;
+  flex: 0 0 40px;
+  width: 40px;
+  border-left: 1px solid var(--border-color);
+  background: var(--bg-sidebar);
+  display: flex;
+  justify-content: center;
+  padding-top: 7px;
+}
+
+.file-tree-expand-btn {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.file-tree-expand-btn:hover {
+  color: var(--text-primary);
+  background: var(--sidebar-hover);
+}
+
+.file-two-col.tree-collapsed .file-col-tree,
+.file-two-col.tree-collapsed .file-tree-splitter {
+  display: none;
 }
 
 .file-col-tree {
+  order: 3;
   min-width: 120px;
   overflow-y: auto;
   display: flex;
@@ -621,6 +657,7 @@
 }
 
 .file-col-content {
+  order: 1;
   flex: 1;
   overflow: auto;
   min-width: 0;
@@ -903,6 +940,7 @@
 
 /* File tree splitter (drag to resize) */
 .file-tree-splitter {
+  order: 2;
   width: 4px;
   cursor: col-resize;
   background: transparent;
@@ -1415,6 +1453,14 @@
 @media (max-width: 768px) {
   .file-two-col {
     flex-direction: column !important;
+  }
+
+  .file-tree-collapsed-rail {
+    display: none;
+  }
+
+  .file-two-col.tree-collapsed .file-col-tree {
+    display: flex;
   }
 
   .file-col-tree {

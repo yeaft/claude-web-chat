@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, access
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { createHash } from 'crypto';
+import { mutateAgentConfig } from './config-store.js';
 // NOTE: migrateSessions runs at the end of initYeaftDir(). It collapses
 // legacy groups/ + chats/ + memory/{group,chat}/ into the unified sessions/
 // layout AND rewrites pre-rename per-message frontmatter (groupId → sessionId).
@@ -31,9 +32,9 @@ export function isPermissionError(err) {
  * @param {string} content
  * @param {string[]} warnings — array to push warning messages into
  */
-function safeWriteFile(filePath, content, warnings) {
+function safeWriteFile(filePath, content, warnings, mode = 0o644) {
   try {
-    writeFileSync(filePath, content, { encoding: 'utf8', mode: 0o644 });
+    writeFileSync(filePath, content, { encoding: 'utf8', mode });
   } catch (err) {
     if (isPermissionError(err)) {
       warnings.push(`Cannot write ${filePath}: ${err.code}`);
@@ -49,9 +50,9 @@ function safeWriteFile(filePath, content, warnings) {
  * @param {string[]} warnings — array to push warning messages into
  * @returns {boolean} — true if directory exists (created or already existed)
  */
-function safeMkdir(dirPath, warnings) {
+function safeMkdir(dirPath, warnings, mode = 0o755) {
   try {
-    mkdirSync(dirPath, { recursive: true, mode: 0o755 });
+    mkdirSync(dirPath, { recursive: true, mode });
     return true;
   } catch (err) {
     if (isPermissionError(err)) {
@@ -168,7 +169,7 @@ export function initYeaftDir(dir) {
 
   // Ensure root exists
   if (!existsSync(root)) {
-    if (safeMkdir(root, warnings)) {
+    if (safeMkdir(root, warnings, 0o700)) {
       created.push(root);
     }
   }
@@ -194,8 +195,20 @@ export function initYeaftDir(dir) {
   // config.json — default configuration (user edits this directly)
   const configJsonPath = join(root, 'config.json');
   if (!existsSync(configJsonPath)) {
-    safeWriteFile(configJsonPath, DEFAULT_CONFIG_JSON, warnings);
-    created.push(configJsonPath);
+    let seeded = false;
+    try {
+      const defaults = JSON.parse(DEFAULT_CONFIG_JSON);
+      mutateAgentConfig(root, (current, state) => {
+        if (!state.exists) {
+          Object.assign(current, defaults);
+          seeded = true;
+        }
+      });
+      if (seeded) created.push(configJsonPath);
+    } catch (err) {
+      if (isPermissionError(err)) warnings.push(`Cannot write ${configJsonPath}: ${err.code}`);
+      else throw err;
+    }
   }
 
   const memoryPath = join(root, 'memory', 'MEMORY.md');

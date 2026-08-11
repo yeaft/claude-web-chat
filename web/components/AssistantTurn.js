@@ -7,6 +7,11 @@ import { getTodoDisplayState } from '../utils/todo-display-state.js';
 import { renderMermaidIn } from '../utils/markdown.js';
 import { openImagePreview } from '../utils/imagePreview.js';
 import { formatSessionMessageDateTime, quoteFromAssistantTurn } from '../utils/session-message-quote.js';
+import {
+  collectMessageFileReferences,
+  decorateMessageFileReferences,
+  resolveMessageFileReference,
+} from '../utils/message-file-reference.js';
 
 export default {
   name: 'AssistantTurn',
@@ -98,7 +103,7 @@ export default {
                 :key="segment.key"
                 class="turn-response-segment turn-response-progress"
               >
-                <div class="turn-text markdown-body" v-html="renderSegment(segment.content)"></div>
+                <div class="turn-text markdown-body" v-html="renderSegment(segment.content)" @click="onMarkdownClick"></div>
                 <span v-if="segment.isStreaming" class="cursor-blink"></span>
               </div>
             </div>
@@ -108,7 +113,7 @@ export default {
             :key="segment.key"
             class="turn-response-segment turn-response-result"
           >
-            <div class="turn-text markdown-body" v-html="renderSegment(segment.content)"></div>
+            <div class="turn-text markdown-body" v-html="renderSegment(segment.content)" @click="onMarkdownClick"></div>
             <span v-if="segment.isStreaming" class="cursor-blink"></span>
           </div>
         </div>
@@ -138,9 +143,6 @@ export default {
 
       <!-- 3. Tool actions -->
       <div v-if="showToolActions" class="turn-actions">
-        <div v-if="turn.toolSummaryCount > 0" class="turn-actions-summary">
-          {{ toolSummaryLabel }}
-        </div>
         <div v-if="expanded" class="turn-actions-history">
           <template v-for="(tool, i) in historyTools" :key="i">
             <ToolLine
@@ -197,7 +199,7 @@ export default {
       </div>
 
       <!-- 6. Response footer actions (visible on hover) -->
-      <div class="turn-footer" v-if="(turn.textContent || responseCollapsible || showDebugAction || (sessionActions && (turn.todoMsg || turn.toolMsgs?.length || turn.toolSummaryCount))) && !turn.isStreaming">
+      <div class="turn-footer" v-if="(turn.textContent || responseCollapsible || showDebugAction || (sessionActions && (turn.todoMsg || turn.toolMsgs?.length))) && !turn.isStreaming">
         <span
           v-if="turnTime && !turn.speakerVpId"
           class="turn-time"
@@ -212,7 +214,7 @@ export default {
           :title="debugActionTitle"
           :aria-label="debugActionTitle"
         >
-          <svg class="debug-turn-action-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 2 1.88 1.88"/><path d="M14.12 3.88 16 2"/><path d="M9 7.13v-1a3 3 0 0 1 6 0v1"/><path d="M12 20a6 6 0 0 0 6-6v-3a6 6 0 0 0-12 0v3a6 6 0 0 0 6 6Z"/><path d="M12 20v-9"/><path d="M8 13H2"/><path d="M18 13h4"/><path d="M8 17H2"/><path d="M18 17h4"/></svg>
+          <svg class="debug-turn-action-icon" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M20 8h-2.81c-.45-.78-1.07-1.45-1.82-1.96L17 4.41 15.59 3l-2.17 2.17C12.96 5.06 12.49 5 12 5s-.96.06-1.41.17L8.41 3 7 4.41l1.62 1.63C7.88 6.55 7.26 7.22 6.81 8H4v2h2.09c-.05.33-.09.66-.09 1v1H4v2h2v1c0 .34.04.67.09 1H4v2h2.81c1.04 1.79 2.97 3 5.19 3s4.15-1.21 5.19-3H20v-2h-2.09c.05-.33.09-.66.09-1v-1h2v-2h-2v-1c0-.34-.04-.67-.09-1H20V8zm-6 8h-4v-2h4v2zm0-4h-4v-2h4v2z"/></svg>
         </button>
         <button v-if="sessionActions" type="button" class="message-action-btn" @click="$emit('quote', assistantQuote)" :title="$t('message.quote')" :aria-label="$t('message.quote')">
           <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>
@@ -269,6 +271,8 @@ export default {
     const screenshotting = Vue.ref(false);
     const turnRef = Vue.ref(null);
     const failedImages = Vue.reactive(new Set());
+    const resolvedFileReferences = Vue.reactive(new Map());
+    let fileReferenceRequestId = null;
     const t = Vue.inject('t');
 
     // AskUserQuestion — delegate to AskCard component
@@ -291,9 +295,7 @@ export default {
       return tools.filter(tool => tool?.toolName !== 'RouteForward');
     });
 
-    const showToolActions = Vue.computed(() => {
-      return actionTools.value.length > 0 || Number(props.turn.toolSummaryCount || 0) > 0;
-    });
+    const showToolActions = Vue.computed(() => actionTools.value.length > 0);
 
     const latestTool = Vue.computed(() => {
       const tools = actionTools.value;
@@ -305,13 +307,6 @@ export default {
     });
 
     const latestToolIndex = Vue.computed(() => Math.max(0, actionTools.value.length - 1));
-
-    const toolSummaryLabel = Vue.computed(() => {
-      const count = Number(props.turn.toolSummaryCount || 0);
-      if (!count) return '';
-      if (typeof t === 'function') return t('chat.toolActionsOmitted', { count });
-      return `${count} older tool actions omitted`;
-    });
 
     const displayedTodos = Vue.computed(() => {
       const todos = props.turn?.todoMsg?.toolInput?.todos;
@@ -378,12 +373,26 @@ export default {
       try {
         if (typeof marked !== 'undefined') {
           const html = marked.parse(content);
-          return wrapTables(addCodeBlockCopyButtons(html));
+          return decorateMessageFileReferences(
+            wrapTables(addCodeBlockCopyButtons(html)),
+            resolvedFileReferences,
+          );
         }
       } catch (e) {
         console.error('Markdown parsing error:', e);
       }
       return simpleMarkdown(content);
+    };
+
+    const onMarkdownClick = (event) => {
+      const anchor = event.target?.closest?.('a[href]');
+      if (!anchor || !event.currentTarget?.contains?.(anchor)) return;
+      const reference = resolveMessageFileReference(anchor.getAttribute('href'));
+      const resolvedPath = anchor.dataset?.resolvedFilePath;
+      if (!reference || !resolvedPath) return;
+      event.preventDefault();
+      event.stopPropagation();
+      store.openFileInExplorer(resolvedPath, { hideTree: true, line: reference.line });
     };
 
     const textSegments = Vue.computed(() => {
@@ -396,6 +405,39 @@ export default {
     });
     const progressSegments = Vue.computed(() => textSegments.value.filter(segment => segment.kind !== 'result'));
     const resultSegments = Vue.computed(() => textSegments.value.filter(segment => segment.kind === 'result'));
+
+    const requestFileReferenceResolution = () => {
+      if (props.turn?.isStreaming) return;
+      const references = new Set();
+      for (const segment of textSegments.value) {
+        if (!segment?.content || typeof marked === 'undefined') continue;
+        try {
+          const html = marked.parse(typeof segment.content === 'string' ? segment.content : String(segment.content));
+          for (const path of collectMessageFileReferences(html)) references.add(path);
+        } catch (_) {}
+      }
+      fileReferenceRequestId = store.resolveMessageFileReferences?.([...references]) || null;
+    };
+    const handleFileReferenceResolution = event => {
+      const msg = event.detail;
+      if (!fileReferenceRequestId || msg?.type !== 'file_references_resolved'
+          || msg.requestId !== fileReferenceRequestId) return;
+      fileReferenceRequestId = null;
+      resolvedFileReferences.clear();
+      for (const entry of msg.references || []) {
+        if (entry?.requestedPath && entry?.resolvedPath) {
+          resolvedFileReferences.set(entry.requestedPath, entry.resolvedPath);
+        }
+      }
+    };
+    Vue.onMounted(() => {
+      window.addEventListener('workbench-message', handleFileReferenceResolution);
+      requestFileReferenceResolution();
+    });
+    Vue.onBeforeUnmount(() => window.removeEventListener('workbench-message', handleFileReferenceResolution));
+    Vue.watch(() => props.turn?.isStreaming, (streaming, previous) => {
+      if (previous && !streaming) requestFileReferenceResolution();
+    });
 
     const addCodeBlockCopyButtons = (html) => {
       return html.replace(/<pre><code([^>]*)>([\s\S]*?)<\/code><\/pre>/g,
@@ -642,7 +684,6 @@ export default {
       latestToolIndex,
       actionTools,
       routeMessages,
-      toolSummaryLabel,
       toggleExpand,
       toolExpandedValue,
       updateToolExpanded,
@@ -650,6 +691,7 @@ export default {
       progressSegments,
       resultSegments,
       renderSegment,
+      onMarkdownClick,
       copyContent,
       copyFullResponse,
       exportMarkdown,

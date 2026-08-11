@@ -5,6 +5,7 @@ import YeaftSidebar from './YeaftSidebar.js';
 import SessionInviteModal from './SessionInviteModal.js';
 import SessionCreateModal from './SessionCreateModal.js';
 import SessionSettingsModal from './SessionSettingsModal.js';
+import PluginCenterPage from './PluginCenterPage.js';
 import WorkbenchPanel from './WorkbenchPanel.js';
 import YeaftDebugPanel from './YeaftDebugPanel.js';
 import VpTimelinePane from './VpTimelinePane.js';
@@ -98,7 +99,7 @@ export function visibleSessionStatusTasks(taskMap) {
 
 export default {
   name: 'YeaftPage',
-  components: { ChatInput, MessageList, SettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, YeaftConversationOutline, LlmTab },
+  components: { ChatInput, MessageList, SettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, PluginCenterPage, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, YeaftConversationOutline, LlmTab },
   template: `
     <div class="yeaft-page" ref="pageRef">
       <!-- Mobile sidebar overlay -->
@@ -116,14 +117,12 @@ export default {
         @open-group-settings="openSessionSettings"
       />
 
-      <!-- Workbench Panel (between sidebar and main) -->
-      <WorkbenchPanel v-if="canUseWorkbench" />
-
       <WorkCenterPage v-if="store.workCenterOpen" />
+      <PluginCenterPage v-else-if="store.pluginCenterOpen" @close="store.closePluginCenter()" />
 
       <!-- Center Conversation. The Session status pane is rendered as a
-           sibling to the RIGHT of this main column so the visual order is
-           [conversation][Session status][debug], with debug always far right. -->
+           sibling to the RIGHT of this main column; turn debug opens as the
+           far-right detail pane only from a finished AI message. -->
       <div v-else class="yeaft-main" :class="{ 'workbench-active': canUseWorkbench && store.workbenchExpanded, 'workbench-maximized': canUseWorkbench && store.workbenchMaximized && store.workbenchExpanded }">
         <!-- Center column: topbar + (settings | empty-hero | MessageList) + ChatInput. -->
         <div class="yeaft-main-center">
@@ -157,14 +156,15 @@ export default {
             v-if="!showOnboardingGuide"
             class="yeaft-topbar-right"
             :search-open="historySearchOpen"
-            :loading-more-history="store.yeaftLoadingMoreHistory || !!store.yeaftSessionHydrateRequestId"
+            :loading-more-history="store.yeaftManualHistoryRefreshLoading"
             :session-status-visible="sessionStatusVisible"
-            :debug-mode="debugMode"
+            :workbench-visible="store.workbenchExpanded"
+            :can-use-workbench="canUseWorkbench"
             :show-page-reload="isMobile"
             @toggle-search="toggleHistorySearch"
             @reload-messages="reloadMessages"
             @toggle-session-status="toggleSessionStatus"
-            @toggle-debug="toggleDebug"
+            @toggle-workbench="toggleWorkbench"
             @reload-page="reloadPage"
           />
         </div>
@@ -174,11 +174,8 @@ export default {
           ref="historySearchRef"
           :outline-state="historyOutlineState"
           :search-state="store.yeaftHistorySearchState"
-          :sender-options="historySenderOptions"
           :active-message-id="historySearchActiveMessageId"
           @query="onHistorySearchQuery"
-          @sender="onHistorySenderChange"
-          @sender-invalid="onHistorySenderInvalid"
           @move="historySearchActiveMessageId = $event"
           @preview="previewHistorySearchResult"
           @select="selectHistorySearchResult"
@@ -440,10 +437,12 @@ export default {
         </div><!-- /.yeaft-main-center -->
       </div>
 
+      <WorkbenchPanel v-if="canUseWorkbench" />
+
       <!-- Session status pane: announcement + VP roster + background tasks.
            It sits to the right of the conversation and to the left of debug. -->
       <VpTimelinePane
-        v-if="!store.workCenterOpen && showVpTimeline"
+        v-if="!store.workCenterOpen && !store.pluginCenterOpen && showVpTimeline"
         :rows="vpTimelineRows"
         :tasks="sessionStatusTasksForActiveSession"
         :announcement-text="sessionStatusAnnouncementText"
@@ -465,7 +464,7 @@ export default {
            right-pane content today, and it should not occupy layout space
            unless explicitly opened. -->
       <aside
-        v-if="!store.workCenterOpen && debugMode"
+        v-if="!store.workCenterOpen && !store.pluginCenterOpen && debugMode"
         class="yeaft-detail"
         :class="{ resizing: isResizingDetail, 'mobile-debug': isNarrowDetail }"
         :style="detailWidthStyle"
@@ -534,8 +533,7 @@ export default {
     // detail panel is only rendered when debugMode is on, so the
     // conversation column gets the full width by default.
     // Turn-level debug: the detail panel visibility follows the store's
-    // `yeaftDebugPanel.open` so both the header entry and the per-turn
-    // turn debug action can open/close it from anywhere.
+    // `yeaftDebugPanel.open`; finished AI turns are the sole entry point.
     const debugMode = Vue.computed(() => !!(
       store.yeaftDebugPanel && store.yeaftDebugPanel.open
     ));
@@ -562,16 +560,6 @@ export default {
     const historySearchOpen = Vue.ref(false);
     const historySearchActiveMessageId = Vue.ref(null);
     const historyOutlineState = Vue.computed(() => store.getYeaftHistoryOutlineState());
-    const historySenderOptions = Vue.computed(() => {
-      const gs = sessionsStore();
-      const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || null;
-      const session = sessionId ? resolveTimelineSession(gs, sessionId, store.currentAgent || null) : null;
-      const roster = Array.isArray(session?.roster) ? session.roster : [];
-      return [
-        { key: 'user', label: $t('yeaft.outline.you') },
-        ...roster.map(vpId => ({ key: `vp:${vpId}`, label: vpStore.vpLabel(vpId) })),
-      ];
-    });
     const historySearchQuery = Vue.ref(store.yeaftHistorySearchState?.query || '');
     let historySearchTimer = null;
     const sessionsStore = () => {
@@ -586,10 +574,7 @@ export default {
         sessionId: store.yeaftActiveSessionFilter || gs?.activeSessionId || null,
       };
     };
-    const rememberedHistorySender = () => loadHistorySenderPreference({
-      ...historySearchIdentity(),
-      validKeys: historySenderOptions.value.map(option => option.key),
-    });
+    const rememberedHistorySender = () => DEFAULT_HISTORY_SENDER;
     const resetHistorySearchState = (senderKey = '') => {
       const { agentId, sessionId } = historySearchIdentity();
       store.yeaftHistorySearchState = {
@@ -660,11 +645,16 @@ export default {
       }, 260);
     };
 
-    // task-340: Workbench capability gate — matches ChatPage.canUseWorkbench
-    // semantics via store.hasCapability. store.workbenchExpanded and
-    // workbenchMaximized are already shared across Chat/Yeaft pages.
+    // Workbench is Agent-owned, not a chat-provider feature. Browser requires
+    // the complete advertised Phase 1 surface before the entry is considered usable.
     const canUseWorkbench = Vue.computed(() =>
-      store.hasCapability('terminal') || store.hasCapability('file_editor')
+      store.hasCapability('terminal')
+      || store.hasCapability('file_editor')
+      || (
+        store.hasCapability('browser_runtime')
+        && store.hasCapability('browser_webrtc')
+        && (store.hasCapability('browser_capture_tab') || store.hasCapability('browser_capture_cdp'))
+      )
     );
 
     // task-341: V2 sidebar is the only sidebar; flag kept as constant
@@ -758,8 +748,25 @@ export default {
         localStorage.setItem(SESSION_STATUS_VISIBLE_KEY, sessionStatusVisible.value ? '1' : '0');
       } catch (_) {}
     };
-    const toggleSessionStatus = () => setSessionStatusVisible(!sessionStatusVisible.value);
+    const toggleSessionStatus = () => {
+      const nextVisible = !sessionStatusVisible.value;
+      if (nextVisible) {
+        if (store.workbenchExpanded) store.toggleWorkbench();
+        store.closeYeaftDebugPanel();
+      }
+      setSessionStatusVisible(nextVisible);
+    };
     const closeSessionStatus = () => setSessionStatusVisible(false);
+    const toggleWorkbench = () => {
+      if (!store.workbenchExpanded) closeSessionStatus();
+      store.toggleWorkbench();
+    };
+    Vue.watch(debugMode, (open) => {
+      if (open) closeSessionStatus();
+    }, { flush: 'sync' });
+    Vue.watch(() => store.workbenchExpanded, (open) => {
+      if (open) closeSessionStatus();
+    }, { flush: 'sync' });
     const TIMELINE_MIN_WIDTH = 220;
     const TIMELINE_DEFAULT_WIDTH = 280;
     const savedTimelineWidth = (() => {
@@ -848,8 +855,7 @@ export default {
       historySearchQuery.value = '';
       resetHistorySearchState(senderKey);
       historySearchOpen.value = true;
-      store.loadYeaftHistoryOutline();
-      if (senderKey) store.searchYeaftHistory('', { senderKey });
+      store.searchYeaftHistory('', { senderKey });
       Vue.nextTick(() => historySearchRef.value?.focus?.());
     };
     const toggleHistorySearch = () => {
@@ -868,20 +874,8 @@ export default {
         store.searchYeaftHistory(historySearchQuery.value, { senderKey: store.yeaftHistorySearchState.senderKey });
       }, 220);
     };
-    const onHistorySenderChange = (senderKey) => {
-      if (historySearchTimer) clearTimeout(historySearchTimer);
-      historySearchTimer = null;
-      historySearchActiveMessageId.value = null;
-      saveHistorySenderPreference({ ...historySearchIdentity(), senderKey });
-      store.searchYeaftHistory(historySearchQuery.value, { senderKey });
-    };
-    const onHistorySenderInvalid = () => {
-      saveHistorySenderPreference({ ...historySearchIdentity(), senderKey: DEFAULT_HISTORY_SENDER });
-      historySearchActiveMessageId.value = null;
-      store.searchYeaftHistory(historySearchQuery.value, { senderKey: DEFAULT_HISTORY_SENDER });
-    };
     const loadOlderHistoryOutline = (scrollSnapshot) => {
-      if (!store.loadYeaftHistoryOutline({ append: true })) return;
+      if (!store.searchYeaftHistory('', { append: true, senderKey: DEFAULT_HISTORY_SENDER })) return;
       const stop = Vue.watch(
         () => historyOutlineState.value.loading,
         loading => {
@@ -1035,15 +1029,6 @@ export default {
     // button that opened/collapsed the placeholder detail panel; the
     // button + placeholder are gone, so the helper is removed too.
 
-    const toggleDebug = () => {
-      if (debugMode.value) {
-        store.closeYeaftDebugPanel();
-      } else if (typeof store.openYeaftTurnDebug === 'function') {
-        // Header entry: open an empty panel. The debug action on AI turns
-        // opens the panel pre-scoped to that exact turn.
-        store.openYeaftTurnDebug({});
-      }
-    };
     const closeDebug = () => {
       store.closeYeaftDebugPanel();
     };
@@ -1637,12 +1622,9 @@ export default {
       historySearchOpen,
       historySearchActiveMessageId,
       historyOutlineState,
-      historySenderOptions,
       toggleHistorySearch,
       closeHistorySearch,
       onHistorySearchQuery,
-      onHistorySenderChange,
-      onHistorySenderInvalid,
       loadOlderHistoryOutline,
       loadMoreHistorySearchResults,
       previewHistorySearchResult,
@@ -1663,7 +1645,6 @@ export default {
       cancelYeaft,
       openWorkItemDraft,
       toggleSidebar,
-      toggleDebug,
       closeDebug,
       reloadMessages,
       retryConversationInventory,
@@ -1728,6 +1709,7 @@ export default {
       sessionStatusVisible,
       toggleSessionStatus,
       closeSessionStatus,
+      toggleWorkbench,
       timelineWidthStyle,
       startTimelineResize,
       onEditVpFromTimeline,

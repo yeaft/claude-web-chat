@@ -1,4 +1,6 @@
-import { stmts, generateUserId, generateAgentSecret, transaction } from './connection.js';
+import { randomUUID } from 'crypto';
+import db, { stmts, generateUserId, generateAgentSecret, transaction } from './connection.js';
+
 
 export const userDb = {
   getOrCreate(username, displayName = null) {
@@ -21,9 +23,10 @@ export const userDb = {
   },
 
   migrateUser(username, passwordHash, email, role = 'admin') {
+    if (this.isDeletionTombstoned(username)) return null;
     const existing = stmts.getUserByUsername.get(username);
     if (existing) {
-      if (existing.password_hash) {
+      if ((existing.deletion_state && existing.deletion_state !== 'active') || existing.password_hash) {
         return existing;
       }
       const newSecret = generateAgentSecret();
@@ -41,6 +44,10 @@ export const userDb = {
     return stmts.getUserByUsername.get(username);
   },
 
+  isDeletionTombstoned(username) {
+    return stmts.getUserDeletionTombstone.get(username) !== undefined;
+  },
+
   getUserByAgentSecret(secret) {
     if (!secret) return null;
     return stmts.getUserByAgentSecret.get(secret) || null;
@@ -48,6 +55,36 @@ export const userDb = {
 
   getAll() {
     return stmts.getAllUsers.all();
+  },
+
+  isActive(userId) {
+    return db.prepare("SELECT 1 FROM users WHERE id = ? AND deletion_state = 'active'").get(userId) !== undefined;
+  },
+
+  beginDeletion(userId, now = Date.now()) {
+    return transaction(() => {
+      const user = stmts.getUserById.get(userId);
+      if (!user) return null;
+      const deletionId = user.deletion_id || `deletion_${randomUUID()}`;
+      if (user.deletion_state !== 'pending') {
+        const changed = db.prepare(`
+          UPDATE users SET deletion_state = 'pending', deletion_requested_at = ?, deletion_id = ?,
+            password_hash = NULL, agent_secret = NULL, totp_secret = NULL, totp_enabled = 0
+          WHERE id = ? AND deletion_state = 'active'
+        `).run(now, deletionId, userId);
+        if (changed.changes !== 1) throw new Error('ACCOUNT_DELETION_STATE_CONFLICT');
+      }
+      return { deletionId, status: 'pending', operationId: null };
+    })();
+  },
+
+  reconcilePendingDeletions() {
+    const pending = db.prepare("SELECT id FROM users WHERE deletion_state = 'pending'").all();
+    let finalized = 0;
+    for (const user of pending) {
+      if (this.deleteUser(user.id, { requirePending: true })) finalized++;
+    }
+    return finalized;
   },
 
   updateLogin(id) {
@@ -106,7 +143,8 @@ export const userDb = {
 
   getByAadOid(aadOid) {
     if (!aadOid) return null;
-    return stmts.getUserByAadOid.get(aadOid) || null;
+    const user = stmts.getUserByAadOid.get(aadOid) || null;
+    return user?.deletion_state === 'active' ? user : null;
   },
 
   updateAadOid(userId, aadOid) {
@@ -145,18 +183,23 @@ export const userDb = {
    * Caller is responsible for revoking JWT sessions (we don't import the
    * session store from here to keep this layer pure).
    */
-  deleteUser(userId) {
-    // No inner try/catch — any failure must bubble out so the transaction
-    // rolls back. A partial delete (e.g. users row gone but daily_stats
-    // orphaned) is worse than the operation failing outright.
+  deleteUser(userId, { requirePending = false } = {}) {
     const run = transaction((id) => {
+      const user = stmts.getUserById.get(id);
+      if (!user || (requirePending && user.deletion_state !== 'pending')) return false;
+
       stmts.deleteIdentitiesForUser.run(id);
       stmts.deleteUserSessionsByUser.run(id);
+      stmts.deleteYeaftSessionsByUserCascade.run(id);
       stmts.deleteUserStats.run(id);
       stmts.deleteDailyStatsForUser.run(id);
       stmts.deleteCustomExpertRolesForUser.run(id);
+      stmts.deleteLegacySandboxesForUser.run(id);
       stmts.deleteInvitationsCreatedBy.run(id);
       stmts.clearInvitationUsedBy.run(id);
+      if (requirePending) {
+        stmts.insertUserDeletionTombstone.run(user.username, user.deletion_id, Date.now());
+      }
       const result = stmts.deleteUserById.run(id);
       return result.changes > 0;
     });

@@ -10,11 +10,21 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import ctx from './context.js';
-import { getDefaultAgentName, getDefaultYeaftDir, resolveRuntimeIdentity, getConfigPath, loadServiceConfig } from './service.js';
+import {
+  getDefaultAgentName,
+  getDefaultYeaftDir,
+  resolveRuntimeIdentity,
+  getConfigPath,
+  loadServiceConfig,
+  shouldLoadLegacyLocalConfig,
+} from './service.js';
 import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
+import { SAFE_REMOTE_UPGRADE_CAPABILITY } from './upgrade-command.js';
 import { loadConfig as loadYeaftConfig } from './yeaft/config.js';
+import { updateBrowserRuntimeSettings } from './yeaft/config-api.js';
+import { bootBrowserRuntime, shutdownBrowserRuntime } from './browser-runtime/index.js';
 import {
   ensureManagedCliTools,
   prepareManagedCliToolEnvironment,
@@ -37,7 +47,8 @@ const pkg = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf-8'));
 ctx.agentVersion = pkg.version;
 ctx.pkgName = pkg.name;
 
-// 配置文件路径（向后兼容：先查当前目录 .claude-agent.json）
+// Legacy direct launches may still read cwd/.claude-agent.json. Explicit
+// service instances must stay scoped to their standard per-instance config.
 const LOCAL_CONFIG_FILE = join(process.cwd(), '.claude-agent.json');
 const IS_LOCAL_RUN = process.env.YEAFT_LOCAL_RUN === 'true';
 const DEFAULT_AGENT_NAME = getDefaultAgentName();
@@ -56,8 +67,10 @@ function loadConfig() {
   // must not inherit a remote agent's persisted configuration.
   if (IS_LOCAL_RUN) return defaults;
 
-  // Priority 1: Local .claude-agent.json (backward compat)
-  if (existsSync(LOCAL_CONFIG_FILE)) {
+  // Priority 1: Local .claude-agent.json (backward compat for unscoped launches only).
+  // A named service can share its cwd with an unrelated legacy launch, so the
+  // process-level instance identity must fence this unscoped file out.
+  if (shouldLoadLegacyLocalConfig(process.env) && existsSync(LOCAL_CONFIG_FILE)) {
     try {
       const saved = JSON.parse(readFileSync(LOCAL_CONFIG_FILE, 'utf-8'));
       const { agentId, ...rest } = saved;
@@ -77,7 +90,7 @@ function loadConfig() {
 }
 
 function saveConfig(config) {
-  if (IS_LOCAL_RUN) return;
+  if (IS_LOCAL_RUN || !shouldLoadLegacyLocalConfig(process.env)) return;
   writeFileSync(LOCAL_CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
@@ -93,12 +106,16 @@ const { agentName: AGENT_NAME, instanceId: INSTANCE_ID } = resolveRuntimeIdentit
 const YEAFT_DIR = process.env.YEAFT_DIR || fileConfig.yeaftDir || getDefaultYeaftDir(INSTANCE_ID);
 try {
   if (!existsSync(YEAFT_DIR)) {
-    mkdirSync(YEAFT_DIR, { recursive: true });
+    mkdirSync(YEAFT_DIR, { recursive: true, mode: 0o700 });
     console.log(`[Agent] Created yeaft dir: ${YEAFT_DIR}`);
   }
 } catch (err) {
   console.warn(`[Agent] Could not ensure yeaft dir ${YEAFT_DIR}: ${err?.message || err}`);
 }
+
+const agentSecret = process.env.AGENT_SECRET_FILE
+  ? readFileSync(process.env.AGENT_SECRET_FILE, 'utf8').trim()
+  : (process.env.AGENT_SECRET || fileConfig.agentSecret);
 
 const CONFIG = {
   instanceId: INSTANCE_ID,
@@ -108,7 +125,7 @@ const CONFIG = {
   yeaftDir: YEAFT_DIR,
   telemetry: loadYeaftConfig({ dir: YEAFT_DIR }).telemetry,
   reconnectInterval: fileConfig.reconnectInterval,
-  agentSecret: process.env.AGENT_SECRET || fileConfig.agentSecret,
+  agentSecret,
   // 显式禁用的工具（非 MCP 相关）
   explicitDisallowedTools: (() => {
     const raw = process.env.DISALLOWED_TOOLS || fileConfig.disallowedTools || '';
@@ -144,10 +161,13 @@ async function detectCapabilities() {
   // agent build can speak plaintext WS frames. New servers see this and
   // flip `agent.encryptOutbound = false`, stopping outbound encryption
   // to this peer. Old servers ignore the unknown capability token.
-  const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center', 'work_center_message_v2', 'session_history_search', 'session_history_outline', 'session_history_window_prefetch'];
+  const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'workbench_session_routes', SAFE_REMOTE_UPGRADE_CAPABILITY, 'work_center', 'work_center_message_v2', 'session_history_search', 'session_history_outline', 'session_history_window_prefetch', 'file_reference_resolution', 'yeaft_plugins'];
   if (process.platform === 'linux') capabilities.push('work_item_attachments');
   const pty = await loadNodePty();
   if (pty) capabilities.push('terminal');
+  if (ctx.browserRuntime) {
+    capabilities.push(...ctx.browserRuntime.setupCapabilities(), ...ctx.browserRuntime.capabilities());
+  }
 
   console.log(`[Capabilities] Detected: ${capabilities.join(', ')}`);
   return capabilities;
@@ -341,6 +361,7 @@ function cleanup() {
       const { shutdownWorkCenter } = await import('./yeaft/work-center/bridge.js');
       await shutdownWorkCenter();
     } catch {}
+    try { await shutdownBrowserRuntime(); } catch {}
     if (ctx.ws) ctx.ws.close();
   });
 }
@@ -380,6 +401,30 @@ process.on('SIGTERM', async () => {
     }
   } catch (error) {
     console.warn(`[Startup] managed rg environment setup failed; using built-in fallback: ${error?.message || error}`);
+  }
+  try {
+    const runtimeConfig = loadYeaftConfig({ dir: YEAFT_DIR }).browserRuntime;
+    ctx.browserRuntime = await bootBrowserRuntime({
+      yeaftDir: YEAFT_DIR,
+      config: runtimeConfig,
+      saveSettings: update => updateBrowserRuntimeSettings(update, YEAFT_DIR),
+      onCapabilitiesChanged: async () => {
+        ctx.agentCapabilities = await detectCapabilities();
+        ctx.sendToServer?.({
+          type: 'agent_capabilities_updated',
+          capabilities: ctx.agentCapabilities,
+        });
+      },
+      send: message => ctx.sendToServer?.(message) || 'dropped',
+    });
+    const probe = ctx.browserRuntime.snapshot().probe;
+    if (probe?.ok) {
+      console.log(`[BrowserRuntime] ready: capture=${probe.captureMode} build=${probe.actualBuildId || probe.expectedBuildId}`);
+    } else if (runtimeConfig?.enabled) {
+      console.warn(`[BrowserRuntime] unavailable: ${probe?.code || 'probe_failed'}`);
+    }
+  } catch (err) {
+    console.warn(`[BrowserRuntime] startup probe failed: ${err?.message || err}`);
   }
   ctx.agentCapabilities = await detectCapabilities();
   // Prime the models.dev community catalog so the Yeaft engine's *synchronous*

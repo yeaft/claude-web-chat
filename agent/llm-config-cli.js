@@ -1,6 +1,8 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { dirname, join } from 'path';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 import { homedir } from 'os';
+import { normalizePluginConfig } from './yeaft/plugins.js';
+import { mutateAgentConfigPath } from './yeaft/config-store.js';
 import {
   discoverGitHubCopilotModels,
   discoverOpenAICompatibleModels,
@@ -21,17 +23,51 @@ export function getDefaultYeaftConfigPath() {
 export function readLocalLlmConfig(configPath = getDefaultYeaftConfigPath()) {
   if (!existsSync(configPath)) return {};
   const raw = readFileSync(configPath, 'utf8');
-  if (!raw.trim()) return {};
-  const parsed = JSON.parse(raw);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+  if (!raw.trim()) {
     throw new Error(`Invalid config file: expected JSON object at ${configPath}`);
+  }
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+    || Object.getPrototypeOf(parsed) !== Object.prototype) {
+    throw new Error(`Invalid config file: expected JSON object at ${configPath}`);
+  }
+  if (Object.prototype.hasOwnProperty.call(parsed, 'plugins')) {
+    try {
+      normalizePluginConfig(parsed.plugins);
+    } catch (err) {
+      throw new Error(`Invalid config file: ${err?.message || err}`);
+    }
   }
   return parsed;
 }
 
-export function writeLocalLlmConfig(config, configPath = getDefaultYeaftConfigPath()) {
-  mkdirSync(dirname(configPath), { recursive: true });
-  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+export function writeLocalLlmConfig(config, configPath = getDefaultYeaftConfigPath(), baseConfig = null) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)
+    || Object.getPrototypeOf(config) !== Object.prototype) {
+    throw new Error(`Invalid config file: expected JSON object at ${configPath}`);
+  }
+  if (config.plugins !== undefined) {
+    try {
+      normalizePluginConfig(config.plugins);
+    } catch (error) {
+      throw new Error(`Invalid config file: ${error?.message || error}`);
+    }
+  }
+
+  mutateAgentConfigPath(configPath, current => {
+    const baseline = baseConfig && typeof baseConfig === 'object' && !Array.isArray(baseConfig)
+      ? baseConfig
+      : {};
+    const keys = new Set([...Object.keys(baseline), ...Object.keys(config)]);
+    for (const key of keys) {
+      if (key === 'plugins' && !Object.prototype.hasOwnProperty.call(config, key)) continue;
+      const before = baseline[key];
+      const after = config[key];
+      if (JSON.stringify(before) === JSON.stringify(after)) continue;
+      if (Object.prototype.hasOwnProperty.call(config, key)) current[key] = after;
+      else delete current[key];
+    }
+  });
 }
 
 export function parseModelsCsv(value) {
@@ -280,7 +316,7 @@ export async function tryAutoConfigureGitHubCopilot(configPath = getDefaultYeaft
       ...options,
       model: options.model || DEFAULT_GITHUB_COPILOT_MODEL,
     });
-    writeLocalLlmConfig(result.config, configPath);
+    writeLocalLlmConfig(result.config, configPath, current);
     return { configured: true, reason: 'configured', ...result };
   } catch (error) {
     return {

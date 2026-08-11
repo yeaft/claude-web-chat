@@ -28,6 +28,8 @@ RUN npm run build
 # Stage 2: Production image
 FROM node:24-alpine
 
+RUN apk add --no-cache docker-cli
+
 ARG BUILD_VERSION=dev
 
 WORKDIR /app
@@ -44,8 +46,10 @@ COPY server/package.json ./server/
 # Install server dependencies only (using workspaces)
 RUN npm ci --workspace=server --omit=dev
 
-# Copy server source
+# Copy server source and the shared Docker Agent lifecycle manager imported by
+# server/container-agent-service.js. Keep the Server image dependency explicit.
 COPY server/*.js ./server/
+COPY agent/container-manager.js ./agent/container-manager.js
 COPY server/handlers ./server/handlers/
 COPY server/routes ./server/routes/
 COPY server/db ./server/db/

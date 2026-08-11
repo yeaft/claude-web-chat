@@ -32,6 +32,10 @@ export function verifyToken(token) {
     }
 
     const user = getUserByUsername(decoded.username);
+    if (!user) {
+      activeSessions.delete(token);
+      return { valid: false };
+    }
 
     return {
       valid: true,

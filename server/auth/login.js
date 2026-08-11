@@ -13,6 +13,7 @@ import { generateVerificationCode, maskEmail } from './utils.js';
  */
 export function completeLogin(username, sessionKey, role) {
   const user = getUserByUsername(username);
+  if (!user) return { success: false, error: 'Invalid or disabled account' };
   const token = issueSessionToken(username);
   activeSessions.set(token, { username, sessionKey });
   return {

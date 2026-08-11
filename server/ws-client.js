@@ -5,13 +5,22 @@ import { generateSkipAuthSession } from './auth.js';
 import { authenticateRequest } from './auth/request-auth.js';
 import { encodeKey } from './encryption.js';
 import { userDb } from './database.js';
-import { agents, webClients, isHeartbeatMessageType, trackRequest } from './context.js';
+import { agents, clearYeaftDebugRequestsForClient, webClients, isHeartbeatMessageType, trackRequest } from './context.js';
+import {
+  applyClientHello,
+  BROWSER_RUNTIME_PROTOCOL,
+  BROWSER_RUNTIME_SETUP_PROTOCOL,
+  WORKBENCH_ROUTE_PROTOCOL,
+} from './client-protocol.js';
+import { clearWorkbenchCorrelationsForClient } from './workbench-correlation.js';
+import { clearBrowserRuntimeForClient } from './browser-runtime-routes.js';
 import {
   parseMessage, sendToWebClient, sendToAgent,
   broadcastAgentList, resolveAgentAccessError
 } from './ws-utils.js';
 import { handleClientConversation } from './handlers/client-conversation.js';
 import { handleClientWorkbench } from './handlers/client-workbench.js';
+import { CLIENT_BROWSER_TYPES, handleClientBrowser } from './handlers/client-browser.js';
 import { handleClientMisc } from './handlers/client-misc.js';
 import { clearWorkCenterRequestsForClient, handleClientWorkCenter } from './handlers/client-work-center.js';
 import { recordPerfTraceEvent } from './perf-trace.js';
@@ -43,18 +52,30 @@ export function handleWebConnection(ws, url, req = {}) {
     role = result?.role === 'admin' ? 'admin' : (result ? 'pro' : null);
   }
 
-  // 获取或创建用户
+  // Authenticated mode must never recreate a deleted or pending account from
+  // a surviving JWT. SKIP_AUTH retains its development bootstrap behavior.
   if (authenticated && username) {
     try {
-      const user = userDb.getOrCreate(username);
-      userId = user.id;
-      userDb.updateLogin(userId);
+      const user = CONFIG.skipAuth
+        ? userDb.getOrCreate(username)
+        : userDb.getByUsername(username);
+      if (!user || (!CONFIG.skipAuth && user.deletion_state !== 'active')) {
+        authenticated = false;
+      } else {
+        userId = user.id;
+        userDb.updateLogin(userId);
+      }
     } catch (e) {
-      console.error('Failed to get/create user:', e.message);
+      authenticated = false;
+      console.error('Failed to resolve user:', e.message);
     }
   }
 
+  const connectionId = randomUUID();
   webClients.set(clientId, {
+    id: clientId,
+    connectionId,
+    connectionGeneration: connectionId,
     ws,
     authenticated,
     username,
@@ -68,7 +89,11 @@ export function handleWebConnection(ws, url, req = {}) {
     // (= old client, encrypt outbound for back-compat). Flipped to
     // `false` when the client sends `client_hello { plaintextOk: true }`
     // — see early dispatch in handleWebMessage.
-    encryptOutbound: true
+    encryptOutbound: true,
+    // Explicit protocols have no omission-based downgrade for security fields.
+    workbenchRouteProtocol: 0,
+    browserRuntimeProtocol: 0,
+    browserRuntimeSetupProtocol: 0,
   });
 
   // 心跳响应处理
@@ -95,6 +120,10 @@ export function handleWebConnection(ws, url, req = {}) {
       role,
       acceptPlaintext: true,
       yeaftSessionInventoryComplete: true,
+      workbenchRouteProtocol: WORKBENCH_ROUTE_PROTOCOL,
+      browserRuntimeProtocol: BROWSER_RUNTIME_PROTOCOL,
+      browserRuntimeSetupProtocol: BROWSER_RUNTIME_SETUP_PROTOCOL,
+      browserRuntimeEnabled: CONFIG.browserRuntime.enabled,
     }));
     setTimeout(() => broadcastAgentList(), 100);
   } else {
@@ -155,6 +184,37 @@ export function handleWebConnection(ws, url, req = {}) {
       }
     }
     clearWorkCenterRequestsForClient(client);
+    clearYeaftDebugRequestsForClient(clientId);
+    const browserPeers = clearBrowserRuntimeForClient(client);
+    for (const peer of browserPeers) {
+      const agent = agents.get(peer.agentId);
+      if (!agent) continue;
+      void sendToAgent(agent, {
+        type: 'browser_peer_detach',
+        agentId: peer.agentId,
+        browserSessionId: peer.browserSessionId,
+        peerId: peer.peerId,
+        connectionGeneration: peer.connectionGeneration,
+        serverIdentity: {
+          ownerUserId: peer.ownerUserId,
+          clientId: peer.clientId,
+          webConnectionId: peer.webConnectionId,
+          webConnectionGeneration: peer.webConnectionGeneration,
+        },
+      }).catch(error => console.warn('[BrowserRuntime] peer disconnect cleanup failed:', error.message));
+    }
+    const ownedTerminals = clearWorkbenchCorrelationsForClient(clientId);
+    for (const owner of ownedTerminals) {
+      const agent = agents.get(owner.agentId);
+      if (!agent) continue;
+      void sendToAgent(agent, {
+        type: 'terminal_close',
+        terminalId: owner.terminalId,
+        conversationId: owner.conversationId,
+        workbenchRouteKey: owner.routeKey,
+        workbenchWorkspaceGeneration: owner.workspaceGeneration,
+      }).catch(error => console.warn('[Workbench] PTY disconnect cleanup failed:', error.message));
+    }
     webClients.delete(clientId);
     console.log(`Web client disconnected: ${clientId}`);
   });
@@ -166,8 +226,9 @@ export function handleWebConnection(ws, url, req = {}) {
 
 // Workbench 功能（terminal、file、git、proxy）仅 admin/pro 可用
 const WORKBENCH_TYPES = new Set([
+  ...CLIENT_BROWSER_TYPES,
   'terminal_create', 'terminal_input', 'terminal_resize', 'terminal_close',
-  'read_file', 'write_file', 'create_file', 'delete_files', 'move_files', 'copy_files', 'upload_to_dir', 'file_search',
+  'read_file', 'resolve_file_references', 'write_file', 'create_file', 'delete_files', 'move_files', 'copy_files', 'upload_to_dir', 'file_search',
   'git_status', 'git_diff', 'git_add', 'git_reset', 'git_restore', 'git_commit', 'git_push',
   'proxy_update_ports', 'update_file_tabs', 'restore_file_tabs'
 ]);
@@ -175,16 +236,29 @@ const WORKBENCH_TYPES = new Set([
 async function handleWebMessage(clientId, msg) {
   const client = webClients.get(clientId);
   if (!client || !client.authenticated) return;
+  if (!CONFIG.skipAuth && !userDb.isActive(client.userId)) {
+    client.authenticated = false;
+    client.ws.close(1008, 'Account disabled');
+    return;
+  }
 
   // feat-ws-plaintext-negotiation: early capability frame from new web
   // clients. Tells the server "you may stop encrypting outbound to me".
   // Old clients never send this; their per-client `encryptOutbound` flag
   // stays `true` and we keep the ciphertext path.
   if (msg.type === 'client_hello') {
-    if (msg.plaintextOk === true) {
-      client.encryptOutbound = false;
+    const wasEncrypted = client.encryptOutbound;
+    applyClientHello(client, msg);
+    if (wasEncrypted && client.encryptOutbound === false) {
       console.log(`[WS] Client ${clientId} negotiated plaintext mode`);
     }
+    await sendToWebClient(client, {
+      type: 'client_hello_ack',
+      workbenchRouteProtocol: client.workbenchRouteProtocol,
+      browserRuntimeProtocol: client.browserRuntimeProtocol,
+      browserRuntimeSetupProtocol: client.browserRuntimeSetupProtocol,
+      browserRuntimeEnabled: CONFIG.browserRuntime.enabled,
+    });
     return;
   }
 
@@ -210,6 +284,7 @@ async function handleWebMessage(clientId, msg) {
 
   // Dispatch to handler sub-modules
   if (await handleClientConversation(clientId, client, msg, checkAgentAccess)) return;
+  if (await handleClientBrowser(client, msg, checkAgentAccess)) return;
   if (await handleClientWorkbench(clientId, client, msg, checkAgentAccess)) return;
   if (await handleClientWorkCenter(client, msg, checkAgentAccess)) return;
   if (await handleClientMisc(clientId, client, msg, checkAgentAccess)) return;

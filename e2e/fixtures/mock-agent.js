@@ -9,18 +9,36 @@ export class MockAgent {
     this.ws = null;
     this.agentId = null;
     this.conversations = new Map();
+    this.browserSessions = new Map();
+    this.browserRuntimeInstallFailure = null;
+    this.browserRuntimeInstallPaused = false;
+    this.pendingBrowserRuntimeInstall = null;
+    this.browserRuntimeReady = false;
     this._messageHandlers = [];
     this._receivedMessages = [];
     this._messageHistory = [];
   }
 
   async connect() {
+    const capabilities = [
+      'terminal',
+      'file_editor',
+      'workbench_session_routes',
+      'work_center',
+      'work_center_message_v2',
+      'work_item_attachments',
+      'browser_runtime_setup',
+      'browser_runtime',
+      'browser_webrtc',
+      'browser_capture_tab',
+      'plaintext-ok',
+    ];
     const params = new URLSearchParams({
       type: 'agent',
       id: this.clientId,
       name: this.agentName,
       workDir: '/tmp/test',
-      capabilities: 'terminal,file_editor,work_center,work_center_message_v2,work_item_attachments,plaintext-ok',
+      capabilities: capabilities.join(','),
     });
     const wsUrl = `${this.serverUrl.replace('http', 'ws')}?${params}`;
     this.ws = new WebSocket(wsUrl);
@@ -28,6 +46,17 @@ export class MockAgent {
       const timeout = setTimeout(() => reject(new Error('MockAgent connect timeout')), 5000);
       this.ws.on('message', (data) => {
         const msg = JSON.parse(data);
+        if (msg.type === 'auth_required' && msg.tempId) {
+          this.send({
+            type: 'auth',
+            tempId: msg.tempId,
+            secret: '',
+            capabilities,
+            version: 'e2e',
+            platform: process.platform,
+          });
+          return;
+        }
         if (msg.type === 'registered') {
           this.agentId = msg.agentId;
           this.send({ type: 'agent_sync_complete' });
@@ -52,6 +81,98 @@ export class MockAgent {
           this.send({
             type: 'conversation_deleted',
             conversationId: msg.conversationId
+          });
+        }
+
+        if (msg.type === 'browser_runtime_status') {
+          this.send({
+            type: 'browser_runtime_status_result',
+            requestId: msg.requestId,
+            supported: true,
+            state: this.pendingBrowserRuntimeInstall ? 'installing'
+              : this.browserRuntimeReady ? 'ready' : 'not_installed',
+            installed: this.browserRuntimeReady,
+            enabled: this.browserRuntimeReady,
+            ready: this.browserRuntimeReady,
+            buildId: '151.0.7922.71',
+            platform: 'linux',
+            downloadBytes: 193_285_407,
+            downloadedBytes: this.pendingBrowserRuntimeInstall ? 96_642_704 : 0,
+            totalBytes: 193_285_407,
+            safeError: null,
+          });
+        }
+        if (msg.type === 'browser_runtime_install') {
+          if (this.browserRuntimeInstallFailure) {
+            this.send({
+              type: 'browser_runtime_error',
+              requestId: msg.requestId,
+              code: 'browser_install_failed',
+              safeError: this.browserRuntimeInstallFailure,
+            });
+          } else if (this.browserRuntimeInstallPaused) {
+            this.pendingBrowserRuntimeInstall = msg;
+            this.send({
+              type: 'browser_runtime_install_progress',
+              requestId: msg.requestId,
+              downloadedBytes: 96_642_704,
+              totalBytes: 193_285_407,
+            });
+          } else {
+            this.completeBrowserRuntimeInstall(msg);
+          }
+        }
+        if (msg.type === 'browser_session_list') {
+          this.send({
+            type: 'browser_session_list_result',
+            requestId: msg.requestId,
+            sessions: [...this.browserSessions.values()],
+          });
+        }
+        if (msg.type === 'browser_session_create') {
+          const browserSessionId = `browser-${randomUUID()}`;
+          const snapshot = {
+            browserSessionId,
+            revision: 2,
+            state: 'ready',
+            activeUrl: 'about:blank',
+            title: '',
+            pageRevision: 1,
+            captureMode: 'tab',
+            viewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
+            viewerCount: 0,
+          };
+          this.browserSessions.set(browserSessionId, snapshot);
+          this.send({ type: 'browser_session_created', requestId: msg.requestId, ...snapshot });
+        }
+        if (msg.type === 'browser_peer_prepare') {
+          this.send({
+            type: 'browser_peer_prepared',
+            browserSessionId: msg.browserSessionId,
+            peerId: msg.peerId,
+            connectionGeneration: msg.connectionGeneration,
+          });
+          this.send({
+            type: 'browser_peer_offer',
+            browserSessionId: msg.browserSessionId,
+            peerId: msg.peerId,
+            connectionGeneration: msg.connectionGeneration,
+            description: {
+              type: 'offer',
+              sdp: 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=Yeaft E2E\r\nt=0 0\r\n',
+            },
+          });
+        }
+        if (msg.type === 'browser_session_close') {
+          const snapshot = this.browserSessions.get(msg.browserSessionId);
+          this.browserSessions.delete(msg.browserSessionId);
+          this.send({
+            type: 'browser_session_snapshot',
+            requestId: msg.requestId,
+            ...(snapshot || { browserSessionId: msg.browserSessionId, revision: 1 }),
+            revision: Number(snapshot?.revision || 1) + 1,
+            state: 'closed',
+            terminalReason: 'user_closed',
           });
         }
         this._receivedMessages.push(msg);
@@ -96,6 +217,50 @@ export class MockAgent {
 
   messages(type = null) {
     return this._messageHistory.filter(message => !type || message.type === type);
+  }
+
+  failBrowserRuntimeInstall(safeError) {
+    this.browserRuntimeInstallFailure = safeError;
+  }
+
+  pauseBrowserRuntimeInstall() {
+    this.browserRuntimeInstallPaused = true;
+  }
+
+  completeBrowserRuntimeInstall(message = this.pendingBrowserRuntimeInstall) {
+    if (!message) throw new Error('No pending Browser Runtime install');
+    this.pendingBrowserRuntimeInstall = null;
+    this.browserRuntimeInstallPaused = false;
+    this.browserRuntimeReady = true;
+    this.send({
+      type: 'browser_runtime_install_progress',
+      requestId: message.requestId,
+      downloadedBytes: 193_285_407,
+      totalBytes: 193_285_407,
+    });
+    this.send({
+      type: 'agent_capabilities_updated',
+      capabilities: [
+        'terminal', 'file_editor', 'workbench_session_routes', 'work_center',
+        'work_center_message_v2', 'work_item_attachments', 'browser_runtime_setup',
+        'browser_runtime', 'browser_webrtc', 'browser_capture_tab', 'plaintext-ok',
+      ],
+    });
+    this.send({
+      type: 'browser_runtime_status_result',
+      requestId: message.requestId,
+      supported: true,
+      state: 'ready',
+      installed: true,
+      enabled: true,
+      ready: true,
+      buildId: '151.0.7922.71',
+      platform: 'linux',
+      downloadBytes: 193_285_407,
+      downloadedBytes: 193_285_407,
+      totalBytes: 193_285_407,
+      safeError: null,
+    });
   }
 
   waitForMessage(type, timeoutMs = 5000) {

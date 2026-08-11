@@ -149,7 +149,7 @@ export default {
             <p v-if="action.brief?.approach">{{ action.brief.approach }}</p>
             <dl class="work-center-action-context-list">
               <div v-if="action.brief?.expectedOutcome"><dt>{{ tr('workCenter.actionExpectedOutcome', 'Expected result') }}</dt><dd>{{ action.brief.expectedOutcome }}</dd></div>
-              <div v-if="action.dependsOnStageIds?.length"><dt>{{ tr('workCenter.dependencies', 'Dependencies') }}</dt><dd>{{ action.dependsOnStageIds.join(', ') }}</dd></div>
+              <div v-if="(action.sourceActionIds?.length || action.dependsOnStageIds?.length)"><dt>{{ tr('workCenter.dependencies', 'Source Actions') }}</dt><dd>{{ (action.sourceActionIds?.length ? action.sourceActionIds : action.dependsOnStageIds).join(', ') }}</dd></div>
               <div v-if="action.canonicalResult?.summary"><dt>{{ tr('workCenter.actionResult', 'Latest result') }}</dt><dd>{{ action.canonicalResult.summary }}</dd></div>
             </dl>
           </section>
@@ -157,6 +157,11 @@ export default {
           <section v-if="waitingQuestion" id="work-center-action-waiting-question" class="work-center-action-waiting" role="status">
             <strong>{{ tr('workCenter.waitingQuestionTitle', 'Input required') }}</strong>
             <p>{{ waitingQuestion }}</p>
+          </section>
+          <section v-if="action.status === 'closed' && action.closeReason" class="work-center-action-closed" role="status">
+            <strong>{{ tr('workCenter.actionClosedTitle', 'Why this Action was closed') }}</strong>
+            <p>{{ action.closeReason }}</p>
+            <small v-if="action.closedAt">{{ tr('workCenter.closedAt', 'Closed at') }} · {{ time(action.closedAt) }}</small>
           </section>
           <section v-if="action.failure" class="work-center-action-failure" role="alert">
             <strong>{{ tr('workCenter.actionFailedTitle', 'Why this Action failed') }}</strong>

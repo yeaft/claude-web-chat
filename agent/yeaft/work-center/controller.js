@@ -11,7 +11,8 @@ import {
 } from './workflow.js';
 import { renderSessionContextSnapshot } from './session-context.js';
 import { normalizeSessionMessageQuote } from '../session-message-quote.js';
-import { normalizeEvidence } from './evidence.js';
+import { normalizeEvidence, normalizeOutputs } from './evidence.js';
+import { isDynamicWorkItem } from './execution-mode.js';
 import { applyAdditivePlanProposal, applyReplanMutation } from './plan-mutation.js';
 import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
 
@@ -24,6 +25,7 @@ function normalizeTerminalResult(result, action) {
     response: String(result.response || ''),
     summary: String(result.summary || ''),
     evidence: normalizeEvidence(result.evidence),
+    outputs: normalizeOutputs(result.outputs),
     waitingReason: result.waitingReason ? String(result.waitingReason) : null,
     error: result.error ? String(result.error) : null,
     failureKind: result.failureKind === 'system_blocked' ? 'system_blocked' : null,
@@ -129,7 +131,7 @@ export class WorkflowController {
       acceptanceCriteria: Array.isArray(input.acceptanceCriteria) ? input.acceptanceCriteria : [],
       attachments: Array.isArray(input.attachments) ? input.attachments : [],
     };
-    let firstAction = input.start !== false ? initialActionFor(draft) : null;
+    let firstAction = input.start !== false && !isDynamicWorkItem(draft) ? initialActionFor(draft) : null;
     if (firstAction) {
       firstAction = {
         ...firstAction,
@@ -301,7 +303,7 @@ export class WorkflowController {
           quote: input.inputEvent?.quote || null,
         });
       }
-      if (Number(workItem.executionSchemaVersion) === 2 && input.inputEvent?.inputId) {
+      if (Number(workItem.executionSchemaVersion) >= 2 && input.inputEvent?.inputId) {
         context.push({
           type: 'input',
           role: 'user',
@@ -337,6 +339,15 @@ export class WorkflowController {
       throw new Error('Run has unconsumed Action input and cannot finish yet');
     }
     const result = normalizeTerminalResult(rawResult, activeAction);
+    if (isDynamicWorkItem(activeWorkItem)) {
+      result.contractPatch = null;
+      result.plan = null;
+      result.planProposal = null;
+      result.replanRequest = null;
+      result.replanMutation = null;
+      result.nextActions = [];
+      result.expandPlan = null;
+    }
     if (result.outcome === 'completed'
         && activeAction.stageId?.startsWith('replan-')
         && !result.replanMutation) {
@@ -380,6 +391,10 @@ export class WorkflowController {
           actions: this.store.getWorkItemDetail(activeWorkItem.id).actions,
           proposal: result.planProposal,
           availableVpIds: this.listAvailableVpIds?.(),
+          reviewAction: activeAction.type === 'review'
+            && result.reviewDecision === 'changes_requested'
+            ? activeAction
+            : null,
         });
       } catch (error) {
         result.outcome = 'failed';
@@ -546,7 +561,7 @@ export class WorkflowController {
               eventData: { reason: result.replanRequest.reason },
             };
           }
-          if (action.type === 'review' && result.reviewDecision === 'changes_requested') {
+          if (action.type === 'review' && result.reviewDecision === 'changes_requested' && !planProposal) {
             const targetStage = plannedWorkItem.workflowSnapshot.stages
               .find(stage => stage.id === action.changesRequestedStageId);
             if (!targetStage) throw new Error('Work Center review return target is missing');

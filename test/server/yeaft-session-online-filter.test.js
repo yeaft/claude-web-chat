@@ -94,7 +94,7 @@ vi.mock('../../server/handlers/session-pin-router.js', () => ({
 }));
 
 const { CONFIG } = await import('../../server/config.js');
-const { agents, webClients } = await import('../../server/context.js');
+const { agents, pendingYeaftDebugRequests, webClients } = await import('../../server/context.js');
 const { handleAgentOutput } = await import('../../server/handlers/agent-output.js');
 const {
   groupOnlineYeaftSessions,
@@ -108,6 +108,7 @@ afterEach(() => {
   CONFIG.skipAuth = originalSkipAuth;
   agents.clear();
   webClients.clear();
+  pendingYeaftDebugRequests.clear();
   getByUser.mockReset();
   getByUser.mockReturnValue([]);
   getByAgent.mockReset();
@@ -998,6 +999,7 @@ describe('Yeaft Session online Agent filtering', () => {
       },
     });
     getForAgent.mockReturnValue(null);
+    broadcastSessionCatalog.mockClear();
 
     const ownerClient = { authenticated: true, userId: 'user-1', sent: [], ws: { readyState: 1 } };
     webClients.set('owner-client', ownerClient);
@@ -1038,6 +1040,8 @@ describe('Yeaft Session online Agent filtering', () => {
         projects: [{ id: 'legacy-project', name: 'Legacy project', sessionIds: ['same-id'] }],
       },
     });
+    expect(agent.yeaftSessions).toBeInstanceOf(Map);
+    expect(agent.yeaftSessions.get('same-id')).toMatchObject({ id: 'same-id', name: 'Session' });
     expect(reconcileProjectSessions).toHaveBeenCalledWith('user-1', 'agent-a', ['same-id']);
     expect(importLegacyProjects).toHaveBeenCalledWith(
       'user-1',
@@ -1053,6 +1057,11 @@ describe('Yeaft Session online Agent filtering', () => {
         projects: [{ id: 'server-project', name: 'Server project' }],
       },
     });
+    // The canonical sidebar reads the server-owned catalog, not this live
+    // envelope. A nested agent snapshot must therefore publish the catalog
+    // after its DB reconciliation, exactly like a top-level snapshot does.
+    expect(broadcastSessionCatalog).toHaveBeenCalledTimes(1);
+    expect(broadcastSessionCatalog).toHaveBeenCalledWith('user-1');
 
     const otherTab = { authenticated: true, userId: 'user-1', sent: [], ws: { readyState: 1 } };
     webClients.set('other-tab', otherTab);
@@ -1076,6 +1085,132 @@ describe('Yeaft Session online Agent filtering', () => {
     expect(ownerClient.sent).toEqual([]);
     expect(otherTab.sent).toEqual([]);
 
+    ownerClient.sent = [];
+    otherTab.sent = [];
+    CONFIG.skipAuth = false;
+    getForAgent.mockReturnValue({ id: 'same-id', agentId: 'agent-a', userId: 'user-1' });
+    const debugRelayClient = {
+      authenticated: true,
+      userId: 'user-1',
+      currentAgent: 'agent-a',
+      sent: ownerClient.sent,
+    };
+    await handleClientConversation('owner-client', debugRelayClient, {
+      type: 'yeaft_fetch_debug_history',
+      agentId: 'agent-a',
+      sessionId: 'same-id',
+      requestId: 'debug-owner-only',
+      requestKind: 'detail',
+      detailTurnId: 'turn-owner-only',
+    }, allow);
+    expect(pendingYeaftDebugRequests.size).toBe(1);
+    // Simulate the rolling topology: an old Agent echoes requestId/sessionId
+    // but drops the newly introduced private browser client field.
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_debug_history',
+      requestId: 'debug-owner-only',
+      requestKind: 'detail',
+      detailTurnId: 'turn-owner-only',
+      sessionId: 'same-id',
+      turns: [{ turnId: 'turn-owner-only' }],
+      loops: [{ turnId: 'turn-owner-only', loopNumber: 1 }],
+      dreamEvents: [],
+      projection: { truncated: true, reason: 'debug_detail_wire_budget' },
+    });
+    expect(ownerClient.sent.at(-1)).toMatchObject({
+      type: 'yeaft_debug_history',
+      agentId: 'agent-a',
+      requestId: 'debug-owner-only',
+      detailTurnId: 'turn-owner-only',
+      projection: { truncated: true, reason: 'debug_detail_wire_budget' },
+    });
+    expect(otherTab.sent).toEqual([]);
+    expect(pendingYeaftDebugRequests.size).toBe(0);
+
+    ownerClient.sent = [];
+    otherTab.sent = [];
+    CONFIG.skipAuth = true;
+    await handleClientConversation('owner-client', debugRelayClient, {
+      type: 'yeaft_fetch_debug_history',
+      agentId: 'agent-a',
+      sessionId: 'same-id',
+      requestId: 'debug-skip-auth-ownerless',
+      requestKind: 'detail',
+      detailTurnId: 'turn-skip-auth-ownerless',
+    }, allow);
+    await handleAgentOutput('agent-a', { ...agent, ownerId: null }, {
+      type: 'yeaft_debug_history',
+      requestId: 'debug-skip-auth-ownerless',
+      requestKind: 'detail',
+      detailTurnId: 'turn-skip-auth-ownerless',
+      sessionId: 'same-id',
+      turns: [{ turnId: 'turn-skip-auth-ownerless' }],
+      loops: [{ turnId: 'turn-skip-auth-ownerless', loopNumber: 1 }],
+      dreamEvents: [],
+    });
+    expect(ownerClient.sent.at(-1)).toMatchObject({
+      type: 'yeaft_debug_history',
+      agentId: 'agent-a',
+      requestId: 'debug-skip-auth-ownerless',
+      detailTurnId: 'turn-skip-auth-ownerless',
+    });
+    expect(otherTab.sent).toEqual([]);
+    expect(pendingYeaftDebugRequests.size).toBe(0);
+
+    ownerClient.sent = [];
+    otherTab.sent = [];
+    CONFIG.skipAuth = false;
+    await handleClientConversation('owner-client', debugRelayClient, {
+      type: 'yeaft_fetch_debug_history',
+      agentId: 'agent-a',
+      sessionId: 'same-id',
+      requestId: 'debug-owner-mismatch',
+      detailTurnId: 'turn-owner-mismatch',
+    }, allow);
+    await handleAgentOutput('agent-a', { ...agent, ownerId: 'other-user' }, {
+      type: 'yeaft_debug_history',
+      requestId: 'debug-owner-mismatch',
+      sessionId: 'same-id',
+      turns: [{ turnId: 'turn-owner-mismatch' }],
+      loops: [],
+      dreamEvents: [],
+    });
+    expect(ownerClient.sent).toEqual([]);
+    expect(otherTab.sent).toEqual([]);
+    expect(pendingYeaftDebugRequests.size).toBe(0);
+
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_debug_history',
+      requestId: 'unregistered-debug',
+      sessionId: 'same-id',
+      turns: [{ turnId: 'must-not-broadcast' }],
+      loops: [],
+      dreamEvents: [],
+    });
+    expect(ownerClient.sent).toEqual([]);
+    expect(otherTab.sent).toEqual([]);
+
+    await handleClientConversation('owner-client', debugRelayClient, {
+      type: 'yeaft_fetch_debug_history',
+      agentId: 'agent-a',
+      sessionId: 'same-id',
+      requestId: 'expired-debug',
+      detailTurnId: 'expired-turn',
+    }, allow);
+    const expiredPending = [...pendingYeaftDebugRequests.values()].find(item => item.requestId === 'expired-debug');
+    expiredPending.expiresAt = Date.now() - 1;
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_debug_history',
+      requestId: 'expired-debug',
+      sessionId: 'same-id',
+      turns: [{ turnId: 'expired-turn' }],
+      loops: [],
+      dreamEvents: [],
+    });
+    expect(ownerClient.sent).toEqual([]);
+    expect(otherTab.sent).toEqual([]);
+    expect(pendingYeaftDebugRequests.size).toBe(0);
+
     await handleAgentOutput('agent-a', agent, {
       type: 'yeaft_history_chunk',
       conversationId: 'yeaft-agent-a',
@@ -1095,6 +1230,7 @@ describe('Yeaft Session online Agent filtering', () => {
     });
 
     ownerClient.sent = [];
+    broadcastSessionCatalog.mockClear();
     await handleAgentOutput('agent-a', agent, {
       type: 'session_list_updated',
       sessions: [{ id: 'same-id', name: 'Renamed' }],

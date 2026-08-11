@@ -1,14 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCoordinator } from '../../../agent/yeaft/sessions/coordinator.js';
 import { createRouter } from '../../../agent/yeaft/routing/router.js';
 import { createLoopGuard, MAX_CHAIN_DEPTH } from '../../../agent/yeaft/routing/loop-guard.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { Engine } from '../../../agent/yeaft/engine.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
+import ctx from '../../../agent/context.js';
 import { createCliSessionRunner, createCliVpEngine } from '../../../agent/yeaft/cli-session-runner.js';
-import { runStreamSessionTurn } from '../../../agent/yeaft/stdio-protocol.js';
+import {
+  normalizeStreamRoutingIntent,
+  runStreamSessionTurn,
+} from '../../../agent/yeaft/stdio-protocol.js';
 import routeForwardTool from '../../../agent/yeaft/tools/route-forward.js';
 import {
   __testEnqueueForVp,
@@ -24,6 +29,8 @@ import {
 } from '../../../agent/yeaft/web-bridge.js';
 
 describe('route_forward thread ownership', () => {
+  const originalConfig = ctx.CONFIG;
+
   it('describes route_forward as the required multi-VP hand-off tool', () => {
     expect(routeForwardTool.description.en).toContain('required hand-off mechanism');
     expect(routeForwardTool.description.en).toContain('VP-authored @mentions');
@@ -58,6 +65,7 @@ describe('route_forward thread ownership', () => {
   afterEach(() => {
     __testSetSession(null);
     __testSetThreadClassifier(null);
+    ctx.CONFIG = originalConfig;
   });
 
   function makeCoordinator() {
@@ -303,6 +311,82 @@ describe('route_forward thread ownership', () => {
     expect(stale?.pendingQueries).toHaveLength(0);
   });
 
+  it('loads distinct VP souls from the active Agent instance into provider requests', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-web-vp-souls-'));
+    try {
+      const souls = {
+        'vp-linus': 'LINUS_INSTANCE_SOUL: simplify the system and prove every claim.',
+        'vp-martin': 'MARTIN_INSTANCE_SOUL: protect architecture boundaries and review independently.',
+      };
+      for (const [vpId, soul] of Object.entries(souls)) {
+        const vpDir = join(root, 'virtual-persons', vpId);
+        mkdirSync(vpDir, { recursive: true });
+        writeFileSync(join(vpDir, 'role.md'), [
+          '---',
+          `id: ${vpId}`,
+          `name: ${vpId === 'vp-linus' ? 'Linus' : 'Martin'}`,
+          '---',
+          soul,
+        ].join('\n'));
+      }
+      ctx.CONFIG = { yeaftDir: root };
+
+      const providerCalls = [];
+      for (const vpId of Object.keys(souls)) {
+        const engine = new Engine({
+          adapter: {
+            async *stream(request) {
+              providerCalls.push({ vpId, system: request.system });
+              yield { type: 'text_delta', text: 'ok' };
+              yield { type: 'stop', stopReason: 'end_turn' };
+            },
+          },
+          trace: new NullTrace(),
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+        });
+        const queryOpts = buildVpQueryOpts({ vpId, sessionId: 'session-soul-proof' });
+        for await (const _event of engine.query({ prompt: 'state your operating principles', ...queryOpts })) {
+          // drain
+        }
+      }
+
+      expect(providerCalls).toHaveLength(2);
+      expect(providerCalls[0].system).toContain(souls['vp-linus']);
+      expect(providerCalls[0].system).not.toContain(souls['vp-martin']);
+      expect(providerCalls[1].system).toContain(souls['vp-martin']);
+      expect(providerCalls[1].system).not.toContain(souls['vp-linus']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('selects the first configured VP when no explicit or default VP is available', () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-web-vp-fallback-'));
+    try {
+      const vpDir = join(root, 'virtual-persons', 'vp-instance-fallback');
+      mkdirSync(vpDir, { recursive: true });
+      writeFileSync(join(vpDir, 'role.md'), [
+        '---',
+        'id: vp-instance-fallback',
+        'name: Instance Fallback',
+        '---',
+        'INSTANCE_FALLBACK_SOUL',
+      ].join('\n'));
+      ctx.CONFIG = { yeaftDir: root };
+      __testSetSession({ config: {} });
+
+      expect(buildVpQueryOpts({ sessionId: 'session-soul-fallback' })).toEqual(expect.objectContaining({
+        senderVpId: 'vp-instance-fallback',
+        vpPersona: expect.objectContaining({
+          vpId: 'vp-instance-fallback',
+          persona: 'INSTANCE_FALLBACK_SOUL',
+        }),
+      }));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('passes the active engine thread id into the route_forward tool context', async () => {
     const { coordinator, stored } = makeCoordinator();
     const queryOpts = buildVpQueryOpts({
@@ -360,6 +444,158 @@ describe('route_forward thread ownership', () => {
         },
       },
     });
+  });
+
+  function createStreamSessionFixture(roster = ['vp-linus', 'vp-martin']) {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-stream-session-'));
+    const sessionId = `session_stream_${Math.random().toString(36).slice(2)}`;
+    const sessionDir = join(root, 'sessions', sessionId);
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({
+      id: sessionId,
+      name: 'stream-json routing fixture',
+      roster,
+      defaultVpId: roster[0] || null,
+      announcement: '',
+      workDir: '',
+      createdAt: new Date().toISOString(),
+    }));
+    const rows = [];
+    const calls = [];
+    const runner = createCliSessionRunner({
+      loaded: {
+        yeaftDir: root,
+        config: {},
+        conversationStore: {
+          append: row => { rows.push(row); return row; },
+          loadSessionHistoryForVp: () => rows.slice(),
+        },
+      },
+      sessionId,
+      engineFactory: (_loaded, _sessionId, vpId) => ({
+        async *query(options) {
+          calls.push({ vpId, options });
+          yield { type: 'turn_open', turnId: `turn-${vpId}`, threadId: 'main', vpId };
+          yield { type: 'turn_end', stopReason: 'end_turn', terminal: true, threadId: 'main' };
+          yield { type: 'turn_close', turnId: `turn-${vpId}`, threadId: 'main' };
+        },
+        abort: () => true,
+      }),
+      personaFactory: vpId => ({ vpId }),
+    });
+    return {
+      root,
+      sessionId,
+      sessionMetaPath: join(sessionDir, 'session.json'),
+      rows,
+      calls,
+      runner,
+      async close() {
+        await runner.close();
+        rmSync(root, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it('returns a terminal stream-json error when a formal Session dispatches no VP', async () => {
+    const fixture = createStreamSessionFixture([]);
+    try {
+      const write = vi.fn();
+      const result = await runStreamSessionTurn({
+        runner: fixture.runner,
+        prompt: 'there is no Session member to run this turn',
+        sessionId: fixture.sessionId,
+        write,
+      });
+
+      expect(result).toMatchObject({
+        subtype: 'error',
+        stop_reason: 'error',
+        is_error: true,
+        dispatched_vp_ids: [],
+      });
+      expect(result.error).toContain('no_default_vp');
+      expect(write.mock.calls.map(([event]) => event.type)).toEqual(['error', 'result']);
+      expect(fixture.calls).toHaveLength(0);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it('dispatches every structured target VP without rewriting the user prompt', async () => {
+    const fixture = createStreamSessionFixture();
+    try {
+      const sessionMetaBefore = readFileSync(fixture.sessionMetaPath, 'utf8');
+      const result = await runStreamSessionTurn({
+        runner: fixture.runner,
+        prompt: 'plain prompt without mentions',
+        sessionId: fixture.sessionId,
+        write: vi.fn(),
+        routingIntent: normalizeStreamRoutingIntent({
+          targetVps: ['vp-linus', 'vp-martin'],
+        }),
+      });
+
+      expect(result).toMatchObject({
+        subtype: 'success',
+        is_error: false,
+        dispatched_vp_ids: ['vp-linus', 'vp-martin'],
+      });
+      expect(fixture.calls.map(call => call.vpId).sort()).toEqual(['vp-linus', 'vp-martin']);
+      expect(fixture.calls.every(call => call.options.prompt === 'plain prompt without mentions')).toBe(true);
+      expect(readFileSync(fixture.sessionMetaPath, 'utf8')).toBe(sessionMetaBefore);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it('keeps formal Session membership immutable and rejects non-member stream targets', async () => {
+    const fixture = createStreamSessionFixture();
+    try {
+      const sessionMetaBefore = readFileSync(fixture.sessionMetaPath, 'utf8');
+      await runStreamSessionTurn({
+        runner: fixture.runner,
+        prompt: 'capture the canonical router',
+        sessionId: fixture.sessionId,
+        write: vi.fn(),
+        routingIntent: normalizeStreamRoutingIntent({ targetVpId: 'vp-linus' }),
+      });
+      const rowCountBeforeRejectedTurn = fixture.rows.length;
+      const write = vi.fn();
+      const result = await runStreamSessionTurn({
+        runner: fixture.runner,
+        prompt: 'do not expand membership',
+        sessionId: fixture.sessionId,
+        write,
+        routingIntent: normalizeStreamRoutingIntent({
+          targetVpId: 'intruder',
+          roster: ['intruder'],
+          vps: ['intruder'],
+          defaultVpId: 'intruder',
+        }),
+      });
+
+      expect(result).toMatchObject({
+        subtype: 'error',
+        stop_reason: 'error',
+        is_error: true,
+        dispatched_vp_ids: [],
+      });
+      expect(result.error).toContain('not in roster');
+      expect(fixture.rows).toHaveLength(rowCountBeforeRejectedTurn);
+      expect(readFileSync(fixture.sessionMetaPath, 'utf8')).toBe(sessionMetaBefore);
+
+      const nonMemberForward = fixture.calls[0].options.router.forward({
+        from: 'vp-linus',
+        to: 'intruder',
+        text: 'attempt to bypass the canonical roster',
+        inboundEnvelope: fixture.calls[0].options.inboundEnvelope,
+      });
+      expect(nonMemberForward).toMatchObject({ ok: false, error: 'target_not_in_roster' });
+      expect(readFileSync(fixture.sessionMetaPath, 'utf8')).toBe(sessionMetaBefore);
+    } finally {
+      await fixture.close();
+    }
   });
 
   it('keeps explicit user @mentions visible and preserves CLI Session routing boundaries', async () => {
@@ -525,6 +761,7 @@ describe('route_forward thread ownership', () => {
       expect.objectContaining({ vpId: 'vp-linus', error }),
     ]);
     await errorRunner.close();
+
     await runner.close();
   }
 
@@ -597,9 +834,13 @@ describe('route_forward thread ownership', () => {
     firstGate.resolve();
     const [firstResult, secondResult] = await Promise.all([first, second]);
 
-    expect(firstEvents).toEqual(['linus:linus-first', 'martin:martin-forwarded']);
+    expect(firstEvents).toEqual([
+      'linus:linus-first',
+      'martin:martin-forwarded',
+      'linus:martin-forwarded',
+    ]);
     expect(secondEvents).toEqual(['martin:martin-second']);
-    expect(firstResult.results.map(item => item.vpId)).toEqual(['linus', 'martin']);
+    expect(firstResult.results.map(item => item.vpId)).toEqual(['linus', 'martin', 'linus']);
     expect(secondResult.results.map(item => item.vpId)).toEqual(['martin']);
     await runner.close();
   }

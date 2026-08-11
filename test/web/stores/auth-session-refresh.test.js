@@ -138,6 +138,52 @@ describe('auth store session restore and refresh', () => {
     expect(globalThis.localStorage.setItem).toHaveBeenCalledWith('authToken', 'renewed-token');
   });
 
+  it('preserves Yeaft history on same-owner refresh and clears it on owner replacement', async () => {
+    globalThis.localStorage = createLocalStorage({ authToken: 'owner-token' });
+    const profiles = ['owner-a', 'owner-b'];
+    globalThis.fetch = vi.fn(async () => jsonResponse({
+      body: { userId: profiles.shift(), username: 'dev', role: 'pro' },
+    }));
+    const historyState = {
+      messages: [{ sessionId: 'session-a', content: 'private history' }],
+      history: { loaded: true },
+      cache: { ranges: [[1, 2]] },
+      window: { visibleTurns: 40 },
+      hydration: { token: 'hydrate-a' },
+      reveal: { key: 'reveal-a' },
+    };
+    const originalHistoryState = structuredClone(historyState);
+    const clearYeaftHistoryMemory = vi.fn(() => {
+      Object.keys(historyState).forEach(key => { historyState[key] = null; });
+    });
+    globalThis.Pinia = {
+      defineStore: createStoreFactory(),
+      useChatStore: () => ({ clearYeaftHistoryMemory }),
+    };
+    vi.resetModules();
+    const { useAuthStore } = await import('../../../web/stores/auth.js');
+    const auth = useAuthStore();
+    auth.token = 'owner-token';
+    auth.isAuthenticated = true;
+    auth.userId = 'owner-a';
+
+    expect(await auth.refreshSession()).toBe(true);
+    expect(clearYeaftHistoryMemory).not.toHaveBeenCalled();
+    expect(historyState).toEqual(originalHistoryState);
+
+    expect(await auth.refreshSession()).toBe(true);
+    expect(clearYeaftHistoryMemory).toHaveBeenCalledOnce();
+    expect(historyState).toEqual({
+      messages: null,
+      history: null,
+      cache: null,
+      window: null,
+      hydration: null,
+      reveal: null,
+    });
+    expect(auth.userId).toBe('owner-b');
+  });
+
   it('does not let stale refresh renewals overwrite a newer login token', async () => {
     globalThis.localStorage = createLocalStorage({ authToken: 'old-token' });
     let auth;
@@ -236,14 +282,47 @@ describe('auth store session restore and refresh', () => {
     expect(globalThis.localStorage.removeItem).not.toHaveBeenCalled();
   });
 
-  it('always posts logout so the server can revoke a cookie-only session', async () => {
+  it('clears in-memory Yeaft history before reset and direct owner replacement', async () => {
+    globalThis.localStorage = createLocalStorage({ authToken: 'owner-b-token' });
+    globalThis.fetch = vi.fn(async () => jsonResponse({
+      body: { userId: 'owner-b', username: 'owner-b', role: 'pro' },
+    }));
+    const clearYeaftHistoryMemory = vi.fn();
+    globalThis.Pinia = {
+      defineStore: createStoreFactory(),
+      useChatStore: () => ({ clearYeaftHistoryMemory }),
+    };
+    vi.resetModules();
+    const { useAuthStore } = await import('../../../web/stores/auth.js');
+    const auth = useAuthStore();
+    auth.isAuthenticated = true;
+    auth.userId = 'owner-a';
+
+    expect(await auth.restoreSession()).toBe(true);
+    expect(clearYeaftHistoryMemory).toHaveBeenCalledOnce();
+    expect(auth.userId).toBe('owner-b');
+
+    await auth.clearStoredSession();
+    expect(clearYeaftHistoryMemory).toHaveBeenCalledTimes(2);
+    expect(auth.userId).toBe(null);
+  });
+
+  it('posts logout and clears browser-owned state without transcript storage', async () => {
     globalThis.localStorage = createLocalStorage({
       'yeaft-work-center-composer-drafts-v1': JSON.stringify({ ownerId: 'user-a', records: {} }),
       'yeaft-work-center-message-outbox-v1': JSON.stringify({ ownerId: 'user-a', records: {} }),
     });
     globalThis.fetch = vi.fn(async () => jsonResponse());
-    const auth = await loadAuthStore();
+    const clearYeaftHistoryMemory = vi.fn();
+    globalThis.Pinia = {
+      defineStore: createStoreFactory(),
+      useChatStore: () => ({ clearYeaftHistoryMemory }),
+    };
+    vi.resetModules();
+    const { useAuthStore } = await import('../../../web/stores/auth.js');
+    const auth = useAuthStore();
     auth.isAuthenticated = true;
+    auth.userId = 'user-a';
 
     await auth.logout();
 
@@ -252,6 +331,7 @@ describe('auth store session restore and refresh', () => {
       headers: { 'Content-Type': 'application/json' },
     });
     expect(auth.isAuthenticated).toBe(false);
+    expect(clearYeaftHistoryMemory).toHaveBeenCalledOnce();
     expect(globalThis.localStorage.removeItem).toHaveBeenCalledWith('authToken');
     expect(globalThis.localStorage.removeItem)
       .toHaveBeenCalledWith('yeaft-work-center-composer-drafts-v1');
@@ -291,11 +371,19 @@ describe('auth store session restore and refresh', () => {
     expect(auth.linkedIdentities).toEqual([]);
   });
 
-  it('deletes an account for an authenticated cookie-only session', async () => {
+  it('deletes an account and clears the in-memory transcript', async () => {
     globalThis.localStorage = createLocalStorage();
     globalThis.fetch = vi.fn(async () => jsonResponse({ body: { success: true } }));
-    const auth = await loadAuthStore();
+    const clearYeaftHistoryMemory = vi.fn();
+    globalThis.Pinia = {
+      defineStore: createStoreFactory(),
+      useChatStore: () => ({ clearYeaftHistoryMemory }),
+    };
+    vi.resetModules();
+    const { useAuthStore } = await import('../../../web/stores/auth.js');
+    const auth = useAuthStore();
     auth.isAuthenticated = true;
+    auth.userId = 'user-a';
 
     const result = await auth.deleteAccount({ confirm: 'DELETE' });
 
@@ -306,6 +394,7 @@ describe('auth store session restore and refresh', () => {
       body: JSON.stringify({ currentPassword: undefined, confirm: 'DELETE' }),
     });
     expect(auth.isAuthenticated).toBe(false);
+    expect(clearYeaftHistoryMemory).toHaveBeenCalledOnce();
   });
 
   it('starts SSO binding for a cookie-only session without putting a token in the URL', async () => {

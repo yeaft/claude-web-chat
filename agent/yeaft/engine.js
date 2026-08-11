@@ -22,9 +22,16 @@ import { promises as fsp } from 'fs';
 import { join, resolve as resolvePath } from 'path';
 import { buildSystemPrompt, buildWorkerPrompt } from './prompts.js';
 import { getRuntimePlatformInfo } from './runtime-platform.js';
-import { LLMContextError, LLMAbortError, LLMAuthError, LLMRateLimitError, LLMServerError, LLMStreamIdleTimeoutError } from './llm/adapter.js';
+import { LLMContextError, LLMAbortError, LLMAuthError, LLMPolicyError, LLMRateLimitError, LLMServerError, LLMStreamIdleTimeoutError } from './llm/adapter.js';
 import { runMemoryPreflow, buildRelevantScopes, memoryScopeLabel } from './sessions/pre-flow.js';
-import { readProjectDoc, pickProjectDocFile, DEFAULT_PROJECT_DOC_MAX_BYTES } from './sessions/project-doc.js';
+import {
+  readProjectDoc,
+  pickProjectDocFile,
+  selectProjectDocContext,
+  projectDocPathHintsFromToolCall,
+  projectDocWriteScopesNeedingReload,
+  DEFAULT_PROJECT_DOC_MAX_BYTES,
+} from './sessions/project-doc.js';
 import { partitionMessages } from './compact/partition.js';
 import { runCompact as runCompactOrchestrator } from './compact/orchestrator.js';
 import { evaluateCompactTriggers } from './compact/triggers.js';
@@ -45,7 +52,11 @@ import { countTurns } from './turn-utils.js';
 import { attachRouterPlan, extractPriorPlan, stripMetaForWire } from './router/continuity.js';
 import { resolveThinking } from './router/thinking.js';
 import { approxTokens, computeBudget } from './memory/budget.js';
-import { COLLAB_TOOL_POLICY, isToolErrorOutput, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
+import { COLLAB_TOOL_POLICY, isToolErrorOutput, localizeVisibleText, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
+import { CONDITIONAL_BUILTIN_TOOL_NAMES, resolveActiveToolNames } from './tools/activation.js';
+import { discoverToolCapabilities } from './tools/discover-tools.js';
+import { agentBelongsToScope, getAgentRegistry } from './tools/agent.js';
+import { createPluginSkillManager } from './plugins.js';
 import { extractDisplayImages, stripDisplayImageData } from './image-assets.js';
 import { acknowledgePendingNotifications, formatNotificationsForPrompt, peekPendingNotifications } from './sub-agent/notifications.js';
 import {
@@ -144,6 +155,8 @@ const RETRY_DEFAULTS = Object.freeze({
 
 const RETRY_CONTINUATION_PROMPT =
   'Continue from the exact point where the previous response stopped. Do not repeat text already produced.';
+const POLICY_RECOVERY_PROMPT =
+  'Continue this authorized code review, but describe security findings abstractly. Do not repeat credential-like or exploit payloads, secrets, tokens, or step-by-step misuse instructions. Preserve the technical conclusion, evidence location, severity, and remediation.';
 
 // Accept legacy namespaced commands and Claude Code-style bare skill commands.
 // Project-tier skills are shown as /<skill-name>; /yeaft-skills:<name> and
@@ -191,6 +204,39 @@ function stripLeadingSkillCommandFromPromptParts(promptParts, skillManager) {
     stripped = true;
     return { ...part, text: parsed.cleanedPrompt };
   });
+}
+
+function resolveSkillPromptState({ skillManager, prompt, explicitSkillName }) {
+  let resolvedSkillContent = '';
+  let resolvedSkills = [];
+  let skillResolutionError = null;
+  if (!skillManager) {
+    return { resolvedSkillContent, resolvedSkills, skillResolutionError };
+  }
+
+  if (explicitSkillName) {
+    resolvedSkillContent = skillManager.getPromptContent(explicitSkillName);
+    const skill = skillManager.list?.().find(item => item.name === explicitSkillName)
+      || (resolvedSkillContent ? { name: explicitSkillName } : null);
+    if (resolvedSkillContent && skill) {
+      resolvedSkills = [{ ...skill, explicit: true }];
+    } else {
+      skillResolutionError = `Requested skill "${explicitSkillName}" was not found.`;
+      resolvedSkillContent = `## Skill command error\n\n${skillResolutionError} Continue without that skill and tell the user it is unavailable.`;
+    }
+  } else if (prompt && typeof skillManager.findRelevant === 'function') {
+    resolvedSkills = skillManager.findRelevant(prompt).map(skill => ({
+      name: skill.name,
+      description: skill.description || '',
+      trigger: skill.trigger || '',
+      category: skill.category,
+      tier: skill._tier,
+      explicit: false,
+    }));
+    resolvedSkillContent = resolvedSkills.map(skill => skillManager.getPromptContent(skill.name)).join('\n\n');
+  }
+
+  return { resolvedSkillContent, resolvedSkills, skillResolutionError };
 }
 
 function resolveRetryPolicy(config) {
@@ -607,6 +653,9 @@ export class Engine {
   /** @type {import('./skills.js').SkillManager|null} */
   #skillManager;
 
+  /** @type {import('./skills.js').SkillManager|null} */
+  #baseSkillManager;
+
   /** @type {import('./mcp.js').MCPManager|null} */
   #mcpManager;
 
@@ -683,6 +732,9 @@ export class Engine {
 
   /** Wire turn id of the active query, used by late async completion rows. */
   #currentQueryTurnId = null;
+
+  /** Durable formal-CLI root identity inherited by every row in this query. */
+  #currentCausalRootId = null;
 
   /**
    * Identity-bound hook into the active query's local read-only result cache.
@@ -825,7 +877,10 @@ export class Engine {
     this.#amsRegistry = amsRegistry || null;
     this.#toolRegistry = toolRegistry || null;
     this.#taskManager = taskManager || null;
-    this.#skillManager = skillManager || null;
+    this.#baseSkillManager = skillManager || null;
+    this.#skillManager = this.#baseSkillManager && Array.isArray(config?.plugins?.skills)
+      ? createPluginSkillManager(this.#baseSkillManager, config.plugins)
+      : this.#baseSkillManager;
     this.#mcpManager = mcpManager || null;
     this.#yeaftDir = yeaftDir || null;
     this.#managedCliReady = managedCliReady || null;
@@ -926,6 +981,9 @@ export class Engine {
   refreshConfig(config) {
     if (!config || typeof config !== 'object') return;
     this.#config = config;
+    this.#skillManager = this.#baseSkillManager && Array.isArray(config.plugins?.skills)
+      ? createPluginSkillManager(this.#baseSkillManager, config.plugins)
+      : this.#baseSkillManager;
     const fastModelId = config.fastModelId || config.model;
     this.#fastConfig = fastModelId !== config.model
       ? { ...config, model: fastModelId }
@@ -941,7 +999,10 @@ export class Engine {
    */
   setRuntimeManagers(managers = {}) {
     if (Object.prototype.hasOwnProperty.call(managers, 'skillManager')) {
-      this.#skillManager = managers.skillManager || null;
+      this.#baseSkillManager = managers.skillManager || null;
+      this.#skillManager = this.#baseSkillManager && Array.isArray(this.#config?.plugins?.skills)
+        ? createPluginSkillManager(this.#baseSkillManager, this.#config.plugins)
+        : this.#baseSkillManager;
     }
     if (Object.prototype.hasOwnProperty.call(managers, 'mcpManager')) {
       this.#mcpManager = managers.mcpManager || null;
@@ -958,19 +1019,23 @@ export class Engine {
   }
 
   /**
-   * Get the list of registered tool definitions (for passing to the adapter).
-   * Prefers ToolRegistry when available, falls back to legacy #tools Map.
+   * Get the active tool definitions for one provider request. The registry keeps
+   * every implementation and compatibility alias loaded; only the active set is
+   * serialized into the request. Legacy standalone engines keep exposing their
+   * explicitly registered tools because they do not use the built-in registry.
    *
-   * task-297: mode-based filtering was removed — all registered tools are
-   * always exposed to the LLM.
-   *
+   * @param {string|null} collabToolPolicy
+   * @param {Set<string>|null} activeToolNames
    * @returns {import('./llm/adapter.js').UnifiedToolDef[]}
    */
-  #getToolDefs(collabToolPolicy = null) {
+  #getToolDefs(collabToolPolicy = null, activeToolNames = null) {
     if (this.#toolRegistry) {
-      return this.#toolRegistry.getToolDefs(this.#config?.language || 'en', { collabToolPolicy });
+      return this.#toolRegistry.getToolDefs(this.#config?.language || 'en', {
+        collabToolPolicy,
+        plugins: this.#config?.plugins,
+        activeToolNames,
+      });
     }
-    // Legacy path: no mode filtering
     const defs = [];
     for (const [, tool] of this.#tools) {
       defs.push({
@@ -980,6 +1045,14 @@ export class Engine {
       });
     }
     return defs;
+  }
+
+  #hasScopedSubAgents({ sessionId, parentVpId, parentThreadId } = {}) {
+    const scope = { sessionId, parentVpId, parentThreadId };
+    for (const agent of getAgentRegistry().values()) {
+      if (agentBelongsToScope(agent, scope)) return true;
+    }
+    return false;
   }
 
   /**
@@ -1196,10 +1269,11 @@ export class Engine {
    * @param {string} [args.explicitSkillName] — leading /skill:<name> command, if present
    * @returns {string}
    */
-  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, projectInstruction, projectLabel, workCenterInstructions, projectDoc, taskCtx, activeTasks, explicitSkillName, resolvedSkillContent = null } = {}) {
-    // Skill selection is normally resolved once by #runQuery so the prompt and
-    // emitted protocol events describe the exact same skills. Keep the local
-    // fallback for internal callers that do not need selection events.
+  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, projectInstruction, projectLabel, workCenterInstructions, projectDoc, taskCtx, activeTasks, collabToolPolicy = null, activeToolNames = null, promptNotices = [], explicitSkillName, resolvedSkillContent = null } = {}) {
+    // #runQuery resolves Skill selection at each provider-request boundary so
+    // a live Plugin policy change cannot leave stale content in the next prompt.
+    // Keep the local fallback for internal callers that do not need selection
+    // events.
     let skillContent = typeof resolvedSkillContent === 'string' ? resolvedSkillContent : '';
     if (resolvedSkillContent === null && this.#skillManager) {
       if (explicitSkillName) {
@@ -1210,10 +1284,17 @@ export class Engine {
       }
     }
 
-    // Get tool names from the appropriate source
-    const toolNames = this.#toolRegistry
-      ? this.#toolRegistry.getToolNames()
+    // Prompt guidance must describe the same canonical capability
+    // intersection that reaches provider schemas and execution.
+    const registeredToolNames = this.#toolRegistry
+      ? this.#toolRegistry.getToolNames({
+          plugins: this.#config?.plugins,
+          collabToolPolicy,
+        })
       : Array.from(this.#tools.keys());
+    const toolNames = activeToolNames instanceof Set
+      ? registeredToolNames.filter(name => activeToolNames.has(name))
+      : registeredToolNames;
 
     return buildWorkerPrompt({
       language: this.#config.language || 'en',
@@ -1230,6 +1311,7 @@ export class Engine {
       runtimePlatform: getRuntimePlatformInfo(),
       taskCtx,
       activeTasks,
+      promptNotices,
       // Worker-shape harness is descriptive metadata for human inspection;
       // production prompts skip it to save tokens. Re-enable via env when
       // diagnosing prompt structure issues.
@@ -1336,6 +1418,7 @@ export class Engine {
       conversationStore: this.#conversationStore,
       adapter: this.#adapter,
       config: this.#config,
+      discoverTools: vpCtx?.discoverTools,
       taskManager: this.#taskManager,
       sessionId: vpCtx?.sessionId || this.#sessionId || null,
       projectSessionIds: Array.isArray(vpCtx?.projectSessionIds)
@@ -1455,7 +1538,7 @@ export class Engine {
    * without injection.
    *
    * @param {string} prompt
-   * @param {{ sessionId?: string, vpId?: string, extraScopes?: string[] }} [ctx]
+   * @param {{ sessionId?: string, vpId?: string, extraScopes?: string[], strictScopes?: string[] }} [ctx]
    * @returns {Promise<{ profile: string, entries: object[], formatted: string }|null>}
    */
   async #recallMemory(prompt, ctx = {}) {
@@ -1468,6 +1551,7 @@ export class Engine {
         chatId: ctx.chatId || this.#chatId,
         vpId: ctx.vpId,
         extraScopes: ctx.extraScopes,
+        strictScopes: ctx.strictScopes,
         pickLimit: resolveMemoryRecallLimit(this.#config),
         uniqueScopes: true,
         canonicalOnly: true,
@@ -1510,8 +1594,17 @@ export class Engine {
     return Boolean(this.#conversationStore) && !this.#config._readOnly;
   }
 
-  #conversationRecord(message, { sessionId, turnId, model, incomplete = false, stopReason = null, executionOrigin = null } = {}) {
+  #conversationRecord(message, { sessionId, turnId, causalRootId = undefined, model, incomplete = false, stopReason = null, executionOrigin = null } = {}) {
     const effectiveTurnId = turnId || message.turnId || null;
+    const normalizeId = value => (typeof value === 'string' && value.trim() ? value.trim() : null);
+    // `null` is an explicit override used by a carried T2 reflection whose
+    // originating query predates causal-root metadata. `undefined` inherits the
+    // active query, which keeps every ordinary write path centralized here.
+    const effectiveCausalRootId = causalRootId === null
+      ? null
+      : (normalizeId(causalRootId)
+        || normalizeId(message.causalRootId)
+        || this.#currentCausalRootId);
     const effectiveVpId = message.speakerVpId || this.#vpId || null;
     const record = {
       role: message.role,
@@ -1541,6 +1634,7 @@ export class Engine {
     if (effectiveTurnId && (message.role === 'assistant' || message.role === 'tool' || message.internal === true)) {
       record.turnId = effectiveTurnId;
     }
+    if (effectiveCausalRootId) record.causalRootId = effectiveCausalRootId;
     if (executionOrigin === 'route_forward' && (message.role === 'assistant' || message.role === 'tool')) {
       record.executionOrigin = executionOrigin;
     }
@@ -1969,15 +2063,23 @@ export class Engine {
    *   user-message content; the string `prompt` is then only used for
    *   logging / history. When omitted the engine falls back to the
    *   string-prompt shape (no regression for existing callers).
+   * @param {string|null} [params.causalRootId] - Stable durable identity for
+   *   every row generated as part of one externally accepted causal root.
    * @yields {EngineEvent}
    */
   async *query(params = {}) {
+    const queryTraceId = typeof params.vpTurnId === 'string' && params.vpTurnId
+      ? params.vpTurnId : null;
     let terminalEmitted = false;
+    let terminalStopReason = 'error';
     let lastTurnNumber = 0;
     try {
       for await (const event of this.#queryLifecycle(params)) {
         if (Number.isFinite(event?.turnNumber)) lastTurnNumber = event.turnNumber;
-        if (event?.type === 'turn_end' && event.terminal === true) terminalEmitted = true;
+        if (event?.type === 'turn_end' && event.terminal === true) {
+          terminalEmitted = true;
+          terminalStopReason = event.stopReason || terminalStopReason;
+        }
         yield event;
       }
     } catch (err) {
@@ -2001,10 +2103,17 @@ export class Engine {
         // hook must not retroactively turn the completed answer into an error.
         console.warn('[Engine] post-turn maintenance failed:', err?.message || err);
       }
+    } finally {
+      if (queryTraceId && typeof this.#trace?.finalizeQuery === 'function') {
+        this.#trace.finalizeQuery(queryTraceId, {
+          sessionId: params.sessionId || null,
+          stopReason: terminalEmitted ? terminalStopReason : 'interrupted',
+        });
+      }
     }
   }
 
-  async *#queryLifecycle({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', projectLabel = '', vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null } = {}) {
+  async *#queryLifecycle({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', projectLabel = '', vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, causalRootId = null, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null } = {}) {
     if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
       const error = new Error('prompt is required and must be a non-empty string');
       yield {
@@ -2032,7 +2141,8 @@ export class Engine {
     // openai-responses.js:#translateUserContent).
 
     // task-327b: `/max` / `/high` / `/medium` / `/low` prefix override.
-    // Explicit caller-supplied userEffort wins over the prefix.
+    // Explicit caller-supplied userEffort wins over the prefix. Session config
+    // is deliberately excluded here because it may refresh between loops.
     // task-327c nit: defensively normalize caller-supplied userEffort BEFORE
     // the merge, so an invalid caller value (e.g. 'ULTRA') does not shadow a
     // valid prompt prefix.
@@ -2042,11 +2152,15 @@ export class Engine {
     const effectivePromptParts = parsedSkill.skillName
       ? stripLeadingSkillCommandFromPromptParts(promptParts, this.#skillManager)
       : promptParts;
-    const configuredEffort = normalizeEffort(this.#config?.modelEffort);
-    const effectiveUserEffort = normalizeEffort(userEffort) || parsed.effort || configuredEffort || null;
+    // Only actual caller input and a prompt prefix are per-query overrides.
+    // Session-configured effort belongs to the live config and is resolved at
+    // each provider-request boundary, just like the live model snapshot.
+    const explicitUserEffort = normalizeEffort(userEffort) || parsed.effort || null;
     const effectiveCollabToolPolicy = collabToolPolicy === COLLAB_TOOL_POLICY.SINGLE_VP || collabToolPolicy === COLLAB_TOOL_POLICY.MULTI_VP
       ? collabToolPolicy
       : null;
+    const effectiveCausalRootId = typeof causalRootId === 'string' && causalRootId.trim()
+      ? causalRootId.trim() : null;
 
     // ─── task-325a: engine-owned AbortController ─────────────
     // We create our own controller for this query run so `engine.abort()`
@@ -2090,7 +2204,8 @@ export class Engine {
     };
     try {
       this.#currentThreadId = threadId || MAIN_THREAD_ID;
-      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds, projectInstruction, projectLabel, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, prepareProviderRequest, startProviderRequest, finishProviderRequest, failProviderRequest, closePendingUserInput, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName, retryLifecycle });
+      this.#currentCausalRootId = effectiveCausalRootId;
+      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: explicitUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds, projectInstruction, projectLabel, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, causalRootId: effectiveCausalRootId, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, prepareProviderRequest, startProviderRequest, finishProviderRequest, failProviderRequest, closePendingUserInput, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName, retryLifecycle });
     } finally {
       // Closing the async generator at a visible retry boundary means the
       // continuation never reached a provider. Keep it out of history and
@@ -2119,6 +2234,7 @@ export class Engine {
       this.#currentAbortCtrl = null;
       this.#abortReason = null;
       this.#currentQueryTurnId = null;
+      this.#currentCausalRootId = null;
       this.#currentThreadId = MAIN_THREAD_ID;
       this.#pendingUserMessages.length = 0;
       this.#externalUserWakePending = false;
@@ -2144,7 +2260,7 @@ export class Engine {
    * in a try/finally without indenting the whole loop.
    * @private
    */
-  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', projectLabel = '', vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null, explicitSkillName = null, retryLifecycle }) {
+  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, projectSessionIds = null, projectInstruction = '', projectLabel = '', vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, causalRootId = null, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, prepareProviderRequest = null, startProviderRequest = null, finishProviderRequest = null, failProviderRequest = null, closePendingUserInput = null, collabToolPolicy = null, explicitSkillName = null, retryLifecycle }) {
 
     const effectiveCollabToolPolicy = collabToolPolicy === COLLAB_TOOL_POLICY.SINGLE_VP || collabToolPolicy === COLLAB_TOOL_POLICY.MULTI_VP
       ? collabToolPolicy
@@ -2155,11 +2271,15 @@ export class Engine {
     const runtimeThreadId = (typeof threadId === 'string' && threadId.trim())
       ? threadId.trim()
       : MAIN_THREAD_ID;
-    const executionOrigin = inboundEnvelope?.msg?.meta?.injectedBy === 'route_forward'
+    const executionOrigin = ['route_forward', 'route_forward_result'].includes(inboundEnvelope?.msg?.meta?.injectedBy)
       ? 'route_forward'
       : null;
-    const queryTurnId = randomUUID();
-    this.#currentQueryTurnId = vpTurnId || queryTurnId;
+    // The bridge-provided VP turn id is also persisted on assistant messages and
+    // is therefore the identity the UI sends back when opening turn debug. Keep
+    // the engine event/trace id identical; a second random id makes the trace
+    // impossible to retrieve from a rendered assistant turn.
+    const queryTurnId = vpTurnId || randomUUID();
+    this.#currentQueryTurnId = queryTurnId;
     // Bind the live query scope before tools can register async work. The
     // constructor's Session id is only guaranteed for bridge-owned engines;
     // standalone/CLI callers pass it per query.
@@ -2233,11 +2353,8 @@ export class Engine {
     const projectScopesForMemory = Array.isArray(projectSessionIds)
       ? projectSessionIds.flatMap(id => [
           `sessions/${id}`,
-          `sessions/${id}/user`,
           `session/${id}`,
-          `session/${id}/user`,
           `group/${id}`,
-          `group/${id}/user`,
         ])
       : [];
     const recallResult = await this.#recallMemory(prompt, {
@@ -2246,6 +2363,10 @@ export class Engine {
         ? vpPersona.vpId
         : (typeof senderVpId === 'string' ? senderVpId : undefined),
       extraScopes: [...topicScopesForMemory, ...projectScopesForMemory],
+      // Global user memory and Project siblings are much broader than the
+      // active Session. A single generic OR-FTS hit must not pull an entire
+      // historical content.md into the provider prompt.
+      strictScopes: ['user', ...projectScopesForMemory],
     });
     recallEntryCount = recallResult && Array.isArray(recallResult.entries)
       ? recallResult.entries.length
@@ -2335,40 +2456,84 @@ export class Engine {
       envelope: inboundEnvelope || null,
     };
 
-    const projectDoc = this.#getProjectDocBlock(workDir);
-    const activeTasks = this.#taskManager
+    const projectDocSource = this.#getProjectDocBlock(workDir);
+    let projectDocLoadedPathHints = [];
+    let projectDocContext = selectProjectDocContext(projectDocSource, {
+      prompt,
+      messages,
+      pathHints: projectDocLoadedPathHints,
+      language: this.#config.language || 'en',
+    });
+    let activeTaskSnapshots = this.#taskManager
+      && typeof this.#taskManager.listActiveTasks === 'function'
+      ? this.#taskManager.listActiveTasks(runtimeSessionId)
+      : [];
+    let activeTasks = this.#taskManager
       ? this.#taskManager.renderActiveTasksForPrompt(runtimeSessionId, {
           language: this.#config.language || 'en',
         })
       : '';
-    let resolvedSkillContent = '';
-    let resolvedSkills = [];
-    let skillResolutionError = null;
-    if (this.#skillManager) {
-      if (explicitSkillName) {
-        resolvedSkillContent = this.#skillManager.getPromptContent(explicitSkillName);
-        const skill = this.#skillManager.list?.().find(item => item.name === explicitSkillName)
-          || (resolvedSkillContent ? { name: explicitSkillName } : null);
-        if (resolvedSkillContent && skill) {
-          resolvedSkills = [{ ...skill, explicit: true }];
-        } else {
-          skillResolutionError = `Requested skill "${explicitSkillName}" was not found.`;
-          resolvedSkillContent = `## Skill command error\n\n${skillResolutionError} Continue without that skill and tell the user it is unavailable.`;
-        }
-      } else if (prompt && typeof this.#skillManager.findRelevant === 'function') {
-        resolvedSkills = this.#skillManager.findRelevant(prompt).map(skill => ({
-          name: skill.name,
-          description: skill.description || '',
-          trigger: skill.trigger || '',
-          category: skill.category,
-          tier: skill._tier,
-          explicit: false,
-        }));
-        resolvedSkillContent = resolvedSkills.map(skill => this.#skillManager.getPromptContent(skill.name)).join('\n\n');
+    const registeredToolNames = this.#toolRegistry
+      ? this.#toolRegistry.getToolNames({
+          collabToolPolicy: effectiveCollabToolPolicy,
+          plugins: this.#config?.plugins,
+        })
+      : Array.from(this.#tools.keys());
+    const registeredToolNameSet = new Set(registeredToolNames);
+    const resolveCurrentActiveToolNames = () => this.#toolRegistry
+      ? resolveActiveToolNames({
+          toolNames: registeredToolNames,
+          prompt,
+          messages,
+          collabToolPolicy: effectiveCollabToolPolicy,
+          activeTasks: activeTaskSnapshots,
+          subAgentToolsActivated: this.#hasScopedSubAgents({
+            sessionId: runtimeSessionId,
+            parentVpId: queryVpId,
+            parentThreadId: runtimeThreadId,
+          }),
+          imageGenerationConfigured: typeof this.#config?.imageApiUrl === 'string'
+            && this.#config.imageApiUrl.trim().length > 0,
+        })
+      : null;
+    const discoveredToolNames = new Set();
+    const discoveryTraversals = new Map();
+    const currentDiscoverableTools = () => this.#toolRegistry
+      ? this.#toolRegistry.getAllTools()
+          .filter(tool => registeredToolNameSet.has(tool.name))
+          .filter(tool => CONDITIONAL_BUILTIN_TOOL_NAMES.has(tool.name) || tool.name.startsWith('mcp__'))
+      : [];
+    const discoveryDirectorySnapshot = (tools, language) => tools
+      .map(tool => ({
+        name: tool.name,
+        description: localizeVisibleText(tool.description, language, tool.name),
+        parameters: tool.parameters,
+      }));
+    const discoveryDirectoryMatches = (snapshot, liveTools, language) => {
+      const liveSnapshot = discoveryDirectorySnapshot(liveTools, language);
+      if (snapshot.length !== liveSnapshot.length) return false;
+      const byName = new Map(snapshot.map(tool => [tool.name, tool]));
+      return liveSnapshot.every(tool => {
+        const prior = byName.get(tool.name);
+        return prior
+          && prior.description === tool.description
+          && JSON.stringify(prior.parameters) === JSON.stringify(tool.parameters);
+      });
+    };
+    const applyDiscoveredTools = (names) => {
+      for (const name of names) {
+        if (this.#toolRegistry?.has(name)) discoveredToolNames.add(name);
       }
-    }
+    };
+    let activeToolNames = resolveCurrentActiveToolNames();
+    let { resolvedSkillContent, resolvedSkills, skillResolutionError } = resolveSkillPromptState({
+      skillManager: this.#skillManager,
+      prompt,
+      explicitSkillName,
+    });
 
-    const systemPrompt = this.#buildSystemPrompt({
+    let promptNotices = [];
+    const buildCurrentSystemPrompt = () => this.#buildSystemPrompt({
       prompt,
       memoryInjection,
       vpPersona,
@@ -2377,11 +2542,15 @@ export class Engine {
       projectInstruction,
       projectLabel,
       workCenterInstructions,
-      projectDoc,
+      projectDoc: projectDocContext.text,
       activeTasks,
+      collabToolPolicy: effectiveCollabToolPolicy,
+      activeToolNames,
+      promptNotices,
       explicitSkillName,
       resolvedSkillContent,
     });
+    let systemPrompt = buildCurrentSystemPrompt();
 
     // ─── HARD INVARIANT: Compact ≠ Dream (read DESIGN-COMPACT-VS-DREAM.md) ─
     // Compact summary (this block) ONLY lands in the messages array head as
@@ -2546,12 +2715,10 @@ export class Engine {
       sessionId: sessionId || null,
       at: queryStartedAt,
     };
-    for (const skill of resolvedSkills) {
-      yield { type: 'skill_loaded', turnId: queryTurnId, skill };
-    }
-    if (skillResolutionError) {
-      yield { type: 'skill_error', turnId: queryTurnId, skillName: explicitSkillName, message: skillResolutionError };
-    }
+    // Skill selection is emitted at the provider-request boundary below. A
+    // persisted Plugin update may replace the filtered SkillManager while this
+    // query is paused on a tool, so reporting it before that boundary could
+    // claim a Skill was loaded even though its content never reached a request.
 
     // Surface the exact memory that entered the prompt. This must be based on
     // the AMS snapshot, not raw FTS candidates, otherwise debug can claim memory
@@ -2581,7 +2748,7 @@ export class Engine {
       };
     }
 
-    const toolDefs = this.#getToolDefs(effectiveCollabToolPolicy);
+    let toolDefs = this.#getToolDefs(effectiveCollabToolPolicy, activeToolNames);
     let turnNumber = 0;
     let continueTurns = 0; // auto-continue counter
     let toolLoopTurns = 0; // task-327b: tool-use turns for long-loop auto-bump
@@ -2589,10 +2756,19 @@ export class Engine {
     let displayImageAnchorMessage = null;
     let lastPersistedAssistantMessage = null;
     let lastPersistedAssistantTextMessage = null;
+    // `refreshConfig()` may publish a new Session model while a stream or a
+    // tool is running. Apply it only before the next provider request; the
+    // current request keeps the snapshot captured below.
     let currentModel = this.#config.model;
+    let primaryModelAtLastBoundary = currentModel;
     let cumulativeInputTokens = 0;
     let cumulativeOutputTokens = 0;
     let activeProviderRequest = null;
+    // Skill events describe the selection injected into each provider request.
+    // The first request must report its initial selection; later loops report
+    // only newly added Skills or a newly introduced explicit-command error.
+    let reportedSkillNames = new Set();
+    let reportedSkillError = null;
     // task-707: tool-callable end-turn signal. Tools (currently only
     // `route_forward`) can set this via toolCtx.requestEndTurn(reason)
     // to break out of the tool-loop after the current batch finishes
@@ -2614,12 +2790,39 @@ export class Engine {
     // gives up: we either fall back to a backup model or surface the
     // error to the user. LLMContextError has its own compact-retry path
     // and does NOT count against this budget.
-    const retryPolicy = resolveRetryPolicy(this.#config);
+    let retryPolicy = resolveRetryPolicy(this.#config);
     let consecutiveRetryableErrors = 0;
     let consecutiveForbiddenErrors = 0;
+    let contentPolicyRecoveryAttempts = 0;
 
     while (true) {
       turnNumber++;
+
+      // `refreshConfig()` is called by the bridge after a persisted Session or
+      // Agent config update. This is the only point a running query adopts the
+      // new primary model, so an in-flight provider stream is never switched.
+      // Keep a retry fallback selected by this query; replacing it here would
+      // turn an exhausted primary into an endless retry loop.
+      if (currentModel === primaryModelAtLastBoundary) {
+        const refreshedPrimaryModel = this.#config.model;
+        if (refreshedPrimaryModel !== primaryModelAtLastBoundary) {
+          currentModel = refreshedPrimaryModel;
+          primaryModelAtLastBoundary = refreshedPrimaryModel;
+        }
+      }
+
+      // Take one immutable runtime snapshot before any request-specific work.
+      // A Session save racing preflight must be picked up by the next loop, not
+      // this request. Fallback retries intentionally retain their selected
+      // model, but still use the current policy and configured effort.
+      const requestConfig = { ...this.#config };
+      // Capture the matching provider catalog in the same synchronous boundary
+      // as config/model. Preflight may yield user/task events before the stream
+      // is built, but one request must never mix two refresh revisions.
+      const requestAdapter = typeof this.#adapter.captureRequest === 'function'
+        ? this.#adapter.captureRequest()
+        : this.#adapter;
+      retryPolicy = resolveRetryPolicy(requestConfig);
 
       // task-324: no hard MAX_TURNS cap. Loop terminates on end_turn,
       // non-retryable error, LLMContextError (after compact retry), or
@@ -2717,9 +2920,7 @@ export class Engine {
       // actually about to call. Single resolver in models.js owns the
       // fallback ladder (registry → config → default) so engine.js and
       // tools/registry.js can never disagree.
-      const currentContextWindow = resolveContextWindow(currentModel, this.#config);
-
-      yield { type: 'turn_start', turnNumber, threadId };
+      const currentContextWindow = resolveContextWindow(currentModel, requestConfig);
 
       const appendedBeforeStream = this.#drainPendingUserMessages(drainPendingUserMessages);
       if (appendedBeforeStream.length > 0) {
@@ -2758,10 +2959,49 @@ export class Engine {
         }
       }
 
+      // Tool availability depends on live Session state. A Bash call can start a
+      // background task (or a sub-agent can appear) during the prior loop, so
+      // recompute the schemas and matching guidance before every provider call.
+      activeTaskSnapshots = this.#taskManager
+        && typeof this.#taskManager.listActiveTasks === 'function'
+        ? this.#taskManager.listActiveTasks(runtimeSessionId)
+        : [];
+      activeTasks = this.#taskManager
+        ? this.#taskManager.renderActiveTasksForPrompt(runtimeSessionId, {
+            language: this.#config.language || 'en',
+          })
+        : '';
+      activeToolNames = resolveCurrentActiveToolNames();
+      for (const name of [...discoveredToolNames]) {
+        if (this.#toolRegistry?.has(name)) activeToolNames?.add(name);
+        else discoveredToolNames.delete(name);
+      }
+      toolDefs = this.#getToolDefs(effectiveCollabToolPolicy, activeToolNames);
+      ({ resolvedSkillContent, resolvedSkills, skillResolutionError } = resolveSkillPromptState({
+        skillManager: this.#skillManager,
+        prompt,
+        explicitSkillName,
+      }));
+      const currentSkillNames = new Set(resolvedSkills.map(skill => skill.name));
+      for (const skill of resolvedSkills) {
+        if (!reportedSkillNames.has(skill.name)) {
+          yield { type: 'skill_loaded', turnId: queryTurnId, skill };
+        }
+      }
+      if (skillResolutionError && skillResolutionError !== reportedSkillError) {
+        yield { type: 'skill_error', turnId: queryTurnId, skillName: explicitSkillName, message: skillResolutionError };
+      }
+      reportedSkillNames = currentSkillNames;
+      reportedSkillError = skillResolutionError;
+      systemPrompt = buildCurrentSystemPrompt();
+
       try {
-        // task-327b: resolve effort per-turn so the long-loop auto-bump
-        // kicks in once toolLoopTurns crosses the threshold.
-        let resolvedEffort = pickEffort({ scenario, toolLoopTurns, userEffort });
+        // Resolve effort per provider request so a saved Session effort takes
+        // effect at the next loop. A caller override or `/effort` prefix stays
+        // fixed for this query and still wins over live Session config.
+        const configuredEffort = normalizeEffort(requestConfig.modelEffort);
+        const requestUserEffort = userEffort || configuredEffort || null;
+        let resolvedEffort = pickEffort({ scenario, toolLoopTurns, userEffort: requestUserEffort });
 
         // DESIGN.md §9.16: thinking-mode precedence chain. When a VP
         // persona is active, the router/continuity bookkeeping has more
@@ -2783,7 +3023,7 @@ export class Engine {
             ? vpPlan.thinking
             : null;
           const resolved = resolveThinking({
-            uiOverride: (userEffort === 'max' || userEffort === 'high') ? userEffort : null,
+            uiOverride: (requestUserEffort === 'max' || requestUserEffort === 'high') ? requestUserEffort : null,
             routerPlan: liveRouterThinking,
             priorPlan: priorPlan && priorPlan.thinking ? priorPlan.thinking : null,
             vpDefault: typeof vpPersona.thinking === 'string' ? vpPersona.thinking : null,
@@ -2878,27 +3118,70 @@ export class Engine {
           }
         }
 
-        // Do not durably publish a model-only continuation until every
-        // pre-request await is complete and the fresh provider request is about
-        // to start. Stop at the visible loop boundary must leave no
-        // continuation that the provider never received.
-        if (signal?.aborted) throw new LLMAbortError();
-        if (pendingContinuationForRequest
-            && retryLifecycle.pendingContinuation === pendingContinuationForRequest) {
-          this.#persistConversationMessage(pendingContinuationForRequest, { sessionId: runtimeSessionId });
+        // Capture only the provider route before the visible boundary. The
+        // returned async iterable must not make a request or write durable
+        // state; both the retry continuation and Work Center EngineTurn remain
+        // uncommitted until the consumer resumes this `turn_start`.
+        //
+        // Engine configuration and AdapterRouter catalog were captured together
+        // at the loop boundary above. Building the stream here and refreshing
+        // while `turn_start` is visible cannot alter this request revision.
+        const hasCaptureStream = typeof requestAdapter.captureStream === 'function';
+        const captureStream = hasCaptureStream
+          ? requestAdapter.captureStream.bind(requestAdapter)
+          : requestAdapter.stream.bind(requestAdapter);
+        let continuationCommitted = false;
+        const commitRetryContinuation = () => {
+          if (continuationCommitted
+              || !pendingContinuationForRequest
+              || retryLifecycle.pendingContinuation !== pendingContinuationForRequest) return;
+          const persisted = this.#persistConversationMessage(pendingContinuationForRequest, {
+            sessionId: runtimeSessionId,
+          });
+          if (persisted) pendingContinuationForRequest._persistedMessageId = persisted.id;
           conversationMessages.push(pendingContinuationForRequest);
           retryLifecycle.pendingContinuation = null;
-        }
-
-        activeProviderRequest = typeof prepareProviderRequest === 'function'
-          ? prepareProviderRequest({
+          continuationCommitted = true;
+        };
+        const commitDispatch = () => {
+          if (!activeProviderRequest && typeof prepareProviderRequest === 'function') {
+            activeProviderRequest = prepareProviderRequest({
               turnNumber,
               entries: appendedBeforeStream,
               system: systemPrompt,
               messages: wireMessages.map(mapDebugMessage),
               model: currentModel,
-            }) || null
-          : null;
+            }) || null;
+          }
+          startProviderRequest?.(activeProviderRequest);
+          commitRetryContinuation();
+        };
+        const providerStream = captureStream({
+          model: currentModel,
+          system: systemPrompt,
+          messages: wireMessages,
+          tools: toolDefs.length > 0 ? toolDefs : undefined,
+          maxTokens: requestConfig.maxOutputTokens || 16384,
+          effort: resolvedEffort,
+          effortSource: requestUserEffort ? 'user' : 'auto',
+          signal,
+          onRawExchange: captureRawExchange,
+          rawExchangeMaxBytes,
+          onRequestStart: () => {
+            // Native adapters invoke this immediately before fetch(). A retry
+            // continuation and Work Center EngineTurn become durable only when
+            // their request crosses dispatch, never when turn_start is shown.
+            commitDispatch();
+          },
+        });
+        yield { type: 'turn_start', turnNumber, threadId };
+
+        // Provider iteration begins after the visible boundary. Native adapters
+        // commit in onRequestStart immediately before fetch. A plain legacy
+        // adapter only enters its generator at iteration, so preserve its old
+        // dispatch semantics while keeping captured Router requests inert.
+        if (signal?.aborted) throw new LLMAbortError();
+        if (!hasCaptureStream) commitDispatch();
 
         // Snapshot task results carried by this exact request. Request start
         // is not delivery: fetch may remain pending and then be aborted before
@@ -2906,19 +3189,7 @@ export class Engine {
         // that included the provider's terminal stop event.
         const requestAsyncTaskIds = Array.from(this.#pendingAsyncTaskConfirmIds);
         let sawProviderStop = false;
-        for await (const event of this.#adapter.stream({
-          model: currentModel,
-          system: systemPrompt,
-          messages: wireMessages,
-          tools: toolDefs.length > 0 ? toolDefs : undefined,
-          maxTokens: this.#config.maxOutputTokens || 16384,
-          effort: resolvedEffort,
-          effortSource: userEffort ? 'user' : 'auto',
-          signal,
-          onRawExchange: captureRawExchange,
-          rawExchangeMaxBytes,
-          onRequestStart: () => startProviderRequest?.(activeProviderRequest),
-        })) {
+        for await (const event of providerStream) {
           // task-325a (abort-stop fix): per-event abort short-circuit.
           // The adapter is expected to throw AbortError when fetch's
           // signal fires, but in practice undici/HTTP-2/proxy layers
@@ -3174,17 +3445,42 @@ export class Engine {
             errorName: err?.name || null,
             statusCode: err?.statusCode ?? null,
             retryable: err instanceof LLMRateLimitError || err instanceof LLMServerError,
+            reasonCode: err?.reasonCode || null,
             message: String(err?.message || '').slice(0, 200),
           },
         });
 
         const earlyIsRateLimit = err instanceof LLMRateLimitError;
         const earlyIsTransient = err instanceof LLMServerError;
+        const earlyIsContentPolicy = err instanceof LLMPolicyError;
         // A completed tool_call has already crossed the streaming boundary to
         // the caller. Replaying that request would publish a duplicate call and
         // leave ambiguous execution ownership, so only pre-tool failures are
         // eligible for transparent retry or model fallback.
         const canReplayProviderRequest = toolCalls.length === 0;
+        if (earlyIsContentPolicy && canReplayProviderRequest && contentPolicyRecoveryAttempts === 0) {
+          contentPolicyRecoveryAttempts = 1;
+          endAttemptTrace('llm_retry');
+          if (responseText) prepareRetryContinuation();
+          retryLifecycle.pendingContinuation = {
+            role: 'user',
+            content: POLICY_RECOVERY_PROMPT,
+            userAuthored: false,
+          };
+          yield {
+            type: 'llm_retry',
+            attempt: 1,
+            maxRetries: 1,
+            delayMs: 0,
+            reason: 'content_policy_recovery',
+            recoveryMode: 'continue',
+            errorName: err.name,
+            statusCode: err.statusCode ?? 422,
+            message: 'Provider content-safety rejection; retrying once with sensitive examples abstracted.',
+          };
+          yield { type: 'turn_end', turnNumber, stopReason: 'llm_retry', threadId };
+          continue;
+        }
         const earlyIsTemporaryForbidden = err instanceof LLMAuthError
           && err.statusCode === 403
           && err.temporary === true;
@@ -3270,7 +3566,7 @@ export class Engine {
           }
         }
 
-        const earlyFallbackModel = this.#config.fallbackModel;
+        const earlyFallbackModel = requestConfig.fallbackModel;
         if (earlyFallbackModel && earlyFallbackModel !== currentModel
           && (earlyIsRateLimit || earlyIsTransient) && canReplayProviderRequest) {
           endAttemptTrace('fallback_retry');
@@ -3372,9 +3668,25 @@ export class Engine {
             && consecutiveRetryableErrors >= retryPolicy.maxRetries;
           errorEvent.retryAttempts = consecutiveRetryableErrors;
           errorEvent.maxRetries = retryPolicy.maxRetries;
+        } else if (err instanceof LLMPolicyError) {
+          errorEvent.reason = 'content_policy_denied';
+          errorEvent.retryExhausted = contentPolicyRecoveryAttempts >= 1;
+          errorEvent.retryAttempts = contentPolicyRecoveryAttempts;
+          errorEvent.maxRetries = 1;
         }
         yield errorEvent;
-        yield { type: 'turn_end', turnNumber, stopReason: 'error', threadId, terminal: true };
+        yield {
+          type: 'turn_end',
+          turnNumber,
+          stopReason: 'error',
+          threadId,
+          terminal: true,
+          detail: {
+            errorName: err?.name || 'Error',
+            statusCode: err?.statusCode ?? null,
+            reason: errorEvent.reason || err?.reasonCode || null,
+          },
+        };
         break;
       }
 
@@ -3768,6 +4080,7 @@ export class Engine {
               count: pairs.length,
               originalUserMsg: prompt,
               originatingTurnId: queryTurnId,
+              causalRootId,
               executionOrigin,
               ready: false,
               result: null,
@@ -3809,6 +4122,72 @@ export class Engine {
         setCurrentTodos,
         askUser,
         workDir,
+        discoverTools: ({ query, cursor, maxResults } = {}) => {
+          if (!this.#toolRegistry) return { query: String(query || ''), tools: [], activated: 0 };
+          const language = this.#config.language || 'en';
+          const queryText = String(query || '');
+          const traversalKey = queryText.trim();
+          const liveTools = currentDiscoverableTools();
+          const requestedCursor = Number(cursor);
+          const hasCursor = cursor != null && cursor !== '' && Number.isInteger(requestedCursor) && requestedCursor > 0;
+          let traversal = hasCursor ? discoveryTraversals.get(traversalKey) : null;
+          if (hasCursor && (!traversal || !discoveryDirectoryMatches(traversal.candidates, liveTools, language))) {
+            discoveryTraversals.delete(traversalKey);
+            return {
+              query: queryText,
+              tools: [],
+              next_cursor: null,
+              total: liveTools.length,
+              omitted_invalid: 0,
+              activated: 0,
+              restart_required: true,
+              message: 'The hidden tool directory changed or no matching traversal exists. Restart discovery without a cursor.',
+            };
+          }
+          if (!hasCursor) {
+            traversal = {
+              candidates: discoveryDirectorySnapshot(liveTools, language),
+            };
+            discoveryTraversals.set(traversalKey, traversal);
+          } else {
+            const pendingTraversal = discoveryTraversals.get(traversalKey);
+            if (!pendingTraversal || pendingTraversal.nextCursor !== requestedCursor) {
+              discoveryTraversals.delete(traversalKey);
+              return {
+                query: queryText,
+                tools: [],
+                next_cursor: null,
+                total: liveTools.length,
+                omitted_invalid: 0,
+                activated: 0,
+                restart_required: true,
+                message: 'The discovery cursor is stale or out of sequence. Restart discovery without a cursor.',
+              };
+            }
+          }
+          const result = discoverToolCapabilities({
+            query: queryText,
+            candidates: traversal.candidates,
+            language,
+            cursor,
+            maxResults,
+          });
+          if (result.restart_required || result.next_cursor == null) discoveryTraversals.delete(traversalKey);
+          else traversal.nextCursor = result.next_cursor;
+          applyDiscoveredTools(result.tools.map(tool => tool.name));
+          return {
+            query: queryText,
+            ...result,
+            activated: result.tools.length,
+            message: result.restart_required
+              ? (result.message || 'The hidden tool directory changed. Restart discovery without a cursor.')
+              : (result.tools.length > 0
+                  ? (result.next_cursor == null
+                      ? 'This discovery page is active on the next model loop; the hidden directory is exhausted.'
+                      : 'This discovery page is active on the next model loop; use next_cursor if the target is not listed.')
+                  : 'No valid hidden registered tools remain on this directory page.'),
+          };
+        },
         currentToolCall: () => currentToolCallForAsyncTask ? { ...currentToolCallForAsyncTask } : null,
         requestEndTurn: (reason) => {
           // First call wins — preserve the kind/reason of the first tool
@@ -3904,8 +4283,18 @@ export class Engine {
 
         // Resolve tool: prefer ToolRegistry, fallback to legacy #tools Map
         const hasTool = this.#toolRegistry
-          ? this.#toolRegistry.isAllowed(tc.name, { collabToolPolicy: effectiveCollabToolPolicy })
+          ? this.#toolRegistry.isAllowed(tc.name, {
+              collabToolPolicy: effectiveCollabToolPolicy,
+              plugins: this.#config?.plugins,
+              activeToolNames,
+            })
           : this.#tools.has(tc.name);
+        const toolProjectDocPathHints = projectDocPathHintsFromToolCall(tc.name, tc.input);
+        const readOnlyTool = hasTool ? isReadOnlyTool(this, tc.name, tc.input) : false;
+        const missingProjectDocScopes = hasTool && !readOnlyTool
+          ? projectDocWriteScopesNeedingReload(projectDocContext, toolProjectDocPathHints)
+          : new Set();
+        const needsProjectDocReload = missingProjectDocScopes.size > 0;
 
         if (skipped) {
           const source = activeToolBatchBarrier.sourceToolName || 'a preceding tool';
@@ -3928,12 +4317,42 @@ export class Engine {
             threadId: this.currentThreadId,
           };
         } else if (!hasTool) {
-          output = `Error: unknown tool "${tc.name}"`;
+          const registered = this.#toolRegistry?.has(tc.name) || this.#tools.has(tc.name);
+          output = registered
+            ? `Error: tool "${tc.name}" is not active for this request`
+            : `Error: unknown tool "${tc.name}"`;
           isError = true;
           yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: true, threadId: this.currentThreadId };
+        } else if (needsProjectDocReload) {
+          projectDocLoadedPathHints = [...new Set([
+            ...projectDocLoadedPathHints,
+            ...toolProjectDocPathHints,
+          ])];
+          const previouslySelectedProjectDocScopes = new Set(projectDocContext.selectedScopes);
+          projectDocContext = selectProjectDocContext(projectDocSource, {
+            prompt,
+            messages,
+            pathHints: projectDocLoadedPathHints,
+            language: this.#config.language || 'en',
+            forcedScopes: [...previouslySelectedProjectDocScopes, ...missingProjectDocScopes],
+          });
+          const zh = String(this.#config?.language || '').toLowerCase().startsWith('zh');
+          const notice = zh
+            ? `项目规则已针对路径 ${toolProjectDocPathHints.join(', ')} 重新加载。先复核新载入的规则，再重新提交写操作；本次调用未执行。`
+            : `Project rules were reloaded for ${toolProjectDocPathHints.join(', ')}. Review the newly loaded rules before resubmitting the write; this call was not executed.`;
+          promptNotices = [notice];
+          systemPrompt = buildCurrentSystemPrompt();
+          output = notice;
+          isError = true;
+          toolBatchBarrier = {
+            kind: 'project_rules_reloaded',
+            message: notice,
+            sourceToolCallId: tc.id,
+            sourceToolName: tc.name,
+          };
+          yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: true, skipped: true, threadId: this.currentThreadId };
         } else {
           duplicateKey = `${tc.name}\u001f${argsHashOf(tc.input)}`;
-          const readOnlyTool = isReadOnlyTool(this, tc.name, tc.input);
           cacheableTool = isCacheableTool(this, tc.name, tc.input);
           // The cache is only valid while the workspace has not changed. Clear
           // it before every potential mutation, including a tool that later
@@ -4484,6 +4903,7 @@ export class Engine {
         reflectionMessage,
         {
           ...context,
+          causalRootId: info.causalRootId || null,
           executionOrigin: info.executionOrigin === 'route_forward' ? 'route_forward' : null,
         },
       );
@@ -4528,6 +4948,12 @@ export class Engine {
   get currentThreadId() {
     return this.#currentThreadId || MAIN_THREAD_ID;
   }
+
+  /** Stable owner scope for external exactly-once task coordinators. */
+  get sessionId() { return this.#sessionId; }
+
+  /** Stable owner scope for external exactly-once task coordinators. */
+  get vpId() { return this.#vpId; }
 
   /**
    * Append a user message into the currently running query. The loop consumes

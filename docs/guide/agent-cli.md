@@ -12,6 +12,7 @@ Do not treat them as aliases. `yeaft-agent` is service/control-plane integration
 ```text
 yeaft-agent [options]              Run Agent in foreground
 yeaft-agent local [options]        Run local Web UI, Server, and Agent
+yeaft-agent local install [options] Install local mode as a managed service
 yeaft-agent install [options]      Install a managed service
 yeaft-agent uninstall [options]    Remove a managed service
 yeaft-agent start [options]        Start a managed service
@@ -32,6 +33,7 @@ yeaft-agent --version              Show package version
 | `--server <url>` | Server WebSocket URL; default `ws://localhost:3456` |
 | `--name <name>` | Agent display name and local instance identity |
 | `--port <port>` | Local mode HTTP port; default `6868` |
+| `--background`, `-d` | Detach local mode after spawning it |
 | `--secret <secret>` | Agent authentication secret |
 | `--work-dir <dir>` | Default execution directory |
 | `--yeaft-dir <dir>` | Yeaft data root for this Agent instance |
@@ -123,7 +125,15 @@ printf '%s\n' '{"type":"user","message":{"role":"user","content":"List the repos
 
 Stdout is JSONL. Events include Session/turn identity and may include text/thinking deltas, skill loads, tool start/result, todo updates, usage, turn stop, result, or error. If a tool needs human input, stream-json input is required so the caller can return an answer. Treat engine events as authoritative rather than reconstructing state from display text.
 
-If the ID names an existing formal Session (with persisted `session.json` and roster), the transport-neutral runner executes that Session and adds VP identity to streamed events. A new ID accepted by stream-json only scopes an ad-hoc CLI message history; it does not create `session.json`, a roster, or a Web product Session. ID validation is currently enforced on the stream-json path; text modes instead fail when the requested formal Session does not exist.
+If the ID names an existing formal Session (with persisted `session.json` and roster), the transport-neutral runner executes that Session and adds VP identity to streamed events. Per-turn VP selectors such as `targetVpId`, `targetVps`, `targets`, and `broadcast` are valid only on this formal-Session path and are checked against the persisted roster before provider dispatch.
+
+A new ID remains an ad-hoc CLI conversation key by default. An integration can opt in to a formal Session only on its first JSONL user prompt by including `roster` (or the identical `vps` alias) and an optional `defaultVpId`; for example:
+
+```json
+{"type":"user","prompt":"Hello","roster":["omni","margaret"],"defaultVpId":"omni"}
+```
+
+The CLI writes canonical `session.json` metadata before dispatching that first turn, then emits one aggregate result with `dispatched_vp_ids` and `vp_results` for every formal-Session turn. Roster ids must be unique valid VP ids, `vps` and `roster` must match when both are supplied, and `defaultVpId` must name a roster member. Later input cannot change the persisted roster. Without the first-prompt roster, VP selectors remain rejected as a terminal result for that input line while later JSONL prompts may continue. ID validation is currently enforced on the stream-json path; text modes instead fail when the requested formal Session does not exist.
 
 ## Diagnostics
 

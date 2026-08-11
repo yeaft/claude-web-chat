@@ -7,6 +7,12 @@ import { clearSessionLoading } from './session.js';
 // Pending ensureConnected resolvers — settled by onopen/timeout
 let _connectResolvers = [];
 
+function notifyBrowserTransportReset() {
+  if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function'
+      || typeof CustomEvent === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('browser-runtime-transport-reset'));
+}
+
 function isAuthenticationClose(event) {
   return event?.code === 1008
     && String(event.reason || '').toLowerCase().includes('authentication');
@@ -141,6 +147,11 @@ export function connect(store) {
   store._hasHandledAgentList = false;
   store._hasHandledYeaftSessionHydrate = false;
   store.yeaftSessionInventoryCompleteSupported = null;
+  store.workbenchRouteProtocolSupported = null;
+  store.browserRuntimeProtocolSupported = null;
+  store.browserRuntimeSetupProtocolSupported = null;
+  store.browserRuntimeServerEnabled = false;
+  notifyBrowserTransportReset();
   store.yeaftSessionHydrateRequestId = null;
   store.yeaftSessionHydrateSlices = [];
   store.yeaftSessionHydrateError = null;
@@ -225,7 +236,10 @@ export function connect(store) {
     try {
       socket.send(JSON.stringify({
         type: 'client_hello',
-        plaintextOk: true
+        plaintextOk: true,
+        workbenchRouteProtocol: 1,
+        browserRuntimeProtocol: 1,
+        browserRuntimeSetupProtocol: 1,
       }));
     } catch (e) {
       console.warn('[WS] Failed to send client_hello:', e);
@@ -256,6 +270,11 @@ export function connect(store) {
     store._hasHandledAgentList = false;
     store._hasHandledYeaftSessionHydrate = false;
     store.yeaftSessionInventoryCompleteSupported = null;
+    store.workbenchRouteProtocolSupported = null;
+    store.browserRuntimeProtocolSupported = null;
+    store.browserRuntimeSetupProtocolSupported = null;
+    store.browserRuntimeServerEnabled = false;
+    notifyBrowserTransportReset();
     store.yeaftSessionHydrateRequestId = null;
     store.yeaftSessionHydrateSlices = [];
     store.yeaftSessionHydrateError = null;
@@ -274,13 +293,11 @@ export function connect(store) {
       return;
     }
 
-    // Mark that the NEXT agent_list (after reconnect) should run a single
-    // Yeaft history catch-up. The socket genuinely dropped here, so we may
-    // have missed messages while offline. handleAgentList consumes and
-    // clears this one-shot flag — routine agent_list broadcasts (with no
-    // preceding close) leave it false and therefore skip the catch-up,
-    // which is what keeps yeaft_load_history / yeaft_vp_subscribe from
-    // looping on every status echo.
+    // Mark that the NEXT online agent_list (after reconnect) should run the
+    // bounded Yeaft history and visible Work Center catch-up. The socket
+    // genuinely dropped here, so the browser may have missed messages/events
+    // while offline. handleAgentList consumes and clears this one-shot flag;
+    // routine agent_list broadcasts leave it false and skip those requests.
     store._yeaftReconnectCatchUpPending = true;
 
     if (wasUpdating) {

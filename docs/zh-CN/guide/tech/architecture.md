@@ -19,7 +19,7 @@ Agent（运行在代码机器的 Node.js）
         │   ├── H2-AMS memory + Dream maintenance
         │   ├── Project 与 scoped sibling-Session recall
         │   └── Work Center（WorkItem → Action → Run）
-        └── Workbench（terminal、Git、files、port proxy）
+        └── Workbench 能力选择页（Terminal、Git、Files、Browser 可用性）
 ```
 
 ## 所有权边界
@@ -120,7 +120,7 @@ agent/
     work-center/            WorkItem/Action/Run store、planner、watcher、runner
     sub-agent/              Child-agent execution 与 notification
     tasks/                  Background shell task persistence
-  workbench/                Terminal、Git、files 等服务
+  workbench/                Route-scoped Terminal、Git、files 与 Browser runtime 服务
 web/                        Vue 3 Options API + Pinia + static CSS/i18n
 test/                       Vitest unit/integration tests
 e2e/                        Playwright browser tests
@@ -158,4 +158,5 @@ Server catalog 给 Browser 一个 Agent-aware 的原生/CLI conversation 视图�
 - [H2-AMS memory](./yeaft-memory.md)
 - [原生 LLM 层](./yeaft-llm.md)
 - [WebSocket 协议](./wire-protocol.md)
+- [WebRTC Browser Runtime 设计](../../../notes/2026-08-07-webrtc-browser-runtime-design.md)
 - [Work Center 用户合同](../user/work-center.md)

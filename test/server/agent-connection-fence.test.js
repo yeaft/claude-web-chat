@@ -3,6 +3,7 @@ import { MockWebSocket, WS_CLOSED, WS_OPEN } from '../helpers/mockWs.js';
 
 const broadcastAgentList = vi.fn(async () => {});
 const clearAgentDirCache = vi.fn();
+const getOrCreateUser = vi.fn(() => ({ id: 'local-user-id', username: 'dev-user' }));
 
 vi.mock('../../server/config.js', () => ({
   CONFIG: {
@@ -38,6 +39,9 @@ vi.mock('../../server/handlers/agent-sync.js', () => ({
   handleAgentSync: vi.fn(async () => false),
 }));
 vi.mock('../../server/perf-trace.js', () => ({ recordPerfTraceEvent: vi.fn() }));
+vi.mock('../../server/database.js', () => ({
+  userDb: { getOrCreate: getOrCreateUser, isActive: vi.fn(() => true) }
+}));
 
 const handleAgentOutput = vi.fn(async () => true);
 vi.mock('../../server/handlers/agent-output.js', () => ({ handleAgentOutput }));
@@ -50,13 +54,17 @@ function agentUrl(id = 'agent-1') {
   return new URL(`ws://localhost/?type=agent&id=${id}&name=Agent&instanceId=${id}&capabilities=plaintext-ok`);
 }
 
-function authenticate(socket, { secret = 'owner-secret', version = '1.0.0' } = {}) {
+function authenticate(socket, {
+  secret = 'owner-secret',
+  version = '1.0.0',
+  capabilities = ['plaintext-ok'],
+} = {}) {
   const challenge = socket.getLastMessage();
   socket.simulateMessage({
     type: 'auth',
     tempId: challenge.tempId,
     secret,
-    capabilities: ['plaintext-ok'],
+    capabilities,
     version,
   });
 }
@@ -80,6 +88,8 @@ beforeEach(() => {
     userId: 'owner-1',
     username: 'owner',
   });
+  getOrCreateUser.mockClear();
+  delete process.env.YEAFT_LOCAL_RUN;
 });
 
 afterEach(() => {
@@ -123,6 +133,29 @@ describe('Agent connection replacement fence', () => {
 
     expect(handleAgentOutput).toHaveBeenCalledTimes(1);
     expect(handleAgentOutput.mock.calls[0][1].ws).toBe(newSocket);
+  });
+
+  it('assigns local-run agents to the skip-auth browser owner only when requested', async () => {
+    process.env.YEAFT_LOCAL_RUN = 'true';
+    const localSocket = new MockWebSocket(WS_OPEN);
+    handleAgentConnection(localSocket, agentUrl('local-agent'));
+    authenticate(localSocket);
+    await settleMessages();
+    expect(getOrCreateUser).toHaveBeenCalledWith('dev-user');
+    expect(agents.get('local-agent')).toMatchObject({
+      ownerId: 'local-user-id',
+      ownerUsername: 'dev-user',
+    });
+
+    delete process.env.YEAFT_LOCAL_RUN;
+    const genericSocket = new MockWebSocket(WS_OPEN);
+    handleAgentConnection(genericSocket, agentUrl('generic-dev-agent'));
+    authenticate(genericSocket);
+    await settleMessages();
+    expect(agents.get('generic-dev-agent')).toMatchObject({
+      ownerId: null,
+      ownerUsername: null,
+    });
   });
 
   it('does not let an old close delete or rebroadcast over the replacement record', async () => {
@@ -192,6 +225,24 @@ describe('Agent connection replacement fence', () => {
     expect(agents.has('agent-1')).toBe(false);
     expect(oldSocket.readyState).toBe(WS_CLOSED);
     expect(oldSocket.closeCode).toBe(1008);
+  });
+
+  it('preserves the safe remote-upgrade capability after authenticated registration', async () => {
+    CONFIG.skipAuth = false;
+    const socket = new MockWebSocket(WS_OPEN);
+
+    handleAgentConnection(socket, agentUrl());
+    authenticate(socket, {
+      version: '1.0.999',
+      capabilities: ['plaintext-ok', 'remote_upgrade_safe'],
+    });
+    await settleMessages();
+
+    expect(agents.get('owner-1:agent-1')).toMatchObject({
+      ws: socket,
+      version: '1.0.999',
+      capabilities: ['plaintext-ok', 'remote_upgrade_safe'],
+    });
   });
 
   it('applies the same replacement fence after authenticated registration', async () => {

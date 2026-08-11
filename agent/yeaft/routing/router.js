@@ -28,6 +28,39 @@
 import { resolveMemberId } from '../sessions/roster.js';
 import { createLoopGuard, extendCausedBy } from './loop-guard.js';
 
+function routeForwardParentFromEnvelope(envelope) {
+  const msg = envelope?.msg;
+  const meta = msg?.meta;
+  if (!meta || typeof meta !== 'object') return null;
+  if (meta.injectedBy === 'route_forward_result') {
+    return meta.routeForwardParent && typeof meta.routeForwardParent === 'object'
+      ? { ...meta.routeForwardParent }
+      : null;
+  }
+  if (meta.injectedBy !== 'route_forward') return null;
+  const forwardId = typeof msg.id === 'string' ? msg.id.trim() : '';
+  const sourceVpId = typeof meta.senderVpId === 'string' ? meta.senderVpId.trim() : '';
+  if (!forwardId || !sourceVpId) return null;
+  return {
+    forwardId,
+    sourceVpId,
+    sourceThreadId: typeof meta.sourceThreadId === 'string' && meta.sourceThreadId.trim()
+      ? meta.sourceThreadId.trim()
+      : 'main',
+    expectedVpIds: Array.isArray(meta.routeForwardExpectedTargets)
+      ? meta.routeForwardExpectedTargets.slice()
+      : [],
+    causedBy: Array.isArray(meta.causedBy) ? meta.causedBy.slice() : [],
+    dispatchErrors: Array.isArray(meta.routeForwardDispatchErrors)
+      ? meta.routeForwardDispatchErrors.slice()
+      : [],
+    truncatedAtFanOutCap: Boolean(meta.routeForwardTruncatedAtFanOutCap),
+    parentRouteForward: meta.routeForwardParent && typeof meta.routeForwardParent === 'object'
+      ? { ...meta.routeForwardParent }
+      : null,
+  };
+}
+
 /**
  * Build a router bound to a single GroupCoordinator + loop guard.
  *
@@ -89,6 +122,7 @@ export function createRouter(deps = {}) {
     }
     const meta = coordinator.group.getMeta();
     if (!meta) return { ok: false, error: 'group_not_initialised' };
+    const claimedVpIds = args.inboundEnvelope?._cliTurnContext?.claimedVpIds;
 
     // Roster membership — `all` is reserved broadcast sentinel handled by
     // coordinator; anything else must resolve to a real member so we fail fast
@@ -101,6 +135,9 @@ export function createRouter(deps = {}) {
     if (targetVpId === from) {
       return { ok: false, error: 'self_forward_rejected' };
     }
+    if (targetVpId !== 'all' && claimedVpIds?.has?.(targetVpId)) {
+      return { ok: false, error: 'target_already_claimed' };
+    }
 
     // Build the causedBy chain BEFORE constructing the synthetic user-like
     // message. We don't know the new msgId yet (coordinator mints it on
@@ -108,6 +145,7 @@ export function createRouter(deps = {}) {
     // The guard runs against the *pre-dispatch* chain; that matches the
     // spec's intent ("depth of forwards already taken").
     const chain = extendCausedBy(args.inboundEnvelope || null, null);
+    const routeForwardParent = routeForwardParentFromEnvelope(args.inboundEnvelope);
 
     // Loop guard: for broadcast, use 'all' as the target key so one VP
     // spamming @all still gets throttled even if each cycle hits different
@@ -133,15 +171,11 @@ export function createRouter(deps = {}) {
     // stamp + `synthetic` marker let Coordinator's `selectRespondingVps`
     // still treat this like a routed turn (target VPs need to respond) even
     // though role is now 'assistant'.
-    const injectText = targetVpId === 'all'
-      ? `@all ${text}`
-      : `@${targetVpId} ${text}`;
-
     const report = coordinator.ingest(
       {
         from,                  // real VP id — preserved for provenance
         role: 'assistant',     // VP-authored — persists as assistant turn
-        text: injectText,
+        text,
         taskId: args.taskId ?? null,
         // route_forward is already visible as the source VP's tool action.
         // Persist the synthetic handoff for audit/dispatch, but keep it out
@@ -151,9 +185,11 @@ export function createRouter(deps = {}) {
         meta: {
           synthetic: true,
           injectedBy: 'route_forward',
+          routeForwardTarget: targetVpId,
           senderVpId: from,
           reason: args.reason || null,
           causedBy: chain,
+          ...(routeForwardParent ? { routeForwardParent } : {}),
           sourceThreadId: typeof args.sourceThreadId === 'string' && args.sourceThreadId.trim()
             ? args.sourceThreadId.trim()
             : null,
@@ -162,11 +198,35 @@ export function createRouter(deps = {}) {
       opts,
     );
 
+    // `deliver()` queues its work, so the target envelopes still share this
+    // stored message object when forward() returns. Record the accepted target
+    // set for the active runtime only: it lets a stream Session return one
+    // combined result to the caller after an @all fan-out finishes. The
+    // transient value is deliberately not required for durable replay.
+    if (report?.message?.meta && Array.isArray(report.dispatched)) {
+      report.message.meta.routeForwardExpectedTargets = report.dispatched.slice();
+      report.message.meta.routeForwardDispatchErrors = Array.isArray(report.errors)
+        ? report.errors.slice()
+        : [];
+      report.message.meta.routeForwardTruncatedAtFanOutCap = Boolean(report.truncatedAtFanOutCap);
+    }
+
     // Record AFTER Coordinator accepts. If Coordinator produced zero
     // dispatches (e.g. task.members gate) we still count it as a hit —
     // the forwarder still tried, and the guard's job is to throttle the
     // sender's ability to keep trying.
     guard.record({ sessionId: meta.id, targetVpId: guardKey });
+    if (!Array.isArray(report.dispatched) || report.dispatched.length === 0) {
+      return {
+        ok: false,
+        error: 'no_targets_dispatched',
+        detail: {
+          errors: Array.isArray(report.errors) ? report.errors : [],
+          truncatedAtFanOutCap: Boolean(report.truncatedAtFanOutCap),
+        },
+        report,
+      };
+    }
 
     return {
       ok: true,

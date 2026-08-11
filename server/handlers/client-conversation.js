@@ -8,7 +8,14 @@ import {
   yeaftSessionDb,
   sessionUiMetadataDb,
 } from '../database.js';
-import { agents, pendingFiles, trackUserTurn, webClients } from '../context.js';
+import {
+  agents,
+  deleteYeaftDebugRequest,
+  pendingFiles,
+  registerYeaftDebugRequest,
+  trackUserTurn,
+  webClients,
+} from '../context.js';
 import {
   sendToWebClient, forwardToAgent,
   broadcastAgentList, broadcastSessionCatalog, buildSessionCatalog, buildHiddenSessionCatalog,
@@ -20,6 +27,10 @@ import {
   chatCatalogKey,
   yeaftCatalogKey,
 } from '../session-catalog.js';
+import {
+  agentSupportsYeaftPlugins,
+  YEAFT_PLUGINS_UNSUPPORTED_ERROR,
+} from '../yeaft-plugin-capability.js';
 
 
 function isRetiredCollabSessionId(id) {
@@ -35,6 +46,14 @@ function emptyYeaftToolStats(reason = '') {
   };
   if (reason) payload.notice = reason;
   return payload;
+}
+
+function emptyYeaftPluginCatalog(error = null) {
+  return {
+    type: 'yeaft_plugin_catalog_result',
+    catalog: { tools: [], skills: [], mcpServers: [] },
+    ...(error ? { error } : {}),
+  };
 }
 
 async function sendVpSnapshotError(client, msg, error) {
@@ -413,6 +432,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
             agentName: agent.name,
             workDir: agent.workDir,
             capabilities: agent.capabilities || ['terminal', 'file_editor', 'background_tasks'],
+            ...(agent.capabilityMetadataProvided === true ? { capabilityMetadataProvided: true } : {}),
             version: agent.version || null,
             conversations: filteredConvs,
             slashCommands: agent.slashCommands || [],
@@ -1265,6 +1285,10 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         ...(typeof msg.perfTraceId === 'string' ? { perfTraceId: msg.perfTraceId } : {}),
         ...(Number.isFinite(msg.afterSeq) ? { afterSeq: msg.afterSeq } : {}),
         ...(typeof msg.afterMessageId === 'string' ? { afterMessageId: msg.afterMessageId } : {}),
+        ...(Number.isFinite(msg.maxRows) ? { maxRows: msg.maxRows } : {}),
+        ...(Number.isFinite(msg.maxBytes) ? { maxBytes: msg.maxBytes } : {}),
+        ...(typeof msg.streamId === 'string' ? { streamId: msg.streamId } : {}),
+        ...(Number.isFinite(msg.revision) ? { revision: msg.revision } : {}),
         _requestClientId: clientId,
       };
       if (forwarded.perfTraceId) {
@@ -1281,6 +1305,45 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         });
       }
       await forwardToAgent(histAgentId, forwarded);
+      break;
+    }
+
+    case 'yeaft_fetch_debug_history': {
+      // Debug traces can contain raw prompts, provider payloads, and tool
+      // output. Treat this as a precise Session-owned request instead of the
+      // generic Yeaft relay: require the compound Agent + Session identity and
+      // correlate the response back to the requesting browser tab.
+      const debugAgentId = msg.agentId;
+      const debugSessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
+      const debugRequestId = typeof msg.requestId === 'string' ? msg.requestId : '';
+      if (!debugAgentId || !debugSessionId || !debugRequestId) return;
+      if (!await checkAgentAccess(debugAgentId)) return;
+      if (!CONFIG.skipAuth && !yeaftSessionDb.getForAgent(client.userId, debugAgentId, debugSessionId)) return;
+      const registered = registerYeaftDebugRequest({
+        agentId: debugAgentId,
+        requestId: debugRequestId,
+        sessionId: debugSessionId,
+        clientId,
+        userId: client.userId,
+      });
+      if (!registered) return;
+      try {
+        await forwardToAgent(debugAgentId, {
+          type: 'yeaft_fetch_debug_history',
+          sessionId: debugSessionId,
+          requestId: debugRequestId,
+          requestKind: msg.requestKind === 'detail' ? 'detail' : 'list',
+          limit: typeof msg.limit === 'number' ? msg.limit : 10,
+          dreamLimit: typeof msg.dreamLimit === 'number' ? msg.dreamLimit : 5,
+          indexOnly: msg.indexOnly === true,
+          detailTurnId: typeof msg.detailTurnId === 'string' ? msg.detailTurnId : null,
+          search: typeof msg.search === 'string' ? msg.search.slice(0, 500) : '',
+          _requestClientId: clientId,
+        });
+      } catch (err) {
+        deleteYeaftDebugRequest({ agentId: debugAgentId, requestId: debugRequestId, clientId });
+        throw err;
+      }
       break;
     }
 
@@ -1578,6 +1641,15 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           }
           return true;
         }
+        if (relayType === 'yeaft_plugin_catalog'
+            && !agentSupportsYeaftPlugins(agents.get(relayAgentId))) {
+          await sendToWebClient(client, {
+            ...emptyYeaftPluginCatalog(YEAFT_PLUGINS_UNSUPPORTED_ERROR),
+            agentId: relayAgentId,
+            requestId: msg.requestId || null,
+          });
+          return true;
+        }
         const relayAgent = agents.get(relayAgentId);
         if (!relayAgent || relayAgent.ws?.readyState !== 1) {
           if (relayType === 'yeaft_fetch_tool_stats') {
@@ -1601,6 +1673,10 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         // router is the authoritative consumer of the payload shape.
         const { agentId: _discard, ...rest } = msg;
         rest.type = relayType;
+        // Direct catalog replies are request-scoped. Carry the browser client
+        // identity through the Agent so another owner tab cannot accidentally
+        // consume a response for this picker request.
+        if (relayType === 'yeaft_plugin_catalog') rest._requestClientId = clientId;
         if (rest.type === 'yeaft_session_send' || rest.type === 'yeaft_session_chat') {
           trackUserTurn(client.userId, Buffer.byteLength(JSON.stringify(msg)));
           const sessionId = typeof rest.sessionId === 'string' ? rest.sessionId.trim() : '';

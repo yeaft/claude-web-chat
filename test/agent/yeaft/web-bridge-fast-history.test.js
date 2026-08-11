@@ -29,11 +29,17 @@ const {
   handleYeaftLoadHistoryOutline,
   handleYeaftLoadMoreHistory,
   handleYeaftSearchHistory,
+  handleYeaftArchiveSession,
+  handleYeaftRenameSession,
   handleYeaftSessionAddMember,
   handleYeaftSessionRemoveMember,
   handleYeaftSessionSetDefaultVp,
+  handleYeaftUpdateSession,
   __testHandleEngineEvent,
+  __testGetRegisteredThreadIds,
   __testGroupHistory,
+  __testResetVpState,
+  __testSeedAbortController,
   __testSetSession,
   __testHooks,
 } = await import('../../../agent/yeaft/web-bridge.js');
@@ -166,6 +172,45 @@ describe('Yeaft load-history first paint', () => {
     }));
     sent.length = 0;
 
+    const policyError = Object.assign(new Error(
+      'The LLM provider blocked this request under its content-safety policy. Continue and avoid repeating sensitive payloads or credential-like examples.',
+    ), {
+      name: 'LLMPolicyError',
+      statusCode: 422,
+      reasonCode: 'content_policy_denied',
+    });
+    __testHandleEngineEvent({
+      type: 'error',
+      error: policyError,
+      retryable: false,
+      reason: 'content_policy_denied',
+      retryExhausted: true,
+      retryAttempts: 1,
+      maxRetries: 1,
+    }, hctx);
+    expect(sent).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'error',
+        statusCode: 422,
+        reasonCode: 'content_policy_denied',
+        retryable: false,
+        retryExhausted: true,
+        message: expect.stringContaining('avoid repeating sensitive payloads'),
+      }),
+    }));
+    expect(sent).toContainEqual(expect.objectContaining({
+      data: expect.objectContaining({
+        type: 'assistant',
+        message: expect.objectContaining({
+          content: [{
+            type: 'text',
+            text: expect.stringContaining('Provider blocked this request for content-safety reasons'),
+          }],
+        }),
+      }),
+    }));
+    sent.length = 0;
+
     const rows = [
       { id: 'm0001', role: 'user', content: 'visible q', sessionId: 'session-fast', threadId: 'main' },
       { id: 'm0002', role: 'user', content: '<task-result id="task_1" kind="shell" status="succeeded">\nPASS\n</task-result>', sessionId: 'session-fast', threadId: 'main' },
@@ -196,7 +241,7 @@ describe('Yeaft load-history first paint', () => {
     expect(projected[0]).toMatchObject({ id: 'm0002', quote });
   });
 
-  it('projects the latest TodoWrite snapshot without counting it as a generic tool summary', () => {
+  it('projects the latest TodoWrite snapshot with full tool actions', () => {
     const projected = __testHooks.projectVisibleHistoryChunkMessages([{
       id: 'm0003',
       role: 'assistant',
@@ -212,7 +257,7 @@ describe('Yeaft load-history first paint', () => {
 
     expect(projected[0]).toMatchObject({
       todos: [{ content: 'New', status: 'completed' }],
-      toolSummaryCount: 1,
+      toolCalls: [{ id: 'bash', name: 'Bash', input: { command: 'true' } }],
       responseKind: 'progress',
     });
 
@@ -338,6 +383,65 @@ describe('Yeaft load-history first paint', () => {
     }
   });
 
+  it('keeps live debug events lightweight and leaves full detail in the persisted trace', () => {
+    sent.length = 0;
+    const handlerCtx = {
+      sessionId: 'session-fast',
+      vpId: 'vp-linus',
+      turnId: 'turn-large-debug',
+      threadId: 'main',
+      resetQueryTimer: vi.fn(),
+    };
+    const large = 'x'.repeat(1024 * 1024);
+
+    __testHandleEngineEvent({
+      type: 'loop',
+      turnId: 'turn-large-debug',
+      loopNumber: 7,
+      model: 'provider/model',
+      systemPrompt: large,
+      messages: [{ role: 'user', content: large }],
+      response: large,
+      toolCalls: [{ id: 'call-1', name: 'Bash', input: { command: large } }],
+      usage: { totalTokens: 42 },
+      latencyMs: 12,
+      ttfbMs: 3,
+      stopReason: 'tool_use',
+      at: 123,
+      rawRequest: { body: large },
+      rawResponse: large,
+    }, handlerCtx);
+
+    __testHandleEngineEvent({
+      type: 'tool_exec',
+      turnId: 'turn-large-debug',
+      loopNumber: 7,
+      callId: 'call-1',
+      name: 'Bash',
+      durationMs: 8,
+      isError: false,
+      toolOutput: large,
+    }, handlerCtx);
+
+    const loop = sent.find(message => message.event?.type === 'loop')?.event;
+    expect(loop).toMatchObject({
+      type: 'loop',
+      turnId: 'turn-large-debug',
+      loopNumber: 7,
+      model: 'provider/model',
+      usage: { totalTokens: 42 },
+    });
+    expect(loop).not.toHaveProperty('systemPrompt');
+    expect(loop).not.toHaveProperty('messages');
+    expect(loop).not.toHaveProperty('rawRequest');
+    expect(loop).not.toHaveProperty('rawResponse');
+    expect(loop).not.toHaveProperty('response');
+    expect(loop).not.toHaveProperty('toolCalls');
+    const tool = sent.find(message => message.event?.type === 'tool_exec')?.event;
+    expect(tool).not.toHaveProperty('toolOutput');
+    expect(JSON.stringify(sent).length).toBeLessThan(4096);
+  });
+
   it('preserves TodoWrite through the real store page and history wire projection', () => {
     const dir = mkdtempSync(join(tmpdir(), 'yeaft-todo-history-'));
     try {
@@ -361,12 +465,12 @@ describe('Yeaft load-history first paint', () => {
 
       expect(page.messages[1]).toMatchObject({
         todos: [{ content: 'Verify', status: 'completed' }],
-        toolSummaryCount: 1,
+        toolCalls: [{ id: 'bash', name: 'Bash', input: { command: 'true' } }],
         responseKind: 'result',
       });
       expect(projected[1]).toMatchObject({
         todos: [{ content: 'Verify', status: 'completed' }],
-        toolSummaryCount: 1,
+        toolCalls: [{ id: 'bash', name: 'Bash', input: { command: 'true' } }],
         responseKind: 'result',
       });
 
@@ -438,7 +542,9 @@ describe('Yeaft load-history first paint', () => {
         }],
       }),
     ]);
-    expect(projected[0].toolSummaryCount).toBeUndefined();
+    expect(projected[0].toolCalls).toEqual([
+      { id: 'ask_1', name: 'AskUser', input: { question: 'Continue?', options: ['Yes', 'No'] } },
+    ]);
   });
 
   historyScenario('keeps outline totals opt-in and traces bounded outline/search scans', async () => {
@@ -587,7 +693,10 @@ describe('Yeaft load-history first paint', () => {
         hasMore: true,
         messages: [
           { role: 'user', content: 'new q', sessionId: 'session-fast' },
-          { role: 'assistant', content: '', sessionId: 'session-fast', speakerVpId: 'vp-linus', toolSummaryCount: 1 },
+          {
+            role: 'assistant', content: '', sessionId: 'session-fast', speakerVpId: 'vp-linus',
+            toolCalls: [{ id: 'tool-1', name: 'Bash', input: { command: 'echo ok' } }],
+          },
         ],
       });
       const historyDone = sent.find(m => m.event?.type === 'history_loaded');
@@ -965,7 +1074,7 @@ describe('Yeaft load-history first paint', () => {
             content: 'I will use a tool',
             ts: '2026-06-20T01:00:02.000Z',
             speakerVpId: 'vp-linus',
-            toolSummaryCount: 1,
+            toolCalls: [{ id: 'toolu_1', name: 'Bash', input: { command: 'echo ok' } }],
           },
         ],
       });
@@ -1149,7 +1258,7 @@ describe('Yeaft load-history first paint', () => {
             content: 'ready delta assistant',
             ts: '2026-06-20T02:00:02.000Z',
             speakerVpId: 'vp-martin',
-            toolSummaryCount: 1,
+            toolCalls: [{ id: 'toolu_2', name: 'WebSearch', input: { query: 'yeaft' } }],
           },
         ],
       });
@@ -1197,6 +1306,67 @@ describe('Yeaft load-history first paint', () => {
       }
     } finally {
       __testSetSession(null);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps in-flight VP work alive across Session metadata updates', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-metadata-runtime-'));
+    try {
+      ctx.CONFIG = { yeaftDir: dir };
+      createSession(join(dir, 'sessions'), {
+        id: 'session-live',
+        name: 'Live',
+        announcement: 'before',
+        roster: ['linus'],
+        defaultVpId: 'linus',
+      }).close();
+
+      const cases = [
+        [handleYeaftRenameSession, { sessionId: 'session-live', name: 'Renamed' }],
+        [handleYeaftUpdateSession, {
+          sessionId: 'session-live',
+          patch: { announcement: 'after' },
+        }],
+        [handleYeaftSessionAddMember, { sessionId: 'session-live', vpId: 'martin' }],
+        [handleYeaftSessionSetDefaultVp, { sessionId: 'session-live', vpId: 'martin' }],
+      ];
+
+      for (const [index, [handler, payload]] of cases.entries()) {
+        const ctrl = new AbortController();
+        const threadId = `metadata-${index}`;
+        __testSeedAbortController(threadId, ctrl, 'session-live', 'linus');
+        handler({ ...payload, requestId: `request-${index}` });
+        expect(ctrl.signal.aborted).toBe(false);
+        expect(__testGetRegisteredThreadIds()).toContain(threadId);
+      }
+    } finally {
+      await __testResetVpState();
+      ctx.CONFIG = null;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still aborts in-flight VP work when the Session is archived', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-archive-runtime-'));
+    try {
+      ctx.CONFIG = { yeaftDir: dir };
+      createSession(join(dir, 'sessions'), {
+        id: 'session-archive',
+        name: 'Archive',
+        roster: ['linus'],
+        defaultVpId: 'linus',
+      }).close();
+      const ctrl = new AbortController();
+      __testSeedAbortController('archive-thread', ctrl, 'session-archive', 'linus');
+
+      handleYeaftArchiveSession({ sessionId: 'session-archive', requestId: 'request-archive' });
+
+      expect(ctrl.signal.aborted).toBe(true);
+      expect(__testGetRegisteredThreadIds()).not.toContain('archive-thread');
+    } finally {
+      await __testResetVpState();
+      ctx.CONFIG = null;
       rmSync(dir, { recursive: true, force: true });
     }
   });

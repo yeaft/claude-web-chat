@@ -62,28 +62,122 @@ function terminalRoutingFields(source) {
   return {
     ...(source?._requestUserId ? { _requestUserId: source._requestUserId } : {}),
     ...(source?._requestClientId ? { _requestClientId: source._requestClientId } : {}),
+    ...(source?._workbenchRequestId ? { _workbenchRequestId: source._workbenchRequestId } : {}),
+    ...(source?.workbenchRouteKey ? { workbenchRouteKey: source.workbenchRouteKey } : {}),
+    ...(source?.workbenchWorkspaceGeneration
+      ? { workbenchWorkspaceGeneration: source.workbenchWorkspaceGeneration }
+      : {}),
   };
+}
+
+function terminalOwner(source) {
+  return {
+    conversationId: source?.conversationId || '',
+    workbenchRouteKey: source?.workbenchRouteKey || '',
+    workbenchWorkspaceGeneration: source?.workbenchWorkspaceGeneration || '',
+  };
+}
+
+function terminalOwnerMatches(term, msg) {
+  if (!term || !msg) return false;
+  const owner = terminalOwner(term);
+  const request = terminalOwner(msg);
+  if (owner.workbenchRouteKey) {
+    return request.workbenchRouteKey === owner.workbenchRouteKey
+      && request.workbenchWorkspaceGeneration === owner.workbenchWorkspaceGeneration
+      && request.conversationId === owner.conversationId;
+  }
+  return !request.workbenchRouteKey
+    && !request.workbenchWorkspaceGeneration
+    && request.conversationId === owner.conversationId;
+}
+
+function rejectTerminalOwnerMismatch(msg, terminalId) {
+  ctx.sendToServer({
+    type: 'terminal_error',
+    conversationId: msg?.conversationId,
+    terminalId,
+    message: 'Terminal owner mismatch',
+    ...terminalRoutingFields(msg),
+  });
+}
+
+/**
+ * Fail closed when the Agent transport loses its Server-side owner state.
+ * Pending creates are cancelled before their backend resolves; established
+ * PTYs are removed from the owner map before kill so synchronous or delayed
+ * exit callbacks cannot affect a replacement terminal with the same id.
+ * No wire event is emitted because the transport is unavailable.
+ */
+export function cleanupTerminalsForDisconnect() {
+  const terminals = [...ctx.terminals.entries()];
+  if (terminals.length === 0) return 0;
+
+  for (const [, term] of terminals) {
+    term.cancelled = true;
+    if (term.timer) {
+      clearTimeout(term.timer);
+      term.timer = null;
+    }
+  }
+  ctx.terminals.clear();
+
+  for (const [, term] of terminals) {
+    if (!term.pty) continue;
+    try { term.pty.kill(); } catch {}
+  }
+  return terminals.length;
 }
 
 export async function handleTerminalCreate(msg) {
   const { conversationId, cols, rows } = msg;
   const terminalId = msg.terminalId || conversationId;
   const conv = ctx.conversations.get(conversationId);
-  const workDir = conv?.workDir || ctx.CONFIG.workDir;
+  const routeScoped = !!msg.workbenchRouteKey;
+  if (routeScoped && !msg.workbenchWorkspaceGeneration) {
+    rejectTerminalOwnerMismatch(msg, terminalId);
+    return;
+  }
+  const workDir = routeScoped
+    ? (msg.workDir || ctx.CONFIG.workDir)
+    : (conv?.workDir || ctx.CONFIG.workDir);
   const routingFields = terminalRoutingFields(msg);
 
-  // 如果已存在终端，先关闭
+  // A terminal id is an object capability. It may only be replaced by its
+  // immutable owner, never by another Session that guessed the id.
   if (ctx.terminals.has(terminalId)) {
     const existing = ctx.terminals.get(terminalId);
+    if (!terminalOwnerMatches(existing, msg)) {
+      rejectTerminalOwnerMismatch(msg, terminalId);
+      return;
+    }
+    existing.cancelled = true;
+    if (existing.timer) {
+      clearTimeout(existing.timer);
+      existing.timer = null;
+    }
+    ctx.terminals.delete(terminalId);
     if (existing.pty) {
       try { existing.pty.kill(); } catch {}
     }
-    if (existing.timer) clearTimeout(existing.timer);
-    ctx.terminals.delete(terminalId);
   }
 
+  const pendingCreation = {
+    pty: null,
+    pending: true,
+    cancelled: false,
+    conversationId,
+    cols: cols || 80,
+    rows: rows || 24,
+    ...terminalOwner(msg),
+    ...routingFields,
+  };
+  ctx.terminals.set(terminalId, pendingCreation);
+
   const pty = await loadNodePty();
+  if (ctx.terminals.get(terminalId) !== pendingCreation || pendingCreation.cancelled) return;
   if (!pty) {
+    ctx.terminals.delete(terminalId);
     ctx.sendToServer({
       type: 'terminal_error',
       conversationId,
@@ -120,40 +214,65 @@ export async function handleTerminalCreate(msg) {
       env: terminalEnv
     });
 
-    // 输出缓冲 - 每 16ms 批量发送
-    let buffer = '';
-    let timer = null;
+    if (ctx.terminals.get(terminalId) !== pendingCreation || pendingCreation.cancelled) {
+      try { ptyProcess.kill(); } catch {}
+      return;
+    }
 
+    const terminalRecord = {
+      pty: ptyProcess,
+      cancelled: false,
+      conversationId,
+      cols: cols || 80,
+      rows: rows || 24,
+      buffer: '',
+      timer: null,
+      ...terminalOwner(msg),
+      ...routingFields,
+    };
+    ctx.terminals.set(terminalId, terminalRecord);
+
+    // Output callbacks are fenced to this exact record. A disconnect or
+    // same-id replacement removes it before kill, so stale data/exit events
+    // cannot leak or delete the replacement.
     ptyProcess.onData(data => {
-      buffer += data;
-      if (!timer) {
-        timer = setTimeout(() => {
+      if (ctx.terminals.get(terminalId) !== terminalRecord || terminalRecord.cancelled) return;
+      terminalRecord.buffer += data;
+      if (!terminalRecord.timer) {
+        terminalRecord.timer = setTimeout(() => {
+          terminalRecord.timer = null;
+          if (ctx.terminals.get(terminalId) !== terminalRecord || terminalRecord.cancelled) {
+            terminalRecord.buffer = '';
+            return;
+          }
           ctx.sendToServer({
             type: 'terminal_output',
             conversationId,
             terminalId,
-            data: buffer,
+            data: terminalRecord.buffer,
             ...routingFields,
           });
-          buffer = '';
-          timer = null;
+          terminalRecord.buffer = '';
         }, 16);
       }
     });
 
     ptyProcess.onExit(({ exitCode }) => {
-      // 发送剩余缓冲
-      if (buffer) {
+      if (ctx.terminals.get(terminalId) !== terminalRecord || terminalRecord.cancelled) return;
+      if (terminalRecord.buffer) {
         ctx.sendToServer({
           type: 'terminal_output',
           conversationId,
           terminalId,
-          data: buffer,
+          data: terminalRecord.buffer,
           ...routingFields,
         });
-        buffer = '';
+        terminalRecord.buffer = '';
       }
-      if (timer) clearTimeout(timer);
+      if (terminalRecord.timer) {
+        clearTimeout(terminalRecord.timer);
+        terminalRecord.timer = null;
+      }
 
       console.log(`[PTY] Process exited for ${terminalId}, code: ${exitCode}`);
       ctx.terminals.delete(terminalId);
@@ -165,16 +284,6 @@ export async function handleTerminalCreate(msg) {
       });
     });
 
-    ctx.terminals.set(terminalId, {
-      pty: ptyProcess,
-      conversationId,
-      cols: cols || 80,
-      rows: rows || 24,
-      buffer: '',
-      timer: null,
-      ...routingFields,
-    });
-
     console.log(`[PTY] Created terminal ${terminalId} for ${conversationId} in ${workDir}`);
     ctx.sendToServer({
       type: 'terminal_created',
@@ -184,6 +293,7 @@ export async function handleTerminalCreate(msg) {
       ...routingFields,
     });
   } catch (e) {
+    if (ctx.terminals.get(terminalId) === pendingCreation) ctx.terminals.delete(terminalId);
     console.error(`[PTY] Failed to create terminal:`, e.message);
     ctx.sendToServer({
       type: 'terminal_error',
@@ -199,6 +309,10 @@ export function handleTerminalInput(msg) {
   const terminalId = msg.terminalId || msg.conversationId;
   const term = ctx.terminals.get(terminalId);
   if (term?.pty) {
+    if (!terminalOwnerMatches(term, msg)) {
+      rejectTerminalOwnerMismatch(msg, terminalId);
+      return;
+    }
     try {
       term.pty.write(msg.data);
     } catch (e) {
@@ -212,6 +326,10 @@ export function handleTerminalResize(msg) {
   const { cols, rows } = msg;
   const term = ctx.terminals.get(terminalId);
   if (term?.pty && cols > 0 && rows > 0) {
+    if (!terminalOwnerMatches(term, msg)) {
+      rejectTerminalOwnerMismatch(msg, terminalId);
+      return;
+    }
     try {
       term.pty.resize(cols, rows);
       term.cols = cols;
@@ -226,11 +344,30 @@ export function handleTerminalClose(msg) {
   const terminalId = msg.terminalId || msg.conversationId;
   const term = ctx.terminals.get(terminalId);
   if (term) {
+    if (!terminalOwnerMatches(term, msg)) {
+      rejectTerminalOwnerMismatch(msg, terminalId);
+      return;
+    }
+    if (term.pending && !term.pty) {
+      term.cancelled = true;
+      ctx.terminals.delete(terminalId);
+      ctx.sendToServer({
+        type: 'terminal_closed',
+        conversationId: term.conversationId || msg.conversationId,
+        terminalId,
+        ...terminalRoutingFields(term),
+      });
+      return;
+    }
+    term.cancelled = true;
+    if (term.timer) {
+      clearTimeout(term.timer);
+      term.timer = null;
+    }
+    ctx.terminals.delete(terminalId);
     if (term.pty) {
       try { term.pty.kill(); } catch {}
     }
-    if (term.timer) clearTimeout(term.timer);
-    ctx.terminals.delete(terminalId);
     console.log(`[PTY] Closed terminal ${terminalId}`);
     ctx.sendToServer({
       type: 'terminal_closed',

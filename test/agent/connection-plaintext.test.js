@@ -1,8 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { MockWebSocket, WS_OPEN } from '../helpers/mockWs.js';
+import { join, resolve } from 'node:path';
+import { MockWebSocket, WS_CLOSED, WS_OPEN } from '../helpers/mockWs.js';
 import {
   DEFAULT_UPGRADE_REGISTRY,
   buildUpgradeInstallArgs,
@@ -18,16 +20,28 @@ import {
 } from '../../agent/windows-upgrade-runner.js';
 import ctx from '../../agent/context.js';
 import { connect, resetConnectionTransport, sendToServer } from '../../agent/connection/index.js';
-import { parseLocalArgs } from '../../agent/local-run.js';
+import { parseLocalArgs, launchLocalInBackground, runLocal } from '../../agent/local-run.js';
+import {
+  generateLocalSystemdUnit,
+  getLocalServiceConfigPath,
+  parseLocalServiceArgs,
+  readLocalServiceConfig,
+  writeLocalServiceConfig,
+} from '../../agent/local-service.js';
 import {
   applyAgentIdentityToEnv,
   getDefaultAgentName,
+  getDefaultYeaftDir,
   getInstanceIdFromArgs,
   parseServiceArgs,
   resolveDisplayName,
+  resolveYeaftDir,
   resolveRuntimeIdentity,
   resolveServiceInstanceId,
+  shouldLoadLegacyLocalConfig,
 } from '../../agent/service/config.js';
+import { shouldLoadLegacyLocalConfig as shouldLoadLegacyLocalConfigFromService } from '../../agent/service.js';
+import { handleLocalCommand } from '../../agent/cli.js';
 import { applyRegisteredTransport } from '../../agent/connection/message-router.js';
 import { generateSessionKey, isEncrypted } from '../../agent/encryption.js';
 
@@ -73,8 +87,103 @@ describe('agent ctx defaults and upgrade contract', () => {
     expect(getInstanceIdFromArgs([], {})).toBe(computerName);
     expect(getInstanceIdFromArgs([], {}, { management: true })).toBe('default');
     expect(getInstanceIdFromArgs([], { YEAFT_AGENT_INSTANCE: 'named' }, { management: true })).toBe('named');
-    expect(parseLocalArgs([], {})).toEqual({ name: computerName, port: 6868 });
-    expect(parseLocalArgs([], { AGENT_NAME: 'env-name' })).toEqual({ name: 'env-name', port: 6868 });
+    expect(parseLocalArgs([], {})).toEqual({
+      name: computerName, port: 6868, background: false, yeaftDir: getDefaultYeaftDir(computerName),
+    });
+    expect(parseLocalArgs([], { AGENT_NAME: 'env-name' })).toEqual({
+      name: 'env-name', port: 6868, background: false, yeaftDir: getDefaultYeaftDir('env-name'),
+    });
+    expect(parseLocalArgs(['--name', 'local-ui', '--port', '7777', '--background'], {})).toEqual({
+      name: 'local-ui', port: 7777, background: true, yeaftDir: getDefaultYeaftDir('local-ui'),
+    });
+    expect(parseLocalArgs(['-d'], { AGENT_NAME: 'local-ui' })).toEqual({
+      name: 'local-ui', port: 6868, background: true, yeaftDir: getDefaultYeaftDir('local-ui'),
+    });
+    expect(parseLocalArgs(['--instance', 'legacy-local'], {})).toEqual({
+      name: 'legacy-local', port: 6868, background: false, yeaftDir: getDefaultYeaftDir('legacy-local'),
+    });
+    expect(parseLocalArgs(['--instance', 'legacy-local', '--name', 'current-local'], {})).toEqual({
+      name: 'current-local', port: 6868, background: false, yeaftDir: getDefaultYeaftDir('current-local'),
+    });
+    expect(parseLocalArgs(['--yeaft-dir', '/tmp/local-data'], { YEAFT_DIR: '/tmp/env-data' })).toEqual({
+      name: computerName, port: 6868, background: false, yeaftDir: '/tmp/local-data',
+    });
+    expect(parseLocalServiceArgs(['--name', 'local-ui', '--port', '7777'], {})).toEqual({
+      name: 'local-ui', port: 7777, yeaftDir: getDefaultYeaftDir('local-ui'),
+    });
+    expect(parseLocalServiceArgs(['--instance', 'legacy-local'], {})).toEqual({
+      name: 'legacy-local', port: 6868, yeaftDir: getDefaultYeaftDir('legacy-local'),
+    });
+    expect(parseLocalServiceArgs(['--instance', 'legacy-local', '--name', 'current-local'], {})).toEqual({
+      name: 'current-local', port: 6868, yeaftDir: getDefaultYeaftDir('current-local'),
+    });
+    expect(parseLocalServiceArgs(['--yeaft-dir', '/tmp/local-data'], { YEAFT_DIR: '/tmp/env-data' })).toEqual({
+      name: computerName, port: 6868, yeaftDir: '/tmp/local-data',
+    });
+    expect(() => parseLocalServiceArgs([
+      '--name', 'local-ui', '--yeaft-dir', '/tmp/line\nbreak',
+    ], {})).toThrow('Yeaft data directory cannot contain control characters');
+    expect(() => parseLocalServiceArgs([
+      '--name', 'local-ui',
+    ], { YEAFT_DIR: '/tmp/carriage\rreturn' })).toThrow('Yeaft data directory cannot contain control characters');
+    expect(() => parseLocalServiceArgs([
+      '--name', 'local-ui',
+    ], {}, {
+      existing: { name: 'local-ui', port: 6868, yeaftDir: '/tmp/legacy\0root' },
+    })).toThrow('Yeaft data directory cannot contain control characters');
+    expect(resolveYeaftDir([], { YEAFT_DIR: '/tmp/env-data' }, 'local-ui')).toBe('/tmp/env-data');
+    expect(resolveYeaftDir(['--yeaft-dir', '/tmp/flag-data'], { YEAFT_DIR: '/tmp/env-data' }, 'local-ui')).toBe('/tmp/flag-data');
+    expect(() => parseLocalServiceArgs(['--background'], {})).toThrow('Unknown local service option');
+    expect(() => parseLocalArgs(['--instance'], {})).toThrow('--instance requires a value');
+    expect(() => parseLocalServiceArgs(['--instance'], {})).toThrow('--instance requires a value');
+    expect(() => parseLocalArgs(['--yeaft-dir'], {})).toThrow('--yeaft-dir requires a value');
+    expect(() => parseLocalServiceArgs(['--yeaft-dir'], {})).toThrow('--yeaft-dir requires a value');
+
+    const detached = { pid: 4321, unref: vi.fn() };
+    const spawnDetached = vi.fn(() => detached);
+    await expect(launchLocalInBackground(['--name', 'local-ui', '--port', '7777', '--background'], {
+      spawn: spawnDetached,
+      cliPath: '/opt/yeaft/cli.js',
+      quiet: true,
+    })).resolves.toEqual({ url: 'http://127.0.0.1:7777', pid: 4321, background: true });
+    expect(spawnDetached).toHaveBeenCalledWith(process.execPath, [
+      '/opt/yeaft/cli.js', 'local', '--name', 'local-ui', '--port', '7777',
+    ], expect.objectContaining({ detached: true, stdio: 'ignore', windowsHide: true }));
+    expect(detached.unref).toHaveBeenCalledTimes(1);
+
+    const localUnit = generateLocalSystemdUnit({ name: 'local-ui', port: 7777 }, {
+      cliPath: '/opt/yeaft/cli.js',
+      workingDirectory: '/workspace/yeaft',
+    });
+    const customRootUnit = generateLocalSystemdUnit({
+      name: 'local-ui', port: 7777, yeaftDir: '/tmp/local-data',
+    }, {
+      cliPath: '/opt/yeaft/cli.js',
+      workingDirectory: '/workspace/yeaft',
+    });
+    const percentRootUnit = generateLocalSystemdUnit({
+      name: 'local-ui', port: 7777, yeaftDir: '/tmp/contains%q-root',
+    }, {
+      cliPath: '/opt/yeaft/cli.js',
+      workingDirectory: '/workspace/yeaft',
+    });
+    expect(() => generateLocalSystemdUnit({
+      name: 'local-ui', port: 7777, yeaftDir: '/tmp/line\nbreak',
+    }, {
+      cliPath: '/opt/yeaft/cli.js',
+      workingDirectory: '/workspace/yeaft',
+    })).toThrow('systemd unit value cannot contain control characters');
+    expect(localUnit).toContain('Description=Yeaft Local Web UI (local-ui)');
+    expect(localUnit).toContain('ExecStart=');
+    expect(localUnit).toContain("'/opt/yeaft/cli.js' local --name 'local-ui' --port 7777");
+    expect(localUnit).toContain('WorkingDirectory=/workspace/yeaft');
+    expect(localUnit).toContain('Environment="YEAFT_LOCAL_RUN=true"');
+    expect(localUnit).toContain(`Environment="YEAFT_DIR=${getDefaultYeaftDir('local-ui')}"`);
+    expect(customRootUnit).toContain('Environment="YEAFT_DIR=/tmp/local-data"');
+    expect(customRootUnit).not.toContain(`Environment="YEAFT_DIR=${getDefaultYeaftDir('local-ui')}"`);
+    expect(percentRootUnit).toContain('Environment="YEAFT_DIR=/tmp/contains%%q-root"');
+    expect(percentRootUnit).not.toContain('Environment="YEAFT_DIR=/tmp/contains%q-root"');
+    expect(localUnit).toContain('WantedBy=default.target');
 
     const env = {};
     expect(applyAgentIdentityToEnv([], env)).toBeNull();
@@ -91,6 +200,11 @@ describe('agent ctx defaults and upgrade contract', () => {
       agentName: 'Display Name',
       instanceId: 'saved-instance',
     });
+    expect(shouldLoadLegacyLocalConfig({})).toBe(true);
+    expect(shouldLoadLegacyLocalConfig({ YEAFT_AGENT_INSTANCE: '' })).toBe(true);
+    expect(shouldLoadLegacyLocalConfig({ YEAFT_AGENT_INSTANCE: 'server' })).toBe(false);
+    expect(shouldLoadLegacyLocalConfig({ YEAFT_AGENT_INSTANCE: 'default' })).toBe(false);
+    expect(shouldLoadLegacyLocalConfigFromService).toBe(shouldLoadLegacyLocalConfig);
     expect(resolveServiceInstanceId([], { YEAFT_AGENT_INSTANCE: 'named' }, { management: true })).toBe('named');
     expect(() => resolveServiceInstanceId([], { YEAFT_AGENT_INSTANCE: 'bad name' }, { management: true })).toThrow('Instance id');
     expect(applyAgentIdentityToEnv(['--instance', 'legacy', '--name', 'explicit-name'], env)).toBe('explicit-name');
@@ -186,6 +300,136 @@ describe('agent ctx defaults and upgrade contract', () => {
 
   });
 
+  it('keeps local instance data roots stable across foreground and systemd mode', async () => {
+    const probe = createServer();
+    await new Promise((resolve, reject) => {
+      probe.once('error', reject);
+      probe.listen(0, '127.0.0.1', resolve);
+    });
+    const { port } = probe.address();
+    await new Promise((resolve, reject) => probe.close(error => error ? reject(error) : resolve()));
+
+    const children = [];
+    const spawnLocal = vi.fn(() => {
+      const child = new EventEmitter();
+      child.exitCode = null;
+      child.killed = false;
+      child.kill = () => {
+        if (child.exitCode !== null) return false;
+        child.killed = true;
+        child.exitCode = 0;
+        queueMicrotask(() => child.emit('exit', 0));
+        return true;
+      };
+      children.push(child);
+      return child;
+    });
+    const previousYeaftDir = process.env.YEAFT_DIR;
+    const previousAgentInstance = process.env.YEAFT_AGENT_INSTANCE;
+    const previousAgentName = process.env.AGENT_NAME;
+    delete process.env.YEAFT_DIR;
+    delete process.env.YEAFT_AGENT_INSTANCE;
+    delete process.env.AGENT_NAME;
+
+    let foreground;
+    let overrideForeground;
+    try {
+      foreground = await runLocal(['--name', 'default', '--port', String(port)], {
+        exit: false,
+        spawn: spawnLocal,
+        waitForServer: async () => {},
+        waitForAgent: async () => {},
+      });
+      const foregroundYeaftDir = spawnLocal.mock.calls[1][2].env.YEAFT_DIR;
+      const localUnit = generateLocalSystemdUnit({ name: 'default', port }, {
+        cliPath: '/opt/yeaft/cli.js',
+        workingDirectory: '/workspace/yeaft',
+      });
+      const serviceYeaftDir = localUnit.match(/^Environment="YEAFT_DIR=(.+)"$/m)?.[1];
+
+      const overrideRoot = '/tmp/yeaft-local-transition';
+      overrideForeground = await runLocal(['--name', 'default', '--port', String(port), '--yeaft-dir', overrideRoot], {
+        exit: false,
+        spawn: spawnLocal,
+        waitForServer: async () => {},
+        waitForAgent: async () => {},
+      });
+      const overrideForegroundYeaftDir = spawnLocal.mock.calls[3][2].env.YEAFT_DIR;
+      const overrideUnit = generateLocalSystemdUnit({
+        name: 'default', port, yeaftDir: parseLocalServiceArgs(['--name', 'default', '--port', String(port), '--yeaft-dir', overrideRoot], {}).yeaftDir,
+      }, {
+        cliPath: '/opt/yeaft/cli.js',
+        workingDirectory: '/workspace/yeaft',
+      });
+      const overrideServiceYeaftDir = overrideUnit.match(/^Environment="YEAFT_DIR=(.+)"$/m)?.[1];
+
+      expect(children).toHaveLength(4);
+      expect(foregroundYeaftDir).toBe(getDefaultYeaftDir('default'));
+      expect(serviceYeaftDir).toBe(foregroundYeaftDir);
+      expect(overrideForegroundYeaftDir).toBe(overrideRoot);
+      expect(overrideServiceYeaftDir).toBe(overrideForegroundYeaftDir);
+    } finally {
+      if (overrideForeground) await overrideForeground.stop();
+      if (foreground) await foreground.stop();
+      if (previousYeaftDir === undefined) delete process.env.YEAFT_DIR;
+      else process.env.YEAFT_DIR = previousYeaftDir;
+      if (previousAgentInstance === undefined) delete process.env.YEAFT_AGENT_INSTANCE;
+      else process.env.YEAFT_AGENT_INSTANCE = previousAgentInstance;
+      if (previousAgentName === undefined) delete process.env.AGENT_NAME;
+      else process.env.AGENT_NAME = previousAgentName;
+    }
+  });
+
+  it('persists the resolved local service data-root override across reinstall', () => {
+    const previousHome = process.env.HOME;
+    const temporaryHome = mkdtempSync(join(tmpdir(), 'yeaft-local-service-'));
+    process.env.HOME = temporaryHome;
+    try {
+      const installed = parseLocalServiceArgs(['--name', 'default', '--yeaft-dir', '/tmp/yeaft-persisted-root'], {});
+      writeLocalServiceConfig(installed);
+
+      const configPath = getLocalServiceConfigPath('default');
+      const restored = readLocalServiceConfig('default');
+      const reinstalled = parseLocalServiceArgs(['--name', 'default', '--port', '7777'], {}, { existing: restored });
+      expect(existsSync(configPath)).toBe(true);
+      expect(restored).toEqual(installed);
+      expect(reinstalled).toEqual({
+        name: 'default', port: 7777, yeaftDir: '/tmp/yeaft-persisted-root',
+      });
+      expect(generateLocalSystemdUnit(reinstalled, {
+        cliPath: '/opt/yeaft/cli.js',
+        workingDirectory: '/workspace/yeaft',
+      })).toContain('Environment="YEAFT_DIR=/tmp/yeaft-persisted-root"');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      rmSync(temporaryHome, { recursive: true, force: true });
+    }
+  });
+
+  it('warns once and routes deprecated local --instance through both foreground and install paths', async () => {
+    const warn = vi.fn();
+    const runLocal = vi.fn().mockResolvedValue(undefined);
+    const handleLocalServiceCommand = vi.fn().mockResolvedValue(undefined);
+
+    await handleLocalCommand(['--instance', 'legacy-local'], {
+      warn,
+      loadLocalRun: async () => ({ runLocal }),
+      onError: error => { throw new Error(error); },
+    });
+    await handleLocalCommand(['install', '--instance', 'legacy-local'], {
+      warn,
+      loadLocalService: async () => ({ handleLocalServiceCommand }),
+      onError: error => { throw new Error(error); },
+    });
+
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenNthCalledWith(1, expect.stringContaining('--instance is deprecated'));
+    expect(warn).toHaveBeenNthCalledWith(2, expect.stringContaining('--instance is deprecated'));
+    expect(runLocal).toHaveBeenCalledWith(['--instance', 'legacy-local']);
+    expect(handleLocalServiceCommand).toHaveBeenCalledWith('install', ['--instance', 'legacy-local']);
+  });
+
   it('runs the detached Windows updater without shell wrappers and with bounded retries', async () => {
     const nodePath = 'C:\\Program Files\\nodejs\\node.exe';
     const npmCliPath = 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js';
@@ -279,33 +523,17 @@ describe('agent ctx defaults and upgrade contract', () => {
   });
 });
 
-describe('agent advertises plaintext-ok capability', () => {
-  it('includes plaintext-ok in agent capability list', async () => {
-    // Mirror agent/index.js definition.
-    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center'];
-    expect(capabilities).toContain('plaintext-ok');
-    expect(capabilities).toContain('work_center');
+describe('agent capability advertisement', () => {
+  it('includes the Plugin protocol capability in agent/index.js', () => {
+    const source = readFileSync(resolve(process.cwd(), 'agent/index.js'), 'utf8');
+    expect(source).toMatch(/const capabilities = \[[^\]]*'yeaft_plugins'/s);
   });
 
-  it('serializes plaintext-ok into the auth-frame capabilities array', () => {
-    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center'];
-    const authFrame = {
-      type: 'auth',
-      tempId: 'temp_abc',
-      secret: 'my-secret',
-      capabilities,
-      version: '0.1.999'
-    };
-    expect(authFrame.capabilities).toContain('plaintext-ok');
-    expect(authFrame.capabilities).toContain('work_center');
-  });
-
-  it('serializes plaintext-ok into the URL ?capabilities= query', () => {
-    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center'];
-    const params = new URLSearchParams({ capabilities: capabilities.join(',') });
-    expect(params.get('capabilities')).toBe('background_tasks,file_editor,ping_session,plaintext-ok,work_center');
-    expect(params.get('capabilities').split(',')).toContain('plaintext-ok');
-    expect(params.get('capabilities').split(',')).toContain('work_center');
+  it('keeps plaintext-ok, workbench routes, and Plugin protocol capabilities in the source list', () => {
+    const source = readFileSync(resolve(process.cwd(), 'agent/index.js'), 'utf8');
+    for (const capability of ['plaintext-ok', 'workbench_session_routes', 'work_center', 'yeaft_plugins']) {
+      expect(source).toContain(`'${capability}'`);
+    }
   });
 });
 
@@ -328,7 +556,12 @@ describe('agent received `registered` flips serverEncryptionRequired', () => {
       expect(ctx.serverEncryptionRequired).toBe(false);
 
       const legacyKey = generateSessionKey();
-      class ConnectSocket extends MockWebSocket {}
+      class ConnectSocket extends MockWebSocket {
+        constructor(url) {
+          super();
+          this.url = url;
+        }
+      }
       ctx.CONFIG = {
         instanceId: 'test-agent',
         agentName: 'Test Agent',
@@ -338,6 +571,13 @@ describe('agent received `registered` flips serverEncryptionRequired', () => {
       };
       ctx.agentCapabilities = [];
       connect(ConnectSocket);
+      expect(new URL(ctx.ws.url).searchParams.get('platform')).toBe(process.platform);
+      ctx.ws.simulateMessage({ type: 'auth_required', tempId: 'platform-test' });
+      expect(ctx.ws.getLastMessage()).toMatchObject({
+        type: 'auth',
+        tempId: 'platform-test',
+        platform: process.platform,
+      });
       applyRegisteredTransport({
         type: 'registered',
         sessionKey: Buffer.from(legacyKey).toString('base64'),
@@ -358,6 +598,80 @@ describe('agent received `registered` flips serverEncryptionRequired', () => {
       ctx.agentCapabilities = original.agentCapabilities;
       ctx.outboundSendQueue = original.outboundSendQueue;
       ctx.outboundSendQueueActive = original.outboundSendQueueActive;
+    }
+  });
+});
+
+describe('Agent socket-close terminal cleanup', () => {
+  it('fail-closes PTYs on active transport replacement and ignores the stale close', () => {
+    const original = {
+      ws: ctx.ws,
+      CONFIG: ctx.CONFIG,
+      agentCapabilities: ctx.agentCapabilities,
+      terminals: ctx.terminals,
+      reconnectTimer: ctx.reconnectTimer,
+      agentHeartbeatTimer: ctx.agentHeartbeatTimer,
+    };
+    class ConnectSocket extends MockWebSocket {
+      static instances = [];
+      constructor(url) {
+        super();
+        this.url = url;
+        ConnectSocket.instances.push(this);
+      }
+    }
+
+    try {
+      ctx.CONFIG = {
+        instanceId: 'terminal-cleanup-agent',
+        agentName: 'Terminal Cleanup Agent',
+        workDir: '/tmp',
+        serverUrl: 'ws://localhost:1',
+        reconnectInterval: 1000,
+        disallowedTools: [],
+      };
+      ctx.agentCapabilities = ['terminal', 'workbench_session_routes'];
+      ctx.terminals = new Map();
+
+      connect(ConnectSocket);
+      const staleSocket = ctx.ws;
+      const replacedPty = { kill: vi.fn() };
+      ctx.terminals.set('replaced-terminal', {
+        pty: replacedPty,
+        cancelled: false,
+        timer: null,
+      });
+
+      connect(ConnectSocket);
+      const currentSocket = ctx.ws;
+      expect(replacedPty.kill).toHaveBeenCalledTimes(1);
+      expect(ctx.terminals.size).toBe(0);
+
+      const currentPty = { kill: vi.fn() };
+      ctx.terminals.set('current-terminal', {
+        pty: currentPty,
+        cancelled: false,
+        timer: null,
+      });
+      staleSocket.emit('close', 1008, 'stale socket');
+      expect(currentPty.kill).not.toHaveBeenCalled();
+      expect(ctx.terminals.has('current-terminal')).toBe(true);
+
+      currentSocket.emit('close', 1008, 'current socket');
+      expect(currentPty.kill).toHaveBeenCalledTimes(1);
+      expect(ctx.terminals.size).toBe(0);
+      currentSocket.emit('close', 1008, 'duplicate close');
+      expect(currentPty.kill).toHaveBeenCalledTimes(1);
+      expect(replacedPty.kill).toHaveBeenCalledTimes(1);
+    } finally {
+      clearTimeout(ctx.reconnectTimer);
+      if (ctx.agentHeartbeatTimer) clearInterval(ctx.agentHeartbeatTimer);
+      ctx.ws = original.ws;
+      ctx.CONFIG = original.CONFIG;
+      ctx.agentCapabilities = original.agentCapabilities;
+      ctx.terminals = original.terminals;
+      ctx.reconnectTimer = original.reconnectTimer;
+      ctx.agentHeartbeatTimer = original.agentHeartbeatTimer;
     }
   });
 });
@@ -407,6 +721,83 @@ describe('sendToServer: encrypt vs plaintext gate', () => {
     const msg = { type: 'auth' };
     await sendToServerUnderTest(ctxLike, msg);
     expect(ws.getLastMessage()).toEqual(msg);
+  });
+
+  it('releases sent queue ownership and bounds disconnected payloads by bytes', async () => {
+    const original = {
+      ws: ctx.ws, sessionKey: ctx.sessionKey, serverEncryptionRequired: ctx.serverEncryptionRequired,
+      outboundSendQueue: ctx.outboundSendQueue, outboundSendQueueBytes: ctx.outboundSendQueueBytes,
+      outboundSendQueueMaxBytes: ctx.outboundSendQueueMaxBytes, outboundSendQueueActive: ctx.outboundSendQueueActive,
+      messageBuffer: ctx.messageBuffer, messageBufferBytes: ctx.messageBufferBytes,
+      messageBufferMaxBytes: ctx.messageBufferMaxBytes, messageBufferMaxSize: ctx.messageBufferMaxSize,
+    };
+    try {
+      Object.assign(ctx, {
+        ws: new MockWebSocket(), sessionKey: null, serverEncryptionRequired: false,
+        outboundSendQueue: [], outboundSendQueueBytes: 0, outboundSendQueueMaxBytes: 1024,
+        outboundSendQueueActive: false, messageBuffer: [], messageBufferBytes: 0,
+        messageBufferMaxBytes: 256, messageBufferMaxSize: 5000,
+      });
+      await expect(sendToServer({ type: 'claude_output', payload: { text: 'sent' } })).resolves.toBe('sent');
+      expect(ctx.outboundSendQueue).toEqual([]);
+      expect(ctx.outboundSendQueueBytes).toBe(0);
+
+      ctx.ws = new MockWebSocket(WS_CLOSED);
+      for (let index = 0; index < 20; index += 1) {
+        await sendToServer({ type: 'yeaft_output', payload: { text: `${index}:${'x'.repeat(80)}` } });
+      }
+      expect(ctx.messageBuffer.length).toBeLessThan(20);
+      expect(ctx.messageBufferBytes).toBeLessThanOrEqual(256);
+      expect(ctx.messageBufferBytes).toBe(
+        ctx.messageBuffer.reduce((total, msg) => total + Buffer.byteLength(JSON.stringify(msg)), 0),
+      );
+      await expect(sendToServer({ type: 'yeaft_output', payload: { text: 'x'.repeat(1024) } })).resolves.toBe('dropped');
+
+      for (const terminalType of ['turn_completed', 'conversation_closed']) {
+        for (const saturation of ['bytes', 'count']) {
+          const terminalMessage = { type: terminalType, conversationId: `${terminalType}-${saturation}` };
+          const ordinaryMessage = { type: 'yeaft_output', payload: { text: 'x'.repeat(80) } };
+          Object.assign(ctx, {
+            messageBuffer: [],
+            messageBufferBytes: 0,
+            messageBufferMaxBytes: saturation === 'bytes' ? 140 : 1024,
+            messageBufferMaxSize: saturation === 'count' ? 1 : 5000,
+          });
+          await expect(sendToServer(terminalMessage)).resolves.toBe('buffered');
+          await expect(sendToServer(ordinaryMessage)).resolves.toBe('dropped');
+          expect(ctx.messageBuffer).toEqual([terminalMessage]);
+
+          Object.assign(ctx, { messageBuffer: [], messageBufferBytes: 0 });
+          await expect(sendToServer(ordinaryMessage)).resolves.toBe('buffered');
+          await expect(sendToServer(terminalMessage)).resolves.toBe('buffered');
+          expect(ctx.messageBuffer).toEqual([terminalMessage]);
+        }
+      }
+
+      const blockedWs = new MockWebSocket();
+      Object.assign(ctx, {
+        ws: blockedWs,
+        outboundSendQueue: [],
+        outboundSendQueueBytes: 0,
+        outboundSendQueueMaxBytes: 220,
+        outboundSendQueueActive: true,
+      });
+      let resolveOrdinary;
+      const ordinary = new Promise(resolve => { resolveOrdinary = resolve; });
+      const ordinaryMessage = { type: 'yeaft_output', payload: { text: 'x'.repeat(120) } };
+      const ordinaryBytes = Buffer.byteLength(JSON.stringify(ordinaryMessage));
+      ctx.outboundSendQueue.push({ msg: ordinaryMessage, bytes: ordinaryBytes, resolve: resolveOrdinary });
+      ctx.outboundSendQueueBytes = ordinaryBytes;
+      const terminal = sendToServer({ type: 'turn_completed', conversationId: 'conv-terminal' });
+      await expect(ordinary).resolves.toBe('dropped');
+      expect(ctx.outboundSendQueue.map(item => item.msg.type)).toEqual(['turn_completed']);
+      ctx.outboundSendQueueActive = false;
+      await sendToServer({ type: 'auth' });
+      await expect(terminal).resolves.toBe('sent');
+      expect(blockedWs.getSentMessages().map(message => message.type)).toContain('turn_completed');
+    } finally {
+      Object.assign(ctx, original);
+    }
   });
 });
 

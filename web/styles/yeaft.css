@@ -603,14 +603,12 @@
 .yeaft-topbar-right :where(
   .yeaft-topbar-vp-toggle,
   .yeaft-search-btn,
-  .yeaft-reload-btn,
-  .yeaft-debug-btn
+  .yeaft-reload-btn
 ),
 .yeaft-session-actions :where(
   .yeaft-topbar-vp-toggle,
   .yeaft-search-btn,
-  .yeaft-reload-btn,
-  .yeaft-debug-btn
+  .yeaft-reload-btn
 ) {
   width: 32px;
   height: 32px;
@@ -621,14 +619,12 @@
 .yeaft-topbar-right :where(
   .yeaft-topbar-vp-toggle,
   .yeaft-search-btn,
-  .yeaft-reload-btn,
-  .yeaft-debug-btn
+  .yeaft-reload-btn
 ) svg,
 .yeaft-session-actions :where(
   .yeaft-topbar-vp-toggle,
   .yeaft-search-btn,
-  .yeaft-reload-btn,
-  .yeaft-debug-btn
+  .yeaft-reload-btn
 ) svg {
   width: 18px;
   height: 18px;
@@ -1114,31 +1110,6 @@
   opacity: 0.5;
 }
 
-/* ── Debug Button ── */
-
-.yeaft-debug-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 6px;
-  border-radius: 6px;
-  transition: background 0.15s, color 0.15s;
-}
-
-.yeaft-debug-btn:hover {
-  background: var(--sidebar-hover);
-  color: var(--text-primary);
-}
-
-.yeaft-debug-btn.active {
-  color: var(--accent);
-  background: var(--sidebar-selected);
-}
-
 /* ── Debug Panel ── */
 
 .yeaft-debug-panel {
@@ -1146,6 +1117,12 @@
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+}
+
+/* Workbench is a sibling of .yeaft-main. Remove the whole conversation
+   column from flex layout so a maximized Workbench receives its full width. */
+.yeaft-main.workbench-maximized {
+  display: none;
 }
 
 /* task-345: align header padding + title/count sizes to Chat right-panel tokens
@@ -2737,6 +2714,16 @@
 /* Error body — render as a code block, not flowing text. Long JSON
    error envelopes (Anthropic 400 / 4xx) are the most common payload
    here, and `word-break: break-all` was chopping them mid-token. */
+.yeaft-debug-notice {
+  margin: 4px 0 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg-input-wrapper);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .yeaft-debug-error {
   font-size: 11px;
   color: var(--error);

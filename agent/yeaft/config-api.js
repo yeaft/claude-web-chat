@@ -8,12 +8,30 @@
  * like maxContinueTurns or debug that don't belong in the UI.
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { DEFAULT_YEAFT_DIR } from './init.js';
 import { normalizeProviderModels, parseModelRef, serializeModelForPersistence } from './models.js';
 import { normaliseTelemetrySection, normaliseYeaftSection } from './config.js';
+import { normaliseBrowserRuntimeSection, validateBrowserRuntimeUpdate } from '../browser-runtime/config.js';
+import { normalizePluginConfig } from './plugins.js';
+import { mutateAgentConfig, readAgentConfigForWrite } from './config-store.js';
 import { isGitHubCopilotProvider, serializeKnownProviderForPersistence } from './llm/known-providers.js';
+
+/**
+ * Read config.json before any public mutation. A missing file is a valid
+ * first-run state, but an existing malformed file, non-object root, or invalid
+ * Plugins schema must never be replaced by an unrelated Settings/MCP write.
+ * Otherwise the runtime's fail-closed policy could silently become inheritance
+ * (all capabilities enabled) on the next config reload.
+ *
+ * @param {string} configPath
+ * @returns {Record<string, unknown>}
+ * @throws {Error} when an existing config cannot be safely preserved
+ */
+function readConfigForWrite(configPath) {
+  return readAgentConfigForWrite(configPath);
+}
 
 /**
  * Read the LLM-relevant portion of config.json.
@@ -117,87 +135,57 @@ function normalizeManagedModelDefaults(config) {
  */
 export function updateLlmConfig(update, dir) {
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
-  const configPath = join(root, 'config.json');
 
-  // Read existing config (preserve non-LLM fields)
-  let existing = {};
-  if (existsSync(configPath)) {
-    try {
-      existing = JSON.parse(readFileSync(configPath, 'utf8'));
-    } catch {
-      // Start fresh if corrupt
-      existing = {};
-    }
-  }
-
-  // Validate providers structure
   if (update.providers !== undefined) {
-    if (!Array.isArray(update.providers)) {
-      return { error: 'providers must be an array' };
-    }
-    for (const p of update.providers) {
-      if (!p.name || typeof p.name !== 'string') {
+    if (!Array.isArray(update.providers)) return { error: 'providers must be an array' };
+    for (const provider of update.providers) {
+      if (!provider.name || typeof provider.name !== 'string') {
         return { error: 'Each provider must have a name' };
       }
-      if (isGitHubCopilotProvider(p)) continue;
-      if (!p.baseUrl || typeof p.baseUrl !== 'string') {
-        return { error: `Provider "${p.name}" must have a baseUrl` };
+      if (isGitHubCopilotProvider(provider)) continue;
+      if (!provider.baseUrl || typeof provider.baseUrl !== 'string') {
+        return { error: `Provider "${provider.name}" must have a baseUrl` };
       }
-      if (!Array.isArray(p.models) || p.models.length === 0) {
-        return { error: `Provider "${p.name}" must have at least one model` };
+      if (!Array.isArray(provider.models) || provider.models.length === 0) {
+        return { error: `Provider "${provider.name}" must have at least one model` };
       }
     }
-    // Normalize + re-serialize each provider's models so that:
-    //   - id-only entries are persisted as plain strings (back-compat)
-    //   - entries with ctx / maxOutput are persisted as objects
-    //   - empty / 0 / NaN values get stripped
-    existing.providers = update.providers.map(p => {
-      const managed = serializeKnownProviderForPersistence(p);
-      if (managed) return managed;
-      const normalized = normalizeProviderModels(p);
+  }
+
+  try {
+    return mutateAgentConfig(root, existing => {
+      if (update.providers !== undefined) {
+        existing.providers = update.providers.map(provider => {
+          const managed = serializeKnownProviderForPersistence(provider);
+          if (managed) return managed;
+          return {
+            ...provider,
+            models: normalizeProviderModels(provider).map(serializeModelForPersistence),
+          };
+        });
+      }
+      if (update.primaryModel !== undefined) existing.primaryModel = update.primaryModel || null;
+      if (update.fastModel !== undefined) existing.fastModel = update.fastModel || null;
+      if (update.providers !== undefined) normalizeManagedModelDefaults(existing);
+      if (update.language !== undefined) existing.language = update.language;
+      if (update.debug !== undefined) existing.debug = update.debug === true;
+
+      const agentConfig = {
+        providers: Array.isArray(existing.providers) ? existing.providers : [],
+        primaryModel: existing.primaryModel || null,
+        fastModel: existing.fastModel || null,
+        language: existing.language || 'en',
+        debug: existing.debug === true,
+      };
       return {
-        ...p,
-        models: normalized.map(serializeModelForPersistence),
+        ...agentConfig,
+        agentConfig,
+        effectiveConfig: agentConfig,
       };
     });
+  } catch (error) {
+    return { error: `Failed to read config.json or persist update: ${error?.message || error}` };
   }
-
-  // Update model selections. A managed provider catalog is authoritative:
-  // when it drops the old Agent default, keep no hidden reference to that
-  // model in primaryModel or fastModel.
-  if (update.primaryModel !== undefined) {
-    existing.primaryModel = update.primaryModel || null;
-  }
-  if (update.fastModel !== undefined) {
-    existing.fastModel = update.fastModel || null;
-  }
-  if (update.providers !== undefined) normalizeManagedModelDefaults(existing);
-  if (update.language !== undefined) {
-    existing.language = update.language;
-  }
-  if (update.debug !== undefined) {
-    existing.debug = update.debug === true;
-  }
-
-  // Write back
-  try {
-    writeFileSync(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf8');
-  } catch (e) {
-    return { error: `Failed to write config.json: ${e.message}` };
-  }
-
-  const agentConfig = {
-    providers: Array.isArray(existing.providers) ? existing.providers : [],
-    primaryModel: existing.primaryModel || null,
-    fastModel: existing.fastModel || null,
-    language: existing.language || 'en',
-    debug: existing.debug === true,
-  };
-  return {
-    ...agentConfig,
-    agentConfig,
-    effectiveConfig: agentConfig,
-  };
 }
 
 // ─── Yeaft runtime settings (task-318) ────────────────────────────
@@ -238,7 +226,6 @@ export function getYeaftSettings(dir) {
  */
 export function updateYeaftSettings(update, dir) {
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
-  const configPath = join(root, 'config.json');
 
   if (!update || typeof update !== 'object') {
     return { error: 'update payload required' };
@@ -265,37 +252,26 @@ export function updateYeaftSettings(update, dir) {
     }
   }
 
-  // Read existing config (preserve LLM and other top-level fields).
-  let existing = {};
-  if (existsSync(configPath)) {
-    try {
-      existing = JSON.parse(readFileSync(configPath, 'utf8'));
-    } catch {
-      existing = {};
-    }
-  }
-
-  const prev = normaliseYeaftSection(existing.yeaft);
-  const merged = {
-    maxConcurrentThreads: update.maxConcurrentThreads !== undefined
-      ? Math.floor(Number(update.maxConcurrentThreads))
-      : prev.maxConcurrentThreads,
-    autoArchiveIdleDays: update.autoArchiveIdleDays !== undefined
-      ? Math.floor(Number(update.autoArchiveIdleDays))
-      : prev.autoArchiveIdleDays,
-    recentTurnsLimit: update.recentTurnsLimit !== undefined
-      ? Math.floor(Number(update.recentTurnsLimit))
-      : prev.recentTurnsLimit,
-  };
-  existing.yeaft = merged;
-
   try {
-    writeFileSync(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf8');
-  } catch (e) {
-    return { error: `Failed to write config.json: ${e.message}` };
+    return mutateAgentConfig(root, existing => {
+      const prev = normaliseYeaftSection(existing.yeaft);
+      const merged = {
+        maxConcurrentThreads: update.maxConcurrentThreads !== undefined
+          ? Math.floor(Number(update.maxConcurrentThreads))
+          : prev.maxConcurrentThreads,
+        autoArchiveIdleDays: update.autoArchiveIdleDays !== undefined
+          ? Math.floor(Number(update.autoArchiveIdleDays))
+          : prev.autoArchiveIdleDays,
+        recentTurnsLimit: update.recentTurnsLimit !== undefined
+          ? Math.floor(Number(update.recentTurnsLimit))
+          : prev.recentTurnsLimit,
+      };
+      existing.yeaft = merged;
+      return merged;
+    });
+  } catch (error) {
+    return { error: `Failed to read config.json or persist update: ${error?.message || error}` };
   }
-
-  return merged;
 }
 
 /**
@@ -335,19 +311,49 @@ export function updateTelemetrySettings(update, dir) {
     return { error: 'unknown telemetry setting' };
   }
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
-  const configPath = join(root, 'config.json');
-  const existing = readConfigJson(configPath);
-  const merged = normaliseTelemetrySection({
-    ...(existing.telemetry && typeof existing.telemetry === 'object' ? existing.telemetry : {}),
-    ...update,
-  });
-  existing.telemetry = merged;
   try {
-    writeFileSync(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf8');
-  } catch (e) {
-    return { error: `Failed to write config.json: ${e.message}` };
+    return mutateAgentConfig(root, existing => {
+      const merged = normaliseTelemetrySection({
+        ...(existing.telemetry && typeof existing.telemetry === 'object' ? existing.telemetry : {}),
+        ...update,
+      });
+      existing.telemetry = merged;
+      return merged;
+    });
+  } catch (error) {
+    return { error: `Failed to read config.json or persist update: ${error?.message || error}` };
   }
-  return merged;
+}
+
+// ─── Browser Runtime settings ───────────────────────────────────────
+
+export function getBrowserRuntimeSettings(dir) {
+  const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
+  const configPath = join(root, 'config.json');
+  if (!existsSync(configPath)) return normaliseBrowserRuntimeSection(null);
+  try {
+    const json = JSON.parse(readFileSync(configPath, 'utf8'));
+    return normaliseBrowserRuntimeSection(json.browserRuntime);
+  } catch (error) {
+    return { error: `Failed to read config.json: ${error.message}` };
+  }
+}
+
+export function updateBrowserRuntimeSettings(update, dir) {
+  const validationError = validateBrowserRuntimeUpdate(update);
+  if (validationError) return { error: validationError };
+  const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
+  try {
+    return mutateAgentConfig(root, existing => {
+      const previous = existing.browserRuntime && typeof existing.browserRuntime === 'object'
+        ? existing.browserRuntime
+        : {};
+      existing.browserRuntime = normaliseBrowserRuntimeSection({ ...previous, ...update });
+      return existing.browserRuntime;
+    });
+  } catch (error) {
+    return { error: `Failed to read config.json or persist update: ${error?.message || error}` };
+  }
 }
 
 // ─── Search settings (web-search backend selection + Tavily key) ────
@@ -415,7 +421,6 @@ export function getSearchSettings(dir) {
  */
 export function updateSearchSettings(update, dir) {
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
-  const configPath = join(root, 'config.json');
 
   if (!update || typeof update !== 'object') {
     return { error: 'update payload required' };
@@ -427,25 +432,17 @@ export function updateSearchSettings(update, dir) {
     return { error: 'tavilyApiKey must be a string' };
   }
 
-  let existing = {};
-  if (existsSync(configPath)) {
-    try {
-      existing = JSON.parse(readFileSync(configPath, 'utf8'));
-    } catch {
-      existing = {};
-    }
-  }
-  const prev = (existing && typeof existing.search === 'object' && existing.search) || {};
-  const merged = { ...prev };
-  if (update.backend !== undefined) merged.backend = update.backend;
-  if (update.tavilyApiKey !== undefined) merged.tavilyApiKey = update.tavilyApiKey;
-  if (update.disableHtmlFallback !== undefined) merged.disableHtmlFallback = !!update.disableHtmlFallback;
-  existing.search = merged;
-
   try {
-    writeFileSync(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf8');
-  } catch (e) {
-    return { error: `Failed to write config.json: ${e.message}` };
+    mutateAgentConfig(root, existing => {
+      const prev = (existing && typeof existing.search === 'object' && existing.search) || {};
+      const merged = { ...prev };
+      if (update.backend !== undefined) merged.backend = update.backend;
+      if (update.tavilyApiKey !== undefined) merged.tavilyApiKey = update.tavilyApiKey;
+      if (update.disableHtmlFallback !== undefined) merged.disableHtmlFallback = !!update.disableHtmlFallback;
+      existing.search = merged;
+    });
+  } catch (error) {
+    return { error: `Failed to read config.json or persist update: ${error?.message || error}` };
   }
   return getSearchSettings(root);
 }
@@ -497,6 +494,42 @@ export async function fetchTavilyUsage(dir) {
     };
   } catch (e) {
     return { error: e.message || String(e) };
+  }
+}
+
+// ─── Agent plugin selection ────────────────────────────────────
+
+/**
+ * Read the Agent-local plugin allowlists. Missing category fields mean
+ * inheritance (all discovered capabilities remain available).
+ */
+export function getPluginConfig(dir) {
+  const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
+  const configPath = join(root, 'config.json');
+  try {
+    const json = readConfigForWrite(configPath);
+    return { plugins: normalizePluginConfig(json.plugins) };
+  } catch (err) {
+    return { error: `Failed to read plugin config: ${err?.message || err}` };
+  }
+}
+
+/**
+ * Persist Agent-local plugin allowlists without touching providers, MCP server
+ * definitions, or any other config.json field.
+ */
+export function updatePluginConfig(plugins, dir) {
+  const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
+  let normalized;
+  try {
+    normalized = normalizePluginConfig(plugins);
+    return mutateAgentConfig(root, existing => {
+      if (Object.keys(normalized).length === 0) delete existing.plugins;
+      else existing.plugins = normalized;
+      return { plugins: normalized };
+    });
+  } catch (error) {
+    return { error: `Failed to read plugin config or persist update: ${error?.message || error}` };
   }
 }
 
@@ -580,24 +613,6 @@ function validateMcpServer(entry) {
 }
 
 /**
- * Read existing config.json (silently start fresh on missing / corrupt).
- * Internal helper used by the MCP CRUD trio to share one parse path.
- *
- * @param {string} configPath
- * @returns {object}
- */
-function readConfigJson(configPath) {
-  if (!existsSync(configPath)) return {};
-  try {
-    const raw = readFileSync(configPath, 'utf8');
-    const json = JSON.parse(raw);
-    return (json && typeof json === 'object') ? json : {};
-  } catch {
-    return {};
-  }
-}
-
-/**
  * List MCP servers currently saved in config.json. Returns an array — empty
  * when none configured. Each entry is the normalised on-disk shape, NOT
  * the runtime status (which lives on `mcpManager.status()`).
@@ -609,12 +624,12 @@ export function listMcpServers(dir) {
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
   const configPath = join(root, 'config.json');
   try {
-    const json = readConfigJson(configPath);
+    const json = readConfigForWrite(configPath);
     const raw = Array.isArray(json.mcpServers) ? json.mcpServers : [];
     const servers = raw.map(normaliseMcpServer).filter(Boolean);
     return { servers };
-  } catch (e) {
-    return { error: `Failed to read config.json: ${e.message}` };
+  } catch (err) {
+    return { error: `Failed to read config.json: ${err?.message || err}` };
   }
 }
 
@@ -633,28 +648,21 @@ export function upsertMcpServer(server, dir) {
   if (err) return { error: err };
 
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
-  const configPath = join(root, 'config.json');
-  const existing = readConfigJson(configPath);
-  const list = Array.isArray(existing.mcpServers) ? existing.mcpServers.slice() : [];
-
   const normalised = normaliseMcpServer(server);
   if (!normalised) return { error: 'invalid server payload' };
 
-  const idx = list.findIndex(s => s && typeof s === 'object' && s.name === normalised.name);
-  if (idx >= 0) {
-    list[idx] = normalised;
-  } else {
-    list.push(normalised);
-  }
-  existing.mcpServers = list;
-
   try {
-    writeFileSync(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf8');
-  } catch (e) {
-    return { error: `Failed to write config.json: ${e.message}` };
+    return mutateAgentConfig(root, existing => {
+      const list = Array.isArray(existing.mcpServers) ? existing.mcpServers.slice() : [];
+      const index = list.findIndex(entry => entry && typeof entry === 'object' && entry.name === normalised.name);
+      if (index >= 0) list[index] = normalised;
+      else list.push(normalised);
+      existing.mcpServers = list;
+      return { servers: list.map(normaliseMcpServer).filter(Boolean), server: normalised };
+    });
+  } catch (error) {
+    return { error: `Failed to read config.json or persist update: ${error?.message || error}` };
   }
-
-  return { servers: list.map(normaliseMcpServer).filter(Boolean), server: normalised };
 }
 
 /**
@@ -676,19 +684,18 @@ export function removeMcpServer(name, dir) {
   // matching against the padded string.
   const target = name.trim();
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
-  const configPath = join(root, 'config.json');
-  const existing = readConfigJson(configPath);
-  const list = Array.isArray(existing.mcpServers) ? existing.mcpServers.slice() : [];
-  const next = list.filter(s => !(s && typeof s === 'object' && s.name === target));
-  const removed = next.length !== list.length;
-  existing.mcpServers = next;
-
   try {
-    writeFileSync(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf8');
-  } catch (e) {
-    return { error: `Failed to write config.json: ${e.message}` };
+    return mutateAgentConfig(root, existing => {
+      const list = Array.isArray(existing.mcpServers) ? existing.mcpServers.slice() : [];
+      const next = list.filter(entry => !(entry && typeof entry === 'object' && entry.name === target));
+      existing.mcpServers = next;
+      return {
+        servers: next.map(normaliseMcpServer).filter(Boolean),
+        removed: next.length !== list.length,
+      };
+    });
+  } catch (error) {
+    return { error: `Failed to read config.json or persist update: ${error?.message || error}` };
   }
-
-  return { servers: next.map(normaliseMcpServer).filter(Boolean), removed };
 }
 

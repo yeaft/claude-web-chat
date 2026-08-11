@@ -140,6 +140,29 @@ export function classifyAuthError(statusCode, responseBody = '', details = {}) {
   });
 }
 
+/** Provider content-safety rejection (commonly 422) — eligible for one sanitized recovery. */
+export class LLMPolicyError extends Error {
+  constructor(_providerMessage, statusCode = 422, details = {}) {
+    super('The LLM provider blocked this request under its content-safety policy. Continue and avoid repeating sensitive payloads or credential-like examples.');
+    this.name = 'LLMPolicyError';
+    this.statusCode = statusCode;
+    this.reasonCode = 'content_policy_denied';
+    this.provider = details.provider || null;
+    this.model = details.model || null;
+  }
+}
+
+const CONTENT_POLICY_RE = /(?:content (?:was )?flagged|content[-_ ]?safety|cybersecurity risk|safety policy|safety system|content[_ -]?filter|policy[_ -]?violation)/i;
+
+export function classifyPolicyError(statusCode, responseBody = '', details = {}) {
+  const status = Number(statusCode) || 0;
+  const signals = providerErrorSignals(responseBody);
+  if (status !== 422 || (!CONTENT_POLICY_RE.test(signals.code) && !CONTENT_POLICY_RE.test(signals.message))) {
+    return null;
+  }
+  return new LLMPolicyError(signals.message, status, details);
+}
+
 /** Context too long error (413 or API-specific) — need compaction. */
 export class LLMContextError extends Error {
   constructor(message) {
@@ -456,9 +479,9 @@ export function classifyFetchError(err, opts = {}) {
  * NOTE: there is intentionally NO body / response truncation here. The whole
  * point of the "copy request" debug feature is to capture EXACTLY what we
  * sent to the LLM. A truncated copy is worse than useless — it lies about
- * what the model saw. If the resulting payload is too large for the debug
- * store, the fix is to bound retention (drop oldest turns), not to mutilate
- * individual payloads. See `MAX_YEAFT_DEBUG_LOOPS` in `web/stores/chat.js`.
+ * what the model saw. Full payloads therefore stay in the Agent's bounded,
+ * file-backed debug trace and are fetched for one Turn on demand; live browser
+ * events carry summary metadata only.
  *
  * @param {{ url: string, method: string, headers: object, body: any }} req
  * @returns {{ url: string, method: string, headers: object, body: any }}
@@ -607,6 +630,21 @@ export class LLMAdapter {
    */
   async *stream(params) { // eslint-disable-line no-unused-vars
     throw new Error('stream() must be implemented by subclass');
+  }
+
+  /**
+   * Capture a stream request before a caller crosses an async boundary.
+   *
+   * Implementations with mutable runtime routing should override this to freeze
+   * their dispatch table at capture time. The base implementation retains
+   * compatibility with legacy adapters by calling stream() without advancing
+   * its async iterator.
+   *
+   * @param {object} params
+   * @returns {AsyncGenerator<StreamEvent>}
+   */
+  captureStream(params) {
+    return this.stream(params);
   }
 
   /**

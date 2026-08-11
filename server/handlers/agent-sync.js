@@ -74,6 +74,20 @@ export async function handleAgentSync(agentId, agent, msg) {
       break;
     }
 
+    case 'agent_capabilities_updated': {
+      const capabilities = Array.isArray(msg.capabilities)
+        ? [...new Set(msg.capabilities.filter(value => (
+          typeof value === 'string' && value.length > 0 && value.length <= 128
+        )).slice(0, 128))]
+        : null;
+      if (!capabilities || capabilities.length === 0) break;
+      agent.capabilities = capabilities;
+      // Transport encryption negotiation is connection-scoped and immutable.
+      // A runtime capability refresh must never flip framing mid-connection.
+      await broadcastAgentList();
+      break;
+    }
+
     case 'agent_metrics': {
       agent.metrics = normalizeAgentMetrics(msg.metrics || {});
       agent.metricsUpdatedAt = Date.now();
@@ -176,7 +190,7 @@ export async function handleAgentSync(agentId, agent, msg) {
           (agent.ownerId && client.userId === agent.ownerId) ||
           (!agent.ownerId && client.role === 'admin')
         )) {
-          await sendToWebClient(client, { type: 'upgrade_agent_ack', agentId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version, reason: msg.reason, currentNode: msg.currentNode, requiredNode: msg.requiredNode });
+          await sendToWebClient(client, { type: 'upgrade_agent_ack', agentId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version, reason: msg.reason, currentNode: msg.currentNode, requiredNode: msg.requiredNode, requiredCapability: msg.requiredCapability });
         }
       }
       break;
@@ -356,10 +370,14 @@ export async function handleAgentSync(agentId, agent, msg) {
       break;
     }
 
+    // Agent-level plugin selection. The Agent owns config.json; the server
+    // only stamps ownership and relays request-scoped replies to the UI.
+    case 'yeaft_plugins':
+    case 'yeaft_plugins_updated':
     // Local telemetry settings relay. Only bounded config is forwarded;
     // trace payloads stay on the Agent.
     case 'telemetry_settings':
-    case 'telemetry_settings_updated':
+    case 'telemetry_settings_updated': {
       for (const [, client] of webClients) {
         if (client.authenticated && (CONFIG.skipAuth ||
           (agent.ownerId && client.userId === agent.ownerId) ||
@@ -369,6 +387,7 @@ export async function handleAgentSync(agentId, agent, msg) {
         }
       }
       break;
+    }
 
     // Search settings + Tavily usage relays. We pass the whole msg
     // through (minus agentId, which we set ourselves) — the payload

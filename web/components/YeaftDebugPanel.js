@@ -129,7 +129,16 @@ export default {
         ? (this.store && this.store.yeaftDebugTurnsById && this.store.yeaftDebugTurnsById[panel.turnId])
         : null;
       if (!turn) return [];
-      return [this.decorateTurnTokenBreakdowns(turn)];
+      // Detail responses keep Turn summaries and Loop payloads in separate
+      // bounded stores. Rejoin them for this exact Turn before rendering;
+      // otherwise the header can report `1L` while the expanded body has no
+      // system prompt or loop rows at all. Preserve embedded loops only as a
+      // compatibility fallback for older live payloads.
+      const storedLoops = this.debugLoopsForTurn(turn.turnId);
+      const loops = storedLoops.length > 0
+        ? storedLoops
+        : (Array.isArray(turn.loops) ? turn.loops : []);
+      return [this.decorateTurnTokenBreakdowns({ ...turn, loops })];
     },
     currentTurnId() {
       return (this.store && this.store.yeaftDebugPanel && this.store.yeaftDebugPanel.turnId) || '';
@@ -177,7 +186,15 @@ export default {
       return !!this.store?.yeaftDebugHistoryLoading;
     },
     requestHistoryError() {
-      return this.store?.yeaftDebugHistoryError || '';
+      const error = this.store?.yeaftDebugHistoryError || '';
+      return error === 'debug_history_timeout'
+        ? this.$t('yeaft.debugHistoryUnavailable')
+        : error;
+    },
+    requestHistoryProjectionNotice() {
+      return this.store?.yeaftDebugHistoryProjection?.truncated === true
+        ? this.$t('yeaft.debugHistoryTruncated')
+        : '';
     },
     toolStats() {
       return this.store?.yeaftToolStats || null;
@@ -1393,6 +1410,7 @@ export default {
           <code v-if="currentTurnSessionId" class="yeaft-debug-turn-context-session" :title="currentTurnSessionId">{{ currentTurnSessionId }}</code>
         </div>
         <div v-if="requestHistoryError" class="yeaft-debug-error">{{ requestHistoryError }}</div>
+        <div v-if="requestHistoryProjectionNotice" class="yeaft-debug-notice">{{ requestHistoryProjectionNotice }}</div>
         <div v-for="turn in turns" :key="turn.turnId" class="yeaft-debug-turn">
           <!-- Turn header -->
           <div class="yeaft-debug-turn-header" :class="{ expanded: expandedTurns[turn.turnId] }" @click="toggleTurn(turn.turnId)">

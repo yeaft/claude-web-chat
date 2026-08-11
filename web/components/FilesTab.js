@@ -8,11 +8,34 @@ import { createQuickOpen } from './files/quickOpen.js';
 import { createFolderPicker } from './files/folderPicker.js';
 import { createFileTabs } from './files/fileTabs.js';
 import { createWsHandler } from './files/wsHandler.js';
+import { createRouteBoundWorkbenchStore } from '../utils/workbench-route.js';
 
 export default {
   name: 'FilesTab',
+  props: {
+    treeInitiallyVisible: { type: Boolean, default: true },
+    routeKey: { type: String, required: true },
+    runtimeProvider: { type: String, required: true },
+    agentId: { type: String, required: true },
+    sessionId: { type: String, required: true },
+    conversationId: { type: String, required: true },
+    workDir: { type: String, default: '' },
+    workspaceGeneration: { type: String, required: true },
+  },
   template: `
-    <div class="files-tab file-two-col" :class="{ 'mobile-editor-view': isMobile && mobileView === 'editor' }" ref="rootEl">
+    <div class="files-tab file-two-col" :class="{ 'mobile-editor-view': isMobile && mobileView === 'editor', 'tree-collapsed': !treeVisible }" ref="rootEl">
+      <div class="file-tree-collapsed-rail" v-if="!treeVisible">
+        <button
+          type="button"
+          class="file-tree-expand-btn"
+          @click="treeVisible = true"
+          :title="$t('files.showTree')"
+          :aria-label="$t('files.showTree')"
+          aria-expanded="false"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2zm10 14H4V8h16v10z"/></svg>
+        </button>
+      </div>
       <!-- 左栏: 层级目录树 -->
       <div class="file-col-tree" :class="{ 'drop-active': externalDropActive }" :style="{ flex: '0 0 ' + treePanelWidth + 'px', transition: isTreeResizing ? 'none' : undefined, fontSize: fontSize + 'px' }" @wheel.ctrl.prevent="onWheel"
         @dragover.prevent="onTreeDragOver($event)"
@@ -30,6 +53,17 @@ export default {
             @blur="cancelTreePathEdit"
             class="tree-path-input"
           />
+          <button
+            type="button"
+            class="vscode-action-btn file-tree-collapse-btn"
+            @mousedown.prevent
+            @click.stop="treeVisible = false"
+            :title="$t('files.hideTree')"
+            :aria-label="$t('files.hideTree')"
+            aria-expanded="true"
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+          </button>
         </div>
         <!-- VS Code 风格 Header: 正常模式 -->
         <div class="file-tree-header vscode-header" v-else>
@@ -56,6 +90,16 @@ export default {
                 <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>
               </button>
             </div>
+            <button
+              type="button"
+              class="vscode-action-btn file-tree-collapse-btn"
+              @click.stop="treeVisible = false"
+              :title="$t('files.hideTree')"
+              :aria-label="$t('files.hideTree')"
+              aria-expanded="true"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+            </button>
           </div>
         </div>
         <!-- 文件选中操作 -->
@@ -144,9 +188,6 @@ export default {
           </template>
         </div>
       </div>
-
-      <!-- 拖拽分割线 -->
-      <div class="file-tree-splitter" @mousedown="startTreeResize" @touchstart.prevent="startTreeResize"></div>
 
       <!-- 右栏: 文件编辑器（带标签页） -->
       <div class="file-col-content" v-if="openFiles.length > 0 || fileLoading" @wheel.ctrl.prevent="onWheel">
@@ -280,6 +321,9 @@ export default {
       <div class="file-col-placeholder" v-if="openFiles.length === 0 && !fileLoading">
         <div class="placeholder-text">{{ $t('files.clickToView') }}</div>
       </div>
+
+      <!-- 拖拽分割线：文件树位于内容右侧 -->
+      <div class="file-tree-splitter" @mousedown="startTreeResize" @touchstart.prevent="startTreeResize"></div>
 
       <!-- 文件夹选择器对话框 -->
       <div class="folder-picker-overlay" v-if="folderPickerOpen" @click.self="folderPickerOpen = false">
@@ -439,9 +483,11 @@ export default {
       </div>
     </div>
   `,
-  setup() {
-    const store = Pinia.useChatStore();
+  setup(props) {
+    const store = createRouteBoundWorkbenchStore(Pinia.useChatStore(), props);
     const t = Vue.inject('t');
+    const capabilityActive = Vue.ref(true);
+    const treeVisible = Vue.ref(props.treeInitiallyVisible);
 
     // --- Shared utilities ---
     const getEffectiveWorkDir = () => store.effectiveWorkDir || '';
@@ -494,7 +540,7 @@ export default {
       const maxWidth = container ? container.offsetWidth * 0.5 : 400;
       const onMove = (ev) => {
         const clientX = isTouch ? ev.touches[0].clientX : ev.clientX;
-        treePanelWidth.value = Math.max(120, Math.min(maxWidth, startWidth + (clientX - startX)));
+        treePanelWidth.value = Math.max(120, Math.min(maxWidth, startWidth - (clientX - startX)));
       };
       const onEnd = () => {
         isTreeResizing.value = false;
@@ -599,6 +645,7 @@ export default {
       store, normalizePath, getEffectiveWorkDir,
       openFiles: tabs.openFiles,
       activeFileIndex: tabs.activeFileIndex,
+      setTreeVisible: visible => { treeVisible.value = !!visible; },
       activeFile: tabs.activeFile,
       fileLoading: tabs.fileLoading,
       fileSaving: tabs.fileSaving,
@@ -608,7 +655,9 @@ export default {
       tree, fp, qo, ops,
       mdPreviewMode: preview.mdPreviewMode,
       renderOfficeLocal: preview.renderOfficeLocal,
-      editorContainer, debugStatus: editor.debugStatus
+      editorContainer, debugStatus: editor.debugStatus,
+      routeKey: props.routeKey,
+      workspaceGeneration: props.workspaceGeneration,
     });
 
     // --- Wrapped operation callbacks (pass t at init time) ---
@@ -680,6 +729,7 @@ export default {
 
     // --- Global keyboard shortcuts ---
     const handleGlobalKeydown = (e) => {
+      if (!capabilityActive.value) return;
       const isVisible = rootEl.value && rootEl.value.offsetParent !== null;
       if (!isVisible && !qo.quickOpenVisible.value && !qo.goToLineVisible.value && !find.findBarVisible.value) return;
 
@@ -721,7 +771,7 @@ export default {
     // --- Lifecycle ---
     Vue.onMounted(() => {
       window.addEventListener('workbench-message', ws.handleWorkbenchMessage);
-      window.addEventListener('open-file-in-explorer', ws.handleOpenFile);
+      window.addEventListener('workbench-open-file-in-active-view', ws.handleOpenFile);
       window.addEventListener('conversation-deleted', tabs.handleConversationDeleted);
       window.addEventListener('keydown', handleGlobalKeydown);
       document.addEventListener('click', handleDocumentClick);
@@ -733,9 +783,21 @@ export default {
       }
     });
 
+    Vue.onActivated(() => {
+      capabilityActive.value = true;
+    });
+
+    Vue.onDeactivated(() => {
+      capabilityActive.value = false;
+      qo.closeQuickOpen();
+      qo.closeGoToLine();
+      find.closeFindBar();
+      ops.hideContextMenu();
+    });
+
     Vue.onUnmounted(() => {
       window.removeEventListener('workbench-message', ws.handleWorkbenchMessage);
-      window.removeEventListener('open-file-in-explorer', ws.handleOpenFile);
+      window.removeEventListener('workbench-open-file-in-active-view', ws.handleOpenFile);
       window.removeEventListener('conversation-deleted', tabs.handleConversationDeleted);
       window.removeEventListener('keydown', handleGlobalKeydown);
       document.removeEventListener('click', handleDocumentClick);
@@ -746,6 +808,7 @@ export default {
 
     return {
       store, debugStatus: editor.debugStatus, rootEl,
+      treeVisible,
       isMobile, mobileView, mobileGoBack,
       fontSize, zoomIn, zoomOut, onWheel,
       treePath: tree.treePath, treeRootPath: tree.treeRootPath,

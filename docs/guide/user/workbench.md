@@ -1,122 +1,129 @@
 # Workbench
 
-Workbench is the **dev tool panel** integrated to the right of the Yeaft chat surface — terminal, file browser, Git, port proxy, all running on the Agent machine, **without you opening SSH or VS Code**.
+Workbench is the development panel on the right side of Chat and Yeaft Sessions. Its tools run on the selected Agent and are scoped to the currently selected Session and working directory.
 
-Use case: "I'm discussing code with Claude and want to glance at output / tweak a file / run a test inline."
+## Open and close Workbench
 
-## Open Workbench
+Use the **Workbench** action in the Chat header or Yeaft Session actions.
 
-- The **Workbench icon** in the sidebar header (panel layout icon)
-- Also present in the collapsed sidebar
-- Opens the Workbench panel on the right of the chat area
-- **Maximize** — fill all space except the sidebar
-- **Collapse** — minimize to an edge
-- Drag the left **resize handle** to change width
+Workbench opens on a launcher with four capability cards:
 
-> Which Workbench tabs (terminal / files / git / proxy) are available depends on the Agent's capabilities (`terminal`, `file_editor`, etc.). Unsupported tabs don't render.
+- **Terminal** — run commands in the current Session working directory
+- **Git** — inspect repository status and diffs
+- **Files** — browse, preview, and edit Agent-local files
+- **Browser** — view and control the Agent-local browser when Browser Runtime is available
+
+All four cards remain visible. A card marked **Unavailable on this Agent** can be opened to see the current availability explanation, but it does not start a fake or partial tool.
+
+Only the capability you select is started. Closing the capability returns focus to its launcher card; closing Workbench collapses the whole panel. You can also maximize the panel or drag its left resize handle.
+
+Workbench follows the canonical Session route. Switching to another Session on the same Agent returns to the launcher and isolates Terminal, Git, and Files state from the previous Session.
 
 ## Terminal
 
-Full terminal emulator (xterm.js + PTY) connected to the Agent machine:
+Terminal provides an xterm.js terminal connected to a PTY on the Agent:
 
-- **Split** — header buttons ─ (horizontal) / │ (vertical), run multiple terminals at once
-- **Close panel** — × on the active panel
-- **Auto-spawn** — Agent's bash tool calls **automatically** create a terminal panel for output
-- Click a panel to make it active (highlighted border)
-- Fonts / colors follow theme
-- Full terminal feature set: vim, tmux, htop all work
+- opens in the selected Session's working directory
+- supports horizontal and vertical splits
+- supports normal terminal applications such as `vim`, `tmux`, and `htop`
+- keeps terminal state only within the owning Session route
+
+Use the Terminal toolbar to split or close terminal panes. Use the Workbench back action to return to the capability launcher without closing the entire Workbench.
 
 ## Files
 
-VS Code-style file browser + editor.
+Files provides a VS Code-style file tree, editor, and preview surface.
 
-### File tree (left)
-- Hierarchical, expandable / collapsible
-- Type-aware file / folder icons
-- **Search** — top input filters by name
-- **Ctrl+P** — quick open file search (fuzzy)
-- **+ New file** / **New folder** — toolbar buttons
-- **🗑 Delete** / **➡ Move** — action toolbar after selection
-- **↻ Refresh** — reload the tree
-- **▼ Collapse all** — fold every expanded directory
-- **📂 Open folder** — change root via folder picker
-- **Drag-drop upload** — drag files from desktop onto the tree
+### File tree
 
-### Editor (right, CodeMirror)
-- **Multiple tabs** — multiple files open at once
-- **Syntax highlighting** — all mainstream languages
-- **Find / replace** — Ctrl+F / Ctrl+H
-- **Ctrl+S** to save (writes to the Agent machine)
-- **Office docs** — doc/docx/xls/xlsx/ppt with optional local preview or Office Online (configured in Settings)
-- **Image preview** — png/jpg/gif/webp render inline
-- **PDF preview** — embedded renderer
+- expand and collapse directories
+- use `Ctrl+P` for quick open
+- create, delete, move, copy, or upload files
+- refresh the tree or choose another folder inside the current Session workspace
 
-**Font size** — Ctrl+Wheel resizes the file-tree font.
+### Editor and previews
+
+- edit multiple files with syntax highlighting
+- use `Ctrl+F` / `Ctrl+H` to find and replace
+- use `Ctrl+S` to save on the Agent
+- preview Markdown, images, PDFs, and supported Office documents
+
+Opening a file reference from chat opens Workbench directly in Files for the current Session route.
 
 ## Git
 
-Visual git status viewer:
+Git shows the repository selected for the current Session:
 
-- **Branch display** — current branch + ↑N behind / ↓N ahead commits
-- **Push** — push pending commits
-- **Pull** — pull from remote
-- **Fetch** — fetch only, no merge
-- **File list**:
-  - Staged changes
-  - Unstaged changes
-  - Untracked files
-  - Per-row status markers (M / A / D / R / ?)
-- **Diff viewer** — side-by-side or unified
-- **Stage / unstage** — single file or all
-- **Commit** — write a commit message + commit
-- **Branch switch** — dropdown to switch / create branches
-- **Working directory** — folder picker to choose the repo
+- branch and ahead/behind status
+- staged, modified, and untracked files
+- file diffs
+- stage, unstage, discard, commit, and push actions
+- an optional folder picker for another repository within the current Session workspace
 
-> Not supported: visual merge conflict resolution (use the terminal), interactive rebase.
+Use Terminal for merge-conflict resolution and interactive rebase.
 
-## Port Proxy
+## Browser
 
-Expose Agent-machine local services through the browser:
+Browser opens an isolated Chromium process on the selected Agent and displays its active tab as a live WebRTC video stream. Browser Sessions are memory-only, use a temporary profile, and are bounded by the Agent's configured Session and idle limits.
 
-- **+ Add port** — Agent, host, port, optional label
-- **Toggle** — enable / disable rules
-- **🌐 Open in browser** — new tab to the proxy URL
-- **📋 Copy URL**
+The current viewer is read-only. Navigation, keyboard, pointer, and scroll control arrive in the next Browser Runtime phase; the UI does not pretend those controls are available in this release.
 
-Typical uses:
-- `npm run dev` on the Agent (`:3000`) → add proxy → browse
-- Jupyter on the Agent (`:8888`) → proxy → browse
-- Remote DB management UIs
+### Enable Browser Runtime
 
-> Port Proxy also exists under Settings → Proxy with shared data.
+The viewer data plane currently supports **Linux x64 Agents only**. Other platforms may be able to run CLI install/status commands, but they do not advertise a ready viewer capability.
 
-## Working with chat
+Browser routes are available on the Server by default. The selected Agent still stays disabled and downloads nothing until the user explicitly enables Browser:
 
-Workbench complements chat, not replaces it:
+1. Select the Linux x64 Agent and open **Workbench → Browser**. If Browser is not ready, the launcher says **Enable required** and the setup panel shows the exact pinned build and platform download size. Opening the panel does not start a download.
+2. Click **Enable Browser** once. Workbench shows the real byte count and percentage while the Agent downloads and verifies the archive. The Agent installs it only in that Agent instance's data directory, persists enablement, runs the full media probe, refreshes capabilities, and automatically opens the Viewer. There is no second enable button and no Agent restart on this UI path.
+3. Configure ICE for the deployment. `BROWSER_STUN_URLS` is optional for direct connectivity. Production deployments should configure `BROWSER_TURN_URLS` and `BROWSER_TURN_SECRET`; use `BROWSER_ICE_TRANSPORT_POLICY=relay` when direct candidates are not allowed. The URLs are comma-separated.
 
-- **AI writes files** → open Files to inspect / tweak
-- **AI runs commands** → terminal panel auto-spawns
-- **AI changes git state** → Git tab refreshes
-- **AI starts a service** → add a Port Proxy to access directly
+Administrators can set `BROWSER_RUNTIME_ENABLED=false` and restart the Server to disable Browser setup, signaling, and viewer routes globally. This is an administrative off switch, not a normal user setup step.
 
-## Performance notes
+For unattended administration, use the equivalent instance-scoped CLI. Every command must select the same `--name` or `--yeaft-dir` as the running Agent:
 
-- Opening lots of large files, many long-running terminals, multiple dev server proxies — browser slows
-- Close unused tabs / panels for instant relief
-- Files editor on huge files (>10MB) gets laggy; use terminal instead
+```bash
+yeaft-agent browser install --name <agent-instance>
+yeaft-agent browser probe --name <agent-instance>
+yeaft-agent browser enable --name <agent-instance>
+yeaft-agent restart --name <agent-instance>  # managed Agent service
+yeaft-agent browser status --name <agent-instance>
+```
+
+The CLI `enable` command persists `browserRuntime.enabled=true`; it does not refresh an already running Agent process. Restart a managed service, or stop and start a foreground Agent, after CLI enablement. `browser probe` exercises the pinned Chrome build, extension, tab capture, offscreen runtime, and WebRTC media path. `browser status` only reports selected-instance configuration and managed-browser installation state, so `installed: true` by itself does not mean the viewer is ready.
+
+A successful Linux tab-capture probe advertises `browser_runtime`, `browser_webrtc`, and `browser_capture_tab`. Workbench enables the viewer only after Web protocol negotiation, the Server's administrative off switch, and the complete Agent capability combination all allow it. Older Agents that do not advertise `browser_runtime_setup` remain compatible when they already advertise the probe-ready viewer capabilities.
+
+A deployment without TURN may work over direct ICE, but it is a degraded direct-only setup and is not a production availability guarantee across NATs or restrictive networks.
+
+### Session lifecycle
+
+- opening Browser restores an existing ready Browser Session for that Agent or creates one
+- closing the Browser capability detaches only the viewer; the Agent reclaims a no-viewer Session after the configured idle timeout
+- **End browser** closes Chromium and deletes its temporary profile immediately
+- WebSocket or Agent transport replacement invalidates the peer generation and closes Agent-owned Browser Sessions fail-closed
+- SDP, ICE candidates, TURN credentials, video, and temporary profile data are never written to Chat or Yeaft transcripts
 
 ## Troubleshooting
 
-**Some Workbench tabs missing**
-- Agent doesn't support that capability — upgrade Agent or check startup logs
+**A capability is unavailable**
 
-**Terminal won't open / stuck loading**
-- Agent-side PTY startup failed — check `yeaft-agent logs`
-- Often node-pty is missing; reinstall Agent
+- for Browser, first run `yeaft-agent browser status --name <agent-instance>` and confirm that the command reports the same `yeaftDir` as the running Agent
+- run `yeaft-agent browser probe --name <agent-instance>`; a nonzero exit or `ok: false` means the Chrome/media path is not ready
+- confirm the Agent is Linux x64, the Server was not explicitly started with `BROWSER_RUNTIME_ENABLED=false`, and the Agent advertises `browser_runtime`, `browser_webrtc`, and `browser_capture_tab`
+- for other capabilities, verify that the selected Agent advertises the required capability, including `workbench_session_routes` for route-scoped tools
+- upgrade the Agent if necessary and check its startup logs
 
-**Files editor save fails**
-- Agent-side permission issue — confirm the Agent user can write that path
+**Terminal does not open**
 
-**Port Proxy won't connect**
-- Target port isn't actually listening on the Agent — verify the service is up
-- Agent firewall blocking — check server / Agent error logs
+- check the Agent logs for PTY startup errors
+- verify that the Agent installation includes the supported PTY backend
+
+**Files or Git points at the wrong project**
+
+- confirm the currently selected Session and its working directory
+- close and reopen the capability after changing Session metadata
+
+**Files cannot save**
+
+- confirm that the Agent process user can write to the selected path

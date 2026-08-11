@@ -33,3 +33,21 @@ jobs:
 
       - name: Build frontend
         run: npm run build
+
+  browser-runtime-windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Browser Runtime Windows ownership tests
+        run: npm run test:focus -- test/agent/browser-runtime.test.js

@@ -73,11 +73,12 @@ export async function extractAndWriteMemorySegments(opts) {
       errors.push({ scope, error: err.message, rawSnippet: err.rawSnippet || '' });
     }
 
+    // Session memory must contain extracted facts and reusable experience, not a
+    // serialized transcript tail. Raw message ids, roles, and tool payloads are
+    // execution history; copying them into canonical Dream content makes that
+    // history re-enter later provider requests as system-prompt prose.
     const recent = scope === `sessions/${opts.sessionId}`
-      ? [
-        buildRecentSegment({ scope, messages, now }),
-        buildRecentExperienceSegment({ scope, extracted, now }),
-      ].filter(Boolean)
+      ? [buildRecentExperienceSegment({ scope, extracted, now })].filter(Boolean)
       : [];
     if (extracted.length === 0 && recent.length === 0) continue;
 
@@ -198,23 +199,6 @@ function normalizeSourceMessageIds(value) {
     }
   }
   return ids;
-}
-
-function buildRecentSegment({ scope, messages, now }) {
-  const recentMessages = messages.slice(-RECENT_MESSAGE_COUNT);
-  const body = [
-    'Recent session details from the latest Dream pass:',
-    ...recentMessages.map(m => `- ${m.id} ${m.role}${m.vpId ? `/${m.vpId}` : ''}: ${oneLine(m.body)}`),
-  ].join('\n');
-  return makeSegment({
-    scope,
-    kind: 'context',
-    tags: ['recent', 'current'],
-    sourceMessages: recentMessages.map(m => m.id),
-    createdAt: now,
-    updatedAt: now,
-    body,
-  });
 }
 
 function buildRecentExperienceSegment({ scope, extracted, now }) {

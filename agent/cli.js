@@ -61,14 +61,24 @@ const SERVICE_COMMANDS = ['install', 'uninstall', 'start', 'stop', 'restart', 's
 
 if (command === 'doctor') {
   await handleDoctorCommand(subArgs);
+} else if (command === 'browser') {
+  try {
+    const { handleBrowserCommand } = await import('./browser-runtime/cli.js');
+    await handleBrowserCommand(subArgs);
+  } catch (error) {
+    console.error(`Browser Runtime command failed: ${error.code || error.message}`);
+    process.exitCode = 1;
+  }
 } else if (command === 'llm') {
   await handleLlmCommand(subArgs);
 } else if (command === 'local') {
+  await handleLocalCommand(subArgs);
+} else if (command === 'container') {
   try {
-    const { runLocal } = await import('./local-run.js');
-    await runLocal(subArgs);
+    const { runContainerCli } = await import('./container-cli.js');
+    await runContainerCli(subArgs);
   } catch (error) {
-    console.error(`Local run failed: ${error.message}`);
+    console.error(`Container Agent failed: ${error.code || error.message}`);
     process.exit(1);
   }
 } else if (command === 'upgrade') {
@@ -84,6 +94,37 @@ if (command === 'doctor') {
   parseAndStart(args);
 }
 
+/** Dispatch the local foreground and managed-service command family. */
+export async function handleLocalCommand(subArgs, options = {}) {
+  const printHelpFn = options.printHelp || printHelp;
+  const warn = options.warn || console.warn;
+  const loadLocalService = options.loadLocalService || (() => import('./local-service.js'));
+  const loadLocalRun = options.loadLocalRun || (() => import('./local-run.js'));
+  try {
+    const localCommand = subArgs[0];
+    if (localCommand === '--help' || localCommand === '-h') {
+      printHelpFn();
+      return;
+    }
+    warnDeprecatedInstanceArg(subArgs, warn);
+    if (SERVICE_COMMANDS.includes(localCommand)) {
+      const { handleLocalServiceCommand } = await loadLocalService();
+      await handleLocalServiceCommand(localCommand, subArgs.slice(1));
+      return;
+    }
+    const { runLocal } = await loadLocalRun();
+    await runLocal(subArgs);
+  } catch (error) {
+    const message = `Local run failed: ${error.message}`;
+    if (options.onError) {
+      options.onError(message, error);
+      return;
+    }
+    console.error(message);
+    process.exit(1);
+  }
+}
+
 function printHelp() {
   console.log(`
   ${pkg.name} v${pkg.version}
@@ -91,6 +132,11 @@ function printHelp() {
   Usage:
     yeaft-agent [options]              Run agent in foreground
     yeaft-agent local [options]        Run local Web UI, server, and agent
+    yeaft-agent local --background      Run local mode in the background
+    yeaft-agent local install [options] Install local mode as a managed service
+    yeaft-agent local uninstall [options] Remove the local managed service
+    yeaft-agent local start|stop|restart|status|logs [options]
+                                      Control the local managed service
     yeaft-agent install [options]      Install as system service
     yeaft-agent uninstall [options]    Remove system service
     yeaft-agent start [options]        Start installed service
@@ -99,7 +145,12 @@ function printHelp() {
     yeaft-agent status [options]       Show service status
     yeaft-agent logs [options]         View service logs (follow mode)
     yeaft-agent doctor                 Diagnose service configuration
+    yeaft-agent browser install        Install the pinned Chrome for Testing build
+    yeaft-agent browser probe          Validate tabCapture → offscreen → WebRTC
+    yeaft-agent browser enable|disable Change the Browser Runtime feature flag
+    yeaft-agent browser status         Show config and managed browser install status
     yeaft-agent llm <command>          Configure local Yeaft LLM providers/models
+    yeaft-agent container <command>    Manage a Dockerized yeaft-agent
     yeaft-agent upgrade [--name <id>]  Upgrade and restart the selected service
     yeaft-agent --version              Show version
 
@@ -108,10 +159,16 @@ function printHelp() {
     --server <url>      WebSocket server URL (default: ws://localhost:3456)
     --name <name>       Agent name and instance id (default: computer name; invalid chars become -)
     --port <port>       Local server port (local command only; default: 6868)
+    --background, -d    Detach local mode after spawning it (local command only)
     --secret <secret>   Agent secret for authentication
     --work-dir <dir>    Default working directory (default: cwd)
     --yeaft-dir <dir>   Yeaft data directory for this instance
     --auto-upgrade      Check for updates on startup
+
+  Browser options:
+    --executable <path> Explicit compatible Chrome for Testing executable
+    --headful           Run the Browser Runtime probe with a visible browser
+    --name <id>         Select the named Agent instance
 
   Environment variables (alternative to flags):
     YEAFT_AGENT_INSTANCE Deprecated local service instance id override
@@ -124,6 +181,8 @@ function printHelp() {
   Examples:
     yeaft-agent local
     yeaft-agent local --name my-worker --port 7000
+    yeaft-agent local --name my-worker --background
+    yeaft-agent local install --name my-worker --port 7000
     yeaft-agent --server wss://your-server.com --name my-worker --secret xxx
     yeaft-agent install --server wss://your-server.com --name my-worker --secret xxx
     yeaft-agent install --server wss://your-server.com --name my-worker-2 --secret xxx
@@ -132,7 +191,7 @@ function printHelp() {
 `);
 }
 
-function printLlmHelp() {
+export function printLlmHelp() {
   console.log(`
   Configure local Yeaft LLM providers/models in ~/.yeaft/config.json.
 
@@ -215,7 +274,7 @@ async function handleLlmCommand(args) {
       const preset = args[1];
       if (preset === 'github-copilot') {
         result = await useGitHubCopilot(current, options);
-        writeLocalLlmConfig(result.config, configPath);
+        writeLocalLlmConfig(result.config, configPath, current);
         console.log(`Configured GitHub Copilot provider with ${result.discovery.models.length} ${result.discovery.source} models.`);
         if (result.discovery.warning) console.log(`Warning: ${result.discovery.warning}`);
         console.log(`Primary model: ${result.config.primaryModel}`);
@@ -224,7 +283,7 @@ async function handleLlmCommand(args) {
       }
       if (preset === 'openai-compatible') {
         result = await useOpenAICompatible(current, options, process.env);
-        writeLocalLlmConfig(result.config, configPath);
+        writeLocalLlmConfig(result.config, configPath, current);
         console.log(`Configured ${result.provider.name} with ${result.discovery.models.length} live models.`);
         console.log(`Primary model: ${result.config.primaryModel}`);
         if (result.config.fastModel) console.log(`Fast model: ${result.config.fastModel}`);
@@ -235,7 +294,7 @@ async function handleLlmCommand(args) {
 
     if (subcommand === 'add-provider') {
       result = addOrUpdateProvider(current, options, process.env);
-      writeLocalLlmConfig(result.config, configPath);
+      writeLocalLlmConfig(result.config, configPath, current);
       console.log(`${result.replaced ? 'Updated' : 'Added'} provider: ${result.provider.name}`);
       if (result.config.primaryModel) console.log(`Primary model: ${result.config.primaryModel}`);
       if (result.config.fastModel) console.log(`Fast model: ${result.config.fastModel}`);
@@ -244,7 +303,7 @@ async function handleLlmCommand(args) {
 
     if (subcommand === 'set-model') {
       result = setLocalModels(current, options);
-      writeLocalLlmConfig(result.config, configPath);
+      writeLocalLlmConfig(result.config, configPath, current);
       if (result.config.primaryModel) console.log(`Primary model: ${result.config.primaryModel}`);
       if (result.config.fastModel) console.log(`Fast model: ${result.config.fastModel}`);
       return;
@@ -252,7 +311,7 @@ async function handleLlmCommand(args) {
 
     if (subcommand === 'remove-provider') {
       result = removeProvider(current, options);
-      writeLocalLlmConfig(result.config, configPath);
+      writeLocalLlmConfig(result.config, configPath, current);
       console.log(result.removed ? `Removed provider: ${options.name}` : `Provider not found: ${options.name}`);
       if (result.cleared.length) {
         console.log(`Cleared ${result.cleared.join(', ')} because it referenced ${options.name}`);
@@ -384,7 +443,7 @@ async function runLlmSetup(current, configPath) {
     const fastAnswer = (await rl.question('Fast model number or id (optional): ')).trim();
     const fast = fastAnswer ? (ids[Number(fastAnswer) - 1] || fastAnswer) : null;
     const result = await useGitHubCopilot(current, { model: primary, fast, allowUnknownModel: false });
-    writeLocalLlmConfig(result.config, configPath);
+    writeLocalLlmConfig(result.config, configPath, current);
     console.log(`Configured GitHub Copilot with ${result.discovery.models.length} ${result.discovery.source} models.`);
     if (result.discovery.warning) console.log(`Warning: ${result.discovery.warning}`);
     console.log(`Primary model: ${result.config.primaryModel}`);

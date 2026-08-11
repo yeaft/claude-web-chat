@@ -2,6 +2,7 @@ import { useChatStore } from './stores/chat.js';
 import { useAuthStore } from './stores/auth.js';
 import { useVpStore } from './stores/vp.js';
 import { useSessionsStore } from './stores/sessions.js';
+import { useBrowserStore } from './stores/browser.js';
 import { createI18n } from './utils/i18n.js';
 import { installAuthFetch } from './utils/auth-fetch.js';
 import zhCN from './i18n/zh-CN.js';
@@ -12,12 +13,16 @@ import YeaftPage from './components/YeaftPage.js';
 import SplitPane from './components/SplitPane.js';
 import ToolLine from './components/ToolLine.js';
 import AppDialog from './components/AppDialog.js';
+import { removeLegacyYeaftHistoryDatabase } from './stores/helpers/legacy-yeaft-history-cache-cleanup.js';
+
+removeLegacyYeaftHistoryDatabase();
 
 // Make stores globally available for components
 window.Pinia = {
   ...Pinia,
   useChatStore: null,
-  useAuthStore: null
+  useAuthStore: null,
+  useBrowserStore: null
 };
 
 const App = {
@@ -78,6 +83,7 @@ window.Pinia.useChatStore = useChatStore;
 window.Pinia.useAuthStore = useAuthStore;
 window.Pinia.useVpStore = useVpStore;
 window.Pinia.useSessionsStore = useSessionsStore;
+window.Pinia.useBrowserStore = useBrowserStore;
 
 // Register global components
 app.component('ToolLine', ToolLine);

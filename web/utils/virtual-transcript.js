@@ -187,13 +187,10 @@ export function resolveTranscriptBottomFollow({ following = true, atBottom = fal
 export function resolveTranscriptUserFollow({
   following = true,
   atBottom = false,
-  resumeBoundaryReached = false,
-  direction = 0,
+  userScroll = false,
 } = {}) {
-  const scrollDirection = Number(direction) || 0;
-  if (scrollDirection < 0) return false;
-  if (!following) return scrollDirection > 0 && !!resumeBoundaryReached;
-  return !!atBottom;
+  if (userScroll) return false;
+  return !!following && !!atBottom;
 }
 
 const TRANSCRIPT_SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);

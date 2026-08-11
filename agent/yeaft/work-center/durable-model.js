@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-export const WORK_CENTER_SCHEMA_VERSION = 35;
+export const WORK_CENTER_SCHEMA_VERSION = 39;
 
 const MIGRATIONS = [
   ['23-conversation-stream', migrateConversationStream],
@@ -16,6 +16,10 @@ const MIGRATIONS = [
   ['33-coordinator-provider-turns', migrateCoordinatorProviderTurns],
   ['34-engine-turn-status-repair', repairEngineTurnStatusContract],
   ['35-coordinator-provider-claims', migrateCoordinatorProviderClaims],
+  ['36-dynamic-coordination', migrateDynamicCoordination],
+  ['37-run-acceptance-checks', migrateRunAcceptanceChecks],
+  ['38-action-closure-and-outputs', migrateActionClosureAndOutputs],
+  ['39-action-creation-source', migrateActionCreationSource],
 ];
 
 const MIGRATION_ALIASES = new Map([
@@ -476,6 +480,96 @@ function migrateCoordinatorProviderClaims(db) {
     CREATE INDEX IF NOT EXISTS idx_coordinator_provider_turns_claim
       ON coordinator_provider_turns(coordinator_turn_id, claim_owner, claim_epoch, status);
   `);
+}
+
+function migrateDynamicCoordination(db) {
+  if (!hasColumn(db, 'work_items', 'coordination_mode')) {
+    db.exec("ALTER TABLE work_items ADD COLUMN coordination_mode TEXT NOT NULL DEFAULT 'legacy'");
+  }
+  if (!hasColumn(db, 'work_items', 'final_result')) {
+    db.exec('ALTER TABLE work_items ADD COLUMN final_result TEXT');
+  }
+  if (!hasColumn(db, 'actions', 'source_action_ids')) {
+    db.exec("ALTER TABLE actions ADD COLUMN source_action_ids TEXT NOT NULL DEFAULT '[]'");
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_work_items_dynamic_status
+      ON work_items(coordination_mode, status, updated_at);
+    CREATE TRIGGER IF NOT EXISTS trg_work_item_final_result_immutable
+    BEFORE UPDATE OF final_result ON work_items
+    WHEN OLD.final_result IS NOT NULL AND NEW.final_result IS NOT OLD.final_result
+    BEGIN
+      SELECT RAISE(ABORT, 'WorkItem final result is immutable');
+    END;
+  `);
+}
+
+function migrateRunAcceptanceChecks(db) {
+  if (!hasColumn(db, 'runs', 'acceptance_checks')) {
+    db.exec("ALTER TABLE runs ADD COLUMN acceptance_checks TEXT NOT NULL DEFAULT '[]'");
+  }
+  db.exec(`
+    DROP TRIGGER IF EXISTS trg_runs_terminal_identity_immutable;
+    CREATE TRIGGER IF NOT EXISTS trg_runs_terminal_identity_immutable
+    BEFORE UPDATE ON runs
+    WHEN OLD.terminal_status IS NOT NULL AND (
+      NEW.action_id IS NOT OLD.action_id OR NEW.work_item_id IS NOT OLD.work_item_id OR
+      NEW.owner_boot_id IS NOT OLD.owner_boot_id OR NEW.lease_epoch IS NOT OLD.lease_epoch OR
+      NEW.ordinal IS NOT OLD.ordinal OR NEW.started_at IS NOT OLD.started_at OR
+      NEW.status IS NOT OLD.status OR NEW.ended_at IS NOT OLD.ended_at OR
+      NEW.terminal_status IS NOT OLD.terminal_status OR NEW.terminal_at IS NOT OLD.terminal_at OR
+      NEW.response IS NOT OLD.response OR NEW.summary IS NOT OLD.summary OR
+      NEW.evidence IS NOT OLD.evidence OR NEW.acceptance_checks IS NOT OLD.acceptance_checks OR
+      NEW.waiting_reason IS NOT OLD.waiting_reason OR NEW.error IS NOT OLD.error OR
+      NEW.failure_kind IS NOT OLD.failure_kind OR NEW.failure_code IS NOT OLD.failure_code OR
+      NEW.review_decision IS NOT OLD.review_decision OR NEW.contract_patch IS NOT OLD.contract_patch OR
+      NEW.checkpoint IS NOT OLD.checkpoint)
+    BEGIN
+      SELECT RAISE(ABORT, 'terminal Run result is immutable');
+    END;
+  `);
+}
+
+function migrateActionClosureAndOutputs(db) {
+  if (!hasColumn(db, 'work_items', 'delivery_target')) {
+    db.exec('ALTER TABLE work_items ADD COLUMN delivery_target TEXT');
+  }
+  if (!hasColumn(db, 'actions', 'close_reason')) {
+    db.exec('ALTER TABLE actions ADD COLUMN close_reason TEXT');
+  }
+  if (!hasColumn(db, 'actions', 'closed_at')) {
+    db.exec('ALTER TABLE actions ADD COLUMN closed_at INTEGER');
+  }
+  if (!hasColumn(db, 'runs', 'outputs')) {
+    db.exec("ALTER TABLE runs ADD COLUMN outputs TEXT NOT NULL DEFAULT '[]'");
+  }
+  db.exec(`
+    DROP TRIGGER IF EXISTS trg_runs_terminal_identity_immutable;
+    CREATE TRIGGER IF NOT EXISTS trg_runs_terminal_identity_immutable
+    BEFORE UPDATE ON runs
+    WHEN OLD.terminal_status IS NOT NULL AND (
+      NEW.action_id IS NOT OLD.action_id OR NEW.work_item_id IS NOT OLD.work_item_id OR
+      NEW.owner_boot_id IS NOT OLD.owner_boot_id OR NEW.lease_epoch IS NOT OLD.lease_epoch OR
+      NEW.ordinal IS NOT OLD.ordinal OR NEW.started_at IS NOT OLD.started_at OR
+      NEW.status IS NOT OLD.status OR NEW.ended_at IS NOT OLD.ended_at OR
+      NEW.terminal_status IS NOT OLD.terminal_status OR NEW.terminal_at IS NOT OLD.terminal_at OR
+      NEW.response IS NOT OLD.response OR NEW.summary IS NOT OLD.summary OR
+      NEW.evidence IS NOT OLD.evidence OR NEW.outputs IS NOT OLD.outputs OR
+      NEW.acceptance_checks IS NOT OLD.acceptance_checks OR
+      NEW.waiting_reason IS NOT OLD.waiting_reason OR NEW.error IS NOT OLD.error OR
+      NEW.failure_kind IS NOT OLD.failure_kind OR NEW.failure_code IS NOT OLD.failure_code OR
+      NEW.review_decision IS NOT OLD.review_decision OR NEW.contract_patch IS NOT OLD.contract_patch OR
+      NEW.checkpoint IS NOT OLD.checkpoint)
+    BEGIN
+      SELECT RAISE(ABORT, 'terminal Run result is immutable');
+    END;
+  `);
+}
+
+function migrateActionCreationSource(db) {
+  if (!hasColumn(db, 'actions', 'creation_source')) {
+    db.exec("ALTER TABLE actions ADD COLUMN creation_source TEXT NOT NULL DEFAULT 'legacy'");
+  }
 }
 
 function migrateReliabilityGuards(db) {

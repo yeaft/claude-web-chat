@@ -131,13 +131,6 @@
   margin-bottom: 2px;
 }
 
-.turn-actions-summary {
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.4;
-  padding: 3px 4px 5px;
-}
-
 .turn-actions-latest {
   display: flex;
   flex-direction: column;
@@ -272,9 +265,11 @@
    No transition on transform — flip should be instant (not animated). */
 .svg-cat-walk {
   position: absolute;
-  left: 0;
+  left: 40px;
   bottom: 8px;
   display: inline-block;
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
 }
 
 .typing-indicator > span:not(.typing-status-text):not(.svg-cat-walk):not(.svg-dog-scene) {
@@ -1314,6 +1309,18 @@
 .markdown-body a:hover {
   text-decoration: underline;
   color: var(--accent-blue-hover);
+}
+
+.markdown-body a.message-file-reference {
+  color: var(--accent-blue);
+  text-decoration: none;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.markdown-body a.message-file-reference:hover {
+  color: var(--accent-blue-hover);
+  text-decoration: underline;
 }
 
 .markdown-body img {

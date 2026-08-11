@@ -196,6 +196,14 @@ export function handleMessage(store, msg) {
       store.applyWorkCenterEvent(msg.agentId, msg.event);
       break;
 
+    case 'client_hello_ack':
+      store.workbenchRouteProtocolSupported = msg.workbenchRouteProtocol === 1;
+      store.browserRuntimeProtocolSupported = msg.browserRuntimeProtocol === 1;
+      store.browserRuntimeSetupProtocolSupported = msg.browserRuntimeSetupProtocol === 1;
+      store.browserRuntimeServerEnabled = msg.browserRuntimeEnabled === true;
+      window.dispatchEvent(new CustomEvent('browser-runtime-message', { detail: msg }));
+      break;
+
     case 'auth_result':
       if (msg.success) {
         store.authenticated = true;
@@ -213,6 +221,13 @@ export function handleMessage(store, msg) {
           store.serverEncryptionRequired = false;
         }
         store.yeaftSessionInventoryCompleteSupported = msg.yeaftSessionInventoryComplete === true;
+        // auth_result advertises Server support; the route protocol is usable
+        // only after Server confirms it processed our client_hello.
+        store.workbenchRouteProtocolSupported = false;
+        store.browserRuntimeProtocolSupported = false;
+        store.browserRuntimeSetupProtocolSupported = false;
+        store.browserRuntimeServerEnabled = msg.browserRuntimeEnabled === true;
+        window.dispatchEvent(new CustomEvent('browser-runtime-message', { detail: msg }));
         store.yeaftSessionHydrateSlices = [];
         store._hasHandledYeaftSessionHydrate = false;
         store.yeaftSessionHydrateError = null;
@@ -243,12 +258,9 @@ export function handleMessage(store, msg) {
 
     case 'agent_list':
       handleAgentList(store, msg);
-      // Legacy Servers broadcast agent_list before sending any Session slices.
-      // Only an actual slice can start the quiet completion window; otherwise a
-      // slow first slice would turn the current live inventory into a fake empty one.
-      if (store.workCenterOpen && store.workCenterAgentId) {
-        store.listWorkItems(store.workCenterAgentId).catch(() => {});
-      }
+      // Work Center projects live scheduler changes through work_center_event.
+      // Routine inventory frames also carry latency/status updates, so refreshing
+      // here turns every broadcast into a visible loading → empty/content cycle.
       break;
 
     case 'yeaft_session_hydrate': {
@@ -418,7 +430,13 @@ export function handleMessage(store, msg) {
       break;
 
     case 'yeaft_history_window': {
-      if (!store.pendingYeaftHistoryWindow?.(msg)) break;
+      const pendingWindow = store.pendingYeaftHistoryWindow?.(msg);
+      if (!pendingWindow) break;
+      if (pendingWindow.pending?.prefetch === true) msg.prefetch = true;
+      // Re-check the exact pending object immediately before merging. Owner and
+      // Session cleanup replaces the pending map, so a response captured before
+      // that transition cannot write plaintext rows after it.
+      if (store.pendingYeaftHistoryWindow?.(msg)?.pending !== pendingWindow.pending) break;
       const conversationId = msg.error ? null : handleYeaftHistoryWindow(store, msg);
       store.handleYeaftHistoryWindow(msg, conversationId);
       break;
@@ -470,6 +488,8 @@ export function handleMessage(store, msg) {
     // we route it from the top-level switch here. Without this, the debug
     // panel only shows turns that happened after the panel was opened.
     case 'yeaft_debug_history': {
+      const panelAgentId = store.yeaftDebugPanel?.agentId || null;
+      if (panelAgentId && msg?.agentId && msg.agentId !== panelAgentId) break;
       const requestId = typeof msg?.requestId === 'string' ? msg.requestId : '';
       const isDetailFetch = typeof msg?.detailTurnId === 'string' && msg.detailTurnId;
       const expectedRequestId = isDetailFetch
@@ -550,11 +570,15 @@ export function handleMessage(store, msg) {
         if (!hydrated) continue;
         const key = loopKey(hydrated);
         hydratedKeys.add(key);
-        // If a live loop exists for the same logical row, keep it; it may
-        // carry richer in-flight fields than the persisted snapshot. The
-        // hydrated order still drives the final ordering, so detail fetches
-        // restore long requests chronologically instead of appending gaps.
-        mergedLoops.push(liveByKey.get(key) || hydrated);
+        // Detail fetches are the authoritative full snapshot; merge them over
+        // the live metadata row while preserving any live-only sequencing or
+        // status fields. List fetches remain lightweight and must not replace
+        // a richer live row. Hydrated order drives the final ordering so long
+        // requests are restored chronologically instead of appending gaps.
+        const live = liveByKey.get(key);
+        mergedLoops.push(isDetailFetch
+          ? { ...(live || {}), ...hydrated }
+          : (live || hydrated));
       }
       if (isDetailFetch) {
         for (const live of liveLoops) {
@@ -595,6 +619,9 @@ export function handleMessage(store, msg) {
       }
       store.yeaftDebugHistoryLoading = false;
       store.yeaftDebugHistoryError = typeof msg?.error === 'string' ? msg.error : null;
+      store.yeaftDebugHistoryProjection = msg?.projection && typeof msg.projection === 'object'
+        ? msg.projection
+        : null;
       store.yeaftDebugHistoryFetchedAt = Date.now();
       // Turn-level debug panel: a detail fetch that matches the panel's
       // current turn flips status to ready/error. Stale detail responses
@@ -959,7 +986,23 @@ export function handleMessage(store, msg) {
 
     case 'upgrade_agent_ack':
       console.log(`[Agent] Upgrade ${msg.success ? 'succeeded' : 'failed'} for agent: ${msg.agentId}`, msg.error || '');
-      window.dispatchEvent(new CustomEvent('agent-upgrade-ack', { detail: { agentId: msg.agentId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version, reason: msg.reason, currentNode: msg.currentNode, requiredNode: msg.requiredNode, minimumVersion: msg.minimumVersion } }));
+      window.dispatchEvent(new CustomEvent('agent-upgrade-ack', { detail: { agentId: msg.agentId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version, reason: msg.reason, currentNode: msg.currentNode, requiredNode: msg.requiredNode, requiredCapability: msg.requiredCapability } }));
+      break;
+
+    // Browser Runtime setup/lifecycle/signaling belongs to the dedicated browser store.
+    case 'browser_runtime_status_result':
+    case 'browser_runtime_install_progress':
+    case 'browser_runtime_error':
+    case 'browser_session_created':
+    case 'browser_session_error':
+    case 'browser_session_snapshot':
+    case 'browser_session_list_result':
+    case 'browser_peer_prepared':
+    case 'browser_peer_offer':
+    case 'browser_peer_ice_candidate':
+    case 'browser_peer_state':
+    case 'browser_peer_error':
+      window.dispatchEvent(new CustomEvent('browser-runtime-message', { detail: msg }));
       break;
 
     // Workbench messages - forward to components
@@ -968,6 +1011,7 @@ export function handleMessage(store, msg) {
     case 'terminal_closed':
     case 'terminal_error':
     case 'file_content':
+    case 'file_references_resolved':
     case 'file_saved':
     case 'directory_listing':
     case 'git_status_result':
@@ -975,6 +1019,7 @@ export function handleMessage(store, msg) {
     case 'git_op_result':
     case 'file_op_result':
     case 'file_search_result':
+    case 'file_tabs_restored':
       if (msg.type === 'file_content') console.log('[Store] Dispatching file_content workbench-message:', msg.type, msg.filePath);
       if (msg.type === 'directory_listing') console.log('[Store] Dispatching directory_listing workbench-message, convId:', msg.conversationId, 'entries:', msg.entries?.length);
       window.dispatchEvent(new CustomEvent('workbench-message', { detail: msg }));
@@ -1067,6 +1112,52 @@ export function handleMessage(store, msg) {
         };
       }
       break;
+
+    // Agent-level plugin configuration. Replies are request-scoped because
+    // the Plugin Center can inspect a non-current Agent.
+    case 'yeaft_plugins':
+    case 'yeaft_plugins_updated': {
+      const record = {
+        plugins: msg.plugins && typeof msg.plugins === 'object' ? msg.plugins : {},
+        error: msg.error || null,
+        loaded: true,
+        at: Date.now(),
+      };
+      if (msg.agentId) {
+        store.pluginConfigByAgent = { ...store.pluginConfigByAgent, [msg.agentId]: record };
+      }
+      const pending = msg.requestId ? store._pluginPending?.[msg.requestId] : null;
+      if (pending) {
+        clearTimeout(pending.timer);
+        delete store._pluginPending[msg.requestId];
+        pending.resolve(record);
+      }
+      break;
+    }
+
+    case 'yeaft_plugin_catalog_result': {
+      const pending = msg.requestId ? store._pluginPending?.[msg.requestId] : null;
+      const catalog = msg.catalog && typeof msg.catalog === 'object'
+        ? {
+            tools: Array.isArray(msg.catalog.tools) ? msg.catalog.tools : [],
+            skills: Array.isArray(msg.catalog.skills) ? msg.catalog.skills : [],
+            mcpServers: Array.isArray(msg.catalog.mcpServers) ? msg.catalog.mcpServers : [],
+          }
+        : { tools: [], skills: [], mcpServers: [] };
+      const key = pending?.key || store.pluginCatalogKey?.(msg.agentId, '');
+      if (key) {
+        store.pluginCatalogByKey = {
+          ...store.pluginCatalogByKey,
+          [key]: { catalog, loading: false, error: msg.error || null, loaded: true, at: Date.now() },
+        };
+      }
+      if (pending) {
+        clearTimeout(pending.timer);
+        delete store._pluginPending[msg.requestId];
+        pending.resolve({ catalog, error: msg.error || null });
+      }
+      break;
+    }
 
     // Local telemetry settings. Only bounded config is returned; raw trace
     // payloads remain agent-local.

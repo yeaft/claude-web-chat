@@ -12,7 +12,7 @@ export function getSystemdServicePath(instanceId = DEFAULT_INSTANCE_ID) {
   return join(homedir(), '.config', 'systemd', 'user', `${getServiceName(instanceId)}.service`);
 }
 
-function generateSystemdUnit(config) {
+export function generateSystemdUnit(config) {
   const nodePath = getNodePath();
   const cliPath = getCliPath();
   const logDir = getLogDir(config.instanceId);
@@ -38,7 +38,8 @@ ExecStart=${nodePath} ${cliPath}
 WorkingDirectory=${config.workDir || homedir()}
 Restart=on-failure
 RestartSec=10
-KillMode=process
+KillMode=mixed
+TimeoutStopSec=15
 ${envLines.join('\n')}
 Environment=PATH=${nodeBinDir}:${homedir()}/.local/bin:${homedir()}/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
 

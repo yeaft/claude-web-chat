@@ -26,6 +26,8 @@ import { DEFAULT_YEAFT_DIR } from './init.js';
 import { getModelEffortOptions, getThinkingCapability, modelSupportsEffort, resolveModel, parseModelRef, normalizeProviderModels, resolveContextWindow, resolveMaxOutputTokens } from './models.js';
 import { inferProtocolFromModelId } from './llm/router.js';
 import { normalizeKnownProviderForRuntime } from './llm/known-providers.js';
+import { createDenyAllPluginConfig, normalizePluginConfig } from './plugins.js';
+import { normaliseBrowserRuntimeSection } from '../browser-runtime/config.js';
 import { readWorkspaceFile } from './workspace-file.js';
 
 /** Default configuration values. */
@@ -351,6 +353,7 @@ function loadLegacyConfig(dir, overrides) {
     proxyUrl: overrides.proxyUrl || env.YEAFT_PROXY_URL || fileConfig.proxyUrl || 'http://localhost:6628',
     baseUrl: overrides.baseUrl || env.YEAFT_BASE_URL || fileConfig.baseUrl || null,
     adapter: overrides.adapter || env.YEAFT_ADAPTER || fileConfig.adapter || null,
+    imageApiUrl: overrides.imageApiUrl || env.YEAFT_IMAGE_API_URL || fileConfig.imageApiUrl || null,
     debug: overrides.debug !== undefined ? overrides.debug
       : env.YEAFT_DEBUG !== undefined ? isTruthy(env.YEAFT_DEBUG)
         : fileConfig.debug !== undefined ? fileConfig.debug : DEFAULTS.debug,
@@ -366,6 +369,8 @@ function loadLegacyConfig(dir, overrides) {
     // task-318: legacy path never had the `yeaft` section — defaults.
     yeaft: normaliseYeaftSection(null),
     telemetry: normaliseTelemetrySection(null),
+    browserRuntime: normaliseBrowserRuntimeSection(null),
+    plugins: {},
     providers: null,
     primaryModel: null,
     fastModel: null,
@@ -412,12 +417,20 @@ export function loadConfig(overrides = {}) {
   // Determine data directory
   const dir = overrides.dir || process.env.YEAFT_DIR || DEFAULTS.dir;
 
-  // Try config.json first
+  // Try config.json first. A missing file preserves legacy behavior, but an
+  // existing file that cannot be parsed (or is not an object) must not reopen
+  // a persisted Plugin restriction through the legacy fallback.
+  const configPath = join(dir, 'config.json');
+  const hasConfigFile = existsSync(configPath);
   const jsonConfig = readConfigJson(dir);
 
-  if (!jsonConfig) {
-    // No config.json → legacy path
-    return loadLegacyConfig(dir, overrides);
+  if (!jsonConfig || typeof jsonConfig !== 'object' || Array.isArray(jsonConfig)) {
+    const config = loadLegacyConfig(dir, overrides);
+    if (hasConfigFile) {
+      config.plugins = createDenyAllPluginConfig();
+      config.pluginConfigError = 'config.json is invalid or must contain an object';
+    }
+    return config;
   }
 
   // ─── Build config from config.json ────────────────────────
@@ -460,6 +473,18 @@ export function loadConfig(overrides = {}) {
   const resolvedMaxOutput = overrides.maxOutputTokens ?? jsonConfig.maxOutputTokens
     ?? resolveMaxOutputTokens(modelIdForInfo, { modelInfo });
 
+  // Missing plugins keeps the historical all-enabled behavior. A present but
+  // invalid schema must not collapse to `{}` because that is also all-enabled;
+  // use explicit empty allowlists until the user repairs config.json instead.
+  let plugins;
+  let pluginConfigError = null;
+  try {
+    plugins = normalizePluginConfig(jsonConfig.plugins);
+  } catch (err) {
+    plugins = createDenyAllPluginConfig();
+    pluginConfigError = err?.message || String(err);
+  }
+
   const config = {
     // Model
     model: overrides.model || model,
@@ -476,6 +501,7 @@ export function loadConfig(overrides = {}) {
     // General settings
     language: overrides.language || jsonConfig.language || DEFAULTS.language,
     debug: overrides.debug !== undefined ? overrides.debug : (jsonConfig.debug ?? DEFAULTS.debug),
+    imageApiUrl: overrides.imageApiUrl || jsonConfig.imageApiUrl || null,
     dir,
 
     // Token limits. Resolution order:
@@ -500,6 +526,14 @@ export function loadConfig(overrides = {}) {
     // don't pollute the flat config namespace used by chat code.
     yeaft: normaliseYeaftSection(jsonConfig.yeaft),
     telemetry: normaliseTelemetrySection(jsonConfig.telemetry),
+    browserRuntime: normaliseBrowserRuntimeSection(jsonConfig.browserRuntime),
+
+    // Agent-level tools / skills / MCP server allowlists. Missing fields mean
+    // all currently discovered capabilities remain enabled. A persisted schema
+    // error is represented by explicit empty allowlists so runtime policy fails
+    // closed instead of reopening every capability.
+    plugins,
+    pluginConfigError,
 
     // Legacy fields (null when using config.json)
     apiKey: overrides.apiKey || null,
@@ -598,7 +632,7 @@ export function loadConfig(overrides = {}) {
  * @returns {{ servers: object[], skipped: { name: string, reason: string, source: string }[] }}
  */
 export function loadMCPConfig(yeaftDir, jsonConfig, workDir, options = {}) {
-  const yeaftGlobal = loadGlobalMCPServers(yeaftDir, jsonConfig);
+  const yeaftGlobal = loadAgentMCPConfig(yeaftDir, jsonConfig);
   const externalUser = loadExternalUserMCPServers();
   const project = workDir
     ? loadProjectMCPServers(workDir, options)
@@ -606,7 +640,7 @@ export function loadMCPConfig(yeaftDir, jsonConfig, workDir, options = {}) {
 
   const servers = [];
   const seen = new Set();
-  for (const tier of [yeaftGlobal, externalUser.servers, project.servers]) {
+  for (const tier of [yeaftGlobal.servers, externalUser.servers, project.servers]) {
     for (const s of tier) {
       if (!s?.name || seen.has(s.name)) continue;
       seen.add(s.name);
@@ -615,6 +649,24 @@ export function loadMCPConfig(yeaftDir, jsonConfig, workDir, options = {}) {
   }
 
   return { servers, skipped: [...externalUser.skipped, ...project.skipped] };
+}
+
+/**
+ * Load only the Agent-owned MCP configuration tier. Plugin Center uses this
+ * catalog source so it reflects current Agent configuration rather than
+ * borrowed user/project MCP sources or a live runtime snapshot.
+ *
+ * An explicitly present `config.json.mcpServers` array is authoritative,
+ * including an empty array. The legacy `mcp.json` fallback applies only when
+ * that field is absent.
+ *
+ * @param {string} yeaftDir
+ * @param {object} [jsonConfig] — Already-parsed config.json (optional, avoids re-read)
+ * @returns {{ servers: object[], skipped: object[] }}
+ */
+export function loadAgentMCPConfig(yeaftDir, jsonConfig) {
+  const configured = jsonConfig === undefined ? readConfigJson(yeaftDir) : jsonConfig;
+  return { servers: loadGlobalMCPServers(yeaftDir, configured), skipped: [] };
 }
 
 /**
@@ -629,10 +681,10 @@ export function loadMCPConfig(yeaftDir, jsonConfig, workDir, options = {}) {
  * @returns {object[]}
  */
 function loadGlobalMCPServers(yeaftDir, jsonConfig) {
-  // Check config.json mcpServers field
+  // An explicitly present config.json array is authoritative, even when it
+  // is empty. Falling back in that case would resurrect removed MCP servers.
   if (jsonConfig && Array.isArray(jsonConfig.mcpServers)) {
-    const valid = jsonConfig.mcpServers.filter(s => s.name && s.command);
-    if (valid.length > 0) return valid;
+    return jsonConfig.mcpServers.filter(s => s.name && s.command);
   }
 
   // Fallback: standalone mcp.json

@@ -64,6 +64,7 @@ export function beginYeaftHistoryLoad(store, {
     requestId,
     generation,
     mode,
+    background: mode === 'prefetch',
     requestedAt: Date.now(),
     latestSeq: Number.isFinite(latestSeq) ? latestSeq : (previous.latestSeq ?? null),
   };
@@ -164,7 +165,9 @@ export function failYeaftHistoryLoad(store, { agentId, sessionId, requestId, err
 export function syncActiveYeaftHistoryLoad(store) {
   const { sessionKey } = activeYeaftHistoryIdentity(store);
   const state = sessionKey ? loadState(store, sessionKey) : null;
-  store.yeaftLoadingMoreHistory = !!state?.loading;
+  // Background prefetch owns the per-Session request fence but no visible
+  // spinner or manual-load gate; scrolling can continue against resident rows.
+  store.yeaftLoadingMoreHistory = !!state?.loading && state?.mode !== 'prefetch';
   store.yeaftHistoryLoadError = state?.error || null;
   store.yeaftHasMoreHistory = !!state?.hasMore;
   store.yeaftOldestLoadedSeq = Number.isFinite(state?.serverOldestFetchedSeq)

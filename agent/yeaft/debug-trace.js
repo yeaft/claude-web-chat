@@ -10,9 +10,10 @@
  * best-effort: failures are logged and never allowed to stop the agent.
  */
 
-import { promises as fsp } from 'fs';
+import { createReadStream, promises as fsp } from 'fs';
 import { basename, dirname, extname, join } from 'path';
 import { createHash, randomUUID } from 'crypto';
+import { createInterface } from 'readline';
 import { truncateUtf8Text } from './perf-trace.js';
 
 const TRACE_VERSION = 3;
@@ -35,6 +36,10 @@ const TRACE_APPEND_BATCH_MS = 100;
 const EVENT_FLUSH_INTERVAL_MS = 30_000;
 const MAX_SEARCH_PATTERN_CHARS = 300;
 const DEFAULT_TRACE_TEXT_MAX_BYTES = 256 * 1024;
+// A turn detail is returned as one WebSocket message. Keep its UI projection
+// comfortably below the Agent connection's 8 MiB outbound queue ceiling while
+// preserving the canonical file-backed trace without any extra truncation.
+const DEBUG_DETAIL_WIRE_MAX_BYTES = 6 * 1024 * 1024;
 
 function isPlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
@@ -127,9 +132,19 @@ function regexHasUnsafeQuantifiedGroup(pattern) {
 function buildTraceSearchDocument(trace) {
   const loops = Array.isArray(trace?.loops) ? trace.loops : [];
   const tools = Array.isArray(trace?.tools) ? trace.tools : [];
-  const toolNames = tools.map(t => t?.toolName || t?.name || '').filter(Boolean).join(' ');
-  const loopModels = loops.map(l => l?.model || '').filter(Boolean).join(' ');
-  const stopReasons = loops.map(l => l?.stopReason || '').filter(Boolean).join(' ');
+  const toolNames = [
+    ...tools.map(t => t?.toolName || t?.name || '').filter(Boolean),
+    ...(Array.isArray(trace?.toolNames) ? trace.toolNames : []),
+  ].join(' ');
+  const loopModels = [
+    ...loops.map(l => l?.model || '').filter(Boolean),
+    ...(Array.isArray(trace?.loopModels) ? trace.loopModels : []),
+  ].join(' ');
+  const stopReasons = [
+    ...loops.map(l => l?.stopReason || '').filter(Boolean),
+    ...(Array.isArray(trace?.stopReasons) ? trace.stopReasons : []),
+    trace?.finalStopReason || '',
+  ].filter(Boolean).join(' ');
   return [
     trace?.requestId,
     trace?.traceId,
@@ -596,7 +611,25 @@ function turnLocatorPath(rootDir, sessionId, turnId) {
 }
 
 function serializableTraceMeta(trace) {
-  const meta = { ...trace };
+  const loops = Array.isArray(trace?.loops) ? trace.loops : [];
+  const tools = Array.isArray(trace?.tools) ? trace.tools : [];
+  const usage = loops.reduce((acc, loop) => {
+    const normalized = normalizeUsage(loop?.usage || {});
+    acc.totalMs += Number(loop?.latencyMs || 0);
+    acc.totalTokens += Number(normalized.totalTokens || 0);
+    acc.summaryInputTokens += Number(normalized.totalInputTokens || 0);
+    acc.summaryOutputTokens += Number(normalized.outputTokens || 0);
+    return acc;
+  }, { totalMs: 0, totalTokens: 0, summaryInputTokens: 0, summaryOutputTokens: 0 });
+  const meta = {
+    ...trace,
+    loopCount: loops.length,
+    toolCount: tools.length,
+    ...usage,
+    loopModels: [...new Set(loops.map(loop => loop?.model).filter(Boolean))],
+    stopReasons: [...new Set(loops.map(loop => loop?.stopReason).filter(Boolean))],
+    toolNames: [...new Set(tools.map(tool => tool?.toolName || tool?.name).filter(Boolean))],
+  };
   delete meta._lastSnapshot;
   delete meta._persistedFormat;
   delete meta._persistedRequestDir;
@@ -639,6 +672,33 @@ async function readJsonLines(filePath) {
     catch { /* A process can leave one torn final append; prior records remain valid. */ }
   }
   return records;
+}
+
+async function countRequestEvents(requestDir) {
+  const meta = await readJson(requestMetaPath(requestDir));
+  if (!meta?.requestId) {
+    const legacy = await readJson(requestFilePath(requestDir));
+    return {
+      loopCount: Array.isArray(legacy?.loops) ? legacy.loops.length : 0,
+      toolCount: Array.isArray(legacy?.tools) ? legacy.tools.length : 0,
+    };
+  }
+  let loopCount = 0;
+  let toolCount = 0;
+  const stream = createReadStream(requestEventsPath(requestDir), { encoding: 'utf8' });
+  stream.on('error', () => {});
+  try {
+    const lines = createInterface({ input: stream, crlfDelay: Infinity });
+    for await (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line);
+        if (event?.type === 'loop' && event.record) loopCount += 1;
+        else if (event?.type === 'tool' && event.record) toolCount += 1;
+      } catch { /* Ignore one torn final append. */ }
+    }
+  } catch { /* Missing/unreadable event file counts as empty. */ }
+  return { loopCount, toolCount };
 }
 
 async function readRequestDir(requestDir) {
@@ -689,11 +749,11 @@ function summarizeTrace(trace, detailsLoaded = false) {
     threadId: trace?.threadId || null,
     openedAt: trace?.openedAt || 0,
     closedAt: trace?.closedAt || null,
-    totalMs: usage.totalMs,
-    totalTokens: usage.totalTokens,
-    summaryInputTokens: usage.summaryInputTokens,
-    summaryOutputTokens: usage.summaryOutputTokens,
-    loopCount: loops.length,
+    totalMs: loops.length > 0 ? usage.totalMs : Number(trace?.totalMs || 0),
+    totalTokens: loops.length > 0 ? usage.totalTokens : Number(trace?.totalTokens || 0),
+    summaryInputTokens: loops.length > 0 ? usage.summaryInputTokens : Number(trace?.summaryInputTokens || 0),
+    summaryOutputTokens: loops.length > 0 ? usage.summaryOutputTokens : Number(trace?.summaryOutputTokens || 0),
+    loopCount: loops.length > 0 ? loops.length : Number(trace?.loopCount || 0),
     memoryLoaded: null,
     memoryAdjust: null,
     tools: Array.isArray(trace?.tools) ? trace.tools.map(t => ({
@@ -745,6 +805,169 @@ function expandTrace(trace) {
     });
   }
   return { loops, turns: Array.from(turnsById.values()) };
+}
+
+function debugDetailTextSentinel(value, maxBytes, path, originalBytes = jsonByteLength(value)) {
+  const text = value == null ? '' : String(value);
+  const budget = Math.max(2, Math.floor(Number(maxBytes) || 0));
+  if (originalBytes <= budget) return text;
+  const marker = `\n... [wire truncated ${path}; original ${originalBytes} bytes]`;
+  const rawBytes = Math.max(1, Buffer.byteLength(text, 'utf8'));
+  const expansion = Math.max(1, originalBytes / rawBytes);
+  const markerBytes = jsonByteLength(marker) - 2;
+  let previewBytes = Math.max(0, Math.floor((budget - markerBytes - 2) / expansion));
+  let projected = `${truncateUtf8Text(text, previewBytes).value}${marker}`;
+  let projectedBytes = jsonByteLength(projected);
+  if (projectedBytes > budget && previewBytes > 0) {
+    previewBytes = Math.max(0, Math.floor(previewBytes * (budget / projectedBytes)) - 8);
+    projected = `${truncateUtf8Text(text, previewBytes).value}${marker}`;
+    projectedBytes = jsonByteLength(projected);
+  }
+  if (projectedBytes <= budget) return projected;
+  if (jsonByteLength(marker) <= budget) return marker;
+  return '';
+}
+
+function debugDetailJsonSentinel(value, maxBytes, path, originalBytes = jsonByteLength(value)) {
+  if (value == null) return value;
+  const budget = Math.max(0, Math.floor(Number(maxBytes) || 0));
+  if (originalBytes <= budget) return value;
+  const base = {
+    __truncated: true,
+    reason: 'debug_detail_wire_budget',
+    path,
+    originalBytes,
+    maxBytes: budget,
+  };
+  const baseBytes = jsonByteLength(base);
+  if (baseBytes > budget) return budget >= 4 ? null : '';
+  let preview = '';
+  try {
+    const encoded = JSON.stringify(value);
+    preview = debugDetailTextSentinel(
+      encoded,
+      Math.max(2, budget - baseBytes - 16),
+      path,
+      jsonByteLength(encoded),
+    );
+  } catch { /* metadata-only sentinel below */ }
+  const projected = preview ? { ...base, preview } : base;
+  return jsonByteLength(projected) <= budget ? projected : base;
+}
+
+function allocateDebugCandidateBudgets(candidates, totalBytes) {
+  const sorted = [...candidates].sort((a, b) => a.originalBytes - b.originalBytes || a.path.localeCompare(b.path));
+  let remainingBytes = Math.max(0, Math.floor(totalBytes));
+  let remainingCount = sorted.length;
+  for (let index = 0; index < sorted.length; index += 1) {
+    const candidate = sorted[index];
+    const fairShare = remainingCount > 0 ? Math.floor(remainingBytes / remainingCount) : 0;
+    if (candidate.originalBytes <= fairShare) {
+      candidate.budget = candidate.originalBytes;
+      remainingBytes -= candidate.budget;
+      remainingCount -= 1;
+      continue;
+    }
+    for (let tail = index; tail < sorted.length; tail += 1) {
+      const count = sorted.length - tail;
+      const budget = count > 0 ? Math.floor(remainingBytes / count) : 0;
+      sorted[tail].budget = budget;
+      remainingBytes -= budget;
+    }
+    break;
+  }
+}
+
+export function projectDebugDetailForWire(detail, maxBytes = DEBUG_DETAIL_WIRE_MAX_BYTES) {
+  // `fetchTurnDebug()` hands us a freshly expanded response object; mutate that
+  // disposable projection rather than cloning tens or hundreds of cumulative
+  // request snapshots. Canonical file records and the request cache are separate.
+  const wire = detail && typeof detail === 'object'
+    ? detail
+    : { loops: [], turns: [], dreamEvents: [] };
+  const payloadBudget = Math.max(0, maxBytes - 2048);
+  const candidates = [];
+  const addCandidate = (container, field, path) => {
+    if (!container || container[field] == null) return;
+    const value = container[field];
+    candidates.push({
+      container,
+      field,
+      path,
+      value,
+      originalBytes: jsonByteLength(value),
+      budget: 0,
+    });
+    // Measure the non-candidate envelope exactly once without serializing every
+    // cumulative request again after each replacement.
+    container[field] = null;
+  };
+
+  const loopFields = ['rawRequest', 'rawResponse', 'messages', 'requestBase', 'requestDelta', 'toolCalls', 'response', 'systemPrompt'];
+  for (const [loopIndex, loop] of (Array.isArray(wire.loops) ? wire.loops : []).entries()) {
+    if (!loop || typeof loop !== 'object') continue;
+    for (const field of loopFields) addCandidate(loop, field, `loops[${loopIndex}].${field}`);
+  }
+  for (const [turnIndex, turn] of (Array.isArray(wire.turns) ? wire.turns : []).entries()) {
+    if (!turn || typeof turn !== 'object') continue;
+    for (const field of ['userPrompt', 'memoryLoaded', 'memoryAdjust']) {
+      addCandidate(turn, field, `turns[${turnIndex}].${field}`);
+    }
+    for (const [toolIndex, tool] of (Array.isArray(turn.tools) ? turn.tools : []).entries()) {
+      if (!tool || typeof tool !== 'object') continue;
+      addCandidate(tool, 'toolInput', `turns[${turnIndex}].tools[${toolIndex}].toolInput`);
+      addCandidate(tool, 'toolOutput', `turns[${turnIndex}].tools[${toolIndex}].toolOutput`);
+    }
+  }
+  for (const [eventIndex] of (Array.isArray(wire.dreamEvents) ? wire.dreamEvents : []).entries()) {
+    addCandidate(wire.dreamEvents, eventIndex, `dreamEvents[${eventIndex}]`);
+  }
+
+  const skeletonBytes = jsonByteLength(wire);
+  const candidateBytes = candidates.reduce((sum, candidate) => sum + candidate.originalBytes, 0);
+  const originalBytes = skeletonBytes - (4 * candidates.length) + candidateBytes;
+  if (originalBytes <= payloadBudget) {
+    for (const candidate of candidates) candidate.container[candidate.field] = candidate.value;
+    return wire;
+  }
+  if (candidates.length === 0 || skeletonBytes > payloadBudget) {
+    throw new Error(`Debug detail metadata exceeds the ${maxBytes}-byte wire budget`);
+  }
+
+  // Each candidate currently occupies JSON `null` (4 bytes) in the skeleton.
+  // Water-fill the exact value budget: small fields stay complete, while large
+  // cumulative requests and tool outputs receive fair, independently bounded
+  // previews. This is O(total input bytes + candidates log candidates), with
+  // one final whole-envelope serialization rather than one per candidate.
+  const valueBudget = payloadBudget - skeletonBytes + (4 * candidates.length);
+  allocateDebugCandidateBudgets(candidates, valueBudget);
+  let truncatedFields = 0;
+  for (const candidate of candidates) {
+    if (candidate.originalBytes <= candidate.budget) {
+      candidate.container[candidate.field] = candidate.value;
+      continue;
+    }
+    const fieldBudget = candidate.budget;
+    candidate.container[candidate.field] = typeof candidate.value === 'string'
+      ? debugDetailTextSentinel(candidate.value, fieldBudget, candidate.path, candidate.originalBytes)
+      : debugDetailJsonSentinel(candidate.value, fieldBudget, candidate.path, candidate.originalBytes);
+    truncatedFields += 1;
+  }
+
+  wire.projection = {
+    truncated: true,
+    reason: 'debug_detail_wire_budget',
+    maxBytes,
+    truncatedFields,
+  };
+  const projectedBytesBase = jsonByteLength(wire);
+  let projectedBytes = projectedBytesBase + Buffer.byteLength(`,\"projectedBytes\":${projectedBytesBase}`, 'utf8');
+  projectedBytes = projectedBytesBase + Buffer.byteLength(`,\"projectedBytes\":${projectedBytes}`, 'utf8');
+  wire.projection.projectedBytes = projectedBytes;
+  if (projectedBytes > maxBytes) {
+    throw new Error(`Debug detail projection still exceeds the ${maxBytes}-byte wire budget`);
+  }
+  return wire;
 }
 
 function traceToLegacyRows(trace) {
@@ -867,19 +1090,15 @@ async function removeRequestDirIfIdentityMatches(requestDir, expected) {
 
 async function readTraceHeaders(rootDir, sessionId) {
   const traces = [];
-  const requestDirs = sessionId == null
-    ? await (async () => {
-      const dirs = [];
-      for (const entry of await readdirSafe(sessionRequestsDir(rootDir, null))) {
-        if (entry.isDirectory()) dirs.push(join(sessionRequestsDir(rootDir, null), entry.name));
-      }
-      return dirs;
-    })()
-    : await collectRequestDirs(rootDir, sessionId);
+  const requestDirs = await collectRequestDirs(rootDir, sessionId);
   for (const requestDir of requestDirs) {
     const meta = await readJson(requestMetaPath(requestDir));
-    const trace = meta?.requestId ? meta : await readJson(requestFilePath(requestDir));
-    if (!trace?.requestId || !trace?.requestKey || trace.sessionId !== sessionId) continue;
+    const stored = meta?.requestId ? meta : await readJson(requestFilePath(requestDir));
+    if (!stored?.requestId || !stored?.requestKey) continue;
+    if (sessionId != null && stored.sessionId !== sessionId) continue;
+    const trace = meta?.requestId ? { ...meta } : serializableTraceMeta(stored);
+    trace._persistedFormat = meta?.requestId ? 'events' : 'legacy';
+    trace._persistedRequestDir = requestDir;
     traces.push({
       trace,
       file: requestFilePath(requestDir),
@@ -888,6 +1107,13 @@ async function readTraceHeaders(rootDir, sessionId) {
     });
   }
   return traces.sort((a, b) => ((a.openedAt || 0) - (b.openedAt || 0)) || String(a.trace.requestKey).localeCompare(String(b.trace.requestKey)));
+}
+
+async function readHeaderDetail(rootDir, header) {
+  const requestDir = header?._persistedRequestDir
+    || requestDirFor(rootDir, header?.sessionId || null, header?.requestKey);
+  const trace = await readRequestDir(requestDir);
+  return sameTraceIdentity(trace, header) ? trace : null;
 }
 
 async function countDirFiles(rootDir) {
@@ -920,6 +1146,8 @@ export class DebugTrace {
   #initializedRequestKeys = new Set();
   /** @type {Set<string>} */
   #reconciledRetentionSessions = new Set();
+  /** @type {Map<string, object>} Lightweight persisted metadata by request key. */
+  #diskHeaders = new Map();
   /** @type {Map<string, Map<string, { trace: object, requestDirs: Set<string>, openedAt: number }>>} */
   #retentionIndex = new Map();
   /** @type {NodeJS.Timeout|null} */
@@ -944,9 +1172,9 @@ export class DebugTrace {
   /** @type {NodeJS.Timeout|null} */
   #eventFlushTimer = null;
   /**
-   * One-time hydrate guard. Reads/maintenance load every on-disk trace into
-   * #requestCache exactly once; afterwards every query is served from memory
-   * with zero disk reads. The write path never hydrates — it only appends.
+   * One-time metadata hydrate guard. Reads/maintenance keep only bounded
+   * request headers resident. Full loop/tool payloads are loaded for one
+   * selected request at a time and are never installed in #requestCache.
    * @type {boolean}
    */
   #hydrated = false;
@@ -1123,31 +1351,37 @@ export class DebugTrace {
   }
 
   async queryByMessage(messageId) {
-    await this.#ensureHydrated();
     await this.#drainWrites();
-    const traces = this.#traceSummaries()
-      .filter(({ trace }) => trace.messageId === messageId)
-      .map(({ trace }) => trace);
+    const traces = (await readTraceSummaries(this.#rootDir)).map(item => item.trace)
+      .filter(trace => trace.messageId === messageId);
     return this.#expandLegacy(traces);
   }
 
   async queryByTrace(traceId) {
-    await this.#ensureHydrated();
     await this.#drainWrites();
-    const traces = this.#traceSummaries()
-      .filter(({ trace }) => trace.traceId === traceId || trace.requestId === traceId)
-      .map(({ trace }) => trace);
+    const traces = (await readTraceSummaries(this.#rootDir)).map(item => item.trace)
+      .filter(trace => trace.traceId === traceId || trace.requestId === traceId);
     return this.#expandLegacy(traces);
   }
 
   async queryRecent(limit = 20) {
-    await this.#ensureHydrated();
     await this.#drainWrites();
     const lim = Math.max(1, Math.min(MAX_HISTORY_LIMIT, Number(limit) || MAX_HISTORY_LIMIT));
-    return this.#traceSummaries()
+    return (await readTraceSummaries(this.#rootDir))
       .slice(-lim)
       .reverse()
       .flatMap(({ trace }) => traceToLegacyRows(trace));
+  }
+
+  finalizeQuery(traceId, { sessionId = null, stopReason = 'end_turn' } = {}) {
+    for (const trace of this.#requestCache.values()) {
+      if (trace.traceId !== traceId || (sessionId != null && trace.sessionId !== sessionId)) continue;
+      trace.active = false;
+      trace.closedAt ||= Date.now();
+      trace.updatedAt = Date.now();
+      trace.finalStopReason = stopReason;
+      this.#appendTraceRecord(trace, 'finalize', { at: trace.updatedAt, stopReason }, { writeMeta: true, evictAfterWrite: true });
+    }
   }
 
   async fetchTurnDebug({ sessionId, turnId, dreamLimit = 0 } = {}) {
@@ -1166,10 +1400,7 @@ export class DebugTrace {
       const locator = await readJson(turnLocatorPath(this.#rootDir, requestedSessionId, requestedTurnId));
       if (locator?.requestKey && locator.sessionId === requestedSessionId && locator.requestId === requestedTurnId) {
         const located = await readRequestDir(requestDirFor(this.#rootDir, requestedSessionId, locator.requestKey));
-        if (traceMatchesIdentity(located, requestedSessionId, requestedTurnId)) {
-          trace = located;
-          this.#requestCache.set(trace.requestKey, trace);
-        }
+        if (traceMatchesIdentity(located, requestedSessionId, requestedTurnId)) trace = located;
       }
     }
     if (!trace) {
@@ -1178,7 +1409,6 @@ export class DebugTrace {
       for (const item of await readTraceSummaries(this.#rootDir, requestedSessionId)) {
         if (traceMatchesIdentity(item.trace, requestedSessionId, requestedTurnId)) {
           trace = item.trace;
-          this.#requestCache.set(trace.requestKey, trace);
           break;
         }
       }
@@ -1186,7 +1416,7 @@ export class DebugTrace {
     const dreamEvents = this.#readDreamEvents({ sessionId: requestedSessionId, dreamLimit });
     if (!trace) return { loops: [], turns: [], dreamEvents, detailTurnId: requestedTurnId };
     const expanded = expandTrace(trace);
-    return { ...expanded, dreamEvents, detailTurnId: requestedTurnId };
+    return projectDebugDetailForWire({ ...expanded, dreamEvents, detailTurnId: requestedTurnId });
   }
 
   async fetchRecentDebugHistory({ limit = MAX_HISTORY_LIMIT, dreamLimit = 5, sessionId = null, threadId = null, indexOnly = false, detailTurnId = null, search = '' } = {}) {
@@ -1195,14 +1425,13 @@ export class DebugTrace {
       const detail = await this.fetchTurnDebug({ sessionId, turnId: requestedDetailTurnId, dreamLimit });
       return { ...detail, hasMore: false, limit: detail.loops.length, indexOnly: false };
     }
-    await this.#ensureHydrated();
     await this.#drainWrites();
     const lim = Math.max(1, Math.min(MAX_HISTORY_LIMIT, Number(limit) || MAX_HISTORY_LIMIT));
     const searchRegex = requestedDetailTurnId ? null : compileTraceSearchRegex(search);
-    const traces = this.#traceSummaries(sessionId)
-      .filter(({ trace }) => !threadId || trace.threadId === threadId)
-      .filter(({ trace }) => requestedDetailTurnId || traceMatchesRegex(trace, searchRegex))
-      .map(({ trace }) => trace);
+    const traces = (await readTraceHeaders(this.#rootDir, sessionId))
+      .map(({ trace }) => trace)
+      .filter(trace => !threadId || trace.threadId === threadId)
+      .filter(trace => requestedDetailTurnId || traceMatchesRegex(trace, searchRegex));
     const dreamEvents = this.#readDreamEvents({ sessionId, dreamLimit });
     if (requestedDetailTurnId) {
       const trace = traces.find(t => t.requestId === requestedDetailTurnId || t.traceId === requestedDetailTurnId);
@@ -1214,14 +1443,22 @@ export class DebugTrace {
     if (indexOnly) {
       return {
         loops: [],
-        turns: selected.map(trace => summarizeTrace(trace, false)),
+        turns: selected.map(trace => ({
+          ...summarizeTrace(trace, false),
+          loopCount: Number(trace.loopCount || 0),
+          tools: [],
+        })),
         dreamEvents,
         hasMore: traces.length > selected.length,
         limit: lim,
         indexOnly: true,
       };
     }
-    const expanded = selected.reduce((acc, trace) => {
+    const selectedKeys = new Set(selected.map(trace => trace.requestKey));
+    const detailed = (await readTraceSummaries(this.#rootDir, sessionId))
+      .map(({ trace }) => trace)
+      .filter(trace => selectedKeys.has(trace.requestKey));
+    const expanded = detailed.reduce((acc, trace) => {
       const item = expandTrace(trace);
       acc.loops.push(...item.loops);
       acc.turns.push(...item.turns);
@@ -1234,16 +1471,20 @@ export class DebugTrace {
     await this.#ensureHydrated();
     await this.#drainWrites();
     const tools = [];
-    for (const { trace } of this.#traceSummaries()) {
+    for (const { trace: header } of this.#traceSummaries().slice().reverse()) {
+      const trace = this.#requestCache.get(header.requestKey)
+        || await readHeaderDetail(this.#rootDir, header);
+      if (!trace) continue;
       for (const tool of Array.isArray(trace.tools) ? trace.tools : []) {
         const row = traceToolToLegacy(trace, tool);
         if (name && row.tool_name !== name) continue;
         if (since && row.created_at < since) continue;
         tools.push(row);
       }
+      tools.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+      if (tools.length > 100) tools.length = 100;
     }
-    tools.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
-    return tools.slice(0, 100);
+    return tools;
   }
 
   async search(keyword) {
@@ -1251,19 +1492,42 @@ export class DebugTrace {
     await this.#drainWrites();
     const needle = String(keyword || '').toLowerCase();
     if (!needle) return [];
-    return this.#traceSummaries()
-      .filter(({ trace }) => JSON.stringify(trace).toLowerCase().includes(needle))
-      .slice(-50)
-      .reverse()
-      .flatMap(({ trace }) => traceToLegacyRows(trace));
+    const results = [];
+    for (const { trace: header } of this.#traceSummaries().slice().reverse()) {
+      const trace = this.#requestCache.get(header.requestKey)
+        || await readHeaderDetail(this.#rootDir, header);
+      if (!trace || !JSON.stringify(trace).toLowerCase().includes(needle)) continue;
+      results.push(...traceToLegacyRows(trace));
+      if (results.length >= 50) break;
+    }
+    return results.slice(0, 50);
   }
 
   async stats() {
     await this.#ensureHydrated();
     await this.#drainWrites();
     const traces = this.#traceSummaries().map(({ trace }) => trace);
-    const turnCount = traces.reduce((n, trace) => n + (Array.isArray(trace.loops) ? trace.loops.length : 0), 0);
-    const toolCount = traces.reduce((n, trace) => n + (Array.isArray(trace.tools) ? trace.tools.length : 0), 0);
+    let turnCount = 0;
+    let toolCount = 0;
+    for (const header of traces) {
+      const live = this.#requestCache.get(header.requestKey);
+      if (live) {
+        turnCount += Array.isArray(live.loops) ? live.loops.length : Number(live.loopCount || 0);
+        toolCount += Array.isArray(live.tools) ? live.tools.length : Number(live.toolCount || 0);
+        continue;
+      }
+      if (Number.isFinite(Number(header.loopCount)) && Number.isFinite(Number(header.toolCount))) {
+        turnCount += Number(header.loopCount);
+        toolCount += Number(header.toolCount);
+        continue;
+      }
+      const counts = await countRequestEvents(
+        header._persistedRequestDir
+          || requestDirFor(this.#rootDir, header.sessionId || null, header.requestKey),
+      );
+      turnCount += counts.loopCount;
+      toolCount += counts.toolCount;
+    }
     const eventCount = this.#events.length;
     const { bytes } = await countDirFiles(this.#rootDir);
     return { turnCount, toolCount, eventCount, dbSizeBytes: bytes, fileSizeBytes: bytes, requestCount: traces.length };
@@ -1295,6 +1559,7 @@ export class DebugTrace {
     await ensureDir(this.#rootDir);
     this.#turnIndex.clear();
     this.#requestCache.clear();
+    this.#diskHeaders.clear();
     this.#initializedRequestKeys.clear();
     this.#reconciledRetentionSessions.clear();
     this.#retentionIndex.clear();
@@ -1324,6 +1589,7 @@ export class DebugTrace {
     const isUsableExisting = (t) => (
       t?.sessionId === normalizedSessionId
       && t?.traceId === traceId
+      && t.active !== false
       && !(turnNumber === 1 && (t.loops || []).some(l => l.loopNumber === 1))
     );
     // Cache-only: the write path must NEVER touch disk (that was the O(N^2)
@@ -1374,12 +1640,28 @@ export class DebugTrace {
     return this.#requestCache.get(requestKey) || null;
   }
 
+  async resumeTrace({ sessionId, turnId } = {}) {
+    if (!sessionId || !turnId) return false;
+    const locator = await readJson(turnLocatorPath(this.#rootDir, sessionId, turnId));
+    let trace = null;
+    if (locator?.requestKey && locator.sessionId === sessionId) {
+      trace = await readRequestDir(requestDirFor(this.#rootDir, sessionId, locator.requestKey));
+    }
+    if (!traceMatchesIdentity(trace, sessionId, turnId)) {
+      trace = (await readTraceSummaries(this.#rootDir, sessionId))
+        .map(item => item.trace)
+        .find(item => traceMatchesIdentity(item, sessionId, turnId)) || null;
+    }
+    if (!trace) return false;
+    this.#requestCache.set(trace.requestKey, trace);
+    return true;
+  }
+
   #traceSummaries(sessionId = null) {
-    // Cache-only: #ensureHydrated() has already merged every on-disk trace
-    // into #requestCache exactly once, so we never touch disk here. This is
-    // what turns the old O(N^2) per-query rescan into an in-memory filter.
+    const merged = new Map(this.#diskHeaders);
+    for (const trace of this.#requestCache.values()) merged.set(trace.requestKey, trace);
     const out = [];
-    for (const trace of this.#requestCache.values()) {
+    for (const trace of merged.values()) {
       if (sessionId && trace.sessionId !== sessionId) continue;
       if (!trace?.requestId || !trace?.requestKey) continue;
       out.push({
@@ -1392,34 +1674,24 @@ export class DebugTrace {
   }
 
   /**
-   * Load every on-disk trace into #requestCache exactly once. Live entries
-   * (created by this process) always win over their disk copy — a flush may
-   * be mid-flight, and the in-memory trace is the newer truth. Idempotent and
-   * concurrency-safe: overlapping callers await the same promise.
-   *
-   * Footprint trade-off (deliberate): this pins every session's full trace
-   * payload (systemPrompt + cumulative messages + rawRequest, each already
-   * byte-bounded) in #requestCache for the instance's lifetime — O(retention ×
-   * total sessions) memory instead of the old O(N²) per-query CPU rescan that
-   * stalled the event loop. Retention (10/session) and the byte caps keep it
-   * bounded, and the web path uses a single module-level instance. Follow-up if
-   * footprint ever bites: hydrate per queried sessionId, or keep only a
-   * lightweight summary resident and lazy-load full payloads on detailTurnId.
+   * Load lightweight persisted metadata once. Active requests stay in
+   * #requestCache; completed payloads remain on disk and are lazy-loaded only
+   * for detail/search/tool queries. This prevents retained debug history from
+   * expanding into a process-lifetime multi-gigabyte object graph.
    */
   async #ensureHydrated() {
     if (this.#hydrated) return;
     if (this.#hydratePromise) return this.#hydratePromise;
     this.#hydratePromise = (async () => {
-      const [summaries, storedEvents] = await Promise.all([
-        readTraceSummaries(this.#rootDir),
+      const [headers, storedEvents] = await Promise.all([
+        readTraceHeaders(this.#rootDir, null),
         readJson(join(this.#rootDir, 'events.json')),
       ]);
-      for (const { trace } of summaries) {
-        if (!trace?.requestKey) continue;
-        // Never clobber a live in-memory trace with its older disk snapshot.
-        if (!this.#requestCache.has(trace.requestKey)) {
-          this.#requestCache.set(trace.requestKey, trace);
-        }
+      for (const { trace } of headers) {
+        if (!trace?.requestKey || this.#requestCache.has(trace.requestKey)) continue;
+        this.#diskHeaders.set(trace.requestKey, trace.active
+          ? { ...trace, active: false, interrupted: true }
+          : trace);
       }
       if (Array.isArray(storedEvents)) this.#mergeStoredEvents(storedEvents);
       this.#hydrated = true;
@@ -1448,7 +1720,7 @@ export class DebugTrace {
     return tracePathFor(this.#rootDir, trace.sessionId || null, trace.requestKey);
   }
 
-  #appendTraceRecord(trace, type, record, { writeMeta = false } = {}) {
+  #appendTraceRecord(trace, type, record, { writeMeta = false, evictAfterWrite = false } = {}) {
     if (!this.#acceptingWrites || !trace?.requestKey || !record) return;
     this.#requestCache.set(trace.requestKey, trace);
     const initialize = !this.#initializedRequestKeys.has(trace.requestKey);
@@ -1459,6 +1731,7 @@ export class DebugTrace {
       record: cloneJsonValue(record),
       initialize,
       writeMeta: !!writeMeta,
+      evictAfterWrite: !!evictAfterWrite,
     });
     if (writeMeta) {
       this.#flushPending();
@@ -1498,15 +1771,16 @@ export class DebugTrace {
       for (const entry of entries) {
         if (!this.#requestCache.has(entry.trace.requestKey)) continue;
         const requestDir = requestDirFor(this.#rootDir, entry.trace.sessionId || null, entry.trace.requestKey);
-        const batch = batches.get(requestDir) || { trace: entry.trace, initialize: false, writeMeta: false, lines: [] };
+        const batch = batches.get(requestDir) || { trace: entry.trace, initialize: false, writeMeta: false, evictAfterWrite: false, lines: [] };
         batch.trace = entry.trace;
         batch.initialize ||= entry.initialize;
         batch.writeMeta ||= entry.writeMeta;
+        batch.evictAfterWrite ||= entry.evictAfterWrite;
         batch.lines.push(`${JSON.stringify({ type: entry.type, record: entry.record })}\n`);
         batches.set(requestDir, batch);
       }
       for (const [requestDir, batch] of batches) {
-        const { trace, initialize, writeMeta } = batch;
+        const { trace, initialize, writeMeta, evictAfterWrite } = batch;
         const lines = [...batch.lines];
         const legacyRequestDir = trace._persistedFormat === 'legacy'
           ? trace._persistedRequestDir || null
@@ -1536,11 +1810,22 @@ export class DebugTrace {
           const eventPath = requestEventsPath(requestDir);
           if (initialize) await prepareJsonlAppend(eventPath);
           await fsp.appendFile(eventPath, lines.join(''), 'utf8');
-          if (writeMeta) await atomicWriteText(metaPath, JSON.stringify(serializableTraceMeta(trace)));
+          if (writeMeta) {
+            const meta = serializableTraceMeta(trace);
+            await atomicWriteText(metaPath, JSON.stringify(meta));
+            this.#diskHeaders.set(trace.requestKey, meta);
+          }
           trace._persistedFormat = 'events';
           trace._persistedRequestDir = requestDir;
           if (legacyRequestDir && legacyRequestDir !== requestDir) {
             await removeRequestDirIfIdentityMatches(legacyRequestDir, trace);
+          }
+          if (evictAfterWrite) {
+            this.#requestCache.delete(trace.requestKey);
+            this.#initializedRequestKeys.delete(trace.requestKey);
+            for (const [turnId, ctx] of this.#turnIndex) {
+              if (ctx.requestKey === trace.requestKey) this.#turnIndex.delete(turnId);
+            }
           }
         } catch (err) {
           console.warn('[Yeaft] debug trace append failed:', err?.message || err);
@@ -1637,6 +1922,7 @@ export class DebugTrace {
 
   async #pruneAll(keep) {
     const sessions = new Set();
+    for (const trace of this.#diskHeaders.values()) sessions.add(trace.sessionId || null);
     for (const trace of this.#requestCache.values()) sessions.add(trace.sessionId || null);
     for (const sessionId of sessions) await this.#pruneSession(sessionId, keep);
   }
@@ -1686,6 +1972,7 @@ export class DebugTrace {
     const stale = pruneCandidates.slice(0, Math.max(0, traces.length - protectedItems.length - keep));
     for (const item of stale) {
       this.#requestCache.delete(item.trace.requestKey);
+      this.#diskHeaders.delete(item.trace.requestKey);
       this.#initializedRequestKeys.delete(item.trace.requestKey);
       index.delete(item.trace.requestKey);
       for (const requestDir of item.requestDirs) {
@@ -1721,6 +2008,8 @@ export class DebugTrace {
 export class NullTrace {
   startTurn() { return 'null'; }
   endTurn() {}
+  finalizeQuery() {}
+  async resumeTrace() { return false; }
   logTool() { return 'null'; }
   logEvent() { return 'null'; }
   event() { return 'null'; }

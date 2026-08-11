@@ -53,6 +53,7 @@ const {
   workItemDetailRefreshIdentity,
 } = await import('../../../web/stores/helpers/work-center.js');
 const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
+const { sliceScopedYeaftMessagesByRecentTurns } = await import('../../../web/stores/helpers/yeaft-message-window.js');
 const { revealOutlineResult } = await import('../../../web/utils/message-search-navigation.js');
 
 function indexedHistoryResult(overrides = {}) {
@@ -97,6 +98,7 @@ function primeStore() {
   store._yeaftHistoryOutlineTimeouts = {};
   store.messagesMap = {};
   store.yeaftHistoryCacheState = {};
+  store.yeaftHistoryFocusWindowBySession = {};
   store._yeaftHistoryWindowPendingByKey = {};
   store.yeaftConversationId = 'conv-a';
   store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-a' };
@@ -117,6 +119,36 @@ async function runConsolidatedHistoryScenarios() {
 
 describe('Yeaft history outline state', () => {
   beforeEach(() => vi.useFakeTimers());
+
+  it('keeps automatic page-restore history out of the manual message refresh spinner', async () => {
+    const store = primeStore();
+    store.yeaftSessionHistoryState = {};
+    store._yeaftManualHistoryRefresh = null;
+
+    const automatic = store.beginYeaftHistoryLoad({
+      agentId: 'agent-a', sessionId: 'same', mode: 'recent', preserveLoaded: false,
+    });
+    expect(store.yeaftLoadingMoreHistory).toBe(true);
+    expect(store.yeaftManualHistoryRefreshLoading).toBe(false);
+
+    expect(store.reloadYeaftMessages()).toBe(automatic.requestId);
+    expect(store.yeaftManualHistoryRefreshLoading).toBe(true);
+    expect(store._sent).toEqual([]);
+
+    store.finishYeaftHistoryLoad({
+      agentId: 'agent-a', sessionId: 'same', requestId: automatic.requestId,
+    }, { loaded: true, hasMore: false, oldestSeq: 1 }, 'chunk');
+    expect(store.yeaftLoadingMoreHistory).toBe(false);
+    expect(store.yeaftManualHistoryRefreshLoading).toBe(false);
+
+    expect(store.reloadYeaftMessages()).toBe(true);
+    expect(store.yeaftManualHistoryRefreshLoading).toBe(true);
+    expect(store._sent.at(-1)).toMatchObject({
+      type: 'yeaft_load_history', agentId: 'agent-a', sessionId: 'same',
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(store.yeaftManualHistoryRefreshLoading).toBe(false);
+  });
 
   it('sends sender-only searches, rejects stale responses, and tracks unread Sessions', () => {
     const store = primeStore();
@@ -187,6 +219,217 @@ describe('Yeaft history outline state', () => {
     })).toBe(false);
   });
 
+  it('reloads an outdated search locator before revealing an uncached message', async () => {
+    const store = primeStore();
+    store.currentAgentInfo.capabilities.push('session_history_search', 'session_history_window_prefetch');
+    store.agents[0].capabilities.push('session_history_search', 'session_history_window_prefetch');
+    const staleResult = indexedHistoryResult({ indexGeneration: 6, snippet: 'target text' });
+    store.yeaftHistorySearchState = {
+      requestId: null,
+      agentId: 'agent-a',
+      sessionId: 'same',
+      query: 'target text',
+      senderKey: '',
+      loading: false,
+      results: [staleResult],
+      hasMore: false,
+      nextBeforeSeq: null,
+      nextCursor: null,
+      error: null,
+    };
+
+    const clicked = store.revealYeaftHistoryResult(staleResult);
+    const staleRequest = store._sent.at(-1);
+    expect(staleRequest).toMatchObject({
+      type: 'yeaft_load_history_window',
+      indexGeneration: 6,
+      anchorMessageId: 'm42',
+    });
+    expect(store.handleYeaftHistoryWindow({
+      ...indexedHistoryResponse(staleRequest),
+      error: 'stale_result',
+      messages: [],
+    }, null)).toBe(false);
+    await Promise.resolve();
+
+    const refresh = store._sent.at(-1);
+    expect(refresh).toMatchObject({
+      type: 'yeaft_search_history',
+      query: 'target text',
+      senderKey: '',
+      sessionId: 'same',
+    });
+    expect(store.handleYeaftHistorySearchResult({
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: refresh.requestId,
+      query: 'target text',
+      senderKey: '',
+      results: [indexedHistoryResult({ indexGeneration: 7, snippet: 'target text' })],
+      hasMore: false,
+    })).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const retry = store._sent.at(-1);
+    expect(retry).toMatchObject({
+      type: 'yeaft_load_history_window',
+      indexGeneration: 7,
+      anchorMessageId: 'm42',
+    });
+    const response = indexedHistoryResponse(retry, {
+      messages: [{ id: 'm42', role: 'assistant', content: 'old answer', createdAt: 42 }],
+    });
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+    expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(true);
+
+    await expect(clicked).resolves.toBe(true);
+    expect(store.isYeaftMessageCached('same', 'm42')).toBe(true);
+    expect(store._yeaftHistoryRevealLeases).toEqual({});
+  });
+
+  it('does not retry a permanent unloaded-window failure', async () => {
+    const store = primeStore();
+    store.currentAgentInfo.capabilities.push('session_history_search', 'session_history_window_prefetch');
+    store.agents[0].capabilities.push('session_history_search', 'session_history_window_prefetch');
+    const result = indexedHistoryResult();
+    store.yeaftHistorySearchState = {
+      requestId: null, agentId: 'agent-a', sessionId: 'same', query: 'target text', senderKey: '',
+      loading: false, results: [result], hasMore: false, nextBeforeSeq: null, error: null,
+    };
+
+    const clicked = store.revealYeaftHistoryResult(result);
+    const request = store._sent.at(-1);
+    store.handleYeaftHistoryWindow({
+      ...indexedHistoryResponse(request), error: 'window_load_failed', messages: [],
+    }, null);
+
+    await expect(clicked).resolves.toBe(false);
+    expect(store._sent).toHaveLength(1);
+  });
+
+  it('refreshes an outline locator after its search panel has closed', async () => {
+    const store = primeStore();
+    store.currentAgentInfo.capabilities.push('session_history_window_prefetch');
+    store.agents[0].capabilities.push('session_history_window_prefetch');
+    const staleResult = indexedHistoryResult({ indexGeneration: 6 });
+    store.yeaftHistoryOutlineBySession[yeaftHistoryIdentityKey('agent-a', 'same')] = {
+      agentId: 'agent-a', sessionId: 'same', loaded: true, loading: false,
+      results: [staleResult], hasMore: false, nextBeforeSeq: null, totalCount: 1, error: null,
+    };
+    store.yeaftHistorySearchState = {
+      requestId: null, agentId: 'agent-a', sessionId: 'same', query: '', senderKey: '',
+      loading: false, results: [], hasMore: false, nextBeforeSeq: null, error: null,
+    };
+
+    const clicked = store.revealYeaftHistoryResult(staleResult);
+    const staleRequest = store._sent.at(-1);
+    store.handleYeaftHistoryWindow({
+      ...indexedHistoryResponse(staleRequest), error: 'stale_result', messages: [],
+    }, null);
+    await Promise.resolve();
+
+    const refresh = store._sent.at(-1);
+    expect(refresh).toMatchObject({ type: 'yeaft_load_history_outline', sessionId: 'same' });
+    expect(store.handleYeaftHistoryOutline({
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: refresh.requestId,
+      results: [indexedHistoryResult({ indexGeneration: 7 })],
+      hasMore: false,
+    })).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const retry = store._sent.at(-1);
+    expect(retry).toMatchObject({
+      type: 'yeaft_load_history_window', indexGeneration: 7, anchorMessageId: 'm42',
+    });
+    const response = indexedHistoryResponse(retry, {
+      messages: [{ id: 'm42', role: 'assistant', content: 'old answer', createdAt: 42 }],
+    });
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+    store.handleYeaftHistoryWindow(response, conversationId);
+    await expect(clicked).resolves.toBe(true);
+  });
+
+  it('binds stale outline relocation to an exact Session refresh already in flight', async () => {
+    const store = primeStore();
+    store.currentAgentInfo.capabilities.push('session_history_window_prefetch');
+    store.agents[0].capabilities.push('session_history_window_prefetch');
+    const key = yeaftHistoryIdentityKey('agent-a', 'same');
+    const staleResult = indexedHistoryResult({ indexGeneration: 6 });
+    store.yeaftHistoryOutlineBySession[key] = {
+      agentId: 'agent-a', sessionId: 'same', loaded: true, loading: false,
+      results: [staleResult], hasMore: false, nextBeforeSeq: null, totalCount: 1, error: null,
+    };
+    store.yeaftHistorySearchState = {
+      requestId: null, agentId: 'agent-a', sessionId: 'same', query: '', senderKey: '',
+      loading: false, results: [], hasMore: false, nextBeforeSeq: null, error: null,
+    };
+
+    expect(store.loadYeaftHistoryOutline({
+      force: true,
+      targetSessionId: 'same',
+      targetAgentId: 'agent-a',
+    })).toBe(true);
+    const inFlightRefresh = store._sent.at(-1);
+    const clicked = store.revealYeaftHistoryResult(staleResult);
+    const staleRequest = store._sent.at(-1);
+    expect(staleRequest).toMatchObject({
+      type: 'yeaft_load_history_window', indexGeneration: 6, anchorMessageId: 'm42',
+    });
+    store.handleYeaftHistoryWindow({
+      ...indexedHistoryResponse(staleRequest), error: 'stale_result', messages: [],
+    }, null);
+    await Promise.resolve();
+
+    expect(store._sent.filter(msg => msg.type === 'yeaft_load_history_outline')).toHaveLength(1);
+    expect(store.handleYeaftHistoryOutline({
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: inFlightRefresh.requestId,
+      results: [indexedHistoryResult({ indexGeneration: 7 })],
+      hasMore: false,
+    })).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const retry = store._sent.at(-1);
+    expect(retry).toMatchObject({
+      type: 'yeaft_load_history_window', indexGeneration: 7, anchorMessageId: 'm42',
+    });
+    const response = indexedHistoryResponse(retry, {
+      messages: [{ id: 'm42', role: 'assistant', content: 'old answer', createdAt: 42 }],
+    });
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+    store.handleYeaftHistoryWindow(response, conversationId);
+    await expect(clicked).resolves.toBe(true);
+  });
+
+  it('cancels a stale-result refresh before exact Session history cleanup', async () => {
+    const store = primeStore();
+    store.currentAgentInfo.capabilities.push('session_history_search', 'session_history_window_prefetch');
+    store.agents[0].capabilities.push('session_history_search', 'session_history_window_prefetch');
+    const staleResult = indexedHistoryResult({ indexGeneration: 6 });
+    store.yeaftHistorySearchState = {
+      requestId: null, agentId: 'agent-a', sessionId: 'same', query: 'target text', senderKey: '',
+      loading: false, results: [staleResult], hasMore: false, nextBeforeSeq: null, error: null,
+    };
+
+    const clicked = store.revealYeaftHistoryResult(staleResult);
+    const staleRequest = store._sent.at(-1);
+    store.handleYeaftHistoryWindow({
+      ...indexedHistoryResponse(staleRequest), error: 'stale_result', messages: [],
+    }, null);
+    await Promise.resolve();
+    expect(Object.keys(store._yeaftHistoryResultRefreshByRequestId)).toHaveLength(1);
+
+    store.clearYeaftHistoryMemory({ agentId: 'agent-a', sessionId: 'same' });
+    await expect(clicked).resolves.toBe(false);
+    expect(store._yeaftHistoryResultRefreshByRequestId).toEqual({});
+  });
+
   it('loads and expands an uncached old anchor through the click action', async () => {
     await runConsolidatedHistoryScenarios();
     const store = primeStore();
@@ -252,7 +495,7 @@ describe('Yeaft history outline state', () => {
     expect(store.yeaftMessageWindowState[keyB].visibleTurns).toBe(17);
     expect(store.finishYeaftHistoryReveal(newerLeaseB)).toBe(true);
     store.pruneYeaftMessageWindow('same', 'agent-b');
-    expect(store.yeaftMessageWindowState[keyB].visibleTurns).toBe(5);
+    expect(store.yeaftMessageWindowState[keyB].visibleTurns).toBe(Number.POSITIVE_INFINITY);
   });
 
   historyScenario('routes same-id background frames only to their owning Agent outline', () => {
@@ -371,6 +614,245 @@ describe('Yeaft history outline state', () => {
     expect(store.messagesMap['conv-a']).toEqual(before);
   });
 
+  it('retries transient outline index responses before surfacing an error', async () => {
+    const store = primeStore();
+    expect(store.loadYeaftHistoryOutline()).toBe(true);
+    const key = yeaftHistoryIdentityKey('agent-a', 'same');
+    const first = store._sent.at(-1);
+
+    expect(store.handleYeaftHistoryOutline({
+      type: 'yeaft_history_outline',
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: first.requestId,
+      results: [],
+      error: 'index_building',
+    })).toBe(true);
+    expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({
+      requestId: first.requestId,
+      loading: true,
+      retryAttempt: 0,
+      error: null,
+    });
+
+    await vi.advanceTimersByTimeAsync(150);
+    expect(store._sent).toHaveLength(2);
+    const second = store._sent.at(-1);
+    expect(second.requestId).not.toBe(first.requestId);
+    expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({
+      requestId: second.requestId,
+      loading: true,
+      retryAttempt: 1,
+      error: null,
+    });
+
+    expect(store.handleYeaftHistoryOutline({
+      type: 'yeaft_history_outline',
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: second.requestId,
+      results: [{ messageId: 'm42', seq: 42, snippet: 'ready' }],
+      hasMore: false,
+    })).toBe(true);
+    expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({
+      loaded: true,
+      loading: false,
+      error: null,
+      results: [expect.objectContaining({ messageId: 'm42' })],
+    });
+  });
+
+  it('upgrades an append retry to a newest-page refresh when invalidated during backoff', async () => {
+    const store = primeStore();
+    const key = yeaftHistoryIdentityKey('agent-a', 'same');
+    store.yeaftHistoryOutlineBySession[key] = {
+      agentId: 'agent-a', sessionId: 'same', loaded: true, loading: false,
+      results: [{ messageId: 'm20', seq: 20 }], hasMore: true,
+      nextBeforeSeq: 20, nextCursor: { generation: 7, beforeEntryStartSeq: 20 },
+      totalCount: null, error: null,
+    };
+    expect(store.loadYeaftHistoryOutline({ append: true })).toBe(true);
+    const first = store._sent.at(-1);
+    expect(first).toMatchObject({
+      cursor: { generation: 7, beforeEntryStartSeq: 20 },
+    });
+    expect(first).not.toHaveProperty('beforeSeq');
+    store.handleYeaftHistoryOutline({
+      type: 'yeaft_history_outline', agentId: 'agent-a', sessionId: 'same',
+      requestId: first.requestId, results: [], error: 'index_building',
+    });
+
+    expect(store.invalidateYeaftHistoryOutline('same', 'agent-a')).toBe(true);
+    expect(store.yeaftHistoryOutlineBySession[key].refreshPending).toBe(true);
+    await vi.advanceTimersByTimeAsync(150);
+
+    const retry = store._sent.at(-1);
+    expect(retry.requestId).not.toBe(first.requestId);
+    expect(retry).not.toHaveProperty('beforeSeq');
+    expect(retry).not.toHaveProperty('cursor');
+    expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({
+      loading: true,
+      requestAppend: false,
+      refreshPending: false,
+      retryAttempt: 1,
+    });
+    store.handleYeaftHistoryOutline({
+      type: 'yeaft_history_outline', agentId: 'agent-a', sessionId: 'same',
+      requestId: retry.requestId, results: [{ messageId: 'm21', seq: 21 }], hasMore: true,
+    });
+    expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({
+      loaded: true,
+      loading: false,
+      results: [expect.objectContaining({ messageId: 'm21' })],
+    });
+  });
+
+  it('preserves an append cursor across a transient retry without invalidation', async () => {
+    const store = primeStore();
+    const key = yeaftHistoryIdentityKey('agent-a', 'same');
+    store.yeaftHistoryOutlineBySession[key] = {
+      agentId: 'agent-a', sessionId: 'same', loaded: true, loading: false,
+      results: [{ messageId: 'm20', seq: 20 }], hasMore: true,
+      nextBeforeSeq: 20, nextCursor: { generation: 7, beforeEntryStartSeq: 20 },
+      totalCount: null, error: null,
+    };
+    store.loadYeaftHistoryOutline({ append: true });
+    const first = store._sent.at(-1);
+    store.handleYeaftHistoryOutline({
+      type: 'yeaft_history_outline', agentId: 'agent-a', sessionId: 'same',
+      requestId: first.requestId, results: [], error: 'stale_result',
+    });
+
+    await vi.advanceTimersByTimeAsync(150);
+    expect(store._sent.at(-1)).toMatchObject({
+      cursor: { generation: 7, beforeEntryStartSeq: 20 },
+    });
+    expect(store._sent.at(-1)).not.toHaveProperty('beforeSeq');
+    expect(store.yeaftHistoryOutlineBySession[key].requestAppend).toBe(true);
+  });
+
+  it('surfaces a transient outline error after bounded retries are exhausted', async () => {
+    const store = primeStore();
+    const key = yeaftHistoryIdentityKey('agent-a', 'same');
+    store.loadYeaftHistoryOutline();
+    for (const delay of [150, 300, 600, 1_000]) {
+      const request = store._sent.at(-1);
+      store.handleYeaftHistoryOutline({
+        type: 'yeaft_history_outline', agentId: 'agent-a', sessionId: 'same',
+        requestId: request.requestId, results: [], error: 'index_building',
+      });
+      await vi.advanceTimersByTimeAsync(delay);
+    }
+    const finalRequest = store._sent.at(-1);
+    store.handleYeaftHistoryOutline({
+      type: 'yeaft_history_outline', agentId: 'agent-a', sessionId: 'same',
+      requestId: finalRequest.requestId, results: [], error: 'index_building',
+    });
+
+    expect(store._sent).toHaveLength(5);
+    expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({
+      loaded: false,
+      loading: false,
+      retryAttempt: 4,
+      error: 'index_building',
+    });
+  });
+
+  it('surfaces non-retryable outline failures immediately', () => {
+    const store = primeStore();
+    expect(store.loadYeaftHistoryOutline()).toBe(true);
+    const request = store._sent.at(-1);
+
+    expect(store.handleYeaftHistoryOutline({
+      type: 'yeaft_history_outline',
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: request.requestId,
+      results: [],
+      error: 'index_unavailable',
+    })).toBe(true);
+    expect(store.yeaftHistoryOutlineBySession[yeaftHistoryIdentityKey('agent-a', 'same')]).toMatchObject({
+      loaded: false,
+      loading: false,
+      error: 'index_unavailable',
+    });
+    expect(store._sent).toHaveLength(1);
+  });
+
+  it('revalidates the exact history request immediately before merging rows', async () => {
+    const store = primeStore();
+    store.messagesMap = { 'conv-a': [] };
+    const pending = store.loadYeaftHistoryWindow(indexedHistoryResult());
+    const request = store._sent.at(-1);
+    const response = {
+      type: 'yeaft_history_window',
+      ...indexedHistoryResponse(request),
+      messages: [{ id: 'm42', role: 'assistant', content: 'must not land' }],
+    };
+    const originalPendingWindow = store.pendingYeaftHistoryWindow.bind(store);
+    let checks = 0;
+    store.pendingYeaftHistoryWindow = vi.fn((msg) => {
+      checks += 1;
+      const match = originalPendingWindow(msg);
+      if (checks === 1) store.clearYeaftHistoryMemory();
+      return match;
+    });
+
+    store.handleMessage(response);
+
+    await expect(pending).resolves.toBe(false);
+    expect(store.pendingYeaftHistoryWindow).toHaveBeenCalledTimes(2);
+    expect(store.messagesMap['conv-a']).toEqual([]);
+  });
+
+  it('cancels delayed history windows before owner cleanup or exact Session deletion', async () => {
+    const store = primeStore();
+    store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-a', 'agent-b': 'conv-b' };
+    store.messagesMap = { 'conv-a': [], 'conv-b': [] };
+
+    const ownerPending = store.loadYeaftHistoryWindow(indexedHistoryResult());
+    const ownerRequest = store._sent.at(-1);
+    store.clearYeaftHistoryMemory();
+    await expect(ownerPending).resolves.toBe(false);
+    store.handleMessage({
+      type: 'yeaft_history_window',
+      ...indexedHistoryResponse(ownerRequest),
+      messages: [{ id: 'm42', role: 'assistant', content: 'late owner plaintext' }],
+    });
+    expect(store.messagesMap['conv-a']).toEqual([]);
+
+    const agentAResult = indexedHistoryResult({ agentId: 'agent-a' });
+    const agentBResult = indexedHistoryResult({ agentId: 'agent-b' });
+    const agentAPending = store.loadYeaftHistoryWindow(agentAResult);
+    const agentARequest = store._sent.at(-1);
+    const agentBPending = store.loadYeaftHistoryWindow(agentBResult);
+    const agentBRequest = store._sent.at(-1);
+
+    store.clearYeaftHistoryMemory({ agentId: 'agent-a', sessionId: 'same' });
+    await expect(agentAPending).resolves.toBe(false);
+    expect(store.pendingYeaftHistoryWindow(indexedHistoryResponse(agentARequest))).toBeNull();
+    expect(store.pendingYeaftHistoryWindow(
+      indexedHistoryResponse(agentBRequest, { agentId: 'agent-b' }),
+    )).not.toBeNull();
+
+    store.handleMessage({
+      type: 'yeaft_history_window',
+      ...indexedHistoryResponse(agentARequest),
+      messages: [{ id: 'm42', role: 'assistant', content: 'late deleted plaintext' }],
+    });
+    expect(store.messagesMap['conv-a']).toEqual([]);
+
+    store.handleMessage({
+      type: 'yeaft_history_window',
+      ...indexedHistoryResponse(agentBRequest, { agentId: 'agent-b' }),
+      messages: [{ id: 'm42', role: 'assistant', content: 'live Agent B history' }],
+    });
+    await expect(agentBPending).resolves.toBe(true);
+    expect(store.messagesMap['conv-b']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: 'live Agent B history', sessionId: 'same' }),
+    ]));
+  });
+
   it('reuses one bounded history-window request across hover prefetch and click', async () => {
     const store = primeStore();
     const result = indexedHistoryResult();
@@ -426,7 +908,12 @@ describe('Yeaft history outline state', () => {
 
     expect(store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')]).toBe(initialWindow);
     expect(store.isYeaftMessageCached('same', 'm42')).toBe(true);
-    const renderedReveal = vi.fn(() => store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')].visibleTurns > 5);
+    const renderedReveal = vi.fn(() => {
+      const focus = store.yeaftHistoryFocusWindowBySession[yeaftHistoryIdentityKey('agent-a', 'same')];
+      return !!focus && store.messagesMap['conv-a'].some(row => (
+        row._historyWindowKey === focus.windowKey && (row.messageId || row.id) === 'm42'
+      ));
+    });
     const clicked = revealOutlineResult({
       result: indexedHistoryResult(),
       revealWindow: candidate => store.revealYeaftHistoryResult(candidate),
@@ -443,7 +930,138 @@ describe('Yeaft history outline state', () => {
     await expect(clicked).resolves.toBe(true);
     expect(renderedReveal).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'm42' }));
     expect(store._sent).toHaveLength(2);
-    expect(store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')].visibleTurns).toBeGreaterThan(5);
+    const focus = store.yeaftHistoryFocusWindowBySession[yeaftHistoryIdentityKey('agent-a', 'same')];
+    expect(store.messagesMap['conv-a']
+      .filter(row => row._historyWindowKey === focus.windowKey)
+      .map(row => row.content)).toEqual(['old answer']);
+    expect(focus).toMatchObject({ messageId: 'm42', conversationId: 'conv-a' });
+  });
+
+  it('merges an uncached search window into the ordered resident transcript without replacing its latest tail', async () => {
+    const store = primeStore();
+    store.messagesMap['conv-a'] = Array.from({ length: 12 }, (_, index) => ({
+      id: `m${index + 50}`,
+      messageId: `m${index + 50}`,
+      seq: index + 50,
+      type: index % 2 ? 'assistant' : 'user',
+      content: `recent ${index}`,
+      sessionId: 'same',
+      timestamp: index + 50,
+      isHistory: true,
+    }));
+    store.yeaftMessageWindowState = {
+      [yeaftHistoryIdentityKey('agent-a', 'same')]: { visibleTurns: 5 },
+    };
+
+    const clicked = store.revealYeaftHistoryResult(indexedHistoryResult());
+    const request = store._sent.at(-1);
+    const response = indexedHistoryResponse(request, {
+      messages: [
+        { id: 'm41', seq: 41, role: 'user', content: 'old question', createdAt: 41 },
+        { id: 'm42', seq: 42, role: 'assistant', content: 'old answer', createdAt: 42 },
+      ],
+    });
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+    expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(true);
+    await expect(clicked).resolves.toBe(true);
+
+    const visible = sliceScopedYeaftMessagesByRecentTurns(
+      store.messagesMap['conv-a'],
+      'same',
+      store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')].visibleTurns,
+    );
+    expect(visible.map(row => row.id)).toEqual([
+      'm41', 'm42',
+      ...Array.from({ length: 12 }, (_, index) => `m${index + 50}`),
+    ]);
+    expect(visible.at(-1)?.id).toBe('m61');
+    expect(store.yeaftHistoryFocusWindowBySession[yeaftHistoryIdentityKey('agent-a', 'same')]).toMatchObject({
+      messageId: 'm42',
+    });
+    expect(store.showLatestYeaftMessageWindow('same', 'agent-a')).toBe(true);
+    expect(sliceScopedYeaftMessagesByRecentTurns(
+      store.messagesMap['conv-a'], 'same', Number.POSITIVE_INFINITY,
+    ).at(-1)?.id).toBe('m61');
+  });
+
+  it('keeps an overlapping recent-tail result resident and visible after returning to Latest', async () => {
+    const store = primeStore();
+    store.messagesMap['conv-a'] = Array.from({ length: 12 }, (_, index) => ({
+      id: `m${index + 50}`,
+      messageId: `m${index + 50}`,
+      type: index % 2 ? 'assistant' : 'user',
+      content: `recent ${index}`,
+      sessionId: 'same',
+      timestamp: index + 50,
+    }));
+    const originalIds = store.messagesMap['conv-a'].map(row => row.id);
+    const result = indexedHistoryResult({
+      entryId: 'entry-m55',
+      entryStartSeq: 55,
+      messageId: 'm55',
+      seq: 55,
+      sourceMessageIds: ['m55'],
+    });
+
+    const clicked = store.revealYeaftHistoryResult(result);
+    const request = store._sent.at(-1);
+    const response = indexedHistoryResponse(request, {
+      messages: [{ id: 'm55', role: 'assistant', content: 'recent 5', createdAt: 55 }],
+    });
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+    expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(true);
+    await expect(clicked).resolves.toBe(true);
+    expect(store.yeaftHistoryFocusWindowBySession[yeaftHistoryIdentityKey('agent-a', 'same')]).toBeUndefined();
+
+    // MessageList still executes this action when Latest is clicked. There is no
+    // detached focus to clear because the target retained recent membership.
+    expect(store.showLatestYeaftMessageWindow('same', 'agent-a')).toBe(false);
+    const resident = store.messagesMap['conv-a'];
+    expect(resident.map(row => row.id)).toEqual(originalIds);
+    expect(resident.find(row => row.id === 'm55')).not.toMatchObject({ _historyWindowDetached: true });
+    expect(sliceScopedYeaftMessagesByRecentTurns(resident, 'same', 50).map(row => row.id)).toEqual(originalIds);
+  });
+
+  it('isolates overlapping history message IDs between Sessions sharing one conversation', async () => {
+    const store = primeStore();
+    store.messagesMap['conv-a'] = [{
+      id: 'm42',
+      messageId: 'm42',
+      type: 'assistant',
+      content: 'session B row',
+      sessionId: 'session-b',
+      timestamp: 42,
+    }];
+    const result = indexedHistoryResult({
+      entryId: 'entry-a-m42',
+      entryStartSeq: 42,
+      messageId: 'm42',
+      seq: 42,
+      sourceMessageIds: ['m42'],
+    });
+
+    const clicked = store.revealYeaftHistoryResult(result, {
+      sessionId: 'same',
+      agentId: 'agent-a',
+    });
+    const request = store._sent.at(-1);
+    const response = indexedHistoryResponse(request, {
+      sessionId: 'same',
+      messages: [{ id: 'm42', role: 'assistant', content: 'session A row', createdAt: 42 }],
+    });
+    const conversationId = mergeYeaftHistoryWindow(store, response);
+    expect(store.handleYeaftHistoryWindow(response, conversationId)).toBe(true);
+    await expect(clicked).resolves.toBe(true);
+
+    expect(store.isYeaftMessageCached('same', 'm42')).toBe(true);
+    expect(store.messagesMap['conv-a']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ messageId: 'm42', sessionId: 'same', content: 'session A row' }),
+      expect.objectContaining({ messageId: 'm42', sessionId: 'session-b', content: 'session B row' }),
+    ]));
+    expect(store.messagesMap['conv-a'].find(row => row.sessionId === 'session-b')).not.toMatchObject({
+      _historyWindowDetached: true,
+      historyEntryId: 'entry-a-m42',
+    });
   });
 
   it('does not expand or render after the active Session changes while a window is pending', async () => {
@@ -531,10 +1149,12 @@ describe('Yeaft history outline state', () => {
   it('reveals a tool-only response through its persisted anchor', () => {
     const store = primeStore();
     store.messagesMap['conv-a'] = [{
-      id: 'm42:tool-summary',
-      messageId: 'm42:tool-summary',
+      id: 'm42:tool:read',
+      messageId: 'm42:tool:read',
       persistedMessageId: 'm42',
-      type: 'tool-summary',
+      type: 'tool-use',
+      toolName: 'FileRead',
+      toolInput: { file_path: 'README.md' },
       sessionId: 'same',
       turnId: 'response-tool-only',
     }];

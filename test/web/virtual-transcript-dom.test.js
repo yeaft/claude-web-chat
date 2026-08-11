@@ -99,7 +99,81 @@ describe('VirtualTranscript DOM windowing', () => {
 
 
 
+  it('keeps the initial Session tail pinned while first-time row measurements replace estimates', async () => {
+    const scroller = document.createElement('div');
+    scroller.className = 'chat-container';
+    let scrollTop = 0;
+    let scrollHeight = 10000;
+    let heightGrowthObserved = false;
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, get: () => 300 },
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: value => { scrollTop = Math.max(0, Number(value) || 0); },
+      },
+    });
+    document.body.appendChild(scroller);
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBoundingClientRect() {
+      if (this.classList?.contains('virtual-transcript-item')) {
+        // Real layout changes scrollHeight before commitMeasurements asks whether
+        // it is still near the tail. The old geometry-derived owner therefore
+        // saw a 4000px gap and never corrected the initial Session position.
+        heightGrowthObserved = true;
+        scrollHeight = 14000;
+        return {
+          x: 0, y: 0, top: 0, right: 100, bottom: 140, left: 0,
+          width: 100, height: 140, toJSON: () => ({}),
+        };
+      }
+      return {
+        x: 0, y: 0, top: 0, right: 0, bottom: 0, left: 0,
+        width: 0, height: 0, toJSON: () => ({}),
+      };
+    });
 
+    const wrapper = mount(VirtualTranscript, {
+      props: {
+        items: turns(100),
+        estimateHeight: () => 100,
+        initialAlign: 'end',
+        itemGap: 0,
+        overscan: 1,
+      },
+      slots: { default: ({ item }) => Vue.h('div', { 'data-turn-id': item.id }, item.id) },
+      attachTo: scroller,
+    });
+
+    await flushAnimationFrame(4);
+
+    expect(heightGrowthObserved).toBe(true);
+    expect(scrollTop).toBe(14000);
+    wrapper.unmount();
+  });
+
+  it('preserves the visible content anchor when background history prepends rows', async () => {
+    const scroller = createScroller({ viewportHeight: 300, scrollHeight: 100000 });
+    scroller.scrollTop = 2500;
+    const wrapper = mount(VirtualTranscript, {
+      props: {
+        items: turns(100),
+        estimateHeight: () => 100,
+        itemGap: 0,
+        overscan: 1,
+      },
+      slots: { default: ({ item }) => Vue.h('div', { 'data-turn-id': item.id }, item.id) },
+      attachTo: scroller,
+    });
+    await flushAnimationFrame(3);
+    wrapper.vm.setBottomFollowEnabled(false);
+
+    await wrapper.setProps({ items: [...turns(20, 'older'), ...turns(100)] });
+    await flushAnimationFrame(3);
+
+    expect(scroller.scrollTop).toBe(4500);
+    wrapper.unmount();
+  });
 
   it('fences stale bottom work and keeps a targeted child row aligned after block resize', async () => {
     const scroller = createScroller({ viewportHeight: 300, scrollHeight: 10000 });

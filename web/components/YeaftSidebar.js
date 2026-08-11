@@ -44,9 +44,6 @@ export default {
         <button class="collapsed-icon-btn" @click="$emit('back')" :title="tr('yeaft.back', 'Back')">
           <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
         </button>
-        <button v-if="canUseWorkbench" class="collapsed-icon-btn" :class="{ active: chatStore && chatStore.workbenchExpanded }" @click="onToggleWorkbench" :title="tr('chat.sidebar.workbench', 'Workbench')">
-          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M20 3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H4V5h16v14zM6 7h5v2H6V7zm0 4h5v2H6v-2zm0 4h5v2H6v-2zm7-8h5v10h-5V7z"/></svg>
-        </button>
         <div class="collapsed-spacer"></div>
         <button class="collapsed-icon-btn" @click="$emit('open-settings')" :title="tr('chat.sidebar.settings', 'Settings')">
           <svg viewBox="0 0 24 24" width="18" height="18"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" fill="currentColor"/></svg>
@@ -70,14 +67,14 @@ export default {
           />
           <div class="sidebar-header-actions">
             <SidebarModeToggle v-if="!chatStore || !chatStore.sessionCatalogLoaded" view="yeaft" @flip="onModeFlip" />
+            <button class="sidebar-icon-btn" :class="{ active: chatStore && chatStore.pluginCenterOpen }" :disabled="onlineAgents.length === 0" :title="$t('yeaft.plugins.title')" :aria-label="$t('yeaft.plugins.title')" @click="onOpenPlugins">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M14 3.5a3 3 0 0 0-4.24 4.24L3.5 14l6.5 6.5 6.26-6.26A3 3 0 0 0 20.5 10L17 13.5l-2.5-2.5L18 7.5A3 3 0 0 0 14 3.5z"/></svg>
+            </button>
             <button class="sidebar-icon-btn sidebar-work-center-header-btn" :class="{ active: chatStore && chatStore.workCenterOpen }" :disabled="workCenterAgents.length === 0" :title="tr('workCenter.title', 'Work Center')" :aria-label="tr('workCenter.title', 'Work Center')" @click="onOpenWorkCenter()">
               <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path fill="currentColor" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 5v2h10V8H7zm0 4v2h7v-2H7zm0 4v2h5v-2H7z"/></svg>
             </button>
             <button class="sidebar-icon-btn" :title="tr('chat.sidebar.collapse', 'Collapse')" @click="$emit('toggle-sidebar')">
               <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 18h13v-2H3v2zm0-5h10v-2H3v2zm0-7v2h13V6H3zm18 9.59L17.42 12 21 8.41 19.59 7l-5 5 5 5L21 15.59z"/></svg>
-            </button>
-            <button v-if="canUseWorkbench" class="sidebar-icon-btn" :class="{ active: chatStore && chatStore.workbenchExpanded }" :title="tr('chat.sidebar.workbench', 'Workbench')" @click="onToggleWorkbench">
-              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M20 3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H4V5h16v14zM6 7h5v2H6V7zm0 4h5v2H6v-2zm0 4h5v2H6v-2zm7-8h5v10h-5V7z"/></svg>
             </button>
           </div>
         </div>
@@ -89,8 +86,6 @@ export default {
         :project-store="chatStore"
         :active-route="chatStore.activeSessionRoute"
         :is-session-unread="isCatalogSessionUnread"
-        :is-session-syncing="isCatalogSessionSyncing"
-        :session-sync-refresh-token="chatStore.sessionHistorySyncRefreshToken"
         :processing-conversations="chatStore.processingConversations"
         :is-yeaft-session-processing="chatStore.isYeaftSessionProcessing"
         :agents="chatStore.agents"
@@ -210,6 +205,10 @@ export default {
 
       <!-- task-342: sidebar bottom — Settings entry + version badge. -->
       <div class="sidebar-bottom">
+        <button class="sidebar-nav-item" :disabled="onlineAgents.length === 0" @click="onOpenPlugins">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M14 3.5a3 3 0 0 0-4.24 4.24L3.5 14l6.5 6.5 6.26-6.26A3 3 0 0 0 20.5 10L17 13.5l-2.5-2.5L18 7.5A3 3 0 0 0 14 3.5z"/></svg>
+          <span>{{ $t('yeaft.plugins.title') }}</span>
+        </button>
         <button class="sidebar-nav-item" @click="$emit('open-settings')">
           <svg viewBox="0 0 24 24" width="20" height="20"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" fill="currentColor"/></svg>
           <span>{{ tr('chat.sidebar.settings', 'Settings') }}</span>
@@ -267,7 +266,7 @@ export default {
       this.openGroupSettings({ id: pending.sessionId, agentId: pending.agentId }, pending.section || 'session');
     }
     this._agentUpgradeAckHandler = (e) => {
-      const { agentId, success, error, alreadyLatest, version, reason, currentNode, requiredNode, minimumVersion } = e.detail || {};
+      const { agentId, success, error, alreadyLatest, version, reason, currentNode, requiredNode } = e.detail || {};
       if (!agentId) return;
       if (!success) {
         delete this.upgradingAgents[agentId];
@@ -281,7 +280,6 @@ export default {
           if (reason === 'manual_upgrade_required') {
             alertDialog(this.$t('chat.agent.manualUpgradeRequired', {
               version: version || '?',
-              minimum: minimumVersion || '?',
             }));
           } else {
             alertDialog(`Agent upgrade failed: ${error || 'Unknown error'}`);
@@ -417,13 +415,6 @@ export default {
       if (!s || !s.currentAgent) return '';
       return String(s.currentAgent);
     },
-    canUseWorkbench() {
-      const s = this.chatStore || this.store;
-      if (!s || typeof s.hasCapability !== 'function') return false;
-      try {
-        return !!(s.hasCapability('terminal') || s.hasCapability('file_editor'));
-      } catch (_) { return false; }
-    },
     // task-yeaft-remove-sidebar-search: retired query-related computeds
     // and placeholder helpers were removed with the old query UI.
   },
@@ -449,17 +440,6 @@ export default {
       if (!s || typeof s.isYeaftSessionUnread !== 'function') return false;
       return s.isYeaftSessionUnread(row.routeRef?.sessionId, row.routeRef?.agentId);
     },
-    isCatalogSessionSyncing(row) {
-      const s = this.chatStore || this.store;
-      return typeof s?.isSessionHistorySyncing === 'function'
-        ? s.isSessionHistorySyncing(row?.routeRef)
-        : false;
-    },
-    // task-341: workbench toggle, guarded for test env.
-    onToggleWorkbench() {
-      const s = this.chatStore || this.store;
-      if (s && typeof s.toggleWorkbench === 'function') s.toggleWorkbench();
-    },
     onModeFlip(target) {
       // Only 'chat' is reachable from here — 'yeaft' is a no-op because
       // we're already in the Yeaft view when this sidebar is mounted.
@@ -473,6 +453,10 @@ export default {
         || this.workCenterAgents.find(agent => agent.id === s?.workCenterAgentId)
         || this.workCenterAgents[0];
       if (target && s && typeof s.enterWorkCenter === 'function') s.enterWorkCenter(target.id);
+    },
+    onOpenPlugins() {
+      const s = this.chatStore || this.store;
+      if (s && typeof s.openPluginCenter === 'function') s.openPluginCenter();
     },
     // task-334m: session-create + selection handlers.
     onGroupCreated(_group) {

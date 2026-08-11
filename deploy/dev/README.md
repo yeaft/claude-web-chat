@@ -16,7 +16,7 @@ dev 蓝绿服务故意不交给 Watchtower。Watchtower 会原地替换容器，
 ## 安装
 
 1. 将本目录复制或 checkout 到主机上的稳定路径。
-2. 复制 `deployer.env.example` 为 `deployer.env`，填写主机路径和 Docker network。
+2. 复制 `deployer.env.example` 为 `deployer.env`，填写主机路径和 Docker network。dev 保持 `BROWSER_RUNTIME_ENABLED=true`，与 Server 默认行为一致；这只开放 Browser setup/viewer 协议，不会把 Chrome 加入 Server/Agent 镜像，也不会触发下载。Chrome 仍由用户在所选 Agent 的 Workbench 中点击“启用浏览器”后按 instance 安装。可将该值设为 `false` 全局关闭 Browser。
 3. 确认 nginx 已只读挂载 `UPSTREAM_FILE` 所在目录，且包含对应 upstream 配置。
 4. 执行：
 

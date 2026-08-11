@@ -20,6 +20,7 @@ export default {
   CONFIG: null,
   managedCliReady: Promise.resolve([]),
   agentCapabilities: [],
+  browserRuntime: null,
   // Agent 级别的 slash commands 缓存（所有 conversation 共用）
   slashCommands: [],
   // Slash command 描述映射: { commandName: description } — 从 plugin commands/*.md 提取
@@ -47,11 +48,15 @@ export default {
   lastHeartbeatStallAt: 0,
   lastHeartbeatStallMs: 0,
   outboundSendQueue: [],
+  outboundSendQueueBytes: 0,
+  outboundSendQueueMaxBytes: 8 * 1024 * 1024,
   outboundSendQueueActive: false,
   assetOutbox: null,
   // 断连期间的消息缓冲队列（重连后 flush）
   messageBuffer: [],
-  messageBufferMaxSize: 5000, // 防止内存无限增长
+  messageBufferBytes: 0,
+  messageBufferMaxSize: 5000,
+  messageBufferMaxBytes: 8 * 1024 * 1024,
   // 由 connection.js 注册的通信函数
   sendToServer: null,
   // 由 index.js 注册的配置保存函数

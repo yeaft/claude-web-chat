@@ -3,6 +3,7 @@
  * Centralizes all workbench-message handling in one place.
  */
 import { getFileType, isMarkdownFile } from './fileEditor.js';
+import { isWorkbenchMessageForRoute, workbenchMessageScope } from '../../utils/workbench-route.js';
 
 export function createWsHandler({
   store, normalizePath, getEffectiveWorkDir,
@@ -10,7 +11,7 @@ export function createWsHandler({
   openFiles, activeFileIndex, activeFile, fileLoading, fileSaving,
   saveTabsState, createEditor, openFileInTab,
   // Tree
-  tree,
+  tree, setTreeVisible,
   // Folder picker
   fp,
   // Quick open
@@ -18,33 +19,57 @@ export function createWsHandler({
   // File operations
   ops,
   // Preview
-  mdPreviewMode, renderOfficeLocal, editorContainer, debugStatus
+  mdPreviewMode, renderOfficeLocal, editorContainer, debugStatus,
+  routeKey = '',
+  workspaceGeneration = '',
 }) {
+  const pendingRevealLines = new Map();
+
+  const revealLine = (file, line) => {
+    if (!file || !Number.isFinite(line) || line <= 0) return;
+    const targetLine = Math.max(0, Math.floor(line) - 1);
+    const run = () => {
+      const cm = file.cmInstance;
+      if (!cm) return false;
+      cm.setCursor({ line: targetLine, ch: 0 });
+      cm.scrollIntoView({ line: targetLine, ch: 0 }, 80);
+      cm.focus();
+      return true;
+    };
+    Vue.nextTick(() => {
+      if (!run()) setTimeout(run, 180);
+    });
+  };
 
   const handleWorkbenchMessage = (event) => {
     const msg = event.detail;
-    if (!msg) return;
+    if (!msg || !isWorkbenchMessageForRoute(msg, routeKey, workspaceGeneration)) return;
+    const messageScope = workbenchMessageScope(msg, routeKey);
 
     switch (msg.type) {
       case 'directory_listing': {
-        if (msg.conversationId === '_folder_picker') {
+        if (messageScope === 'files-folder-picker') {
           fp.handleFolderPickerListing(msg);
           return;
         }
+        if (routeKey && messageScope !== 'main') return;
         tree.handleDirectoryListing(msg);
         break;
       }
       case 'file_content': {
+        const nFilePath = normalizePath(msg.requestedFilePath || msg.filePath);
+        const responseTab = openFiles.value.find(f => f.path === nFilePath
+          && (!f.agentId || !msg.agentId || f.agentId === msg.agentId)
+          && (!f.conversationId || !msg.conversationId || f.conversationId === msg.conversationId));
+        if (!responseTab || (responseTab.requestId && msg.requestId && msg.requestId !== responseTab.requestId)) return;
         fileLoading.value = false;
         if (msg.error) {
           debugStatus.value = `Error: ${msg.error}`;
           ops.clearPendingDownload();
-          const errFilePath = normalizePath(msg.filePath);
-          const errTab = openFiles.value.find(f => f.path === errFilePath);
-          if (errTab) { errTab.previewLoading = false; errTab.previewError = msg.error; }
+          responseTab.previewLoading = false;
+          responseTab.previewError = msg.error;
           return;
         }
-        const nFilePath = normalizePath(msg.filePath);
 
         // Handle pending download
         if (ops.getPendingDownload() && normalizePath(ops.getPendingDownload()) === nFilePath) {
@@ -67,9 +92,9 @@ export function createWsHandler({
           return;
         }
 
-        const tabIndex = openFiles.value.findIndex(f => f.path === nFilePath);
+        const tabIndex = openFiles.value.indexOf(responseTab);
         if (tabIndex >= 0) {
-          const file = openFiles.value[tabIndex];
+          const file = responseTab;
           if (msg.binary) {
             file.previewLoading = false;
             const previewBaseUrl = `${location.protocol}//${location.host}/api/preview/${msg.fileId}?token=${msg.previewToken}`;
@@ -102,20 +127,30 @@ export function createWsHandler({
             } else {
               Vue.nextTick(() => { setTimeout(() => createEditor(file), 100); });
             }
+            const revealLineNumber = pendingRevealLines.get(nFilePath);
+            pendingRevealLines.delete(nFilePath);
+            revealLine(file, revealLineNumber);
           }
         }
         break;
       }
       case 'file_saved': {
+        const nSavedPath = normalizePath(msg.requestedFilePath || msg.filePath);
+        const savedFile = openFiles.value.find(f => f.path === nSavedPath
+          && (!f.agentId || !msg.agentId || f.agentId === msg.agentId)
+          && (!f.conversationId || !msg.conversationId || f.conversationId === msg.conversationId));
+        if (!savedFile?.pendingSaveRequestId) return;
+        // New Agents echo requestId. Old Agents do not, so accept a missing id
+        // only for a real pending save after owner + path selected the tab.
+        if (msg.requestId && msg.requestId !== savedFile.pendingSaveRequestId) return;
         fileSaving.value = false;
+        const savedContent = savedFile.pendingSaveContent;
+        delete savedFile.pendingSaveRequestId;
+        delete savedFile.pendingSaveContent;
         if (msg.error) { console.error('File save failed:', msg.error); return; }
-        const nSavedPath = normalizePath(msg.filePath);
-        const savedFile = openFiles.value.find(f => f.path === nSavedPath);
-        if (savedFile) {
-          savedFile.originalContent = savedFile.content;
-          savedFile.isDirty = false;
-          saveTabsState(store.currentConversation);
-        }
+        savedFile.originalContent = savedContent ?? savedFile.content;
+        savedFile.isDirty = savedFile.content !== savedFile.originalContent;
+        saveTabsState(savedFile.conversationId || store.currentConversation);
         break;
       }
       case 'file_search_result': {
@@ -156,9 +191,21 @@ export function createWsHandler({
   };
 
   const handleOpenFile = (event) => {
-    const { filePath: path } = event.detail;
+    const {
+      filePath: path,
+      agentId = store.currentAgent,
+      conversationId = store.currentConversation,
+      workDir = getEffectiveWorkDir(),
+      workbenchRouteKey = routeKey,
+      hideTree = false,
+      line = null,
+    } = event.detail || {};
     const nPath = normalizePath(path);
-    openFileInTab(nPath, nPath.split('/').pop());
+    if (!nPath || !agentId || !conversationId || (routeKey && workbenchRouteKey !== routeKey)) return;
+    if (hideTree && typeof setTreeVisible === 'function') setTreeVisible(false);
+    if (Number.isFinite(line) && line > 0) pendingRevealLines.set(nPath, line);
+    openFileInTab(nPath, nPath.split('/').pop(), { agentId, conversationId, workDir });
+    revealLine(activeFile.value, line);
   };
 
   return {

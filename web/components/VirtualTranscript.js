@@ -69,6 +69,8 @@ export default {
     let activeTargetKey = null;
     let activeTargetAlign = 'start';
     let activeTargetElement = null;
+    let previousItems = [];
+    let itemChangeGeneration = 0;
 
     // Item offsets only change when the items, estimates, or measured heights
     // change. Keep them out of the scroll-dependent computed so wheel/touch
@@ -123,6 +125,40 @@ export default {
 
     function syncInitialPosition() {
       if (!alignInitialEnd()) readScrollState();
+    }
+
+    function offsetForKey(items, key) {
+      const index = items.findIndex((item, itemIndex) => getVirtualItemKey(item, itemIndex) === key);
+      if (index < 0) return null;
+      const layout = buildVirtualOffsets(items, heightCache, {
+        itemGap: props.itemGap,
+        estimateHeight: props.estimateHeight,
+      });
+      return layout.offsets[index] || 0;
+    }
+
+    function preserveAnchorAcrossItems(previous, next, generation) {
+      const scroller = scrollEl.value;
+      if (!scroller || bottomFollowEnabled || previous.length === 0 || next.length === 0) return;
+      const previousLayout = buildVirtualOffsets(previous, heightCache, {
+        itemGap: props.itemGap,
+        estimateHeight: props.estimateHeight,
+      });
+      const previousWindow = computeVirtualWindowFromLayout(previous, previousLayout, {
+        scrollTop: scroller.scrollTop || 0,
+        viewportHeight: scroller.clientHeight || viewportHeight.value,
+        overscan: 0,
+      });
+      const anchorIndex = Math.min(previous.length - 1, previousWindow.visibleStart);
+      const anchorKey = getVirtualItemKey(previous[anchorIndex], anchorIndex);
+      const previousOffset = previousLayout.offsets[anchorIndex] || 0;
+      Vue.nextTick(() => {
+        if (generation !== itemChangeGeneration) return;
+        const nextOffset = offsetForKey(next, anchorKey);
+        if (!Number.isFinite(nextOffset)) return;
+        scroller.scrollTop += nextOffset - previousOffset;
+        readScrollState();
+      });
     }
 
     function scheduleReadScrollState() {
@@ -219,10 +255,23 @@ export default {
 
       const scroller = scrollEl.value;
       const wasNearBottom = bottomFollowEnabled && isNearBottom(scroller);
+      // A newly mounted Session tail has no cached DOM heights yet. Measuring the
+      // first virtual window replaces estimates and can grow scrollHeight before
+      // any row has a finite previousHeight. Preserve tail ownership for that
+      // initial settling pass; otherwise the browser remains at the old maximum,
+      // mounts a different estimated window, and repeatedly oscillates until a
+      // user upward scroll disables bottom following.
+      const isInitialMeasurementBatch = measurements.some(measurement => !Number.isFinite(measurement.previousHeight));
       const windowStart = virtualWindow.value.visibleStart;
       const shouldRealignTarget = !!activeTargetKey && measurements.some(measurement => measurement.key === activeTargetKey);
       let anchorDelta = 0;
-      let shouldScrollToBottom = false;
+      // Geometry can already report "not near bottom" by the time a first DOM
+      // measurement observes that actual rows grew beyond their estimates. For
+      // an end-aligned transcript, follow intent—not that transient geometry—is
+      // authoritative until the user explicitly pauses following.
+      let shouldScrollToBottom = bottomFollowEnabled
+        && props.initialAlign === 'end'
+        && isInitialMeasurementBatch;
 
       // Do not read virtualWindow or virtualLayout in this loop. Vue can then
       // collapse all cache invalidations into one render/layout recomputation.
@@ -373,10 +422,19 @@ export default {
     Vue.watch(
       () => props.items.map((item, index) => getVirtualItemKey(item, index)).join('\n'),
       () => {
+        const nextItems = props.items.slice();
+        const previous = previousItems;
+        previousItems = nextItems;
+        itemChangeGeneration += 1;
+        const generation = itemChangeGeneration;
         itemIndexByKey.clear();
         props.items.forEach((item, index) => itemIndexByKey.set(getVirtualItemKey(item, index), index));
         if (activeTargetKey && !itemIndexByKey.has(activeTargetKey)) clearTargetAnchor();
-        Vue.nextTick(syncInitialPosition);
+        if (previous.length > 0) preserveAnchorAcrossItems(previous, nextItems, generation);
+        Vue.nextTick(() => {
+          if (generation !== itemChangeGeneration) return;
+          syncInitialPosition();
+        });
       },
       { immediate: true },
     );

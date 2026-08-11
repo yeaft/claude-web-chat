@@ -4,9 +4,10 @@ import { join, basename, dirname, extname } from 'path';
 import { platform } from 'os';
 import ctx from '../context.js';
 import { resolveAndValidatePath, BINARY_EXTENSIONS } from './utils.js';
+import { sendWorkbenchResult } from './request-routing.js';
 
 export async function handleReadFile(msg) {
-  const { conversationId, filePath, _requestUserId } = msg;
+  const { conversationId, filePath, requestId, _requestUserId, _requestClientId } = msg;
   console.log('[Agent] handleReadFile received:', { filePath, conversationId, workDir: msg.workDir });
   const conv = ctx.conversations.get(conversationId);
   const workDir = msg.workDir || conv?.workDir || ctx.CONFIG.workDir;
@@ -20,11 +21,14 @@ export async function handleReadFile(msg) {
       // Binary file: read as Buffer, send base64
       const buffer = await readFile(resolved);
       console.log('[Agent] Sending binary file_content:', { filePath: resolved, size: buffer.length, mimeType, conversationId });
-      ctx.sendToServer({
+      sendWorkbenchResult(ctx, msg, {
         type: 'file_content',
         conversationId,
+        requestId,
         _requestUserId,
+        _requestClientId,
         filePath: resolved,
+        requestedFilePath: filePath,
         content: buffer.toString('base64'),
         binary: true,
         mimeType
@@ -53,21 +57,27 @@ export async function handleReadFile(msg) {
       };
 
       console.log('[Agent] Sending file_content:', { filePath: resolved, contentLen: content.length, conversationId });
-      ctx.sendToServer({
+      sendWorkbenchResult(ctx, msg, {
         type: 'file_content',
         conversationId,
+        requestId,
         _requestUserId,
+        _requestClientId,
         filePath: resolved,
+        requestedFilePath: filePath,
         content,
         language: langMap[ext] || null
       });
     }
   } catch (e) {
-    ctx.sendToServer({
+    sendWorkbenchResult(ctx, msg, {
       type: 'file_content',
       conversationId,
+      requestId,
       _requestUserId,
+      _requestClientId,
       filePath,
+      requestedFilePath: filePath,
       content: '',
       error: e.message
     });
@@ -75,7 +85,7 @@ export async function handleReadFile(msg) {
 }
 
 export async function handleWriteFile(msg) {
-  const { conversationId, filePath, content, _requestUserId } = msg;
+  const { conversationId, filePath, content, requestId, _requestUserId, _requestClientId } = msg;
   const conv = ctx.conversations.get(conversationId);
   const workDir = msg.workDir || conv?.workDir || ctx.CONFIG.workDir;
 
@@ -83,19 +93,25 @@ export async function handleWriteFile(msg) {
     const resolved = resolveAndValidatePath(filePath, workDir);
     await writeFile(resolved, content, 'utf-8');
 
-    ctx.sendToServer({
+    sendWorkbenchResult(ctx, msg, {
       type: 'file_saved',
       conversationId,
+      requestId,
       _requestUserId,
+      _requestClientId,
       filePath: resolved,
+      requestedFilePath: filePath,
       success: true
     });
   } catch (e) {
-    ctx.sendToServer({
+    sendWorkbenchResult(ctx, msg, {
       type: 'file_saved',
       conversationId,
+      requestId,
       _requestUserId,
+      _requestClientId,
       filePath,
+      requestedFilePath: filePath,
       success: false,
       error: e.message
     });
@@ -118,7 +134,7 @@ export async function handleListDirectory(msg) {
             drives.push({ name: letter + ':', type: 'directory', size: 0 });
           }
         }
-        ctx.sendToServer({
+        sendWorkbenchResult(ctx, msg, {
           type: 'directory_listing',
           conversationId,
           requestId,
@@ -135,7 +151,7 @@ export async function handleListDirectory(msg) {
           .filter(e => !(e.isDirectory() && SKIP_DIRS.has(e.name)))
           .map(e => ({ name: e.name, type: e.isDirectory() ? 'directory' : 'file', size: 0 }))
           .sort((a, b) => a.name.localeCompare(b.name));
-        ctx.sendToServer({
+        sendWorkbenchResult(ctx, msg, {
           type: 'directory_listing',
           conversationId,
           requestId,
@@ -146,7 +162,7 @@ export async function handleListDirectory(msg) {
         });
       }
     } catch (e) {
-      ctx.sendToServer({
+      sendWorkbenchResult(ctx, msg, {
         type: 'directory_listing',
         conversationId,
         requestId,
@@ -194,7 +210,7 @@ export async function handleListDirectory(msg) {
       return a.name.localeCompare(b.name);
     });
 
-    ctx.sendToServer({
+    sendWorkbenchResult(ctx, msg, {
       type: 'directory_listing',
       conversationId,
       requestId,
@@ -204,7 +220,7 @@ export async function handleListDirectory(msg) {
       entries: result
     });
   } catch (e) {
-    ctx.sendToServer({
+    sendWorkbenchResult(ctx, msg, {
       type: 'directory_listing',
       conversationId,
       requestId,
@@ -236,13 +252,13 @@ export async function handleCreateFile(msg) {
       }
       await writeFile(resolved, '', 'utf-8');
     }
-    ctx.sendToServer({
+    sendWorkbenchResult(ctx, msg, {
       type: 'file_op_result', conversationId, _requestUserId,
       operation: 'create', success: true,
       message: (isDirectory ? 'Directory' : 'File') + ' created: ' + basename(resolved)
     });
   } catch (e) {
-    ctx.sendToServer({
+    sendWorkbenchResult(ctx, msg, {
       type: 'file_op_result', conversationId, _requestUserId,
       operation: 'create', success: false, error: e.message
     });
@@ -278,13 +294,13 @@ export async function handleDeleteFiles(msg) {
       ? 'Deleted: ' + deleted.join(', ') + (errors.length > 0 ? '; Errors: ' + errors.join(', ') : '')
       : 'Failed: ' + errors.join(', ');
 
-    ctx.sendToServer({
+    sendWorkbenchResult(ctx, msg, {
       type: 'file_op_result', conversationId, _requestUserId,
       operation: 'delete', success: deleted.length > 0,
       message, deletedCount: deleted.length, errorCount: errors.length
     });
   } catch (e) {
-    ctx.sendToServer({
+    sendWorkbenchResult(ctx, msg, {
       type: 'file_op_result', conversationId, _requestUserId,
       operation: 'delete', success: false, error: e.message
     });
@@ -326,13 +342,13 @@ export async function handleMoveFiles(msg) {
       ? 'Moved: ' + moved.join(', ') + ' → ' + basename(destResolved) + (errors.length > 0 ? '; Errors: ' + errors.join(', ') : '')
       : 'Failed: ' + errors.join(', ');
 
-    ctx.sendToServer({
+    sendWorkbenchResult(ctx, msg, {
       type: 'file_op_result', conversationId, _requestUserId,
       operation: 'move', success: moved.length > 0,
       message, movedCount: moved.length, errorCount: errors.length
     });
   } catch (e) {
-    ctx.sendToServer({
+    sendWorkbenchResult(ctx, msg, {
       type: 'file_op_result', conversationId, _requestUserId,
       operation: 'move', success: false, error: e.message
     });
@@ -387,13 +403,13 @@ export async function handleCopyFiles(msg) {
       ? 'Copied: ' + copied.join(', ') + (errors.length > 0 ? '; Errors: ' + errors.join(', ') : '')
       : 'Failed: ' + errors.join(', ');
 
-    ctx.sendToServer({
+    sendWorkbenchResult(ctx, msg, {
       type: 'file_op_result', conversationId, _requestUserId,
       operation: 'copy', success: copied.length > 0,
       message, copiedCount: copied.length, errorCount: errors.length
     });
   } catch (e) {
-    ctx.sendToServer({
+    sendWorkbenchResult(ctx, msg, {
       type: 'file_op_result', conversationId, _requestUserId,
       operation: 'copy', success: false, error: e.message
     });
@@ -429,13 +445,13 @@ export async function handleUploadToDir(msg) {
       ? 'Uploaded: ' + saved.join(', ') + (errors.length > 0 ? '; Errors: ' + errors.join(', ') : '')
       : 'Failed: ' + errors.join(', ');
 
-    ctx.sendToServer({
+    sendWorkbenchResult(ctx, msg, {
       type: 'file_op_result', conversationId, _requestUserId,
       operation: 'upload', success: saved.length > 0,
       message, uploadedCount: saved.length, errorCount: errors.length
     });
   } catch (e) {
-    ctx.sendToServer({
+    sendWorkbenchResult(ctx, msg, {
       type: 'file_op_result', conversationId, _requestUserId,
       operation: 'upload', success: false, error: e.message
     });

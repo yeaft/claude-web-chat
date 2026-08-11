@@ -1,7 +1,13 @@
 import { CONFIG } from '../config.js';
 import { hashPassword } from '../auth.js';
 import { userDb, sessionDb } from '../database.js';
-import { activeSessions, revokedTokens } from '../auth/session-store.js';
+import {
+  activeSessions, pendingVerifications, pendingTotpVerifications, pendingTotpSetup,
+  revokedTokens
+} from '../auth/session-store.js';
+import { clearSessionCookie } from '../auth/request-auth.js';
+import { agents, webClients, userStatsDeltas } from '../context.js';
+import { containerAgentService } from '../container-agent-service.js';
 
 // 过滤用户敏感字段
 function sanitizeUser(user) {
@@ -48,7 +54,11 @@ function ensureAgentSecret(user) {
 /**
  * Register user profile, agent secret, and admin user management routes.
  */
-export function registerUserRoutes(app, { requireAuth, requireAdmin }) {
+export function registerUserRoutes(app, {
+  requireAuth,
+  requireAdmin,
+  containerService = containerAgentService,
+}) {
   // Get my profile
   app.get('/api/user/profile', requireAuth, (req, res) => {
     try {
@@ -149,21 +159,36 @@ export function registerUserRoutes(app, { requireAuth, requireAdmin }) {
         }
       }
 
-      const removed = userDb.deleteUser(user.id);
-      if (!removed) return res.status(404).json({ error: 'User not found or already deleted' });
+      // Keep managed cleanup and the durable active -> pending transition inside
+      // one owner lifecycle fence so an admitted create cannot outlive deletion.
+      const deletion = await containerService.prepareOwnerDeletion(
+        user.id,
+        () => userDb.beginDeletion(user.id),
+      );
+      if (!deletion) return res.status(404).json({ error: 'User not found or already deleted' });
 
-      // Best-effort: revoke every active JWT belonging to this user so any
-      // open tabs can't keep talking to the API.
-      try {
-        for (const [token, info] of activeSessions.entries()) {
-          if (info && info.username === user.username) {
-            activeSessions.delete(token);
-            revokedTokens.add(token);
-          }
+      // Durable eligibility is enforced from the user row. These sweeps close
+      // already-open channels immediately rather than waiting for their next use.
+      for (const [token, info] of activeSessions.entries()) {
+        if (info?.username === user.username) {
+          activeSessions.delete(token);
+          revokedTokens.add(token);
         }
-      } catch {}
-
-      res.json({ success: true });
+      }
+      for (const pending of [pendingVerifications, pendingTotpVerifications, pendingTotpSetup]) {
+        for (const [token, info] of pending) {
+          if (info?.username === user.username) pending.delete(token);
+        }
+      }
+      for (const [, client] of webClients) {
+        if (client.userId === user.id) client.ws.close(1008, 'Account disabled');
+      }
+      for (const [, agent] of agents) {
+        if (agent.ownerId === user.id) agent.ws.close(1008, 'Account disabled');
+      }
+      userStatsDeltas.delete(user.id);
+      clearSessionCookie(req, res);
+      res.status(202).json(deletion);
     } catch (err) {
       console.error('Delete user error:', err);
       res.status(500).json({ error: 'Failed to delete account' });

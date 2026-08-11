@@ -25,6 +25,7 @@
 
 import { createInterface } from 'readline';
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { join } from 'path';
@@ -35,11 +36,23 @@ import { listModels, resolveModel, parseModelRef, resolveContextWindow, resolveM
 import { buildSystemPrompt } from './prompts.js';
 import { searchMessages } from './conversation/search.js';
 import { ConversationStore } from './conversation/persist.js';
-import { snapshotSessions } from './sessions/session-crud.js';
+import { sessionsRoot, snapshotSessions } from './sessions/session-crud.js';
 import { loadSessionConfig, resolveSessionConfig } from './sessions/session-config.js';
+import { createSession } from './sessions/session-store.js';
+import { addOrUpdateManifestSession, withSessionManifestLock } from './sessions/session-manifest.js';
 import { validateSessionId } from './sessions/ids.js';
-import { createJsonlWriter, JsonlInput, runStreamTurn, runStreamSessionTurn } from './stdio-protocol.js';
+import {
+  createJsonlWriter,
+  JsonlInput,
+  normalizeStreamRoutingIntent,
+  normalizeStreamSessionBootstrap,
+  runStreamTurn,
+  runStreamSessionTurn,
+} from './stdio-protocol.js';
 import { createCliSessionRunner } from './cli-session-runner.js';
+import { emitStreamTaskEvent, taskResultReentryContext } from './tasks/result-delivery.js';
+import { TASK_RESULT_DELIVERY, taskResultDeliveryFor } from './tasks/store.js';
+import { buildStreamSubAgentFrame } from './sub-agent/public-event.js';
 import {
   cleanupManagedCliRuntimePaths,
   ensureManagedCliTools,
@@ -816,6 +829,34 @@ async function runREPL(config, args) {
 
 // ─── Structured stdio handler ──────────────────────────────────
 
+function writeStreamProtocolError({ write, sessionId, error }) {
+  const turnId = randomUUID();
+  const normalized = error instanceof Error ? error : new Error(String(error || 'Unknown error'));
+  write({
+    type: 'error',
+    session_id: sessionId,
+    turn_id: turnId,
+    thread_id: 'main',
+    threadId: 'main',
+    error: { name: normalized.name || 'Error', message: normalized.message || String(normalized) },
+    retryable: false,
+  });
+  const result = {
+    type: 'result',
+    subtype: 'error',
+    session_id: sessionId,
+    turn_id: turnId,
+    thread_id: 'main',
+    threadId: 'main',
+    stop_reason: 'error',
+    is_error: true,
+    result: '',
+    error: normalized.message || String(normalized),
+  };
+  write(result);
+  return result;
+}
+
 async function runStreamJson(config, args) {
   const sessionId = args.sessionId || `session_cli_${randomUUID()}`;
   const validation = validateSessionId(sessionId);
@@ -854,8 +895,159 @@ async function runStreamJson(config, args) {
     managedCliReady: args.managedCliReady,
   });
   const { engine, conversationStore, skillManager, toolRegistry } = loaded;
-  const sessionRunner = createCliSessionRunner({ loaded, sessionId, workDir });
   const todoState = { value: [] };
+  const asyncTaskOwners = new Map();
+  const rescuedTaskIds = new Set();
+  const pendingTaskRescues = new Set();
+  const taskLifecycleWaiters = new Set();
+  let sessionRunner = null;
+  let taskEventIntakeOpen = true;
+  let hadError = false;
+  let singleEngineTail = Promise.resolve();
+  let streamSessionBootstrapOpen = false;
+
+  const loadStreamHistory = () => conversationStore.loadRecentBySession(sessionId, 20).map(message => ({
+    role: message.role,
+    content: message.content,
+    ...(message.toolCallId && { toolCallId: message.toolCallId }),
+    ...(message.toolCalls && { toolCalls: message.toolCalls }),
+  }));
+
+  // An ad-hoc stream-json conversation has exactly one Engine and no VP roster.
+  // Serialize both root turns and late task-result rescues on that same stable
+  // process owner so a completion cannot race another query or invent a VP id.
+  const runSingleEngineTurn = (turnOptions) => {
+    const turn = singleEngineTail.catch(() => {}).then(() => runStreamTurn({
+      engine,
+      ...turnOptions,
+    }));
+    singleEngineTail = turn;
+    return turn;
+  };
+
+  const wakeTaskLifecycleWaiters = () => {
+    if (taskLifecycleWaiters.size === 0) return;
+    const waiters = Array.from(taskLifecycleWaiters);
+    taskLifecycleWaiters.clear();
+    for (const resolveWaiter of waiters) resolveWaiter();
+  };
+
+  const rescueTaskResult = async (context) => {
+    const taskId = context?.task?.id;
+    if (!taskId || !context?.content || rescuedTaskIds.has(taskId)) return false;
+    if (sessionRunner && !context.vpId) return false;
+    rescuedTaskIds.add(taskId);
+    try {
+      const common = {
+        prompt: context.content,
+        sessionId,
+        workDir,
+        model: loaded.config.model,
+        modelEffort: loaded.config.modelEffort || null,
+        input,
+        write,
+        taskId,
+      };
+      const result = sessionRunner
+        ? await runStreamSessionTurn({
+            runner: sessionRunner,
+            ...common,
+            internal: true,
+            meta: {
+              injectedBy: 'task_result',
+              routeTargetVpId: context.vpId,
+              threadId: context.threadId || 'main',
+            },
+            routingIntent: { targetVpIds: [context.vpId], explicit: true },
+          })
+        : await runSingleEngineTurn({
+            ...common,
+            messages: loadStreamHistory(),
+            threadId: context.threadId || 'main',
+            userAlreadyPersisted: true,
+          });
+      hadError ||= result?.is_error === true;
+      return true;
+    } catch (error) {
+      hadError = true;
+      writeStreamProtocolError({ write, sessionId, error });
+      return false;
+    }
+  };
+
+  const queueTaskRescue = (context) => {
+    if (!taskEventIntakeOpen) return null;
+    let rescue;
+    rescue = rescueTaskResult(context).finally(() => {
+      pendingTaskRescues.delete(rescue);
+      wakeTaskLifecycleWaiters();
+    });
+    pendingTaskRescues.add(rescue);
+    wakeTaskLifecycleWaiters();
+    return rescue;
+  };
+
+  const configureStreamEngine = (targetEngine, vpId = null) => {
+    if (!targetEngine) return;
+    if (typeof targetEngine.setAsyncTaskCoordinator === 'function') {
+      const removeOwner = (taskId, ownerEngine) => {
+        const owner = asyncTaskOwners.get(taskId);
+        if (!owner || owner.engine !== ownerEngine) return null;
+        asyncTaskOwners.delete(taskId);
+        return owner;
+      };
+      targetEngine.setAsyncTaskCoordinator({
+        onRegister(taskId, ownerEngine) {
+          if (!taskId) return;
+          asyncTaskOwners.set(taskId, {
+            engine: ownerEngine,
+            sessionId,
+            vpId: vpId || null,
+            threadId: ownerEngine.currentThreadId || 'main',
+          });
+        },
+        onUnregister: removeOwner,
+        onConsumed: removeOwner,
+        onDeferred(taskId, ownerEngine) {
+          const owner = removeOwner(taskId, ownerEngine);
+          const task = loaded.taskManager?.getTask?.(sessionId, taskId);
+          if (!owner || !task || !['succeeded', 'failed', 'cancelled', 'orphaned'].includes(task.status)) return;
+          const context = taskResultReentryContext({ event: 'completed', task }, { sessionId, owner });
+          if (context) queueTaskRescue(context);
+        },
+        onUndelivered(taskId, delivery, ownerEngine) {
+          const owner = removeOwner(taskId, ownerEngine);
+          if (!owner || rescuedTaskIds.has(taskId)) return;
+          queueTaskRescue({
+            task: { id: taskId, kind: delivery?.taskKind, status: delivery?.taskStatus },
+            sessionId: delivery?.sessionId || owner.sessionId,
+            vpId: delivery?.vpId || owner.vpId,
+            threadId: delivery?.threadId || owner.threadId,
+            content: delivery?.content,
+          });
+        },
+      });
+    }
+    if (typeof targetEngine.setSubAgentEventSink === 'function') {
+      targetEngine.setSubAgentEventSink((agentId, event) => {
+        const frame = buildStreamSubAgentFrame({ event, agentId, sessionId, vpId, threadId: targetEngine.currentThreadId });
+        if (frame) write(frame);
+      });
+    }
+  };
+
+  configureStreamEngine(engine, null);
+  sessionRunner = createCliSessionRunner({ loaded, sessionId, workDir, configureEngine: configureStreamEngine });
+  if (sessionRunner) {
+    snapshotSessions(loaded.yeaftDir);
+    const meta = sessionRunner.meta;
+    if (meta) addOrUpdateManifestSession(
+      loaded.yeaftDir,
+      meta,
+      join(sessionsRoot(loaded.yeaftDir), sessionId),
+    );
+  }
+  streamSessionBootstrapOpen = !sessionRunner;
 
   write({
     type: 'system',
@@ -870,16 +1062,98 @@ async function runStreamJson(config, args) {
     output_format: 'stream-json',
   });
 
-  const runPrompt = async (prompt) => {
-    const priorMessages = conversationStore.loadRecentBySession(sessionId, 20).map(message => ({
-      role: message.role,
-      content: message.content,
-      ...(message.toolCallId && { toolCallId: message.toolCallId }),
-      ...(message.toolCalls && { toolCalls: message.toolCalls }),
-    }));
+  if (loaded.taskManager && typeof loaded.taskManager.setEventSink === 'function') {
+    loaded.taskManager.setEventSink((event) => {
+      if (!taskEventIntakeOpen) return;
+      const hadExactOwner = asyncTaskOwners.has(event?.task?.id);
+      const delivery = emitStreamTaskEvent({ event, asyncTaskOwners, write, sessionId });
+      if (delivery.projected && !delivery.delivered && !hadExactOwner && event?.event === 'completed') {
+        const context = taskResultReentryContext(event, { sessionId });
+        if (context) queueTaskRescue(context);
+      }
+      wakeTaskLifecycleWaiters();
+    });
+  }
+
+  const activeModelReentryTasks = () => {
+    if (!loaded.taskManager || typeof loaded.taskManager.listActiveTasks !== 'function') return [];
+    return loaded.taskManager.listActiveTasks(sessionId).filter(task => (
+      taskResultDeliveryFor(task) === TASK_RESULT_DELIVERY.MODEL_REENTRY
+    ));
+  };
+
+  const drainTaskLifecycle = async () => {
+    if (!loaded.taskManager || typeof loaded.taskManager.setEventSink !== 'function') {
+      taskEventIntakeOpen = false;
+      return;
+    }
+    // EOF is a lifecycle fence, not permission to abandon model-reentry work.
+    // Keep the Session runner and task event sink alive until every owned
+    // result-producing task is terminal and every resulting rescue turn has
+    // settled. `status_only` tasks remain detached and never hold CLI exit.
+    for (;;) {
+      if (activeModelReentryTasks().length === 0 && pendingTaskRescues.size === 0) {
+        // JavaScript runs this check + close synchronously. No TaskManager
+        // completion can interleave between observing the empty sets and
+        // detaching the sink, so no late rescue can target a closed runner.
+        taskEventIntakeOpen = false;
+        loaded.taskManager.setEventSink(null);
+        wakeTaskLifecycleWaiters();
+        return;
+      }
+      await new Promise(resolveWaiter => taskLifecycleWaiters.add(resolveWaiter));
+    }
+  };
+
+  const runPrompt = async (prompt, message = null) => {
+    if (streamSessionBootstrapOpen) {
+      streamSessionBootstrapOpen = false;
+      const bootstrap = normalizeStreamSessionBootstrap(message);
+      if (bootstrap) {
+        let workspaceKey = '';
+        try { workspaceKey = realpathSync(resolve(workDir)); } catch { /* leave empty */ }
+        withSessionManifestLock(loaded.yeaftDir, () => {
+          sessionRunner = createCliSessionRunner({
+            loaded,
+            sessionId,
+            workDir,
+            configureEngine: configureStreamEngine,
+          });
+          if (sessionRunner) return;
+          const handle = createSession(sessionsRoot(loaded.yeaftDir), {
+            id: sessionId,
+            name: sessionId,
+            roster: bootstrap.roster,
+            defaultVpId: bootstrap.defaultVpId,
+            workDir,
+            workspaceKey,
+          });
+          handle.close();
+        });
+        if (!sessionRunner) {
+          sessionRunner = createCliSessionRunner({
+            loaded,
+            sessionId,
+            workDir,
+            configureEngine: configureStreamEngine,
+          });
+        }
+        if (!sessionRunner) throw new Error(`Failed to initialize formal stream-json Session ${sessionId}`);
+        const meta = sessionRunner.meta;
+        if (meta) addOrUpdateManifestSession(
+          loaded.yeaftDir,
+          meta,
+          join(sessionsRoot(loaded.yeaftDir), sessionId),
+        );
+      }
+    }
+    const routingIntent = normalizeStreamRoutingIntent(message);
+    if (routingIntent && !sessionRunner) {
+      throw new Error('stream-json VP selectors require an existing formal Session with a persisted roster');
+    }
     const turnOptions = {
       prompt,
-      messages: priorMessages,
+      messages: loadStreamHistory(),
       sessionId,
       workDir,
       model: loaded.config.model,
@@ -890,31 +1164,45 @@ async function runStreamJson(config, args) {
       setCurrentTodos: todos => { todoState.value = Array.isArray(todos) ? todos.slice() : []; },
     };
     return sessionRunner
-      ? runStreamSessionTurn({ runner: sessionRunner, ...turnOptions })
-      : runStreamTurn({ engine, ...turnOptions });
+      ? runStreamSessionTurn({ runner: sessionRunner, routingIntent, ...turnOptions })
+      : runSingleEngineTurn(turnOptions);
   };
 
-  let hadError = false;
   const recordResult = (result) => {
     hadError ||= result?.is_error === true;
     return result;
   };
   try {
     if (args.prompt) {
-      recordResult(await runPrompt(args.prompt));
+      try {
+        recordResult(await runPrompt(args.prompt));
+      } catch (error) {
+        recordResult(writeStreamProtocolError({ write, sessionId, error }));
+      }
     } else if (input) {
       for (;;) {
         const item = await input.nextPrompt();
         if (!item) break;
-        recordResult(await runPrompt(item.prompt));
+        try {
+          recordResult(await runPrompt(item.prompt, item.message));
+        } catch (error) {
+          recordResult(writeStreamProtocolError({ write, sessionId, error }));
+        }
       }
     } else {
       let prompt = '';
       for await (const chunk of process.stdin) prompt += chunk;
-      if (prompt.trim()) recordResult(await runPrompt(prompt.trim()));
+      if (prompt.trim()) {
+        try {
+          recordResult(await runPrompt(prompt.trim()));
+        } catch (error) {
+          recordResult(writeStreamProtocolError({ write, sessionId, error }));
+        }
+      }
     }
   } finally {
     input?.close();
+    await drainTaskLifecycle();
     await sessionRunner?.close();
     await loaded.shutdown();
     console.log = originalConsole.log;

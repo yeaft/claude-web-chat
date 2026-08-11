@@ -62,7 +62,7 @@
   width: 0;
   min-width: 0;
   background: var(--bg-workbench);
-  border-right: 1px solid var(--border-color);
+  border-left: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -72,9 +72,8 @@
 }
 
 .workbench-panel.expanded {
-  /* Default: take ~75% of remaining space after sidebar */
-  width: calc(75% - 260px);
-  min-width: 300px;
+  width: clamp(360px, 42vw, 760px);
+  min-width: 320px;
   flex-shrink: 1;
 }
 
@@ -130,7 +129,7 @@
 .resize-handle {
   position: absolute;
   top: 0;
-  right: -3px;
+  left: -3px;
   width: 6px;
   height: 100%;
   cursor: col-resize;
@@ -148,7 +147,7 @@
 @media (pointer: coarse) {
   .resize-handle {
     width: 20px;
-    right: -10px;
+    left: -10px;
   }
 }
 
@@ -159,69 +158,36 @@
   height: 100%;
 }
 
-/* Workbench Tab Bar */
-.workbench-tabs {
-  display: flex;
-  align-items: center;
-  padding: 0 8px;
-  flex-shrink: 0;
-  height: 48px;
-  gap: 2px;
-}
-
-.wb-tab {
+/* Workbench navigation */
+.workbench-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text-muted);
-  border-radius: 6px;
-  transition: all 0.15s;
-  white-space: nowrap;
-}
-
-.wb-tab:hover {
-  background: var(--sidebar-hover);
-  color: var(--text-primary);
-}
-
-.wb-tab.active {
-  background: var(--session-active);
-  color: var(--text-primary);
-}
-
-.wb-tab svg {
+  height: 48px;
+  padding: 0 8px;
   flex-shrink: 0;
 }
 
-.tab-badge {
-  min-width: 16px;
-  height: 16px;
+.workbench-header-copy {
+  min-width: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 0 4px;
-  background: var(--text-muted);
-  color: var(--bg-main);
-  font-size: 10px;
+}
+
+.workbench-header-title {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 14px;
   font-weight: 600;
-  border-radius: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.wb-tab.active .tab-badge {
-  background: var(--text-secondary);
-}
-
-.wb-tab-spacer {
+.workbench-header-spacer {
   flex: 1;
 }
 
-.wb-tab-action {
+.workbench-header-action {
   width: 32px;
   height: 32px;
   border: none;
@@ -232,21 +198,356 @@
   justify-content: center;
   border-radius: 6px;
   color: var(--text-muted);
-  transition: all 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
 
-.wb-tab-action:hover {
+.workbench-header-action:hover {
   background: var(--sidebar-hover);
   color: var(--text-primary);
 }
 
-/* Workbench Tab Content */
+.workbench-header-action:focus-visible,
+.workbench-capability-card:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+.workbench-view-content,
 .workbench-tab-content {
   flex: 1;
   min-height: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.workbench-launcher {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 28px;
+}
+
+.workbench-launcher-intro {
+  max-width: 560px;
+  margin-bottom: 24px;
+}
+
+.workbench-launcher-intro h2,
+.workbench-capability-empty h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.workbench-launcher-intro p,
+.workbench-capability-empty p {
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.workbench-capability-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.workbench-capability-card {
+  min-width: 0;
+  min-height: 132px;
+  padding: 18px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 10px 12px;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+
+.workbench-capability-card:hover {
+  border-color: var(--text-muted);
+  background: var(--sidebar-hover);
+  transform: translateY(-1px);
+}
+
+.workbench-capability-card.unavailable {
+  background: var(--bg-workbench);
+}
+
+.workbench-capability-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--session-active);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.workbench-capability-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.workbench-capability-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.workbench-capability-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.workbench-capability-description {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.workbench-capability-status {
+  grid-column: 2;
+  width: max-content;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.workbench-capability-status.available {
+  color: var(--success);
+}
+
+.workbench-capability-empty {
+  flex: 1;
+  min-height: 0;
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.workbench-capability-empty p {
+  max-width: 480px;
+}
+
+.workbench-capability-empty .btn-secondary {
+  margin-top: 20px;
+}
+
+.workbench-capability-empty-icon {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 16px;
+}
+
+.workbench-capability-empty-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.browser-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--browser-stage-bg);
+}
+
+.browser-toolbar {
+  min-height: 44px;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-workbench);
+  color: var(--text-secondary);
+}
+
+.browser-location {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  background: var(--bg-input);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  font-size: 12px;
+}
+
+.browser-location > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-connection-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--text-muted);
+}
+
+.browser-connection-dot.connected {
+  background: var(--success);
+}
+
+.browser-connection-dot.failed {
+  background: var(--error);
+}
+
+.browser-status {
+  flex: 0 0 auto;
+  max-width: 160px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-end-button {
+  flex: 0 0 auto;
+  min-height: 30px;
+}
+
+.browser-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--browser-stage-bg);
+}
+
+.browser-stage-placeholder {
+  flex-direction: column;
+  gap: 16px;
+  padding: 32px;
+  background: var(--bg-workbench);
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.browser-stage-placeholder h2,
+.browser-stage-placeholder p {
+  margin: 0;
+}
+
+.browser-stage-placeholder p {
+  max-width: 480px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.browser-setup-stage {
+  overflow-y: auto;
+}
+
+.browser-install-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(400px, 100%);
+}
+
+.browser-install-progress {
+  flex: 1;
+  min-width: 0;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border-color);
+}
+
+.browser-install-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-blue);
+  transition: width 0.2s ease;
+}
+
+.browser-install-percent {
+  min-width: 3ch;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.browser-stage-placeholder .browser-install-meta,
+.browser-stage-placeholder .browser-install-note {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.browser-stage-placeholder .browser-setup-error {
+  color: var(--error);
+}
+
+.browser-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--browser-stage-bg);
+}
+
+.browser-video-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: var(--bg-workbench);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.browser-video-overlay .session-loading-spinner {
+  width: 24px;
+  height: 24px;
+}
+
+@media (max-width: 520px) {
+  .workbench-launcher {
+    padding: 20px 16px;
+  }
+
+  .workbench-capability-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workbench-capability-card {
+    min-height: 112px;
+  }
+
+  .workbench-capability-empty {
+    padding: 24px 20px;
+  }
 }
 
 

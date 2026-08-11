@@ -10,6 +10,7 @@ import {
   finishStreamingForConversation,
   maxDbMessageId,
 } from '../../web/stores/helpers/messages.js';
+import { YEAFT_HISTORY_CACHE_LIMITS } from '../../web/stores/helpers/yeaft-history-cache.js';
 import {
   calculateFloatingMenuPosition,
   calculateFloatingSubmenuPosition,
@@ -21,6 +22,7 @@ import { openImagePreview } from '../../web/utils/imagePreview.js';
 import SidebarWorkCenter from '../../web/components/SidebarWorkCenter.js';
 import enMessages from '../../web/i18n/en.js';
 import zhCNMessages from '../../web/i18n/zh-CN.js';
+import { yeaftHistoryIdentityKey } from '../../web/stores/helpers/yeaft-history-identity.js';
 import { yeaftSessionIdentityKey } from '../../web/stores/helpers/yeaft-session-identity.js';
 import { migrateYeaftConversationState } from '../../web/stores/helpers/yeaft-conversation-state.js';
 import {
@@ -115,7 +117,9 @@ const { default: SessionCreateModal } = await import('../../web/components/Sessi
 const { default: ChatPage } = await import('../../web/components/ChatPage.js');
 const { default: YeaftSidebar } = await import('../../web/components/YeaftSidebar.js');
 const { default: WorkCenterPage } = await import('../../web/components/WorkCenterPage.js');
+const { default: PluginCenterPage } = await import('../../web/components/PluginCenterPage.js');
 const {
+  __testSortYeaftRowsBySequence,
   handleConversationCreated,
   handleConversationResumed,
   handleSyncMessagesResult,
@@ -143,7 +147,572 @@ function makeStore() {
   };
 }
 
+describe('app dialog contracts', () => {
+  it('queues requests FIFO and resolves each request exactly once', async () => {
+    globalThis.Vue = Vue;
+    const dialogModule = await import('../../web/utils/dialog.js');
+    const first = dialogModule.confirmDialog('first');
+    const second = dialogModule.promptDialog('second', 'seed');
+    expect(dialogModule.useDialogState()).toMatchObject({ type: 'confirm', message: 'first' });
+
+    dialogModule.resolveDialog(true);
+    dialogModule.resolveDialog(false);
+    await expect(first).resolves.toBe(true);
+    await Vue.nextTick();
+    expect(dialogModule.useDialogState()).toMatchObject({ type: 'prompt', message: 'second', value: 'seed' });
+    dialogModule.resolveDialog(true, 'edited');
+    await expect(second).resolves.toBe('edited');
+    await Vue.nextTick();
+    expect(dialogModule.useDialogState().open).toBe(false);
+  });
+
+  it('enforces keyboard, overlay, focus trap, inert background, and focus restoration', async () => {
+    globalThis.Vue = Vue;
+    const dialogModule = await import('../../web/utils/dialog.js');
+    const { default: AppDialog } = await import('../../web/components/AppDialog.js');
+    const trigger = document.createElement('button');
+    trigger.textContent = 'trigger';
+    document.body.appendChild(trigger);
+    trigger.focus();
+    const wrapper = mount(AppDialog, {
+      attachTo: document.body,
+      global: { mocks: { $t: key => key } },
+    });
+    const element = selector => document.body.querySelector(selector);
+
+    const confirm = dialogModule.confirmDialog('confirm');
+    await Vue.nextTick();
+    await Vue.nextTick();
+    expect(trigger.inert).toBe(true);
+    expect(document.activeElement).toBe(element('.app-dialog-confirm'));
+    element('.app-dialog-confirm').dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    expect(document.activeElement).toBe(element('.btn-secondary'));
+    element('.btn-secondary').dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
+    expect(document.activeElement).toBe(element('.app-dialog-confirm'));
+    element('.app-dialog-overlay').click();
+    await expect(confirm).resolves.toBe(false);
+    await Vue.nextTick();
+    await Vue.nextTick();
+    expect(trigger.inert).toBe(false);
+    expect(document.activeElement).toBe(trigger);
+
+    const prompt = dialogModule.promptDialog('prompt', 'seed');
+    await Vue.nextTick();
+    await Vue.nextTick();
+    expect(document.activeElement).toBe(element('.app-dialog-input'));
+    element('.app-dialog-input').value = 'edited';
+    element('.app-dialog-input').dispatchEvent(new Event('input', { bubbles: true }));
+    element('.app-dialog-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await expect(prompt).resolves.toBe('edited');
+
+    const escapedPrompt = dialogModule.promptDialog('escape');
+    await Vue.nextTick();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await expect(escapedPrompt).resolves.toBeNull();
+    const alert = dialogModule.alertDialog('alert');
+    await Vue.nextTick();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await expect(alert).resolves.toBeUndefined();
+
+    wrapper.unmount();
+    trigger.remove();
+  });
+});
+
 describe('message flow regressions', () => {
+  it('preserves the configured MCP cache when an error broadcast omits servers', () => {
+    const store = useChatStore();
+    store.yeaftMcpServers = [{ name: 'github', command: 'node', args: [], env: {} }];
+    store.yeaftMcpRuntime = { connected: true, toolCount: 1, perServer: [{ name: 'github', ready: true, toolCount: 1 }] };
+    store.yeaftMcpError = null;
+
+    handleMessage(store, {
+      type: 'yeaft_mcp_updated',
+      reason: 'base-runtime-load',
+      runtime: { connected: true, toolCount: 1, perServer: [{ name: 'github', ready: true, toolCount: 1 }] },
+      error: 'Failed to read config.json: plugins.tools must be an array',
+    });
+
+    expect(store.yeaftMcpServers).toEqual([{ name: 'github', command: 'node', args: [], env: {} }]);
+    expect(store.yeaftMcpRuntime).toMatchObject({
+      connected: true,
+      perServer: [expect.objectContaining({ name: 'github', ready: true })],
+    });
+    expect(store.yeaftMcpError).toContain('Failed to read config.json');
+  });
+
+  it('renders an immediate upgrade requirement instead of waiting for an unsupported Plugin Agent', async () => {
+    const pluginStore = Vue.reactive({
+      agents: [{
+        id: 'agent-old',
+        name: 'Old Agent',
+        online: true,
+        capabilities: ['plaintext-ok'],
+        capabilityMetadataProvided: true,
+      }],
+      currentAgent: 'agent-old',
+      pluginCenterAgentId: 'agent-old',
+      pluginConfigByAgent: {},
+      pluginCatalogByKey: {},
+      pluginCatalogKey: (agentId, workDir = '') => `${agentId}:${workDir}`,
+      loadPluginConfig: vi.fn(),
+      loadPluginCatalog: vi.fn(),
+      savePluginConfig: vi.fn(),
+      sendWsMessage: vi.fn(),
+    });
+    const priorStore = globalThis.Pinia.useChatStore;
+    globalThis.Pinia.useChatStore = () => pluginStore;
+    const pluginCenter = mount(PluginCenterPage, {
+      global: { mocks: { $t: key => key } },
+    });
+    await Vue.nextTick();
+
+    expect(pluginStore.loadPluginConfig).not.toHaveBeenCalled();
+    expect(pluginStore.loadPluginCatalog).not.toHaveBeenCalled();
+    expect(pluginCenter.text()).toContain('yeaft.plugins.upgradeRequired');
+    expect(pluginCenter.get('.btn-ghost').attributes('disabled')).toBeDefined();
+    expect(pluginCenter.get('.btn-primary').attributes('disabled')).toBeDefined();
+
+    pluginCenter.unmount();
+    globalThis.Pinia.useChatStore = priorStore;
+  });
+
+  it('distinguishes explicit Plugin incompatibility from missing capability metadata', async () => {
+    const store = useChatStore();
+    store.agents = [{
+      id: 'agent-old',
+      online: true,
+      capabilities: ['plaintext-ok'],
+      capabilityMetadataProvided: true,
+    }];
+    store.sendWsMessage = vi.fn();
+
+    await expect(store.loadPluginConfig('agent-old')).resolves.toMatchObject({
+      error: expect.stringContaining('does not support Plugins'),
+    });
+    await expect(store.savePluginConfig({}, 'agent-old')).resolves.toMatchObject({
+      error: expect.stringContaining('does not support Plugins'),
+    });
+    await expect(store.loadPluginCatalog('agent-old')).resolves.toMatchObject({
+      error: expect.stringContaining('does not support Plugins'),
+    });
+    expect(store.sendWsMessage).not.toHaveBeenCalled();
+
+    store.agents = [{ id: 'agent-legacy', online: true, capabilities: ['plaintext-ok'] }];
+    const config = store.loadPluginConfig('agent-legacy');
+    const catalog = store.loadPluginCatalog('agent-legacy');
+
+    expect(store.sendWsMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'get_yeaft_plugins', agentId: 'agent-legacy',
+    }));
+    expect(store.sendWsMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'yeaft_plugin_catalog', agentId: 'agent-legacy',
+    }));
+
+    for (const [requestId, pending] of Object.entries(store._pluginPending)) {
+      clearTimeout(pending.timer);
+      delete store._pluginPending[requestId];
+      pending.resolve(pending.kind === 'catalog'
+        ? { catalog: { tools: [], skills: [], mcpServers: [] }, error: null }
+        : { plugins: {}, error: null });
+    }
+    await Promise.all([config, catalog]);
+  });
+
+
+  it('applies the final serialized MCP mutation broadcast to the configured cache', () => {
+    const store = useChatStore();
+    const github = { name: 'github', command: 'node', args: [], env: {} };
+    const linear = { name: 'linear', command: 'node', args: [], env: {} };
+    store.yeaftMcpServers = [github];
+    store.yeaftMcpRuntime = { connected: true, toolCount: 1, perServer: [{ name: 'github', ready: true, toolCount: 1 }] };
+    store.yeaftMcpError = null;
+
+    handleMessage(store, {
+      type: 'yeaft_mcp_updated',
+      reason: 'add',
+      servers: [github, linear],
+      runtime: {
+        connected: true,
+        toolCount: 2,
+        perServer: [
+          { name: 'github', ready: true, toolCount: 1 },
+          { name: 'linear', ready: true, toolCount: 1 },
+        ],
+      },
+      error: null,
+    });
+    handleMessage(store, {
+      type: 'yeaft_mcp_updated',
+      reason: 'remove',
+      servers: [linear],
+      runtime: { connected: true, toolCount: 1, perServer: [{ name: 'linear', ready: true, toolCount: 1 }] },
+      error: null,
+    });
+
+    expect(store.yeaftMcpServers.map(server => server.name)).toEqual(['linear']);
+    expect(store.yeaftMcpRuntime).toMatchObject({
+      connected: true,
+      perServer: [expect.objectContaining({ name: 'linear', ready: true })],
+    });
+    expect(store.yeaftMcpError).toBeNull();
+  });
+
+  it('keeps the manual upgrade bridge in stop-install-start order in both languages', () => {
+    const installCommand = 'npm install -g @yeaft/webchat-agent@latest --registry=https://pkg.yeaft.com/';
+    const guides = [
+      {
+        message: enMessages['chat.agent.manualUpgradeRequired'],
+        stopAnchor: 'First stop the selected Agent/service',
+        managerAnchor: 'PM2 or another service manager',
+        foregroundAnchor: 'foreground terminal',
+        exitAnchor: 'Confirm that process has exited',
+        startAnchor: 'start the same Agent instance again with its original configuration',
+      },
+      {
+        message: zhCNMessages['chat.agent.manualUpgradeRequired'],
+        stopAnchor: '先停止该机器上所选的 Agent/服务',
+        managerAnchor: 'PM2 或其他服务管理器',
+        foregroundAnchor: '前台终端',
+        exitAnchor: '确认该进程已经退出',
+        startAnchor: '使用原配置启动同一 Agent 实例',
+      },
+    ];
+
+    for (const guide of guides) {
+      expect(guide.message).toContain(guide.managerAnchor);
+      expect(guide.message).toContain(guide.foregroundAnchor);
+      const stopIndex = guide.message.indexOf(guide.stopAnchor);
+      const exitIndex = guide.message.indexOf(guide.exitAnchor);
+      const installIndex = guide.message.indexOf(installCommand);
+      const startIndex = guide.message.indexOf(guide.startAnchor);
+      expect(stopIndex).toBeGreaterThanOrEqual(0);
+      expect(exitIndex).toBeGreaterThan(stopIndex);
+      expect(installIndex).toBeGreaterThan(exitIndex);
+      expect(startIndex).toBeGreaterThan(installIndex);
+    }
+  });
+  it('does not refresh Work Center for routine agent inventory broadcasts', () => {
+    const store = useChatStore();
+    store.workCenterOpen = true;
+    store.workCenterAgentId = 'agent-work-center';
+    store.currentAgent = 'agent-work-center';
+    store.currentView = 'yeaft';
+    store._hasHandledAgentList = true;
+    store._yeaftReconnectCatchUpPending = false;
+    store.agents = [{
+      id: 'agent-work-center',
+      name: 'server',
+      online: true,
+      version: '1.0.369',
+      capabilities: ['work_center'],
+      conversations: [],
+    }];
+    store.currentAgentInfo = store.agents[0];
+    store.listWorkItems = vi.fn(() => Promise.resolve([]));
+    store.loadOpenedYeaftSessionsForConnectedAgents = vi.fn();
+    store.requestYeaftSessionBootstrap = vi.fn();
+    store.sendWsMessage = vi.fn(() => true);
+
+    handleMessage(store, {
+      type: 'agent_list',
+      agents: [{ ...store.agents[0], latency: 12 }],
+    });
+    handleMessage(store, {
+      type: 'agent_list',
+      agents: [{ ...store.agents[0], latency: 18 }],
+    });
+
+    expect(store.listWorkItems).not.toHaveBeenCalled();
+  });
+
+  it('refreshes Work Center once after a genuine reconnect and preserves active filters', () => {
+    const store = useChatStore();
+    const activeFilters = {
+      lane: 'active',
+      keyword: 'reconnect',
+      vpId: 'vp-reviewer',
+    };
+    store.workCenterOpen = true;
+    store.workCenterAgentId = 'agent-work-center';
+    store.currentAgent = 'agent-work-center';
+    store.currentView = 'chat';
+    store.recoveryDismissed = true;
+    store._hasHandledAgentList = false;
+    store._yeaftReconnectCatchUpPending = true;
+    store._workCenterListFiltersByAgent = {
+      'agent-work-center': activeFilters,
+    };
+    store.agents = [{
+      id: 'agent-work-center',
+      name: 'server',
+      online: true,
+      version: '1.0.369',
+      capabilities: ['work_center'],
+      conversations: [],
+    }];
+    store.currentAgentInfo = store.agents[0];
+    store.listWorkItems = vi.fn(() => Promise.resolve([]));
+    store.loadOpenedYeaftSessionsForConnectedAgents = vi.fn();
+    store.requestYeaftSessionBootstrap = vi.fn();
+    store.sendWsMessage = vi.fn(() => true);
+
+    handleMessage(store, {
+      type: 'agent_list',
+      agents: [{ ...store.agents[0], latency: 12 }],
+    });
+
+    expect(store.listWorkItems).toHaveBeenCalledTimes(1);
+    expect(store.listWorkItems).toHaveBeenCalledWith('agent-work-center', activeFilters);
+    expect(store._yeaftReconnectCatchUpPending).toBe(false);
+    expect(store.sendWsMessage).toHaveBeenCalledWith({
+      type: 'select_agent',
+      agentId: 'agent-work-center',
+      silent: true,
+    });
+
+    handleMessage(store, {
+      type: 'agent_list',
+      agents: [{ ...store.agents[0], latency: 18 }],
+    });
+
+    expect(store.listWorkItems).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes an open Work Center once when its Agent process comes back online', () => {
+    const store = useChatStore();
+    const activeFilters = { lane: 'needs_attention', keyword: 'restart' };
+    store.workCenterOpen = true;
+    store.workCenterAgentId = 'agent-work-center';
+    store.currentAgent = 'agent-work-center';
+    store.currentView = 'chat';
+    store.recoveryDismissed = true;
+    store._hasHandledAgentList = true;
+    store._yeaftReconnectCatchUpPending = false;
+    store._yeaftAgentSeen = {
+      id: 'agent-work-center',
+      online: false,
+      version: '1.0.369',
+    };
+    store._workCenterListFiltersByAgent = {
+      'agent-work-center': activeFilters,
+    };
+    store.agents = [];
+    store.currentAgentInfo = null;
+    store.listWorkItems = vi.fn(() => Promise.resolve([]));
+    store.loadOpenedYeaftSessionsForConnectedAgents = vi.fn();
+    store.requestYeaftSessionBootstrap = vi.fn();
+    store.sendWsMessage = vi.fn(() => true);
+
+    const onlineAgent = {
+      id: 'agent-work-center',
+      name: 'server',
+      online: true,
+      version: '1.0.370',
+      capabilities: ['work_center'],
+      conversations: [],
+    };
+    handleMessage(store, {
+      type: 'agent_list',
+      agents: [onlineAgent],
+    });
+
+    expect(store.listWorkItems).toHaveBeenCalledTimes(1);
+    expect(store.listWorkItems).toHaveBeenCalledWith('agent-work-center', activeFilters);
+    expect(store._yeaftReconnectCatchUpPending).toBe(false);
+
+    handleMessage(store, {
+      type: 'agent_list',
+      agents: [{ ...onlineAgent, latency: 24 }],
+    });
+
+    expect(store.listWorkItems).toHaveBeenCalledTimes(1);
+  });
+
+  it('prunes completed Yeaft resident turns at terminal metadata boundaries', async () => {
+    const { useChatStore } = await import('../../web/stores/chat.js');
+    const store = useChatStore();
+    const conversationId = 'yeaft-memory-bound';
+    const sessionId = 'session-memory-bound';
+    store.currentView = 'yeaft';
+    store.currentAgent = 'agent-memory';
+    store.yeaftAgentId = 'agent-memory';
+    store.yeaftConversationId = conversationId;
+    store.yeaftConversationIdsByAgent = { 'agent-memory': conversationId };
+    store.yeaftActiveSessionFilter = sessionId;
+    store.messagesMap = { [conversationId]: [] };
+    store.activeVpTurns = {};
+    store.stoppingVpTurnIds = {};
+    store.vpStatuses = {};
+    store.yeaftProcessingSessions = {};
+
+    const turnCount = YEAFT_HISTORY_CACHE_LIMITS.maxTurnsPerSession + 20;
+    for (let index = 1; index <= turnCount; index += 1) {
+      store.messagesMap[conversationId].push(
+        {
+          id: `user-${index}`,
+          dbMessageId: index,
+          type: 'user',
+          content: `prompt ${index}`,
+          sessionId,
+          clientMessageId: `client-${index}`,
+        },
+        {
+          id: `assistant-${index}`,
+          type: 'assistant',
+          content: `response ${index}`,
+          sessionId,
+          turnId: `turn-${index}`,
+          status: index === turnCount ? 'pending' : 'completed',
+          isStreaming: false,
+        },
+      );
+    }
+
+    store.handleYeaftOutput({
+      agentId: 'agent-memory',
+      conversationId,
+      event: {
+        type: 'vp_turn_end',
+        sessionId,
+        vpId: 'omni',
+        turnId: `turn-${turnCount}`,
+        reason: 'end_turn',
+      },
+    });
+
+    const kept = store.messagesMap[conversationId];
+    expect(kept.length).toBeLessThanOrEqual(YEAFT_HISTORY_CACHE_LIMITS.maxTurnsPerSession * 2);
+    expect(kept.some(row => row.id === `user-${turnCount}`)).toBe(true);
+    expect(kept.some(row => row.id === `assistant-${turnCount}`)).toBe(true);
+    expect(kept.some(row => row.id === 'user-1')).toBe(false);
+  });
+
+  it('drops oversized live debug detail from legacy Agent events', async () => {
+    const { useChatStore } = await import('../../web/stores/chat.js');
+    const store = useChatStore();
+    const large = 'x'.repeat(1024 * 1024);
+    store.yeaftDebugLoops = [];
+    store.yeaftDebugTurnsById = {
+      'turn-legacy-debug': {
+        turnId: 'turn-legacy-debug',
+        sessionId: 'session-debug',
+        tools: [],
+        closedAt: null,
+      },
+    };
+    store.yeaftDebugTurnOrder = ['turn-legacy-debug'];
+
+    store.handleYeaftOutput({
+      agentId: 'agent-debug',
+      conversationId: 'conv-debug',
+      sessionId: 'session-debug',
+      event: {
+        type: 'loop',
+        turnId: 'turn-legacy-debug',
+        loopNumber: 1,
+        model: 'provider/model',
+        systemPrompt: large,
+        messages: [{ role: 'user', content: large }],
+        response: large,
+        toolCalls: [{ id: 'call-1', name: 'Bash', input: { command: large } }],
+        rawRequest: { body: large },
+        rawResponse: large,
+        usage: { totalTokens: 42 },
+      },
+    });
+    store.handleYeaftOutput({
+      agentId: 'agent-debug',
+      conversationId: 'conv-debug',
+      sessionId: 'session-debug',
+      event: {
+        type: 'tool_exec',
+        turnId: 'turn-legacy-debug',
+        loopNumber: 1,
+        callId: 'call-1',
+        name: 'Bash',
+        toolOutput: large,
+      },
+    });
+
+    expect(store.yeaftDebugLoops).toHaveLength(1);
+    expect(store.yeaftDebugLoops[0]).toMatchObject({
+      turnId: 'turn-legacy-debug',
+      loopNumber: 1,
+      model: 'provider/model',
+      usage: { totalTokens: 42 },
+    });
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('systemPrompt');
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('messages');
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('rawRequest');
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('rawResponse');
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('response');
+    expect(store.yeaftDebugLoops[0]).not.toHaveProperty('toolCalls');
+    expect(store.yeaftDebugTurnsById['turn-legacy-debug'].tools[0]).not.toHaveProperty('toolOutput');
+    expect(JSON.stringify(store.yeaftDebugLoops).length).toBeLessThan(2048);
+  });
+
+  it('hydrates full persisted debug detail over the same live metadata loop', () => {
+    const turnId = 'turn-debug-detail';
+    const store = {
+      _yeaftDebugHistoryLatestDetailRequestId: 'detail-request',
+      _yeaftDebugHistoryLatestListRequestId: null,
+      _fetchYeaftDebugHistoryTimer: null,
+      _yeaftDebugHistoryInFlightKey: 'session-debug:turn-debug-detail',
+      yeaftDebugTurnsById: {
+        [turnId]: {
+          turnId,
+          sessionId: 'session-debug',
+          closedAt: 123,
+          liveOnlyStatus: 'complete',
+        },
+      },
+      yeaftDebugLoops: [{
+        turnId,
+        loopNumber: 1,
+        model: 'provider/model',
+        usage: { totalTokens: 42 },
+        liveOnlySequence: 9,
+      }],
+      yeaftDebugTurnOrder: [turnId],
+      yeaftDebugHistoryLoading: true,
+    };
+    const fullMessages = [{ role: 'user', content: 'full persisted message' }];
+    const fullRawRequest = { body: { input: 'full persisted request' } };
+
+    handleMessage(store, {
+      type: 'yeaft_debug_history',
+      requestId: 'detail-request',
+      detailTurnId: turnId,
+      turns: [{ turnId, sessionId: 'session-debug', detailsLoaded: true }],
+      loops: [{
+        turnId,
+        loopNumber: 1,
+        model: 'provider/model',
+        systemPrompt: 'full persisted prompt',
+        messages: fullMessages,
+        response: 'full persisted response',
+        toolCalls: [{ id: 'call-1', name: 'Bash', input: { command: 'true' } }],
+        rawRequest: fullRawRequest,
+        rawResponse: { output: 'full persisted raw response' },
+        usage: { totalTokens: 42 },
+      }],
+    });
+
+    expect(store.yeaftDebugHistoryLoading).toBe(false);
+    expect(store.yeaftDebugLoops).toHaveLength(1);
+    expect(store.yeaftDebugLoops[0]).toMatchObject({
+      turnId,
+      loopNumber: 1,
+      liveOnlySequence: 9,
+      systemPrompt: 'full persisted prompt',
+      messages: fullMessages,
+      response: 'full persisted response',
+      rawRequest: fullRawRequest,
+      rawResponse: { output: 'full persisted raw response' },
+    });
+  });
+
   it('keeps same-id streaming updates in one assistant message', () => {
     const store = makeStore();
 
@@ -198,6 +767,16 @@ describe('message flow regressions', () => {
       { id: 'optimistic-user', dbMessageId: 17 },
       { id: 'streaming-assistant-uuid', isStreaming: true },
     ])).toBe(17);
+  });
+
+  it('links only typed Work Center URL outputs', () => {
+    const isExternalOutput = WorkCenterPage.methods.isExternalOutput;
+    expect(isExternalOutput({ kind: 'link', ref: 'https://example.test/artifact' })).toBe(true);
+    expect(isExternalOutput({ kind: 'pr', ref: 'https://github.com/example/repo/pull/1' })).toBe(true);
+    expect(isExternalOutput({ kind: 'link', ref: 'javascript:alert(1)' })).toBe(false);
+    expect(isExternalOutput({ kind: 'commit', ref: 'https://example.test/callback#access_token=secret' })).toBe(false);
+    expect(isExternalOutput({ kind: 'file', ref: 'https://example.test/callback#access_token=secret' })).toBe(false);
+    expect(isExternalOutput('https://example.test/untyped')).toBe(false);
   });
 
   it('keeps Work Center inputs available and detail layouts responsive', async () => {
@@ -852,9 +1431,6 @@ describe('message flow regressions', () => {
     ] });
     expect(sidebar.findAll('.session-item.processing')).toHaveLength(2);
     expect(sidebar.findAll('.processing-dot')).toHaveLength(2);
-    expect(sidebar.findAll('.sidebar-session-syncing')).toHaveLength(1);
-    expect(sidebar.get('.sidebar-session-syncing').attributes('aria-label')).toBe('sidebar.sessions.syncing');
-    await sidebar.setProps({ isSessionSyncing: () => false, sessionSyncRefreshToken: 1 });
     expect(sidebar.findAll('.sidebar-session-syncing')).toHaveLength(0);
     expect(sidebar.findAll('.session-pin-icon')).toHaveLength(1);
     expect(sidebar.findAll('.sidebar-session-meta')).toHaveLength(0);
@@ -1334,13 +1910,13 @@ describe('message flow regressions', () => {
       agentId: 'agent-a',
       success: false,
       reason: 'manual_upgrade_required',
-      version: '1.0.337',
-      minimumVersion: '1.0.342',
+      version: '1.0.369',
+      requiredCapability: 'remote_upgrade_safe',
     });
     expect(upgradeAckDetail).toMatchObject({
       reason: 'manual_upgrade_required',
-      version: '1.0.337',
-      minimumVersion: '1.0.342',
+      version: '1.0.369',
+      requiredCapability: 'remote_upgrade_safe',
     });
     await Vue.nextTick();
     expect(dialogModule.useDialogState().message).toBe('chat.agent.manualUpgradeRequired');
@@ -1397,8 +1973,8 @@ describe('message flow regressions', () => {
         agentId: 'agent-a',
         success: false,
         reason: 'manual_upgrade_required',
-        version: '1.0.337',
-        minimumVersion: '1.0.342',
+        version: '1.0.369',
+        requiredCapability: 'remote_upgrade_safe',
       },
     }));
     await Vue.nextTick();
@@ -1462,12 +2038,12 @@ describe('message flow regressions', () => {
     expect(yeaftSidebarSource).toContain(':project-store="chatStore"');
     expect(yeaftSidebarSource).toContain(':active-route="chatStore.activeSessionRoute"');
     expect(chatPageSource).toContain(':processing-conversations="store.processingConversations"');
-    expect(chatPageSource).toContain(':is-session-syncing="isCatalogSessionSyncing"');
-    expect(chatPageSource).toContain(':session-sync-refresh-token="store.sessionHistorySyncRefreshToken"');
+    expect(chatPageSource).not.toContain(':is-session-syncing=');
+    expect(chatPageSource).not.toContain(':session-sync-refresh-token=');
     expect(chatPageSource).toContain(':agents="store.agents"');
     expect(yeaftSidebarSource).toContain(':is-yeaft-session-processing="chatStore.isYeaftSessionProcessing"');
-    expect(yeaftSidebarSource).toContain(':is-session-syncing="isCatalogSessionSyncing"');
-    expect(yeaftSidebarSource).toContain(':session-sync-refresh-token="chatStore.sessionHistorySyncRefreshToken"');
+    expect(yeaftSidebarSource).not.toContain(':is-session-syncing=');
+    expect(yeaftSidebarSource).not.toContain(':session-sync-refresh-token=');
     expect(yeaftSidebarSource).toContain(':agents="chatStore.agents"');
     expect(chatPageSource).not.toContain("action === 'split'");
     expect(chatPageSource).not.toContain('splitScreen.splitToPanel');
@@ -1637,7 +2213,7 @@ describe('message flow regressions', () => {
         'chat:a': { requestId: 'request-a', catalogKey: 'chat:a', loading: true },
         'chat:b': { requestId: 'request-b', catalogKey: 'chat:b', loading: true },
       },
-      formatDbMessageForHistoryHydration: vi.fn(row => ({ id: `row-${row.id}`, dbMessageId: row.id, type: row.role, content: row.content })),
+      formatDbMessage: vi.fn(row => ({ id: `row-${row.id}`, dbMessageId: row.id, type: row.role, content: row.content })),
       isCurrentChatHistoryResponse(msg) {
         return msg.catalogKey === `chat:${msg.conversationId}`
           && this.chatHistoryRequests[msg.catalogKey]?.requestId === msg.requestId;
@@ -1758,6 +2334,81 @@ describe('message flow regressions', () => {
       },
     });
     expect(workCenterPage.get('.work-center-agent-picker .modern-select-label').text()).toBe('server');
+
+    const pluginConfigRequests = [];
+    const pluginStore = Vue.reactive({
+      agents: [{ id: 'agent-a', name: 'Agent A', online: true, capabilities: ['yeaft_plugins'] }],
+      currentAgent: 'agent-a',
+      pluginCenterAgentId: 'agent-a',
+      pluginConfigByAgent: {},
+      pluginCatalogByKey: {
+        'agent-a:': {
+          loading: false,
+          catalog: {
+            tools: [{ id: 'FileRead', label: 'FileRead' }],
+            skills: [{ id: 'skill-a', label: 'skill-a' }, { id: 'skill-b', label: 'skill-b' }],
+            mcpServers: [],
+          },
+        },
+      },
+      pluginCatalogKey: (agentId, workDir = '') => `${agentId}:${workDir}`,
+      loadPluginConfig: vi.fn(() => new Promise(resolve => {
+        pluginConfigRequests.push(resolve);
+      })),
+      loadPluginCatalog: vi.fn(() => Promise.resolve()),
+      savePluginConfig: vi.fn(plugins => Promise.resolve({ plugins })),
+    });
+    globalThis.Pinia.useChatStore = () => pluginStore;
+    const pluginCenter = mount(PluginCenterPage, {
+      global: { mocks: { $t: key => key } },
+    });
+    await Vue.nextTick();
+    expect(pluginCenter.findAll('input[type="checkbox"]').every(input => input.element.disabled)).toBe(true);
+    expect(pluginCenter.get('.btn-primary').attributes('disabled')).toBeDefined();
+    pluginCenter.vm.toggle('skills', 'skill-a', false);
+    await pluginCenter.vm.save();
+    expect(pluginStore.savePluginConfig).not.toHaveBeenCalled();
+
+    pluginConfigRequests[0]({ plugins: {}, error: 'Failed to read plugin config: malformed config' });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Vue.nextTick();
+    expect(pluginCenter.vm.configReady).toBe(false);
+    expect(pluginCenter.get('.btn-primary').attributes('disabled')).toBeDefined();
+    expect(pluginCenter.vm.selection).toBeNull();
+    pluginStore.pluginConfigByAgent['agent-a'] = {
+      plugins: {},
+      error: 'Failed to read plugin config: malformed config',
+      loaded: true,
+    };
+    pluginCenter.vm.loadConfig('agent-a');
+    await Vue.nextTick();
+    expect(pluginConfigRequests).toHaveLength(2);
+    expect(pluginCenter.vm.configReady).toBe(false);
+    expect(pluginCenter.get('.btn-primary').attributes('disabled')).toBeDefined();
+    await pluginCenter.vm.save();
+    expect(pluginStore.savePluginConfig).not.toHaveBeenCalled();
+
+    pluginConfigRequests[1]({ plugins: { tools: ['FileRead'] } });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Vue.nextTick();
+    expect(pluginCenter.vm.configReady).toBe(true);
+    expect(pluginCenter.vm.selection).toEqual({ tools: ['FileRead'] });
+    pluginCenter.vm.toggle('skills', 'skill-a', false);
+    expect(pluginCenter.vm.selection).toEqual({
+      tools: ['FileRead'],
+      skills: ['skill-b'],
+    });
+    await pluginCenter.vm.save();
+    expect(pluginStore.savePluginConfig).toHaveBeenCalledWith({
+      tools: ['FileRead'],
+      skills: ['skill-b'],
+    }, 'agent-a');
+    expect(pluginCenter.vm.enabledCount).toBe(2);
+    pluginCenter.unmount();
+
+    globalThis.Pinia.useChatStore = () => workCenterStore;
     await workCenterPage.get('.work-center-agent-picker .modern-select-trigger').trigger('click');
     await Vue.nextTick();
     const agentMenu = document.body.querySelector('.work-center-agent-menu');
@@ -2188,9 +2839,9 @@ describe('message flow regressions', () => {
       const ordinaryEntryHistoryFrames = store.sendWsMessage.mock.calls
         .map(call => call[0])
         .filter(msg => msg.type === 'yeaft_load_history');
-      expect(ordinaryEntryHistoryFrames).toEqual([
-        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same' }),
-      ]);
+      expect(ordinaryEntryHistoryFrames).toEqual(expect.arrayContaining([
+        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same', limit: 5 }),
+      ]));
       expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'select_agent')).toEqual([
         expect.objectContaining({ agentId: 'agent-b' }),
       ]);
@@ -2736,14 +3387,18 @@ describe('message flow regressions', () => {
         .map(call => call[0])
         .filter(msg => msg.type === 'yeaft_load_history');
       expect(restoredExactOwnerHistoryFrames).toEqual([
-        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same' }),
+        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same', limit: 5 }),
       ]);
+      const exactOwnerHistoryFrame = restoredExactOwnerHistoryFrames[0];
+      expect(exactOwnerHistoryFrame).toEqual(
+        expect.objectContaining({ agentId: 'agent-b', sessionId: 'same' }),
+      );
       store.handleMessage({
         type: 'yeaft_history_chunk',
         agentId: 'agent-b',
         sessionId: 'same',
         conversationId: 'conv-exact-b',
-        requestId: restoredExactOwnerHistoryFrames[0].requestId,
+        requestId: exactOwnerHistoryFrame.requestId,
         mode: 'recent',
         messages: [],
         latestSeq: 0,
@@ -2843,14 +3498,18 @@ describe('message flow regressions', () => {
         .map(call => call[0])
         .filter(msg => msg.type === 'yeaft_load_history');
       expect(exactOwnerHistoryFrames).toEqual([
-        expect.objectContaining({ agentId: 'agent-a', sessionId: 'same' }),
+        expect.objectContaining({ agentId: 'agent-a', sessionId: 'same', limit: 5 }),
       ]);
+      const agentAHistoryFrame = exactOwnerHistoryFrames[0];
+      expect(agentAHistoryFrame).toEqual(
+        expect.objectContaining({ agentId: 'agent-a', sessionId: 'same' }),
+      );
       store.handleMessage({
         type: 'yeaft_history_chunk',
         agentId: 'agent-a',
         sessionId: 'same',
         conversationId: 'conv-exact-a',
-        requestId: exactOwnerHistoryFrames[0].requestId,
+        requestId: agentAHistoryFrame.requestId,
         mode: 'recent',
         messages: [],
         latestSeq: 0,
@@ -3080,14 +3739,18 @@ describe('message flow regressions', () => {
         .map(call => call[0])
         .filter(msg => msg.type === 'yeaft_load_history');
       expect(migratedHistoryFrames).toEqual([
-        expect.objectContaining({ agentId: 'agent-a', sessionId: 'legacy-bare' }),
+        expect.objectContaining({ agentId: 'agent-a', sessionId: 'legacy-bare', limit: 5 }),
       ]);
+      const migratedHistoryFrame = migratedHistoryFrames[0];
+      expect(migratedHistoryFrame).toEqual(
+        expect.objectContaining({ agentId: 'agent-a', sessionId: 'legacy-bare' }),
+      );
       store.handleMessage({
         type: 'yeaft_history_chunk',
         agentId: 'agent-a',
         sessionId: 'legacy-bare',
         conversationId: 'conv-agent-a',
-        requestId: migratedHistoryFrames[0].requestId,
+        requestId: migratedHistoryFrame.requestId,
         mode: 'recent',
         messages: [],
         latestSeq: 0,
@@ -3220,8 +3883,19 @@ describe('message flow regressions', () => {
         store.yeaftConversationIdsByAgent = { 'agent-a': 'conv-crud-a', 'agent-b': 'conv-crud-b' };
         store.yeaftConversationId = 'conv-crud-b';
         store.activeConversations = ['conv-crud-b'];
-        store.messagesMap = { 'conv-crud-a': [], 'conv-crud-b': [] };
-        store.yeaftSessionHistoryState = {};
+        store.messagesMap = {
+          'conv-crud-a': [
+            { type: 'user', content: 'agent A private', sessionId: 'same', seq: 1 },
+            { type: 'user', content: 'agent A other', sessionId: 'other', seq: 2 },
+          ],
+          'conv-crud-b': [
+            { type: 'user', content: 'agent B private', sessionId: 'same', seq: 1 },
+          ],
+        };
+        const deletedSessionKey = yeaftHistoryIdentityKey('agent-a', 'same');
+        store.yeaftSessionHistoryState = { [deletedSessionKey]: { loaded: true } };
+        store.yeaftHistoryCacheState = { [deletedSessionKey]: { ranges: [[1, 2]] } };
+        store.yeaftMessageWindowState = { [deletedSessionKey]: { visibleTurns: 20 } };
         store._yeaftHistoryLoad = null;
         store.yeaftSessionHydrateRequestId = null;
         store.sendWsMessage = vi.fn(() => true);
@@ -3258,6 +3932,19 @@ describe('message flow regressions', () => {
           (msg.type === 'select_agent' && msg.agentId === 'agent-a')
           || (msg.type === 'yeaft_load_history' && msg.agentId === 'agent-a')
         ))).toEqual([]);
+        if (op === 'delete') {
+          await vi.waitFor(() => {
+            expect(store.messagesMap['conv-crud-a']).toEqual([
+              expect.objectContaining({ content: 'agent A other', sessionId: 'other' }),
+            ]);
+          });
+          expect(store.messagesMap['conv-crud-b']).toEqual([
+            expect.objectContaining({ content: 'agent B private', sessionId: 'same' }),
+          ]);
+          expect(store.yeaftSessionHistoryState[deletedSessionKey]).toBeUndefined();
+          expect(store.yeaftHistoryCacheState[deletedSessionKey]).toBeUndefined();
+          expect(store.yeaftMessageWindowState[deletedSessionKey]).toBeUndefined();
+        }
         store.pendingAgentSelection = null;
         store.agentSwitching = false;
       }
@@ -3520,7 +4207,7 @@ describe('message flow regressions', () => {
     store.sendWsMessage = vi.fn(() => true);
     store.addMessage = vi.fn();
     store.saveOpenSessions = vi.fn();
-    store.formatDbMessageForHistoryHydration = vi.fn(row => row);
+    store.formatDbMessage = vi.fn(row => row);
     handleConversationCreated(store, {
       conversationId: 'created-copilot',
       agentId: 'agent-a',
@@ -4252,7 +4939,6 @@ describe('message flow regressions', () => {
     expect(firstYeaftLoads[0]).toMatchObject({
       agentId: 'agent-a', sessionId: 'session-a', limit: 5,
     });
-    expect(firstYeaftLoads[0]).not.toHaveProperty('afterSeq');
     expect(store.isSessionHistorySyncing(yeaftDescriptor.routeRef)).toBe(true);
     expect(store.openCatalogSession(yeaftDescriptor)).toBe(true);
     expect(store.sendWsMessage.mock.calls.map(call => call[0]).filter(msg => msg.type === 'yeaft_load_history')).toHaveLength(1);
@@ -4266,7 +4952,8 @@ describe('message flow regressions', () => {
       conversationId: 'conv-a',
       sessionId: 'session-a',
       requestId: firstYeaftLoads[0].requestId,
-      mode: 'recent',
+      mode: 'delta',
+      afterSeq: 7,
       messages: [{ id: 'fresh-yeaft', role: 'assistant', content: 'fresh answer', sessionId: 'session-a', ts: 2 }],
       latestSeq: 8,
       hasMore: false,
@@ -5094,6 +5781,107 @@ describe('message flow regressions', () => {
     expect(store.messagesMap[bridgeConversationId]).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'persisted-row-2', content: 'delta answer' }),
     ]));
+
+    // A refresh can merge persisted rows from different storage generations.
+    // Sequence is comparable only when both rows have it: a newly persisted row
+    // must not jump above older legacy history merely because the legacy row has
+    // no m#### id, and a live optimistic tail must remain last.
+    store.messagesMap[bridgeConversationId] = [{
+      id: optimisticId,
+      messageId: optimisticId,
+      clientMessageId: optimisticId,
+      type: 'user',
+      content: 'pending send',
+      sessionId: 'visible-session',
+      turnId: optimisticId,
+      timestamp: 3_000,
+    }];
+    const mixedGenerationRequest = store.beginYeaftHistoryLoad({
+      agentId: 'agent-a',
+      sessionId: 'visible-session',
+      mode: 'recent',
+      preserveLoaded: false,
+    });
+    store.handleMessage({
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-a',
+      conversationId: bridgeConversationId,
+      sessionId: 'visible-session',
+      requestId: mixedGenerationRequest.requestId,
+      mode: 'recent',
+      messages: [{
+        id: 'legacy-history-row',
+        role: 'user',
+        content: 'legacy history',
+        sessionId: 'visible-session',
+        ts: 1_000,
+      }, {
+        id: 'm0002',
+        seq: 2,
+        role: 'assistant',
+        content: 'new persisted answer',
+        sessionId: 'visible-session',
+        ts: 2_000,
+      }],
+      oldestSeq: 2,
+      latestSeq: 2,
+      hasMore: false,
+    });
+    expect(store.messagesMap[bridgeConversationId]
+      .filter(row => row.sessionId === 'visible-session')
+      .map(row => row.content)).toEqual([
+      'legacy history',
+      'new persisted answer',
+      'pending send',
+    ]);
+
+    // Sorting must be independent of the current array permutation. The three
+    // storage generations previously formed a comparison cycle here.
+    const legacyRow = {
+      id: 'legacy-permutation-row',
+      messageId: 'legacy-permutation-row',
+      type: 'user',
+      content: 'legacy permutation',
+      sessionId: 'visible-session',
+      timestamp: 200,
+      isHistory: true,
+    };
+    const sequencedRow = {
+      id: 'm0003',
+      messageId: 'm0003',
+      seq: 3,
+      type: 'assistant',
+      content: 'sequenced permutation',
+      sessionId: 'visible-session',
+      timestamp: 300,
+      isHistory: true,
+    };
+    const liveRow = {
+      id: 'live-permutation-row',
+      messageId: 'live-permutation-row',
+      clientMessageId: 'live-permutation-row',
+      type: 'user',
+      content: 'live permutation',
+      sessionId: 'visible-session',
+      timestamp: 100,
+    };
+    const permutations = [
+      [legacyRow, sequencedRow, liveRow],
+      [legacyRow, liveRow, sequencedRow],
+      [sequencedRow, legacyRow, liveRow],
+      [sequencedRow, liveRow, legacyRow],
+      [liveRow, legacyRow, sequencedRow],
+      [liveRow, sequencedRow, legacyRow],
+    ];
+    for (const rows of permutations) {
+      const sorted = rows.map(row => ({ ...row }));
+      __testSortYeaftRowsBySequence(sorted);
+      expect(sorted.map(row => row.content)).toEqual([
+        'legacy permutation',
+        'sequenced permutation',
+        'live permutation',
+      ]);
+    }
 
     // Empty history still has a real chunk frame. Completion-first must not
     // strand a first-ever empty Session in loading state or manufacture rows.

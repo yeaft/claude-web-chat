@@ -110,13 +110,35 @@ export function matchesPlatform(platforms) {
  * @param {string} [filename] — source filename (for name fallback)
  * @returns {Skill|null}
  */
-export function parseSkill(raw, filename = '') {
-  if (!raw || !raw.startsWith('---')) return null;
+function skillFrontmatterStart(raw) {
+  if (!raw) return -1;
 
-  const endIdx = raw.indexOf('\n---', 3);
+  let cursor = raw.charCodeAt(0) === 0xFEFF ? 1 : 0;
+  if (raw.startsWith('---', cursor)) return cursor;
+
+  let sawComment = false;
+  while (cursor < raw.length) {
+    while (cursor < raw.length && /\s/.test(raw[cursor])) cursor++;
+    if (!raw.startsWith('<!--', cursor)) break;
+    const commentEnd = raw.indexOf('-->', cursor + 4);
+    if (commentEnd === -1) return -1;
+    sawComment = true;
+    cursor = commentEnd + 3;
+  }
+
+  if (!sawComment) return -1;
+  while (cursor < raw.length && /\s/.test(raw[cursor])) cursor++;
+  return raw.startsWith('---', cursor) ? cursor : -1;
+}
+
+export function parseSkill(raw, filename = '') {
+  const startIdx = skillFrontmatterStart(raw);
+  if (startIdx === -1) return null;
+
+  const endIdx = raw.indexOf('\n---', startIdx + 3);
   if (endIdx === -1) return null;
 
-  const frontmatter = raw.slice(4, endIdx).trim();
+  const frontmatter = raw.slice(startIdx + 4, endIdx).trim();
   const body = raw.slice(endIdx + 4).trim();
 
   const skill = {
@@ -229,6 +251,10 @@ function shouldIgnorePath(candidatePath, ignorePaths) {
   return ignorePaths.some(ignorePath => pathIsInside(candidatePath, ignorePath));
 }
 
+function displaySkillPath(relativePath) {
+  return String(relativePath || '').replaceAll('\\', '/');
+}
+
 function discoverSkills(rootDir, subPath = '', opts = {}) {
   const dir = subPath ? join(rootDir, subPath) : rootDir;
   const ignorePaths = Array.isArray(opts.ignorePaths) ? opts.ignorePaths : [];
@@ -264,11 +290,11 @@ function discoverSkills(rootDir, subPath = '', opts = {}) {
             skill.category = skill.category || subPath.split(sep).join('/');
           }
           skills.push(skill);
-        } else {
-          errors.push(`Failed to parse skill: ${relPath}`);
+        } else if (skillFrontmatterStart(raw) !== -1) {
+          errors.push(`Failed to parse skill: ${displaySkillPath(relPath)}`);
         }
       } catch (err) {
-        errors.push(`Error loading ${relPath}: ${err.message}`);
+        errors.push(`Error loading ${displaySkillPath(relPath)}: ${err.message}`);
       }
     } else if (entry.isDirectory()) {
       // Check for SKILL.md inside this directory
@@ -290,10 +316,10 @@ function discoverSkills(rootDir, subPath = '', opts = {}) {
             skill._templates = listSubdirFiles(join(entryPath, 'templates'));
             skills.push(skill);
           } else {
-            errors.push(`Failed to parse skill: ${relPath}/SKILL.md`);
+            errors.push(`Failed to parse skill: ${displaySkillPath(relPath)}/SKILL.md`);
           }
         } catch (err) {
-          errors.push(`Error loading ${relPath}/SKILL.md: ${err.message}`);
+          errors.push(`Error loading ${displaySkillPath(relPath)}/SKILL.md: ${err.message}`);
         }
       } else {
         // No SKILL.md — treat as category directory, recurse
@@ -329,7 +355,9 @@ function discoverWorkspaceSkills(workspaceRoot, skillsRelativeRoot, subPath = ''
       if (!read || read.truncated) continue;
       const skill = parseSkill(read.buffer.toString('utf8'), entry.name);
       if (!skill?.name) {
-        errors.push(`Failed to parse skill: ${relPath}`);
+        if (skillFrontmatterStart(read.buffer.toString('utf8')) !== -1) {
+          errors.push(`Failed to parse skill: ${displaySkillPath(relPath)}`);
+        }
         continue;
       }
       skill._source = 'file';
@@ -352,7 +380,7 @@ function discoverWorkspaceSkills(workspaceRoot, skillsRelativeRoot, subPath = ''
       if (!read || read.truncated) continue;
       const skill = parseSkill(read.buffer.toString('utf8'), entry.name);
       if (!skill?.name) {
-        errors.push(`Failed to parse skill: ${relPath}/SKILL.md`);
+        errors.push(`Failed to parse skill: ${displaySkillPath(relPath)}/SKILL.md`);
         continue;
       }
       skill._source = 'directory';

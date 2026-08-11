@@ -12,7 +12,7 @@ import { handleProxyHttpRequest, handleProxyWsOpen, handleProxyWsMessage, handle
 import {
   handleReadFile, handleWriteFile, handleListDirectory,
   handleGitStatus, handleGitDiff, handleGitAdd, handleGitReset, handleGitRestore, handleGitCommit, handleGitPush,
-  handleFileSearch, handleCreateFile, handleDeleteFiles, handleMoveFiles, handleCopyFiles, handleUploadToDir, handleTransferFiles
+  handleFileSearch, handleResolveFileReferences, handleCreateFile, handleDeleteFiles, handleMoveFiles, handleCopyFiles, handleUploadToDir, handleTransferFiles
 } from '../workbench.js';
 import { handleListHistorySessions, handleListFolders, handleListModels } from '../history.js';
 import {
@@ -26,13 +26,14 @@ import { sendToServer, flushMessageBuffer } from './buffer.js';
 import { sendAgentMetricsSnapshot } from '../metrics.js';
 import { handleRestartAgent, handleUpgradeAgent } from './upgrade.js';
 import { loadMcpServers, updateMcpConfig } from '../mcp.js';
-import { getLlmConfig, updateLlmConfig, getYeaftSettings, updateYeaftSettings, getTelemetrySettings, updateTelemetrySettings, getSearchSettings, updateSearchSettings, fetchTavilyUsage } from '../yeaft/config-api.js';
+import { getLlmConfig, updateLlmConfig, getYeaftSettings, updateYeaftSettings, getPluginConfig, updatePluginConfig, getTelemetrySettings, updateTelemetrySettings, getSearchSettings, updateSearchSettings, fetchTavilyUsage } from '../yeaft/config-api.js';
 import { loadConfig } from '../yeaft/config.js';
 import { discoverLlmModels } from '../llm-model-discovery.js';
 import { fetchModelsDev } from '../yeaft/llm/models-dev.js';
-import { handleYeaftSessionSend, handleYeaftAskUserAnswer, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftModeSwitch, handleYeaftModelSwitch, resetYeaftSession, refreshLiveSessionConfig, handleYeaftLoadHistory, handleYeaftLoadHistoryOutline, handleYeaftSearchHistory, handleYeaftLoadHistoryWindow, handleYeaftLoadMoreHistory, handleYeaftAbortThread, handleYeaftAbortAll, handleYeaftAbortTurn, handleYeaftVpSubscribe, handleYeaftVpCreate, handleYeaftVpUpdate, handleYeaftVpDelete, handleYeaftVpRead, handleYeaftListSessions, handleYeaftProjectContextSync, handleYeaftProjectMutation, handleYeaftCreateSession, handleYeaftRenameSession, handleYeaftUpdateSession, handleYeaftUpdateSessionConfig, handleYeaftArchiveSession, handleYeaftDeleteSession, handleYeaftSessionAddMember, handleYeaftSessionRemoveMember, handleYeaftSessionSetDefaultVp, handleYeaftScanWorkdirSessions, handleYeaftRestoreSession, handleYeaftDreamTrigger, handleYeaftFetchToolStats, handleYeaftFetchDebugHistory, handleYeaftMcpList, handleYeaftMcpAdd, handleYeaftMcpRemove, handleYeaftMcpReload, broadcastLanguageChange, broadcastYeaftSessionSnapshotEager, broadcastYeaftVpSnapshotEager, preloadYeaftSkillSlashCommands } from '../yeaft/web-bridge.js';
+import { handleYeaftSessionSend, handleYeaftAskUserAnswer, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftModeSwitch, handleYeaftModelSwitch, resetYeaftSession, refreshLiveSessionConfig, handleYeaftLoadHistory, handleYeaftLoadHistoryOutline, handleYeaftSearchHistory, handleYeaftLoadHistoryWindow, handleYeaftLoadMoreHistory, handleYeaftAbortThread, handleYeaftAbortAll, handleYeaftAbortTurn, handleYeaftVpSubscribe, handleYeaftVpCreate, handleYeaftVpUpdate, handleYeaftVpDelete, handleYeaftVpRead, handleYeaftListSessions, handleYeaftProjectContextSync, handleYeaftProjectMutation, handleYeaftCreateSession, handleYeaftRenameSession, handleYeaftUpdateSession, handleYeaftUpdateSessionConfig, handleYeaftArchiveSession, handleYeaftDeleteSession, handleYeaftSessionAddMember, handleYeaftSessionRemoveMember, handleYeaftSessionSetDefaultVp, handleYeaftScanWorkdirSessions, handleYeaftRestoreSession, handleYeaftDreamTrigger, handleYeaftFetchToolStats, handleYeaftFetchDebugHistory, handleYeaftMcpList, handleYeaftMcpAdd, handleYeaftMcpRemove, handleYeaftMcpReload, handleYeaftPluginCatalog, broadcastLanguageChange, broadcastYeaftSessionSnapshotEager, broadcastYeaftVpSnapshotEager, preloadYeaftSkillSlashCommands } from '../yeaft/web-bridge.js';
 import { startYeaftStatusRefresh, forceRefreshYeaftStatus } from '../yeaft/status-cache.js';
 import { handleWorkCenterRequest } from '../yeaft/work-center/bridge.js';
+import { handleBrowserRuntimeMessage } from '../browser-runtime/messages.js';
 
 export async function applyLlmConfigUpdate(msg, dependencies = {}) {
   const updateConfig = dependencies.updateLlmConfig || updateLlmConfig;
@@ -94,6 +95,7 @@ export function applyRegisteredTransport(msg) {
 }
 
 export async function handleMessage(msg) {
+  if (await handleBrowserRuntimeMessage(msg)) return;
   switch (msg.type) {
     case 'registered':
       applyRegisteredTransport(msg);
@@ -286,6 +288,10 @@ export async function handleMessage(msg) {
       await handleFileSearch(msg);
       break;
 
+    case 'resolve_file_references':
+      await handleResolveFileReferences(msg);
+      break;
+
     case 'create_file':
       await handleCreateFile(msg);
       break;
@@ -390,9 +396,9 @@ export async function handleMessage(msg) {
     }
 
     case 'update_llm_config': {
-      // Saving the file and refreshing the model menu are separate outcomes.
-      // Always acknowledge the completed write; the frontend owns the single
-      // runtime reset it dispatches after a successful save.
+      // The bridge publishes the replacement config and provider index at the
+      // next Engine loop boundary. The frontend must not reset or abort the
+      // active Session turn after a successful save.
       await applyLlmConfigUpdate(msg);
       break;
     }
@@ -431,6 +437,24 @@ export async function handleMessage(msg) {
     case 'get_unify_settings': {
       const settings = getYeaftSettings(ctx.CONFIG?.yeaftDir);
       sendToServer({ type: 'yeaft_settings', ...settings });
+      break;
+    }
+
+    case 'get_yeaft_plugins': {
+      const result = getPluginConfig(ctx.CONFIG?.yeaftDir);
+      sendToServer({ type: 'yeaft_plugins', requestId: msg.requestId || null, ...result });
+      break;
+    }
+
+    case 'update_yeaft_plugins': {
+      const hasPlugins = Object.prototype.hasOwnProperty.call(msg, 'plugins');
+      const hasConfig = Object.prototype.hasOwnProperty.call(msg, 'config');
+      const payload = hasPlugins ? msg.plugins : (hasConfig ? msg.config : {});
+      const result = updatePluginConfig(payload, ctx.CONFIG?.yeaftDir);
+      if (!result.error) {
+        try { await refreshLiveSessionConfig(); } catch { /* next runtime load still sees disk config */ }
+      }
+      sendToServer({ type: 'yeaft_plugins_updated', requestId: msg.requestId || null, ...result });
       break;
     }
 
@@ -611,6 +635,10 @@ export async function handleMessage(msg) {
     // All four reply via `vp_crud_result`; VpLoader's rescan emits the
     // authoritative `vp_updated` / `vp_removed` events so the store stays
     // in sync without a bespoke ack path.
+    case 'yeaft_plugin_catalog':
+      handleYeaftPluginCatalog(msg);
+      break;
+
     case 'yeaft_vp_create':
     case 'unify_vp_create':
       handleYeaftVpCreate(msg);

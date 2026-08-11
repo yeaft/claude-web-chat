@@ -23,8 +23,9 @@ import { DEFAULT_YEAFT_DIR } from './init.js';
 import { buildDreamOutputSnapshot } from './dream/output-snapshot.js';
 import { Engine } from './engine.js';
 import { loadSession } from './session.js';
-import { loadConfig, loadMCPConfig } from './config.js';
+import { loadAgentMCPConfig, loadConfig, loadMCPConfig } from './config.js';
 import { createSkillManager } from './skills.js';
+import { buildPluginCatalog, createPluginSkillManager, resolveMcpPluginPolicy } from './plugins.js';
 import { MCPManager } from './mcp.js';
 import { sendToServer } from '../connection/buffer.js';
 import ctx from '../context.js';
@@ -97,6 +98,7 @@ import { consumeNotificationForAgent } from './sub-agent/notifications.js';
 import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
 import { recordAgentSessionCreated, recordAgentTurn } from '../metrics.js';
 import { TASK_RESULT_DELIVERY, isTerminalTaskStatus, taskResultDeliveryFor } from './tasks/store.js';
+import { formatTaskResultForVp } from './tasks/result-format.js';
 
 const LEGACY_SKILL_COMMAND_PREFIX = 'skill:';
 const YEAFT_SKILL_COMMAND_PREFIX = 'yeaft-skills:';
@@ -130,6 +132,19 @@ const pendingUserPrompts = new Map();
 
 /** @type {import('./session.js').Session | null} */
 let session = null;
+
+// Agent-local MCP config and live runtime managers are mutable. WebSocket
+// dispatch deliberately allows unrelated frames to overlap, so serialize MCP
+// CRUD and runtime bootstrap from config read through connection, activation,
+// tool hot-swap, and MCP publication. Keep the tail fulfilled after a failure:
+// the caller still receives its error, but a later transition is not blocked.
+let mcpTransitionTail = Promise.resolve();
+
+function enqueueMcpTransition(operation) {
+  const queued = mcpTransitionTail.then(operation);
+  mcpTransitionTail = queued.catch(() => undefined);
+  return queued;
+}
 
 /**
  * Single-flight runtime boot. History replay must not wait for this promise on
@@ -175,12 +190,24 @@ function modelRefsEquivalent(left, right) {
 function resolveLiveSessionConfig(baseConfig, sessionId, options = {}) {
   const configRoot = baseConfig?.dir || liveConfigRoot();
   const sessionConfig = normalizeSessionConfig(configRoot, sessionId, baseConfig, options);
-  return resolveSessionConfig(baseConfig, sessionConfig);
+  const resolved = resolveSessionConfig(baseConfig, sessionConfig);
+  // Session config lives in the agent-local root. `resolveSessionConfig()`
+  // intentionally returns a fresh object without its storage hint, so restore
+  // it for the next cached-engine lookup.
+  return configRoot && !resolved.dir ? { ...resolved, dir: configRoot } : resolved;
 }
 
 let sessionConfigRefreshRevision = 0;
 
-/** Reload the Agent-owned config and install it into every live Engine. */
+/**
+ * Reload the Agent-owned config and install it into every live Engine.
+ *
+ * This deliberately mutates only runtime snapshots. Model/config saves must
+ * not retire cached engines, clear task owners, invalidate the coordinator, or
+ * abort a request that has already started. Engine.query() captures its LLM
+ * request values at each loop boundary, so an active stream completes with its
+ * original config and a following tool loop uses the published snapshot.
+ */
 export async function refreshLiveSessionConfig(options = {}) {
   sessionConfigRefreshRevision += 1;
   if (!session && sessionLoadPromise) {
@@ -211,6 +238,8 @@ export async function refreshLiveSessionConfig(options = {}) {
 
   const liveSession = session;
   const currentConfig = liveSession.config || {};
+  const pluginsChanged = JSON.stringify(currentConfig.plugins || {})
+    !== JSON.stringify(freshConfig.plugins || {});
   const runtimeOnly = {};
   for (const key of ['serverMode', '_readOnly', 'modelEffort']) {
     if (Object.prototype.hasOwnProperty.call(currentConfig, key)) runtimeOnly[key] = currentConfig[key];
@@ -236,10 +265,19 @@ export async function refreshLiveSessionConfig(options = {}) {
   if (typeof liveSession.adapter?.refreshProviders === 'function') {
     liveSession.adapter.refreshProviders(freshConfig.providers || []);
   }
+  // Plugin selections affect connected MCP processes as well as model-visible
+  // schemas. Retire cached project runtimes before applying the new selection;
+  // the base runtime is rebuilt below so the default Session cannot retain old
+  // MCP tools or a stale manager after a save.
+  if (pluginsChanged) await shutdownProjectRuntimes();
   for (const key of Object.keys(currentConfig)) delete currentConfig[key];
   Object.assign(currentConfig, nextConfig);
   liveSession.engine?.refreshConfig?.(currentConfig);
   liveSession.trace?.refreshConfig?.(currentConfig.telemetry || {});
+  if (pluginsChanged && session === liveSession) {
+    claimRuntimeOwnership(liveSession);
+    await scheduleBaseRuntimeLoad();
+  }
   for (const { key, engine, config } of vpConfigSnapshots) {
     engine.refreshConfig?.(config);
     vpEngineConfigKeys.set(key, engineConfigKey(config));
@@ -591,13 +629,16 @@ const vpCurrentTodos = new Map();
  * that nobody consumes — exactly the pre-707 bug).
  *
  * Purge sites:
- *   - `invalidateGroupContext(sessionId)` — called from every group CRUD
- *     handler that mutates roster / meta / lifecycle state on disk
- *     (rename, update announcement, archive, delete, add/remove member,
- *     set default VP).
- *   - `handleYeaftSessionSend` — invalidates inline when its own
- *     auto-add / default-VP-heal pass mutated the roster.
+ *   - `invalidateGroupContext(sessionId)` — called from Session CRUD handlers
+ *     that mutate roster / metadata / lifecycle state on disk (rename, update
+ *     announcement, archive, delete, add/remove member, set default VP).
+ *   - `handleYeaftSessionSend` — invalidates inline when its own auto-add /
+ *     default-VP-heal pass mutated the roster.
  *   - `resetYeaftSession` and `__testResetVpState` clear the whole map.
+ *
+ * Model/config saves deliberately do not purge this map: they publish a new
+ * in-memory runtime snapshot and the active engine adopts it at its next LLM
+ * loop boundary without aborting the request already in flight.
  *
  * @type {Map<string, { coord: ReturnType<typeof createCoordinator>,
  *                     router: ReturnType<typeof createRouter>,
@@ -673,8 +714,18 @@ function engineConfigKey(config) {
     fastModel: config?.fastModel || '',
     fastModelId: config?.fastModelId || '',
     fallbackModel: config?.fallbackModel || '',
+    plugins: config?.plugins || {},
     providers: Array.isArray(config?.providers) ? config.providers : [],
   });
+}
+
+function effectiveRuntimeManagers(skillManager, mcpManager, _config = session?.config) {
+  // Engine owns the final skill-policy wrapper so refreshConfig() can safely
+  // reapply a changed Agent plugin selection without mutating shared managers.
+  return {
+    skillManager: skillManager || null,
+    mcpManager: mcpManager || null,
+  };
 }
 
 function normalizeSessionWorkDir(workDir) {
@@ -694,7 +745,7 @@ const RUNNING_THREAD_STATES = new Set(['queued', 'typing', 'thinking', 'retrying
 const vpThreads = new Map();
 /** @type {Map<string, Set<Promise<string|null>>>} */
 const routePromisesByMsgId = new Map();
-/** @type {Map<string, { workDir: string, skillManager: import('./skills.js').SkillManager, mcpManager: import('./mcp.js').MCPManager, mcpStatus: object, mcpConfig: object, status: { skills: number, mcpServers: string[], mcpFailed: object[], mcpSkipped: object[], tools: number } }>} */
+/** @type {Map<string, { workDir: string, skillManager: import('./skills.js').SkillManager, mcpManager: import('./mcp.js').MCPManager, mcpStatus: object, configuredMcpConfig: object, effectiveMcpConfig: object, status: { skills: number, mcpServers: string[], mcpFailed: object[], mcpSkipped: object[], tools: number } }>} */
 const projectRuntimes = new Map();
 /** @type {Map<string, Promise<any>>} */
 const baseRuntimeLoadPromises = new Map();
@@ -816,7 +867,7 @@ function activateBaseRuntime(owner = captureRuntimeOwner(), { reloadSkills = tru
   if (!isCurrentRuntimeOwner(owner)) return { removed: 0, added: 0, skipped: true };
   activeRuntimeKey = BASE_RUNTIME_KEY;
   const swap = replaceSessionMcpTools(owner, mcpManager);
-  retargetVpEngines(owner, { skillManager: skillManager || null, mcpManager: mcpManager || null });
+  retargetVpEngines(owner, effectiveRuntimeManagers(skillManager, mcpManager, ownerSession.config));
   if (status) {
     status.skills = skillManager?.size || 0;
     status.mcpServers = Array.isArray(status.mcpServers) ? status.mcpServers : [];
@@ -843,10 +894,11 @@ function activateProjectRuntime(runtime, owner = captureRuntimeOwner(), { reload
   if (!runtimeBelongsToOwner(runtime, owner)) return { removed: 0, added: 0, skipped: true };
   activeRuntimeKey = runtimeKey;
   const swap = replaceSessionMcpTools(owner, runtime.mcpManager);
-  retargetVpEngines(owner, {
-    skillManager: runtime.skillManager,
-    mcpManager: runtime.mcpManager,
-  });
+  retargetVpEngines(owner, effectiveRuntimeManagers(
+    runtime.skillManager,
+    runtime.mcpManager,
+    owner.ownerSession.config,
+  ));
   runtime.status = {
     ...runtime.status,
     skills: runtime.skillManager?.size || 0,
@@ -954,7 +1006,12 @@ function registerRoutePromise(msgId, promise) {
     routePromisesByMsgId.set(msgId, set);
   }
   set.add(promise);
-  promise.finally(() => set.delete(promise)).catch(() => {});
+  promise.finally(() => {
+    set.delete(promise);
+    if (set.size === 0 && routePromisesByMsgId.get(msgId) === set) {
+      routePromisesByMsgId.delete(msgId);
+    }
+  }).catch(() => {});
 }
 
 
@@ -1020,7 +1077,7 @@ function threadSnapshotForClassifier(thread) {
 
 function readVpForClassifier(vpId) {
   try {
-    const vp = readVp(vpId);
+    const vp = readConfiguredVp(vpId);
     return vp ? { vpId, ...vp } : { vpId };
   } catch {
     return { vpId };
@@ -1035,18 +1092,19 @@ async function waitForRoutePromises(msgId) {
 }
 
 /**
- * Drop the cached coordinator + router for a group AND abort/clear any
- * in-flight VP turns belonging to it. Call this from every CRUD handler
- * that mutates the group's roster, meta, or lifecycle state on disk —
- * the cached coord holds a closed `sessionHandle`, so without invalidation
- * later route_forward / ingest calls would read zombie meta (stale
- * roster, pre-rename announcement, kicked members still routable).
+ * Drop the cached coordinator + router for a Session. Metadata changes must
+ * not abort in-flight work: a rename, announcement sync, or default-VP update
+ * can race any provider request, and the running coordinator already owns a
+ * consistent snapshot for that turn. Future turns rebuild from disk.
+ *
+ * Destructive lifecycle operations opt into runtime teardown.
  *
  * Idempotent — safe to call when no entry exists.
  */
-function invalidateGroupContext(sessionId) {
+function invalidateGroupContext(sessionId, { abortRuntime = false } = {}) {
   if (!sessionId) return;
   sessionContexts.delete(sessionId);
+  if (!abortRuntime) return;
   const prefix = `${sessionId}::`;
   for (const [k, ctrl] of vpAborts) {
     if (!k.startsWith(prefix)) continue;
@@ -1066,7 +1124,7 @@ function invalidateGroupContext(sessionId) {
     if (k.startsWith(prefix)) vpThreads.delete(k);
   }
   // Reap per-(group,vp) TodoWrite snapshots for this group so a
-  // deleted/renamed group doesn't pin a stale checklist forever.
+  // deleted/archived group doesn't pin a stale checklist forever.
   for (const k of vpCurrentTodos.keys()) {
     if (k.startsWith(prefix)) vpCurrentTodos.delete(k);
   }
@@ -1301,9 +1359,6 @@ function projectPersistedToHistoryEntry(m, { includeReflections = false } = {}) 
       input: tc.input,
     }));
   }
-  if (Number.isFinite(m.toolSummaryCount) && m.toolSummaryCount > 0) {
-    entry.toolSummaryCount = m.toolSummaryCount;
-  }
   if (m.isError) entry.isError = true;
   if (m.ts) entry.ts = m.ts;
   else if (m.time) entry.ts = m.time;
@@ -1311,7 +1366,7 @@ function projectPersistedToHistoryEntry(m, { includeReflections = false } = {}) 
   if (Array.isArray(m.attachments) && m.attachments.length > 0) entry.attachments = m.attachments;
   if (m.quote && typeof m.quote === 'object') entry.quote = m.quote;
   if (Array.isArray(m.todos)) entry.todos = m.todos;
-  if ((entry.role === 'user' || entry.role === 'assistant') && !entry.content && !entry.attachments && !entry.images && !entry.toolCalls && !entry.todos && !entry.toolSummaryCount && !entry.askUserResults) return null;
+  if ((entry.role === 'user' || entry.role === 'assistant') && !entry.content && !entry.attachments && !entry.images && !entry.toolCalls && !entry.todos && !entry.askUserResults) return null;
   return entry;
 }
 
@@ -1414,13 +1469,11 @@ function projectVisibleHistoryChunkMessages(messages = []) {
       ...(typeof m.stopReason === 'string' && m.stopReason ? { stopReason: m.stopReason } : {}),
       ...(Array.isArray(m.todos) ? { todos: m.todos } : {}),
       ...(Array.isArray(m.askUserResults) && m.askUserResults.length > 0 ? { askUserResults: m.askUserResults } : {}),
-      ...(Number.isFinite(m.toolSummaryCount) && m.toolSummaryCount > 0
-        ? { toolSummaryCount: m.toolSummaryCount }
-        : (Array.isArray(m.toolCalls) && m.toolCalls.length > 0 ? { toolSummaryCount: m.toolCalls.length } : {})),
+      ...(Array.isArray(m.toolCalls) && m.toolCalls.length > 0 ? { toolCalls: m.toolCalls } : {}),
     }));
 }
 
-function emitHistoryChunk({ sessionId, messages, mode = 'older', oldestSeq = null, nextBeforeSeq = null, hasMore = false, latestSeq = null, afterSeq = null, turns = null, pageKind = null, gapStopAtSeq = null, cacheEpoch = null, requestId = null, requestClientId = null, perfTraceId = null }) {
+function emitHistoryChunk({ sessionId, messages, mode = 'older', oldestSeq = null, nextBeforeSeq = null, hasMore = false, latestSeq = null, afterSeq = null, hasMoreAfter = false, streamId = null, revision = null, turns = null, pageKind = null, gapStopAtSeq = null, cacheEpoch = null, requestId = null, requestClientId = null, perfTraceId = null }) {
   const projectedMessages = projectVisibleHistoryChunkMessages(messages);
   // Empty deltas still carry the authoritative safe cursor and clear the
   // browser's syncingAfterSeq fence. Dropping this envelope leaves Session
@@ -1439,6 +1492,9 @@ function emitHistoryChunk({ sessionId, messages, mode = 'older', oldestSeq = nul
     hasMore: !!hasMore,
     latestSeq,
     afterSeq,
+    hasMoreAfter: !!hasMoreAfter,
+    streamId,
+    revision,
     turns,
     ...(pageKind ? { pageKind } : {}),
     ...(Number.isFinite(gapStopAtSeq) ? { gapStopAtSeq } : {}),
@@ -1473,31 +1529,21 @@ function emitLegacyHistoryOutputFrames(replayEntries) {
           id: entry.id || null,
           content: [
             ...(entry.content ? [{ type: 'text', text: entry.content }] : []),
+            ...((entry.toolCalls || []).map(toolCall => ({ type: 'tool_use', ...toolCall, history: true }))),
             ...((entry.images || []).map(image => ({ type: 'image_asset', image }))),
           ],
         },
         ts: entry.ts || null,
       }, envelopeOpts);
-      if (Array.isArray(entry.toolCalls) && entry.toolCalls.length > 0) {
-        sendSessionOutputFrame({
-          type: 'assistant',
-          message: {
-            content: [{
-              type: 'tool_summary',
-              count: entry.toolCalls.length,
-              omittedCount: entry.toolCalls.length,
-              source: 'history',
-            }],
-          },
-          ts: entry.ts || null,
-        }, envelopeOpts);
-      }
       sendSessionOutputFrame({ type: 'result', result_text: '' }, envelopeOpts);
     }
   }
 }
 
 function emitVisibleHistoryReplay({ store, sessionId, limit, beforeSeq = null, mode = 'recent', requestId = null, requestClientId = null, perfTraceId = null }) {
+  const historyMetadata = sessionId && typeof store.getSessionHistoryMetadata === 'function'
+    ? store.getSessionHistoryMetadata(sessionId)
+    : null;
   const visiblePage = sessionId
     ? loadVisibleGroupHistoryPage(store, sessionId, limit, beforeSeq)
     : { messages: limit > 0 ? (store.loadRecent?.(limit) || []) : [], oldestSeq: null, hasMore: false };
@@ -1519,6 +1565,8 @@ function emitVisibleHistoryReplay({ store, sessionId, limit, beforeSeq = null, m
       nextBeforeSeq: visiblePage.nextBeforeSeq,
       hasMore: visiblePage.hasMore,
       latestSeq: Number.isFinite(latestSeq) ? latestSeq : null,
+      streamId: historyMetadata?.streamId || null,
+      revision: historyMetadata?.revision ?? null,
       turns: limit,
       requestId,
       requestClientId,
@@ -1786,11 +1834,22 @@ function getOrCreateVpEngine(sessionId, vpId, threadId = 'main') {
   // Per-session config overlay (v1: model only). Falls back to the
   // session's user-level config when no override is set. Session config is
   // always resolved from the agent-local root; project `.yeaft` is ignored.
+  // Agent-level plugin config is already part of session.config; Session
+  // config still only overlays model/effort. Keep the runtime policy Agent
+  // scoped even though each VP Engine has its own effective config snapshot.
   const effectiveConfig = resolveLiveSessionConfig(session.config, sessionId);
   const configKey = engineConfigKey(effectiveConfig);
   let eng = vpEngines.get(key);
-  if (eng && vpEngineConfigKeys.get(key) === configKey) return eng;
-  if (eng) retireCachedVpEngine(key, { reason: 'config_changed', rescue: true, expectedEngine: eng });
+  if (eng) {
+    // Config changes are snapshots, not a lifecycle boundary. The save handler
+    // publishes the snapshot to every cached engine. The next query loop reads
+    // it before invoking its adapter; no engine replacement or abort needed.
+    if (vpEngineConfigKeys.get(key) !== configKey) {
+      eng.refreshConfig?.(effectiveConfig);
+      vpEngineConfigKeys.set(key, configKey);
+    }
+    return eng;
+  }
   eng = new Engine({
     adapter: session.adapter,
     trace: session.trace,
@@ -1850,7 +1909,12 @@ function getOrCreateVpEngine(sessionId, vpId, threadId = 'main') {
  */
 function getOrCreateSessionContext(sessionId, sessionHandle) {
   let entry = sessionContexts.get(sessionId);
-  if (entry && entry.coord && entry.router) return entry;
+  if (entry && entry.coord && entry.router) {
+    if (sessionHandle && sessionHandle !== entry.sessionHandle) {
+      try { sessionHandle.close?.(); } catch { /* best-effort unused handle cleanup */ }
+    }
+    return entry;
+  }
   // Either no entry, or a partial entry seeded by `getOrCreateSessionHistory`
   // (no coord/router yet). Build the coord/router and merge into the
   // existing record so the per-group history reference and hydration
@@ -1903,29 +1967,6 @@ function enqueueForVp(sessionId, vpId, envelope) {
   }
   const routePromise = routeEnvelopeToVpThread(sessionId, vpId, envelope);
   registerRoutePromise(envelope?.msg?.id, routePromise);
-}
-
-function formatTaskResultForVp(task) {
-  const result = task?.result || {};
-  const log = task?.log || {};
-  const lines = [
-    `<task-result id="${task.id}" kind="${task.kind}" status="${task.status}">`,
-    `title: ${task.title || task.kind || task.id}`,
-  ];
-  if (task?.runtime?.command) lines.push(`command: ${task.runtime.command}`);
-  if (result.exitCode !== undefined && result.exitCode !== null) lines.push(`exitCode: ${result.exitCode}`);
-  if (result.signal) lines.push(`signal: ${result.signal}`);
-  if (result.error) lines.push(`error: ${result.error}`);
-  if (result.summary) lines.push(`summary: ${result.summary}`);
-  if (log.path) lines.push(`log: ${log.path}`);
-  if (log.preview) {
-    const preview = String(log.preview).slice(-4000);
-    lines.push('logTail:');
-    lines.push(preview.split('\n').map(line => `  ${line}`).join('\n'));
-  }
-  lines.push('</task-result>');
-  lines.push('This is an asynchronous tool result from a background task, not a user message. Consume it now: tell the user the outcome or continue the work. Do not wait for another user turn.');
-  return lines.join('\n');
 }
 
 function scheduleTaskResultRescue({ taskId, sessionId, vpId, threadId = 'main', content, taskKind, taskStatus }) {
@@ -2351,6 +2392,8 @@ export async function __testDrainVpDrivers() {
  * a half-aborted controller writing to a now-cleared map.
  */
 export async function __testResetVpState() {
+  await mcpTransitionTail.catch(() => undefined);
+  mcpTransitionTail = Promise.resolve();
   await shutdownProjectRuntimes();
   for (const ctrl of vpAborts.values()) {
     try { if (!ctrl.signal.aborted) ctrl.abort(); } catch { /* */ }
@@ -2484,9 +2527,11 @@ function loadAndBroadcastYeaftSkillSlashCommands() {
   const configuredWorkDir = typeof ctx.CONFIG?.workDir === 'string' ? ctx.CONFIG.workDir.trim() : '';
   if (configuredWorkDir && configuredWorkDir !== process.cwd()) roots.push(configuredWorkDir);
   const skillManager = createSkillManager(yeaftDir, roots.join(delimiter));
-  broadcastSkillSlashCommands({ skillManager });
+  const config = loadConfig({ dir: yeaftDir });
+  const visibleSkillManager = createPluginSkillManager(skillManager, config.plugins);
+  broadcastSkillSlashCommands({ skillManager: visibleSkillManager });
   return {
-    skills: skillManager.size,
+    skills: visibleSkillManager?.size || 0,
     slashCommands: ctx.slashCommands,
     slashCommandDescriptions: ctx.slashCommandDescriptions,
   };
@@ -2501,7 +2546,10 @@ export function preloadYeaftSkillSlashCommands() {
 }
 
 function broadcastSkillSlashCommands(sessionLike, extraSkillManagers = []) {
-  const managers = [sessionLike?.skillManager, ...extraSkillManagers].filter(Boolean);
+  const plugins = sessionLike?.config?.plugins || session?.config?.plugins || {};
+  const managers = [sessionLike?.skillManager, ...extraSkillManagers]
+    .filter(Boolean)
+    .map(manager => createPluginSkillManager(manager, plugins));
   const { commands: slashCommands, descriptions: slashCommandDescriptions } = buildMergedSkillSlashCommands(managers);
   // Yeaft owns an isolated command catalogue. Reusing ctx's Claude Chat
   // commands made unsupported entries such as /compact and /mcp appear in a
@@ -2604,14 +2652,18 @@ function stopSkillHotReload(owner = null) {
   return true;
 }
 
-async function loadBaseRuntime(owner = captureRuntimeOwner()) {
+async function runBaseRuntimeTransition(owner = captureRuntimeOwner()) {
   if (!isCurrentRuntimeOwner(owner)) return null;
   const ownerSession = owner.ownerSession;
   const yeaftDir = ctx.CONFIG?.yeaftDir || ownerSession.yeaftDir || DEFAULT_YEAFT_DIR;
   const previousSkillManager = ownerSession.skillManager;
   const previousMcpManager = ownerSession.mcpManager;
   const skillManager = createRuntimeSkillManager(yeaftDir, process.cwd());
-  const mcpConfig = loadRuntimeMcpConfig(yeaftDir, undefined, process.cwd());
+  const rawMcpConfig = loadRuntimeMcpConfig(yeaftDir, undefined, process.cwd());
+  const { configured: configuredMcpConfig, effective: effectiveMcpConfig } = resolveMcpPluginPolicy(
+    rawMcpConfig,
+    ownerSession.config?.plugins,
+  );
   const mcpManager = createRuntimeMcpManager();
   let mcpStatus = { connected: [], failed: [] };
   const runtime = {
@@ -2623,13 +2675,14 @@ async function loadBaseRuntime(owner = captureRuntimeOwner()) {
     skillManager,
     mcpManager,
     mcpStatus,
-    mcpConfig,
-    loading: mcpConfig.servers.length > 0,
+    configuredMcpConfig,
+    effectiveMcpConfig,
+    loading: effectiveMcpConfig.servers.length > 0,
     status: {
       skills: skillManager.size,
       mcpServers: [],
       mcpFailed: [],
-      mcpSkipped: mcpConfig.skipped || [],
+      mcpSkipped: effectiveMcpConfig.skipped || [],
       tools: ownerSession.toolRegistry?.size || 0,
     },
   };
@@ -2647,9 +2700,9 @@ async function loadBaseRuntime(owner = captureRuntimeOwner()) {
     hydrateYeaftStatusFromSession(ownerSession, { reason: 'base_runtime_skills', emitEvent: true });
   }
 
-  if (mcpConfig.servers.length > 0) {
+  if (effectiveMcpConfig.servers.length > 0) {
     try {
-      mcpStatus = await mcpManager.connectAll(mcpConfig.servers);
+      mcpStatus = await mcpManager.connectAll(effectiveMcpConfig.servers);
     } catch (err) {
       runtime.loading = false;
       if (ownerSession.skillManager === skillManager) ownerSession.skillManager = previousSkillManager;
@@ -2670,7 +2723,7 @@ async function loadBaseRuntime(owner = captureRuntimeOwner()) {
       ...runtime.status,
       mcpServers: mcpStatus.connected,
       mcpFailed: mcpStatus.failed,
-      mcpSkipped: mcpConfig.skipped || [],
+      mcpSkipped: effectiveMcpConfig.skipped || [],
       tools: ownerSession.toolRegistry?.size || 0,
     };
     ownerSession.mcpManager = mcpManager;
@@ -2679,12 +2732,16 @@ async function loadBaseRuntime(owner = captureRuntimeOwner()) {
       activateBaseRuntime(owner, { reloadSkills: false });
       hydrateYeaftStatusFromSession(ownerSession, { reason: 'base_runtime_mcp', emitEvent: true });
       if (isCurrentRuntimeOwner(owner)) {
-        try { broadcastMcpUpdated({ reason: 'base-runtime-load' }); } catch { /* best-effort */ }
+        try { await broadcastMcpUpdated({ reason: 'base-runtime-load' }); } catch { /* best-effort */ }
       }
     }
   }
 
   return isCurrentRuntimeOwner(owner) && baseRuntime === runtime ? runtime : null;
+}
+
+function loadBaseRuntime(owner = captureRuntimeOwner()) {
+  return enqueueMcpTransition(() => runBaseRuntimeTransition(owner));
 }
 
 function scheduleBaseRuntimeLoad() {
@@ -2710,7 +2767,7 @@ function scheduleBaseRuntimeLoad() {
   return promise;
 }
 
-async function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
+async function runProjectRuntimeTransition(workDir, owner = captureRuntimeOwner()) {
   if (!isCurrentRuntimeOwner(owner)) return null;
   const ownerSession = owner.ownerSession;
   const normalizedWorkDir = normalizeSessionWorkDir(workDir);
@@ -2730,7 +2787,11 @@ async function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
     ? `${process.cwd()}${delimiter}${normalizedWorkDir}`
     : normalizedWorkDir;
   const skillManager = createRuntimeSkillManager(yeaftDir, skillRoots);
-  const mcpConfig = loadRuntimeMcpConfig(yeaftDir, undefined, normalizedWorkDir);
+  const rawMcpConfig = loadRuntimeMcpConfig(yeaftDir, undefined, normalizedWorkDir);
+  const { configured: configuredMcpConfig, effective: effectiveMcpConfig } = resolveMcpPluginPolicy(
+    rawMcpConfig,
+    ownerSession.config?.plugins,
+  );
   const mcpManager = createRuntimeMcpManager();
   let mcpStatus = { connected: [], failed: [] };
   const runtime = {
@@ -2740,13 +2801,14 @@ async function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
     skillManager,
     mcpManager,
     mcpStatus,
-    mcpConfig,
-    loading: mcpConfig.servers.length > 0,
+    configuredMcpConfig,
+    effectiveMcpConfig,
+    loading: effectiveMcpConfig.servers.length > 0,
     status: {
       skills: skillManager.size,
       mcpServers: [],
       mcpFailed: [],
-      mcpSkipped: mcpConfig.skipped || [],
+      mcpSkipped: effectiveMcpConfig.skipped || [],
       tools: ownerSession.toolRegistry?.size || 0,
     },
   };
@@ -2758,9 +2820,9 @@ async function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
   // Skill metadata is ready before external MCP startup. Activation is still
   // owner-gated so reset cannot publish this runtime into a replacement session.
   activateProjectRuntime(runtime, owner, { reloadSkills: false });
-  if (mcpConfig.servers.length > 0) {
+  if (effectiveMcpConfig.servers.length > 0) {
     try {
-      mcpStatus = await mcpManager.connectAll(mcpConfig.servers);
+      mcpStatus = await mcpManager.connectAll(effectiveMcpConfig.servers);
     } catch (err) {
       runtime.loading = false;
       await disconnectRuntimeMcpManager(mcpManager);
@@ -2777,12 +2839,16 @@ async function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
       ...runtime.status,
       mcpServers: mcpStatus.connected,
       mcpFailed: mcpStatus.failed,
-      mcpSkipped: mcpConfig.skipped || [],
+      mcpSkipped: effectiveMcpConfig.skipped || [],
       tools: ownerSession.toolRegistry?.size || 0,
     };
     if (activeRuntimeKey === key) activateProjectRuntime(runtime, owner, { reloadSkills: false });
   }
   return runtimeBelongsToOwner(runtime, owner) && projectRuntimes.get(key) === runtime ? runtime : null;
+}
+
+function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
+  return enqueueMcpTransition(() => runProjectRuntimeTransition(workDir, owner));
 }
 
 function scheduleProjectRuntimeLoad(workDir) {
@@ -2816,6 +2882,7 @@ function getProjectRuntimeForTurn(sessionMeta) {
   if (!owner) return null;
   const workDir = normalizeSessionWorkDir(sessionMeta?.workDir);
   if (!workDir) {
+    if (!runtimeBelongsToOwner(baseRuntime, owner)) scheduleBaseRuntimeLoad();
     activateBaseRuntime(owner);
     return null;
   }
@@ -2924,6 +2991,16 @@ function configuredVpPaths() {
     libDir: join(root, 'virtual-persons'),
     memoryRoot: join(root, 'memory'),
   };
+}
+
+function readConfiguredVp(vpId) {
+  const { libDir } = configuredVpPaths();
+  return readVp(vpId, libDir ? { libDir } : {});
+}
+
+function scanConfiguredVpLibrary() {
+  const { libDir } = configuredVpPaths();
+  return scanVpLibrary(libDir ? { dir: libDir } : {});
 }
 
 export function handleYeaftVpSubscribe(msg = {}) {
@@ -3157,6 +3234,64 @@ function sendSessionCrudResult(payload) {
   sendSessionEvent({ type: 'session_crud_result', ...next });
 }
 
+function isMcpServerEnabled(name, plugins = session?.config?.plugins) {
+  return !Array.isArray(plugins?.mcpServers) || plugins.mcpServers.includes(name);
+}
+
+function resolvePluginCatalogRuntime(workDir = '') {
+  const owner = captureRuntimeOwner();
+  const normalizedWorkDir = normalizeSessionWorkDir(workDir);
+  const runtime = normalizedWorkDir
+    ? projectRuntimes.get(projectRuntimeKey(normalizedWorkDir))
+    : null;
+  const active = runtimeBelongsToOwner(runtime, owner)
+    ? runtime
+    : (baseRuntime && runtimeBelongsToOwner(baseRuntime, owner) ? baseRuntime : null);
+  return {
+    toolRegistry: session?.toolRegistry || null,
+    skillManager: active?.skillManager || session?.skillManager || null,
+    mcpManager: active?.mcpManager || session?.mcpManager || null,
+  };
+}
+
+function loadPluginCatalogMcpConfig(yeaftDir) {
+  // The Plugins catalog is Agent-owned. Re-read its raw configuration on every
+  // request so MCP CRUD is visible immediately, while keeping the
+  // config.json -> mcp.json compatibility fallback.
+  return loadAgentMCPConfig(yeaftDir);
+}
+
+/** Test-only: read the MCP catalog source without sending a bridge response. */
+export function __testLoadPluginCatalogMcpConfig(yeaftDir) {
+  return loadPluginCatalogMcpConfig(yeaftDir);
+}
+
+export function handleYeaftPluginCatalog(msg = {}) {
+  const requestId = msg.requestId || null;
+  const requestedWorkDir = normalizeSessionWorkDir(msg.workDir);
+  try {
+    const runtime = resolvePluginCatalogRuntime(requestedWorkDir);
+    const yeaftDir = ctx.CONFIG?.yeaftDir || session?.yeaftDir || DEFAULT_YEAFT_DIR;
+    runtime.mcpConfig = loadPluginCatalogMcpConfig(yeaftDir);
+    const catalog = buildPluginCatalog(runtime);
+    sendToServer({
+      type: 'yeaft_plugin_catalog_result',
+      requestId,
+      ...(msg._requestClientId ? { _requestClientId: msg._requestClientId } : {}),
+      catalog,
+      error: null,
+    });
+  } catch (err) {
+    sendToServer({
+      type: 'yeaft_plugin_catalog_result',
+      requestId,
+      ...(msg._requestClientId ? { _requestClientId: msg._requestClientId } : {}),
+      catalog: { tools: [], skills: [], mcpServers: [] },
+      error: err?.message || String(err),
+    });
+  }
+}
+
 function sendSessionSnapshotBroadcast() {
   try {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
@@ -3280,7 +3415,7 @@ export function handleYeaftCreateSession(msg) {
   const payload = (msg && msg.payload) || {};
   try {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
-    const group = createSessionFromSpec(yeaftDir, payload);
+    const group = createSessionFromSpec(yeaftDir, payload, configuredVpPaths());
     recordAgentSessionCreated();
     group.config = loadSessionConfig(yeaftDir, group.id);
     sendSessionCrudResult({ op: 'create', requestId, ok: true, session: group });
@@ -3397,12 +3532,14 @@ export function handleYeaftUpdateSession(msg) {
 }
 
 /**
- * Persist the model selected in the group conversation header. Cache invalidation:
- * drop every cached Engine whose key starts with `${sessionId}::` so the
- * next turn picks up the new model. The group meta itself is untouched.
+ * Persist the model selected in the Session conversation header.
+ *
+ * Cached engines remain alive. This handler publishes their updated effective
+ * config; `Engine.refreshConfig()` applies it at the next LLM loop boundary.
+ * The current stream and its AbortController are untouched.
  *
  * Payload: { sessionId, requestId, config: { model?: string|null } }
- *  - `model: ''` or `null` clears the selected group model (falls back to user default).
+ *  - `model: ''` or `null` clears the selected Session model (falls back to user default).
  */
 export function handleYeaftUpdateSessionConfig(msg) {
   const requestId = msg && msg.requestId;
@@ -3414,15 +3551,23 @@ export function handleYeaftUpdateSessionConfig(msg) {
     if (!partial) throw new SessionConfigError('invalid_patch', 'config object required');
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const savedConfig = updateSessionConfig(yeaftDir, sessionId, partial);
-    // Retire cached engines so accepted terminal task results are rescued
-    // before the next VP turn rebuilds with the new model.
+    const effectiveBaseConfig = session?.config || loadConfig({ dir: yeaftDir });
+    // The write above is the source of truth. Merge it directly instead of
+    // reopening the file so cached engines cannot observe an unrelated stale
+    // read between persistence and publication.
+    const sessionConfig = resolveSessionConfig(effectiveBaseConfig, savedConfig);
+    const publishedSessionConfig = sessionConfig.dir || !effectiveBaseConfig?.dir
+      ? sessionConfig
+      : { ...sessionConfig, dir: effectiveBaseConfig.dir };
     const prefix = `${sessionId}::`;
-    for (const k of Array.from(vpEngines.keys())) {
-      if (k.startsWith(prefix)) {
-        retireCachedVpEngine(k, { reason: 'session_config_changed', rescue: true });
-      }
+    for (const [key, engine] of vpEngines) {
+      if (!key.startsWith(prefix)) continue;
+      engine.refreshConfig?.(publishedSessionConfig);
+      vpEngineConfigKeys.set(key, engineConfigKey(publishedSessionConfig));
     }
-    invalidateGroupContext(sessionId);
+    // Do not invalidate the Session coordinator or abort active VP turns.
+    // The next adapter loop sees this config; the stream already underway
+    // completes with the values captured for that request.
     sendSessionCrudResult({ op: 'update_config', requestId, ok: true, sessionId, config: savedConfig });
     sendSessionSnapshotBroadcast();
   } catch (err) {
@@ -3438,7 +3583,7 @@ export function handleYeaftArchiveSession(msg) {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const result = archiveSession(yeaftDir, sessionId);
     projectContextBySession.delete(sessionId);
-    invalidateGroupContext(sessionId);
+    invalidateGroupContext(sessionId, { abortRuntime: true });
     sendSessionCrudResult({
       op: 'archive',
       requestId,
@@ -3478,7 +3623,7 @@ export function handleYeaftDeleteSession(msg) {
     // turns for the deleted group. Engines for the deleted group are
     // also dropped — unlike rename/announcement updates, the group is
     // gone for good and there's nothing to preserve.
-    invalidateGroupContext(sessionId);
+    invalidateGroupContext(sessionId, { abortRuntime: true });
     const prefix = `${sessionId}::`;
     for (const k of Array.from(vpEngines.keys())) {
       if (k.startsWith(prefix)) {
@@ -3565,7 +3710,7 @@ export function handleYeaftSessionSetDefaultVp(msg) {
 function buildVpPersona(vpId) {
   if (!vpId) return null;
   try {
-    const vp = readVp(vpId);
+    const vp = readConfiguredVp(vpId);
     if (!vp) return null;
     return {
       vpId,
@@ -4232,6 +4377,10 @@ function handleEngineEvent(event, hctx) {
       break;
 
     case 'tool_exec':
+      // Full tool output is already durable in the file-backed debug trace and
+      // is fetched on demand when the user opens this Turn. Do not mirror it
+      // into the always-on browser store: a long-lived tab otherwise retains
+      // every large Bash/FileRead result even while the debug panel is closed.
       sendSessionEvent({
         type: 'tool_exec',
         turnId: event.turnId,
@@ -4240,7 +4389,6 @@ function handleEngineEvent(event, hctx) {
         name: event.name,
         durationMs: event.durationMs,
         isError: event.isError,
-        toolOutput: event.toolOutput,
       }, envelope);
       break;
 
@@ -4290,26 +4438,21 @@ function handleEngineEvent(event, hctx) {
       break;
 
     case 'loop':
-      // feat-6af5f9f1 PR B: replaces the old `debug_turn` event. Same
-      // payload shape plus turnId + loopNumber + usage.totalTokens.
-      // feat-debug-timestamp: also forward `at` (epoch ms) so the
-      // debug panel can render per-loop HH:MM:SS.
+      // Live clients only need bounded summary metadata. The complete request,
+      // response, prompt, messages, and tool calls are already persisted by
+      // DebugTrace and fetched for one Turn on demand. Forwarding those growing
+      // snapshots on every loop made a long-lived browser tab retain hundreds
+      // of MiB (or GiB) while the debug panel was closed.
       sendSessionEvent({
         type: 'loop',
         turnId: event.turnId,
         loopNumber: event.loopNumber,
         model: event.model,
-        systemPrompt: event.systemPrompt,
-        messages: event.messages,
-        response: event.response,
-        toolCalls: event.toolCalls,
         usage: event.usage,
         latencyMs: event.latencyMs,
         ttfbMs: event.ttfbMs,
         stopReason: event.stopReason,
         at: event.at,
-        rawRequest: event.rawRequest,
-        rawResponse: event.rawResponse,
       }, envelope);
       break;
 
@@ -4321,9 +4464,13 @@ function handleEngineEvent(event, hctx) {
       const errMsg = event.error?.message || 'Unknown error';
       const retryAttempts = Number.isFinite(event.retryAttempts) ? event.retryAttempts : 0;
       const exhaustedIdle = event.reason === 'stream_idle_timeout' && event.retryExhausted;
-      const visibleErrMsg = exhaustedIdle && retryAttempts > 0
-        ? `${errMsg} after ${retryAttempts} fresh request retries`
-        : errMsg;
+      const contentPolicyDenied = event.reason === 'content_policy_denied'
+        || event.error?.reasonCode === 'content_policy_denied';
+      const visibleErrMsg = contentPolicyDenied
+        ? 'Provider blocked this request for content-safety reasons after one safe recovery attempt. Continue and ask the VP to avoid repeating sensitive payloads, credentials, tokens, or exploit samples.'
+        : exhaustedIdle && retryAttempts > 0
+          ? `${errMsg} after ${retryAttempts} fresh request retries`
+          : errMsg;
       hctx.lastEngineErrorDetail = {
         message: visibleErrMsg,
         ...(event.reason ? { reason: event.reason } : {}),
@@ -4528,7 +4675,7 @@ async function runYeaftSessionSend(msg) {
     if (wantsAdd.length) {
       for (const vpId of wantsAdd) {
         try {
-          const vp = readVp(vpId);
+          const vp = readConfiguredVp(vpId);
           if (!vp) continue;
           addMember(yeaftDir, sessionId, vpId);
           rosterMutated = true;
@@ -4807,9 +4954,9 @@ export function buildVpQueryOpts({ vpId, sessionCoordinator, sessionId, envelope
   }
   if (!resolvedVpId) {
     try {
-      const lib = scanVpLibrary();
-      if (Array.isArray(lib) && lib.length > 0 && lib[0].vpId) {
-        resolvedVpId = lib[0].vpId;
+      const lib = scanConfiguredVpLibrary();
+      if (Array.isArray(lib) && lib.length > 0 && lib[0].id) {
+        resolvedVpId = lib[0].id;
       }
     } catch { /* library scan is best-effort */ }
   }
@@ -5323,15 +5470,17 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         escalationState.engineKey = threadKey(sessionId, vpId, threadId);
       }
       if (projectRuntime) {
-        vpEngine.setRuntimeManagers?.({
-          skillManager: projectRuntime.skillManager,
-          mcpManager: projectRuntime.mcpManager,
-        });
+        vpEngine.setRuntimeManagers?.(effectiveRuntimeManagers(
+          projectRuntime.skillManager,
+          projectRuntime.mcpManager,
+          session?.config?.plugins,
+        ));
       } else {
-        vpEngine.setRuntimeManagers?.({
-          skillManager: session?.skillManager || null,
-          mcpManager: session?.mcpManager || null,
-        });
+        vpEngine.setRuntimeManagers?.(effectiveRuntimeManagers(
+          session?.skillManager || null,
+          session?.mcpManager || null,
+          session?.config?.plugins,
+        ));
       }
       if (thread) thread.engine = vpEngine;
 
@@ -6439,11 +6588,13 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
   const search = typeof msg?.search === 'string' ? msg.search.trim() : '';
   const requestId = typeof msg?.requestId === 'string' && msg.requestId ? msg.requestId : null;
   const requestKind = typeof msg?.requestKind === 'string' && msg.requestKind ? msg.requestKind : null;
+  const requestClientId = typeof msg?._requestClientId === 'string' && msg._requestClientId ? msg._requestClientId : null;
   const indexOnly = !!msg?.indexOnly;
   const detailTurnId = typeof msg?.detailTurnId === 'string' && msg.detailTurnId ? msg.detailTurnId : null;
   let loops = [];
   let turns = [];
   let dreamEvents = [];
+  let projection = null;
   let hasMore = false;
   try {
     if (session?.trace && detailTurnId && sessionId && typeof session.trace.fetchTurnDebug === 'function') {
@@ -6451,12 +6602,14 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
       loops = Array.isArray(out?.loops) ? out.loops : [];
       turns = Array.isArray(out?.turns) ? out.turns : [];
       dreamEvents = Array.isArray(out?.dreamEvents) ? out.dreamEvents : [];
+      projection = out?.projection && typeof out.projection === 'object' ? out.projection : null;
       hasMore = false;
     } else if (session?.trace && typeof session.trace.fetchRecentDebugHistory === 'function') {
       const out = await session.trace.fetchRecentDebugHistory({ limit, dreamLimit, sessionId, threadId, indexOnly, detailTurnId, search });
       loops = Array.isArray(out?.loops) ? out.loops : [];
       turns = Array.isArray(out?.turns) ? out.turns : [];
       dreamEvents = Array.isArray(out?.dreamEvents) ? out.dreamEvents : [];
+      projection = out?.projection && typeof out.projection === 'object' ? out.projection : null;
       hasMore = !!out?.hasMore;
     }
   } catch (err) {
@@ -6467,6 +6620,7 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
       dreamEvents: [],
       requestId,
       requestKind,
+      ...(requestClientId ? { _requestClientId: requestClientId } : {}),
       sessionId,
       threadId,
       search,
@@ -6482,8 +6636,10 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
     loops,
     turns,
     dreamEvents,
+    ...(projection ? { projection } : {}),
     requestId,
     requestKind,
+    ...(requestClientId ? { _requestClientId: requestClientId } : {}),
     sessionId,
     threadId,
     search,
@@ -6761,7 +6917,20 @@ export async function handleYeaftLoadHistory(msg) {
     // and wants only the messages that arrived after that cursor. Returns
     // mode:'delta' so the frontend can append+dedupe instead of replacing
     // the pane.
-    const afterSeqRaw = (msg && Number.isFinite(msg.afterSeq)) ? msg.afterSeq : null;
+    const deltaLimit = Number.isFinite(msg?.maxRows)
+      ? Math.min(500, Math.max(1, Math.floor(msg.maxRows)))
+      : 100;
+    const deltaMaxBytes = Number.isFinite(msg?.maxBytes)
+      ? Math.min(2 * 1024 * 1024, Math.max(32 * 1024, Math.floor(msg.maxBytes)))
+      : 512 * 1024;
+    const historyMetadata = typeof session.conversationStore.getSessionHistoryMetadata === 'function'
+      ? session.conversationStore.getSessionHistoryMetadata(sessionId)
+      : null;
+    const cacheIdentityMatches = !msg?.streamId || (
+      msg.streamId === historyMetadata?.streamId
+      && Number(msg.revision) === Number(historyMetadata?.revision)
+    );
+    const afterSeqRaw = cacheIdentityMatches && msg && Number.isFinite(msg.afterSeq) ? msg.afterSeq : null;
     const afterMessageId = (msg && typeof msg.afterMessageId === 'string') ? msg.afterMessageId : null;
     let afterSeq = afterSeqRaw;
     if (afterSeq === null && afterMessageId && typeof session.conversationStore.getMessageSeqById === 'function') {
@@ -6769,7 +6938,10 @@ export async function handleYeaftLoadHistory(msg) {
     }
     if (sessionId && afterSeq !== null && typeof session.conversationStore.loadAfterSeqByGroup === 'function') {
       const loadStart = perfNowMs();
-      const delta = session.conversationStore.loadAfterSeqByGroup(sessionId, afterSeq);
+      const delta = session.conversationStore.loadAfterSeqByGroup(sessionId, afterSeq, {
+        limit: deltaLimit,
+        maxBytes: deltaMaxBytes,
+      });
       traceDuration('history.store_load_delta', loadStart, { detail: { count: delta.messages?.length || 0, afterSeq } });
       const emitStart = perfNowMs();
       const projectedMessages = emitHistoryChunk({
@@ -6778,6 +6950,9 @@ export async function handleYeaftLoadHistory(msg) {
         mode: 'delta',
         latestSeq: delta.latestSeq,
         afterSeq,
+        hasMoreAfter: delta.hasMoreAfter,
+        streamId: historyMetadata?.streamId || null,
+        revision: historyMetadata?.revision ?? null,
         requestId,
         requestClientId,
         perfTraceId,
@@ -6791,6 +6966,9 @@ export async function handleYeaftLoadHistory(msg) {
         requestId,
         latestSeq: delta.latestSeq,
         afterSeq,
+        hasMoreAfter: !!delta.hasMoreAfter,
+        streamId: historyMetadata?.streamId || null,
+        revision: historyMetadata?.revision ?? null,
       }, { sessionId, requestId, requestClientId, perfTraceId });
       return;
     }
@@ -6831,6 +7009,8 @@ export async function handleYeaftLoadHistory(msg) {
         nextBeforeSeq: visiblePage.nextBeforeSeq,
         hasMore: visiblePage.hasMore,
         latestSeq,
+        streamId: historyMetadata?.streamId || null,
+        revision: historyMetadata?.revision ?? null,
         turns: limit,
         requestId,
         requestClientId,
@@ -6873,12 +7053,19 @@ export async function handleYeaftLoadHistory(msg) {
       oldestSeq,
       nextBeforeSeq: visiblePage.nextBeforeSeq,
       latestSeq,
+      streamId: historyMetadata?.streamId || null,
+      revision: historyMetadata?.revision ?? null,
     }, { sessionId, requestId, requestClientId, perfTraceId });
   };
 
   if (!session) {
     const yeaftDir = ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR;
-    const afterSeqRaw = (msg && Number.isFinite(msg.afterSeq)) ? msg.afterSeq : null;
+    const deltaLimit = Number.isFinite(msg?.maxRows)
+      ? Math.min(500, Math.max(1, Math.floor(msg.maxRows)))
+      : 100;
+    const deltaMaxBytes = Number.isFinite(msg?.maxBytes)
+      ? Math.min(2 * 1024 * 1024, Math.max(32 * 1024, Math.floor(msg.maxBytes)))
+      : 512 * 1024;
     const afterMessageId = (msg && typeof msg.afterMessageId === 'string') ? msg.afterMessageId : null;
     const limit = (typeof msg.limit === 'number') ? msg.limit : 10;
     ensureYeaftConversationId();
@@ -6901,6 +7088,14 @@ export async function handleYeaftLoadHistory(msg) {
     // window immediately, then finish loadSession below for actual turns.
     const coldStoreStart = perfNowMs();
     const coldStore = new ConversationStore(historyYeaftDir);
+    const historyMetadata = sessionId && typeof coldStore.getSessionHistoryMetadata === 'function'
+      ? coldStore.getSessionHistoryMetadata(sessionId)
+      : null;
+    const cacheIdentityMatches = !msg?.streamId || (
+      msg.streamId === historyMetadata?.streamId
+      && Number(msg.revision) === Number(historyMetadata?.revision)
+    );
+    const afterSeqRaw = cacheIdentityMatches && msg && Number.isFinite(msg.afterSeq) ? msg.afterSeq : null;
     traceDuration('history.cold_store_open', coldStoreStart);
     if (sessionId && (afterSeqRaw !== null || afterMessageId)) {
       let afterSeq = afterSeqRaw;
@@ -6909,8 +7104,11 @@ export async function handleYeaftLoadHistory(msg) {
       }
       const loadStart = perfNowMs();
       const delta = afterSeq !== null && typeof coldStore.loadAfterSeqByGroup === 'function'
-        ? coldStore.loadAfterSeqByGroup(sessionId, afterSeq)
-        : { messages: [], latestSeq: null };
+        ? coldStore.loadAfterSeqByGroup(sessionId, afterSeq, {
+            limit: deltaLimit,
+            maxBytes: deltaMaxBytes,
+          })
+        : { messages: [], latestSeq: null, hasMoreAfter: false };
       traceDuration('history.store_load_delta', loadStart, { detail: { count: delta.messages?.length || 0, afterSeq, cold: true } });
       const emitStart = perfNowMs();
       const projectedMessages = emitHistoryChunk({
@@ -6919,12 +7117,26 @@ export async function handleYeaftLoadHistory(msg) {
         mode: 'delta',
         latestSeq: delta.latestSeq,
         afterSeq,
+        hasMoreAfter: delta.hasMoreAfter,
+        streamId: historyMetadata?.streamId || null,
+        revision: historyMetadata?.revision ?? null,
         requestId,
         requestClientId,
         perfTraceId,
       });
       traceDuration('history.emit_chunk', emitStart, { detail: { mode: 'delta', count: projectedMessages.length, cold: true } });
-      sendSessionEvent({ type: 'history_loaded', mode: 'delta', count: projectedMessages.length, sessionId, requestId, latestSeq: delta.latestSeq, afterSeq }, { sessionId, requestId, requestClientId, perfTraceId });
+      sendSessionEvent({
+        type: 'history_loaded',
+        mode: 'delta',
+        count: projectedMessages.length,
+        sessionId,
+        requestId,
+        latestSeq: delta.latestSeq,
+        afterSeq,
+        hasMoreAfter: !!delta.hasMoreAfter,
+        streamId: historyMetadata?.streamId || null,
+        revision: historyMetadata?.revision ?? null,
+      }, { sessionId, requestId, requestClientId, perfTraceId });
     } else if (!metadataOnly) {
       const replayStart = perfNowMs();
       emitVisibleHistoryReplay({ store: coldStore, sessionId, limit, mode: 'recent', requestId, requestClientId, perfTraceId });
@@ -7445,16 +7657,54 @@ export async function resetYeaftSession() {
  * connection state next to the configured servers. Safe to call when
  * the session hasn't been initialised yet — returns an empty runtime.
  */
+function activeMcpManager(owner = captureRuntimeOwner()) {
+  if (!isCurrentRuntimeOwner(owner)) return session?.mcpManager || null;
+  if (activeRuntimeKey !== BASE_RUNTIME_KEY) {
+    const runtime = projectRuntimes.get(activeRuntimeKey) || null;
+    if (runtimeBelongsToOwner(runtime, owner)) return runtime.mcpManager || null;
+  }
+  return owner.ownerSession.mcpManager || null;
+}
+
+async function retireInactiveMcpRuntimes(owner, activeManager) {
+  if (!isCurrentRuntimeOwner(owner)) return;
+  const retire = [];
+
+  // The base manager stays cached while a project runtime is active. It was
+  // built from the old Agent config, so remove it rather than allowing a later
+  // base activation to revive a deleted MCP. The next base turn schedules a
+  // fresh loader; until then there is deliberately no base MCP fallback.
+  if (runtimeBelongsToOwner(baseRuntime, owner) && baseRuntime.mcpManager !== activeManager) {
+    const staleBase = baseRuntime;
+    baseRuntime = null;
+    baseRuntimeLoadPromises.delete(BASE_RUNTIME_KEY);
+    if (owner.ownerSession.mcpManager === staleBase.mcpManager) owner.ownerSession.mcpManager = null;
+    // A loading manager may acquire its connection after this point. Its
+    // post-connect ownership check performs the reliable cleanup in that case.
+    if (!staleBase.loading) retire.push(disconnectRuntimeMcpManager(staleBase.mcpManager));
+  }
+
+  for (const [key, runtime] of projectRuntimes) {
+    if (!runtimeBelongsToOwner(runtime, owner) || runtime.mcpManager === activeManager) continue;
+    projectRuntimes.delete(key);
+    projectRuntimeLoadPromises.delete(key);
+    if (!runtime.loading) retire.push(disconnectRuntimeMcpManager(runtime.mcpManager));
+  }
+
+  await Promise.allSettled(retire);
+}
+
 function mcpRuntimeSnapshot() {
-  if (!session?.mcpManager) {
+  const mcpManager = activeMcpManager();
+  if (!mcpManager) {
     return { connected: false, toolCount: 0, perServer: [] };
   }
-  const status = session.mcpManager.status() || [];
-  const toolCount = typeof session.mcpManager.toolCount === 'number'
-    ? session.mcpManager.toolCount
+  const status = mcpManager.status() || [];
+  const toolCount = typeof mcpManager.toolCount === 'number'
+    ? mcpManager.toolCount
     : status.reduce((sum, s) => sum + (s.toolCount || 0), 0);
   return {
-    connected: !!session.mcpManager.hasServers,
+    connected: !!mcpManager.hasServers,
     toolCount,
     perServer: status.map(s => ({
       name: s.name,
@@ -7470,23 +7720,34 @@ function mcpRuntimeSnapshot() {
  * pick up the change.
  */
 function hotSwapMcpTools() {
-  return replaceSessionMcpTools(captureRuntimeOwner(), session?.mcpManager);
+  const owner = captureRuntimeOwner();
+  return replaceSessionMcpTools(owner, activeMcpManager(owner));
 }
 
 /**
  * Broadcast a `yeaft_mcp_updated` event so any client subscribed to the
  * Yeaft view (Settings panel, status badge) refreshes without needing
- * to re-open the panel. The current list+runtime are included so the UI
- * is single-source (no separate fetch round-trip needed).
+ * to re-open the panel. A CRUD/reload caller should pass its confirmed
+ * `configuredServers` snapshot rather than rereading config after async
+ * runtime work. Fallback reads preserve an existing UI cache on failure by
+ * omitting `servers` and reporting the strict-read error.
  */
-function broadcastMcpUpdated(extra = {}) {
-  const yeaftDir = ctx.CONFIG?.yeaftDir;
-  const listed = listMcpServers(yeaftDir);
-  sendToServer({
+function broadcastMcpUpdated({ configuredServers, ...extra } = {}) {
+  let servers = configuredServers;
+  let error = null;
+  if (!Array.isArray(servers)) {
+    const yeaftDir = ctx.CONFIG?.yeaftDir;
+    const listed = listMcpServers(yeaftDir);
+    if (listed.error) error = listed.error;
+    else servers = listed.servers;
+  }
+
+  return sendToServer({
     type: 'yeaft_mcp_updated',
-    servers: listed.servers || [],
     runtime: mcpRuntimeSnapshot(),
     ...extra,
+    ...(Array.isArray(servers) ? { servers } : {}),
+    error,
   });
 }
 
@@ -7502,11 +7763,11 @@ export function handleYeaftMcpList(msg = {}) {
   });
 }
 
-export async function handleYeaftMcpAdd(msg = {}) {
+async function runYeaftMcpAddMutation(msg = {}) {
   const yeaftDir = ctx.CONFIG?.yeaftDir;
   const result = upsertMcpServer(msg.server || {}, yeaftDir);
   if (result.error) {
-    sendToServer({
+    await sendToServer({
       type: 'yeaft_mcp_add_result',
       requestId: msg.requestId || null,
       servers: [],
@@ -7516,22 +7777,28 @@ export async function handleYeaftMcpAdd(msg = {}) {
     return;
   }
 
-  // Apply at runtime when the session is live. The MCPManager's
-  // `connect(serverConfig)` already disconnects-and-reconnects if a
-  // server with the same name was already registered.
+  // A queued runtime bootstrap may have made a project manager active before
+  // this mutation runs. Capture the manager after the config write, then
+  // retire inactive caches and update the manager that owns live tools.
+  const owner = captureRuntimeOwner();
+  const mcpManager = activeMcpManager(owner);
+  await retireInactiveMcpRuntimes(owner, mcpManager);
   let connectError = null;
-  if (session?.mcpManager) {
+  if (mcpManager && !isMcpServerEnabled(result.server.name)) {
     try {
-      await session.mcpManager.connect(result.server);
+      await mcpManager.disconnect(result.server.name);
+    } catch { /* no active connection to retire */ }
+  } else if (mcpManager) {
+    try {
+      await mcpManager.connect(result.server);
     } catch (err) {
       connectError = err?.message || String(err);
       console.warn(`[Yeaft] MCP connect "${result.server.name}" failed:`, connectError);
     }
   }
 
-  const swap = replaceSessionMcpTools(captureRuntimeOwner(), session?.mcpManager);
-
-  sendToServer({
+  const swap = replaceSessionMcpTools(owner, mcpManager);
+  await sendToServer({
     type: 'yeaft_mcp_add_result',
     requestId: msg.requestId || null,
     servers: result.servers,
@@ -7540,15 +7807,24 @@ export async function handleYeaftMcpAdd(msg = {}) {
     connectError,
     error: null,
   });
-  broadcastMcpUpdated({ reason: 'add', name: result.server.name, connectError });
+  await broadcastMcpUpdated({
+    reason: 'add',
+    name: result.server.name,
+    connectError,
+    configuredServers: result.servers,
+  });
 }
 
-export async function handleYeaftMcpRemove(msg = {}) {
+export function handleYeaftMcpAdd(msg = {}) {
+  return enqueueMcpTransition(() => runYeaftMcpAddMutation(msg));
+}
+
+async function runYeaftMcpRemoveMutation(msg = {}) {
   const yeaftDir = ctx.CONFIG?.yeaftDir;
   const name = typeof msg.name === 'string' ? msg.name : '';
   const result = removeMcpServer(name, yeaftDir);
   if (result.error) {
-    sendToServer({
+    await sendToServer({
       type: 'yeaft_mcp_remove_result',
       requestId: msg.requestId || null,
       servers: [],
@@ -7558,17 +7834,19 @@ export async function handleYeaftMcpRemove(msg = {}) {
     return;
   }
 
-  if (session?.mcpManager) {
+  const owner = captureRuntimeOwner();
+  const mcpManager = activeMcpManager(owner);
+  await retireInactiveMcpRuntimes(owner, mcpManager);
+  if (mcpManager) {
     try {
-      await session.mcpManager.disconnect(name);
+      await mcpManager.disconnect(name);
     } catch (err) {
       console.warn(`[Yeaft] MCP disconnect "${name}" failed:`, err?.message || err);
     }
   }
 
-  const swap = replaceSessionMcpTools(captureRuntimeOwner(), session?.mcpManager);
-
-  sendToServer({
+  const swap = replaceSessionMcpTools(owner, mcpManager);
+  await sendToServer({
     type: 'yeaft_mcp_remove_result',
     requestId: msg.requestId || null,
     servers: result.servers,
@@ -7577,46 +7855,71 @@ export async function handleYeaftMcpRemove(msg = {}) {
     swap,
     error: null,
   });
-  broadcastMcpUpdated({ reason: 'remove', name });
+  await broadcastMcpUpdated({
+    reason: 'remove',
+    name,
+    configuredServers: result.servers,
+  });
 }
 
-export async function handleYeaftMcpReload(msg = {}) {
+export function handleYeaftMcpRemove(msg = {}) {
+  return enqueueMcpTransition(() => runYeaftMcpRemoveMutation(msg));
+}
+
+async function runYeaftMcpReloadMutation(msg = {}) {
   const yeaftDir = ctx.CONFIG?.yeaftDir;
   const targetName = typeof msg.name === 'string' && msg.name ? msg.name : null;
+  const listed = listMcpServers(yeaftDir);
 
-  if (!session?.mcpManager) {
-    // Session not yet alive — just echo the current config + an empty
-    // runtime so the UI knows to wait for session boot.
-    const listed = listMcpServers(yeaftDir);
-    sendToServer({
+  // Do not turn a failed strict config read into an empty successful reload.
+  // In particular, leave an existing MCP runtime and its flattened tools alone
+  // until the user repairs config.json.
+  if (listed.error) {
+    await sendToServer({
       type: 'yeaft_mcp_reload_result',
       requestId: msg.requestId || null,
-      servers: listed.servers || [],
+      servers: [],
+      runtime: mcpRuntimeSnapshot(),
+      error: listed.error,
+    });
+    return;
+  }
+
+  const owner = captureRuntimeOwner();
+  const mcpManager = activeMcpManager(owner);
+  if (!mcpManager) {
+    // Session not yet alive; just echo the current config + an empty
+    // runtime so the UI knows to wait for session boot.
+    await sendToServer({
+      type: 'yeaft_mcp_reload_result',
+      requestId: msg.requestId || null,
+      servers: listed.servers,
       runtime: mcpRuntimeSnapshot(),
       error: null,
     });
     return;
   }
 
-  const listed = listMcpServers(yeaftDir);
-  const configured = listed.servers || [];
+  // Full reload applies an externally changed Agent MCP config, so stale
+  // runtime caches are just as unsafe as after add/remove. A named reload is
+  // only a local reconnect and must keep inactive base/project caches warm.
+  if (!targetName) await retireInactiveMcpRuntimes(owner, mcpManager);
 
-  // Per-server reload: disconnect + reconnect the named server only.
-  // Whole-set reload: disconnect everything, then reconnect from current
-  // config.json. The latter is what the user clicks "Reload all" for.
+  const configured = listed.servers;
+  const enabled = configured.filter(server => isMcpServerEnabled(server.name));
   const failures = [];
   try {
     if (targetName) {
-      const cfg = configured.find(s => s.name === targetName);
-      try { await session.mcpManager.disconnect(targetName); } catch { /* ignore */ }
+      const cfg = enabled.find(server => server.name === targetName);
+      try { await mcpManager.disconnect(targetName); } catch { /* ignore */ }
       if (cfg) {
-        try { await session.mcpManager.connect(cfg); }
+        try { await mcpManager.connect(cfg); }
         catch (err) { failures.push({ name: targetName, error: err?.message || String(err) }); }
       }
     } else {
-      try { await session.mcpManager.disconnectAll(); } catch { /* ignore */ }
-      for (const cfg of configured) {
-        try { await session.mcpManager.connect(cfg); }
+      try { await mcpManager.disconnectAll(); } catch { /* ignore */ }
+      for (const cfg of enabled) {
+        try { await mcpManager.connect(cfg); }
         catch (err) { failures.push({ name: cfg.name, error: err?.message || String(err) }); }
       }
     }
@@ -7624,9 +7927,8 @@ export async function handleYeaftMcpReload(msg = {}) {
     console.warn('[Yeaft] MCP reload failed:', err?.message || err);
   }
 
-  const swap = replaceSessionMcpTools(captureRuntimeOwner(), session?.mcpManager);
-
-  sendToServer({
+  const swap = replaceSessionMcpTools(owner, mcpManager);
+  await sendToServer({
     type: 'yeaft_mcp_reload_result',
     requestId: msg.requestId || null,
     servers: configured,
@@ -7635,7 +7937,16 @@ export async function handleYeaftMcpReload(msg = {}) {
     swap,
     error: null,
   });
-  broadcastMcpUpdated({ reason: 'reload', name: targetName, failures });
+  await broadcastMcpUpdated({
+    reason: 'reload',
+    name: targetName,
+    failures,
+    configuredServers: configured,
+  });
+}
+
+export function handleYeaftMcpReload(msg = {}) {
+  return enqueueMcpTransition(() => runYeaftMcpReloadMutation(msg));
 }
 
 export const __testHooks = {
@@ -7658,6 +7969,9 @@ export const __testHooks = {
   },
   setSessionForTest(nextSession) {
     __testSetSession(nextSession || null);
+  },
+  broadcastMcpUpdatedForTest(extra) {
+    return broadcastMcpUpdated(extra);
   },
   setRuntimeFactoriesForTest({
     createSkillManager: nextCreateSkillManager,
@@ -7757,6 +8071,20 @@ export const __testHooks = {
   async loadProjectRuntime(workDir) {
     return loadProjectRuntime(workDir);
   },
+  registerRoutePromiseForTest(msgId, promise) {
+    registerRoutePromise(msgId, promise);
+  },
+  routePromiseEntryCountForTest() {
+    return routePromisesByMsgId.size;
+  },
+  getOrCreateSessionContextForTest(sessionId, sessionHandle) {
+    return getOrCreateSessionContext(sessionId, sessionHandle);
+  },
+  clearSessionContextForTest(sessionId) {
+    const entry = sessionContexts.get(sessionId);
+    try { entry?.sessionHandle?.close?.(); } catch { /* best-effort test cleanup */ }
+    sessionContexts.delete(sessionId);
+  },
   seedSessionContext(sessionId, meta) {
     const group = {
       getMeta() { return structuredClone(meta); },
@@ -7791,7 +8119,8 @@ export const __testHooks = {
       skillManager: runtime?.skillManager || { list: () => [] },
       mcpManager: runtime?.mcpManager || { listTools: () => [], disconnectAll: async () => {} },
       mcpStatus: runtime?.mcpStatus || { connected: [], failed: [] },
-      mcpConfig: runtime?.mcpConfig || { servers: [], skipped: [] },
+      configuredMcpConfig: runtime?.configuredMcpConfig || runtime?.mcpConfig || { servers: [], skipped: [] },
+      effectiveMcpConfig: runtime?.effectiveMcpConfig || runtime?.mcpConfig || { servers: [], skipped: [] },
       status: runtime?.status || { skills: 0, mcpServers: [], mcpFailed: [], mcpSkipped: [], tools: 0 },
     };
     projectRuntimes.set(projectRuntimeKey(normalizedWorkDir), seeded);

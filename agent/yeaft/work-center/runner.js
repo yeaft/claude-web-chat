@@ -4,6 +4,8 @@ import { defineTool } from '../tools/types.js';
 import { allTools } from '../tools/index.js';
 import { parsePatch } from '../tools/apply-patch.js';
 import { defaultRegistry } from '../vp/registry.js';
+import { createVp } from '../vp/vp-crud.js';
+import { loadVpFromDir } from '../vp/vp-store.js';
 import { createTrace } from '../debug-trace.js';
 import { isPathInsideOrEqual } from '../tools/path-safety.js';
 import { resolveWorkItemModel, selectWorkItemVp } from './assignment.js';
@@ -34,13 +36,14 @@ import { MCPManager } from '../mcp.js';
 import { buildMcpFlattenedTools } from '../tools/mcp-tools.js';
 import { recallWorkspaceSessionContext } from './workspace-context.js';
 import { applyGeneratedPlan, BUILT_IN_ACTION_TYPES } from './workflow.js';
+import { isDynamicWorkItem, usesMainlineContext } from './execution-mode.js';
 import {
   applyAdditivePlanProposal,
   applyReplanMutation,
   MAX_REPLAN_ADDED_ACTIONS,
 } from './plan-mutation.js';
 import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
-import { normalizeEvidence } from './evidence.js';
+import { normalizeEvidence, normalizeOutputs } from './evidence.js';
 import {
   MAINLINE_CONTEXT_HARD_LIMIT_BYTES,
   buildMainlineContextSnapshot,
@@ -267,18 +270,18 @@ function assertToolInput(toolName, input, workDir, attachmentFiles) {
   return next;
 }
 
-export function workItemToolPolicySnapshot(workDir, attachmentRefs = [], mcpToolNames = []) {
+export function workItemToolPolicySnapshot(workDir, attachmentRefs = [], extraToolNames = []) {
   const hasAttachments = attachmentRefs.length > 0;
   const builtInTools = WORK_ITEM_TOOL_NAMES.filter(name => !hasAttachments || name !== 'Bash');
   return {
     policyVersion: 1,
-    allowedToolNames: [...builtInTools, ...mcpToolNames],
+    allowedToolNames: [...builtInTools, ...extraToolNames],
     readRoots: [workDir],
     attachmentRefs,
     writeRoots: [workDir],
     shell: { enabled: !hasAttachments, fixedCwd: workDir, background: false, sandboxed: false },
     async: false,
-    mcpTools: [...mcpToolNames],
+    mcpTools: extraToolNames.filter(name => name.startsWith('mcp__')),
   };
 }
 
@@ -328,6 +331,69 @@ function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunAct
   };
 }
 
+export function createWorkItemVpTool({ yeaftDir, registry, isRunActive }) {
+  return defineTool({
+    name: 'CreateWorkItemVp',
+    description: 'Create one persistent specialist VP in this Agent instance after the Coordinator assigned this VP-authoring Action. Use a narrow role and persona for the missing capability; do not clone an existing VP or create a general-purpose replacement.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['vpId', 'displayName', 'role', 'area', 'traits', 'persona'],
+      properties: {
+        vpId: { type: 'string', minLength: 1, maxLength: 64 },
+        displayName: { type: 'string', minLength: 1, maxLength: 120 },
+        displayNameZh: { type: 'string', maxLength: 120 },
+        description: { type: 'string', maxLength: 500 },
+        descriptionZh: { type: 'string', maxLength: 500 },
+        role: { type: 'string', minLength: 1, maxLength: 200 },
+        roleZh: { type: 'string', maxLength: 200 },
+        area: { type: 'string', minLength: 1, maxLength: 64 },
+        traits: { type: 'array', minItems: 1, maxItems: 20, uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 80 } },
+        modelHint: { type: 'string', enum: ['primary', 'fast'] },
+        persona: { type: 'string', minLength: 1, maxLength: 12_000 },
+      },
+    },
+    async execute(input) {
+      if (!isRunActive()) throw new Error('Work Center Run is no longer active');
+      if (!yeaftDir) throw new Error('Work Center VP creation requires the current Agent data directory');
+      const libDir = path.join(yeaftDir, 'virtual-persons');
+      const { vpId, dir } = createVp(input, {
+        libDir,
+        memoryRoot: path.join(yeaftDir, 'memory'),
+      });
+      const vp = loadVpFromDir(dir);
+      if (!vp) throw new Error(`Created Work Center VP could not be loaded: ${vpId}`);
+      registry?.setVp?.(vp);
+      return JSON.stringify({ created: true, vpId });
+    },
+    isConcurrencySafe: () => false,
+    isReadOnly: () => false,
+    sideEffectScope: 'external',
+  });
+}
+
+function assertCreateVpActionAuthority(workItem, action, registry) {
+  if (action?.type !== 'create_vp') return;
+  if (action.workspaceMode === 'read') {
+    const error = new Error('create_vp Action cannot use read workspace mode because VP creation mutates Agent-global state');
+    error.retryable = false;
+    throw error;
+  }
+  const assignmentPolicy = action.assignmentPolicy;
+  const assignedVpIds = assignmentPolicy?.mode === 'planned'
+    ? assignmentPolicy.candidateVpIds || []
+    : [];
+  if (!isDynamicWorkItem(workItem)
+      || action.creationSource !== 'dynamic_coordinator'
+      || assignedVpIds.length !== 1
+      || !String(assignmentPolicy?.assignmentReason || '').trim()
+      || !registry?.getVp?.(assignedVpIds[0])) {
+    const error = new Error('create_vp Action lacks dynamic Coordinator provenance and one explicit existing VP assignment');
+    error.retryable = false;
+    throw error;
+  }
+}
+
 export function planningVpCatalog(vps) {
   return vps.map(vp => ({
     id: vp.id,
@@ -349,7 +415,7 @@ export function createSubmitWorkItemPlanTool({
 }) {
   const vpCatalog = planningVpCatalog(vps);
   const vpIds = vpCatalog.map(vp => vp.id);
-  const actionTypes = BUILT_IN_ACTION_TYPES.filter(type => type !== 'triage');
+  const actionTypes = BUILT_IN_ACTION_TYPES.filter(type => !['triage', 'create_vp'].includes(type));
   const catalogDescription = `Action types: ${actionTypes.join(', ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'}; ${vp.traits.join(', ') || 'no traits'})`).join('; ')}.`;
   return defineTool({
     name: 'SubmitWorkItemPlan',
@@ -413,12 +479,30 @@ export function createSubmitWorkItemPlanTool({
   });
 }
 
-function terminalPlanningFields() {
+function terminalPlanningFields(options = {}) {
   return {
     summary: { type: 'string', minLength: 1, maxLength: 2_000 },
     evidence: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 1_000 } },
     acceptanceChecks: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['criterion', 'status', 'evidence'], properties: { criterion: { type: 'string' }, status: { type: 'string', enum: ['passed', 'deferred', 'not_applicable'] }, evidence: { type: 'string', minLength: 1, maxLength: 1_000 } } } },
+    ...(options.review === true ? {
+      reviewDecision: { type: 'string', const: 'changes_requested' },
+    } : {}),
   };
+}
+
+function reviewPlanningRequirements(action) {
+  return action?.type === 'review' ? ['reviewDecision'] : [];
+}
+
+function assertReviewPlanningDecision(input, action) {
+  if (action?.type !== 'review') return;
+  if (input?.reviewDecision !== 'changes_requested') {
+    throw new Error('Review planning controls require reviewDecision "changes_requested"');
+  }
+}
+
+function reviewPlanningResult(input, action) {
+  return action?.type === 'review' ? { reviewDecision: input.reviewDecision } : {};
 }
 
 function plannedActionSchema(vpIds, { requireCandidates = true } = {}) {
@@ -426,7 +510,7 @@ function plannedActionSchema(vpIds, { requireCandidates = true } = {}) {
   if (requireCandidates) required.push('candidateVpIds', 'assignmentReason');
   return { type: 'object', additionalProperties: false, required, properties: {
     id: { type: 'string', minLength: 1, maxLength: 64 }, name: { type: 'string', minLength: 1, maxLength: 120 },
-    type: { type: 'string', enum: BUILT_IN_ACTION_TYPES.filter(type => type !== 'triage') }, capability: { type: 'string', maxLength: 64 },
+    type: { type: 'string', enum: BUILT_IN_ACTION_TYPES.filter(type => !['triage', 'create_vp'].includes(type)) }, capability: { type: 'string', maxLength: 64 },
     objective: { type: 'string', minLength: 1, maxLength: 2_000 }, approach: { type: 'string', minLength: 1, maxLength: 2_000 }, expectedOutcome: { type: 'string', minLength: 1, maxLength: 2_000 },
     candidateVpIds: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string', enum: vpIds } }, assignmentReason: { type: 'string', minLength: 1, maxLength: 1_000 },
     dependsOnActionIds: { type: 'array', uniqueItems: true, items: { type: 'string' } }, workspaceMode: { type: 'string', enum: ['read', 'isolated-write', 'integrate', 'shared'] },
@@ -445,11 +529,15 @@ export function createProposeWorkItemActionsTool({
     : '';
   return defineTool({
     name: 'ProposeWorkItemActions',
-    description: `Propose an additive change to the current WorkItem DAG. It is applied only if this Action completes and its Run lease plus basePlanRevision remain valid. Use stable stageId values in dependsOnActionIds, changesRequestedActionId, and dependencyPatches[].addDependsOnActionIds. The only internal id field is dependencyPatches[].actionId, which must use the displayed internalActionId of an eligible ready attempt=0 target.${currentIdentity} Existing Actions: ${existing.map(action => `stageId=${action.stageId} (internalActionId=${action.id}, ${action.status}, attempt ${action.attempt})`).join('; ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'})`).join('; ')}. Only add new Actions and optionally add dependencies to attempt=0 ready Actions. This tool validates the complete additive DAG immediately; if validation fails, correct the proposal in the same turn.`,
+    description: `Propose an additive change to the current WorkItem DAG. It is applied only if this Action completes and its Run lease plus basePlanRevision remain valid. Use stable stageId values in dependsOnActionIds, changesRequestedActionId, and dependencyPatches[].addDependsOnActionIds. The only internal id field is dependencyPatches[].actionId, which must use the displayed internalActionId of an eligible ready attempt=0 target.${currentIdentity} Existing Actions: ${existing.map(action => `stageId=${action.stageId} (internalActionId=${action.id}, ${action.status}, attempt ${action.attempt})`).join('; ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'})`).join('; ')}. Only add new Actions and optionally add dependencies to attempt=0 ready Actions. A Review submitting changes_requested must add remediation followed by a fresh Review and make delivery depend on that fresh approval gate; otherwise request a replan. This tool validates the complete additive DAG immediately; if validation fails, correct the proposal in the same turn.`,
     parameters: { type: 'object', additionalProperties: false,
-      required: ['summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'actions'],
+      required: [
+        'summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'actions',
+        ...reviewPlanningRequirements(currentAction),
+      ],
       properties: {
-        ...terminalPlanningFields(), proposalId: { type: 'string', minLength: 1, maxLength: 128 },
+        ...terminalPlanningFields({ review: currentAction?.type === 'review' }),
+        proposalId: { type: 'string', minLength: 1, maxLength: 128 },
         basePlanRevision: { type: 'integer', const: workItem.planRevision },
         actions: { type: 'array', minItems: 1, maxItems: 8, items: plannedActionSchema(vpIds) },
         dependencyPatches: { type: 'array', maxItems: 8, items: { type: 'object', additionalProperties: false, required: ['actionId', 'addDependsOnActionIds'], properties: { actionId: { type: 'string', enum: existing.filter(action => action.status === 'ready' && action.attempt === 0).map(action => action.id) }, addDependsOnActionIds: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string' } } } } },
@@ -457,14 +545,22 @@ export function createProposeWorkItemActionsTool({
     async execute(input, ctx = {}) {
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('A WorkItem plan mutation was already submitted for this Run');
+      assertReviewPlanningDecision(input, currentAction);
       applyAdditivePlanProposal({
         workItem,
         actions,
         proposal: input,
         availableVpIds: vpIds,
+        reviewAction: currentAction,
       });
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
-      collector.value = { kind: 'expand', input: structuredClone(input) };
+      collector.value = {
+        kind: 'expand',
+        input: {
+          ...structuredClone(input),
+          ...reviewPlanningResult(input, currentAction),
+        },
+      };
       ctx.requestEndTurn?.({ kind: 'work_item_actions_proposed', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId, actionCount: input.actions.length });
     },
@@ -472,21 +568,34 @@ export function createProposeWorkItemActionsTool({
   });
 }
 
-export function createRequestWorkItemReplanTool({ workItem, collector, isRunActive }) {
+export function createRequestWorkItemReplanTool({
+  workItem, collector, isRunActive, currentAction = null,
+}) {
   return defineTool({
     name: 'RequestWorkItemReplan',
     description: 'Request an explicit replan barrier when additive Actions are insufficient because the contract or existing future topology must change. The current Action must still complete. Work Center will preserve completed history, fence sibling Runs, supersede only unfinished Actions, and insert a new triage/replan Action. Active integration finalization prevents the barrier.',
     parameters: { type: 'object', additionalProperties: false,
-      required: ['summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'reason'],
+      required: [
+        'summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'reason',
+        ...reviewPlanningRequirements(currentAction),
+      ],
       properties: {
-        ...terminalPlanningFields(), proposalId: { type: 'string', minLength: 1, maxLength: 128 },
+        ...terminalPlanningFields({ review: currentAction?.type === 'review' }),
+        proposalId: { type: 'string', minLength: 1, maxLength: 128 },
         basePlanRevision: { type: 'integer', const: workItem.planRevision },
         reason: { type: 'string', minLength: 1, maxLength: 4_000 },
       } },
     async execute(input, ctx = {}) {
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('A WorkItem plan mutation was already submitted for this Run');
-      collector.value = { kind: 'replan', input: structuredClone(input) };
+      assertReviewPlanningDecision(input, currentAction);
+      collector.value = {
+        kind: 'replan',
+        input: {
+          ...structuredClone(input),
+          ...reviewPlanningResult(input, currentAction),
+        },
+      };
       ctx.requestEndTurn?.({ kind: 'work_item_replan_requested', proposalId: input.proposalId });
       return JSON.stringify({ submitted: true, proposalId: input.proposalId });
     },
@@ -587,6 +696,7 @@ export function parseStructuredResult(text, actionType) {
       outcome: parsed.outcome,
       summary: String(parsed.summary || ''),
       evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
+      outputs: normalizeOutputs(parsed.outputs),
       waitingReason: parsed.waitingReason ? String(parsed.waitingReason) : null,
       error: parsed.error ? String(parsed.error) : null,
       reviewDecision: ['approved', 'changes_requested'].includes(parsed.reviewDecision)
@@ -645,10 +755,11 @@ function completionContract(action, workItem) {
   "outcome": "completed|waiting|retryable|failed",
   "summary": "short result",
   "evidence": ["test, PR, file, or other verifiable evidence"],
+  "outputs": [{ "kind": "file|link|pr|commit", "label": "user-facing output name", "ref": "safe relative path for file, safe HTTP(S) URL for link/pr, or commit hash/full refs/... name for commit; never relabel a URL as file/commit" }],
   "acceptanceChecks": ${JSON.stringify(acceptanceChecks)},
   "waitingReason": null,
   "error": null${reviewField}${triageField}${planField}
-}\nFor completed, provide at least one concrete evidence item and exactly one acceptanceChecks entry for every current acceptance criterion, in the same order, with status passed, deferred, or not_applicable and a non-empty evidence reference. Triage must use its proposed criteria when submitting a contractPatch. An intermediate Action may defer criteria outside its task-specific expected result; the final deliver Action, and an approved review with no downstream work, require every criterion to pass. If a criterion is no longer applicable, ask the WorkItem Coordinator to revise the contract instead of pretending it passed. This is a deterministic submission gate, not independent proof: later verification and delivery Actions must verify the claims. A model turn ending is not completion. Use waiting when user or external input is required. Use retryable only for a transient failure. Do not start background jobs or delegate this Action.`;
+}\nFor completed, provide at least one concrete evidence item and exactly one acceptanceChecks entry for every current acceptance criterion, in the same order, with status passed, deferred, or not_applicable and a non-empty evidence reference. Report every user-consumable file, URL, PR, or commit in outputs; evidence proves work, while outputs tell the user where the deliverable is. Triage must use its proposed criteria when submitting a contractPatch. An intermediate Action may defer criteria outside its task-specific expected result; the final deliver Action, and an approved review with no downstream work, require every criterion to pass. If a criterion is no longer applicable, ask the WorkItem Coordinator to revise the contract instead of pretending it passed. This is a deterministic submission gate, not independent proof: later verification and delivery Actions must verify the claims. A model turn ending is not completion. Use waiting when user or external input is required. Use retryable only for a transient failure. Do not start background jobs or delegate this Action.`;
 }
 
 function safeCheckpointUrl(value) {
@@ -903,7 +1014,9 @@ export class WorkItemRunner {
           action: finalizeOwnedIntegration(this.store, action, run, ownerBootId),
         };
       }
-      const dependencies = this.store.listActionDependencies(workItem.id, action.dependsOnStageIds || []);
+      const dependencies = isDynamicWorkItem(workItem)
+        ? this.store.listActionSources(workItem.id, action.sourceActionIds || [])
+        : this.store.listActionDependencies(workItem.id, action.dependsOnStageIds || []);
       if (dependencies.length > 0 && dependencies.every(dependency => (
         dependency.workspaceMode === 'shared' && !dependency.workspace?.isolated
       ))) {
@@ -976,11 +1089,11 @@ export class WorkItemRunner {
     }
   }
 
-  async run({ workItem, action, run, signal, ownerBootId, onProgress, registerProgressReader, registerInputWake }) {
+  async run({ workItem, action, run, signal, ownerBootId, onProgress, registerProgressReader, registerInputWake, onEngineEvent = null }) {
+    assertCreateVpActionAuthority(workItem, action, this.registry);
     const runtime = await this.runtimeProvider();
-    const currentSettings = workItem?.workflowSnapshot?.planningMode === 'ai' && this.policyProvider
-      ? await this.policyProvider()
-      : null;
+    const currentSettings = ['ai', 'coordinator'].includes(workItem?.workflowSnapshot?.planningMode)
+      && this.policyProvider ? await this.policyProvider() : null;
     const currentModelPolicy = currentSettings?.actionModelPolicies?.[action.type]
       || currentSettings?.actionModelPolicies?.custom
       || currentSettings?.modelPolicy
@@ -993,15 +1106,16 @@ export class WorkItemRunner {
       ? resolveWorkItemWorkDir({ workspaceKey: action.workspace.path }, runtime.defaultWorkDir)
       : workspaceDir;
     const priorRuns = this.store.listCompletedRuns(workItem.id);
-    const v2Execution = Number(workItem.executionSchemaVersion) === 2;
-    const dependencyContext = v2Execution
-      ? []
-      : this.store.listActionDependencies?.(workItem.id, action.dependsOnStageIds || []) || [];
+    const mainlineExecution = usesMainlineContext(workItem);
+    const dependencyContext = isDynamicWorkItem(workItem)
+      ? this.store.listActionSources?.(workItem.id, action.sourceActionIds || []) || []
+      : mainlineExecution ? []
+        : this.store.listActionDependencies?.(workItem.id, action.dependsOnStageIds || []) || [];
     const dependencyBlock = dependencyContext.length === 0 ? '' : `\n\nCompleted dependency results:\n${dependencyContext.map(dependency => {
       const evidence = dependency.evidence?.length
         ? `\nEvidence: ${dependency.evidence.map(item => item.label).join('; ')}`
         : '';
-      return `### ${dependency.stageId} (${dependency.vpId || 'unknown VP'})\n${dependency.summary || '(no summary)'}${evidence}`;
+      return `### ${isDynamicWorkItem(workItem) ? dependency.id : dependency.stageId} (${dependency.vpId || 'unknown VP'})\n${dependency.summary || '(no summary)'}${evidence}`;
     }).join('\n\n')}`;
     const resumeBlock = renderActionResumeBlock(this.store.getActionResumeContext?.(action.id, run.id));
     const assignment = executionAction.assignmentPolicy
@@ -1041,7 +1155,7 @@ export class WorkItemRunner {
     const attachmentFileById = new Map(attachmentContext.files.map(file => [file.id, file]));
     const fixedPromptSuffix = `${resumeBlock}${attachmentContext.promptBlock}${completionContract(executionAction, workItem)}`;
     const reservedPromptBytes = Buffer.byteLength(fixedPromptSuffix, 'utf8');
-    const mainline = v2Execution
+    const mainline = mainlineExecution
       ? buildMainlineContextSnapshot(
           this.store.getWorkItemDetail(workItem.id),
           executionAction,
@@ -1060,6 +1174,13 @@ export class WorkItemRunner {
       && workItem?.workflowSnapshot?.planningMode === 'ai'
       && !replanToolEnabled;
     const runTools = [];
+    if (executionAction.type === 'create_vp') {
+      runTools.push(createWorkItemVpTool({
+        yeaftDir: runtime.yeaftDir || this.yeaftDir,
+        registry: this.registry,
+        isRunActive,
+      }));
+    }
     if (planToolEnabled) runTools.push(createSubmitWorkItemPlanTool({
       vps: this.registry.listVps(),
       workItem,
@@ -1082,7 +1203,12 @@ export class WorkItemRunner {
         actions: this.store.getWorkItemDetail(workItem.id).actions,
         collector: mutationCollector, isRunActive, currentAction: executionAction,
       }));
-      runTools.push(createRequestWorkItemReplanTool({ workItem, collector: mutationCollector, isRunActive }));
+      runTools.push(createRequestWorkItemReplanTool({
+        workItem,
+        collector: mutationCollector,
+        isRunActive,
+        currentAction: executionAction,
+      }));
     }
     const runToolNames = runTools.map(tool => tool.name);
     const toolPolicySnapshot = workItemToolPolicySnapshot(
@@ -1122,8 +1248,12 @@ export class WorkItemRunner {
       runTools,
       operationLifecycle,
     });
+    // Agent Plugins govern normal Session runtimes in this MVP. Work Center
+    // owns separate control-plane tools and lifecycle, so forwarding the Agent
+    // policy here could hide SubmitWorkItemPlan and other required run tools.
+    const { plugins: _plugins, ...workCenterBaseConfig } = runtime.config;
     const config = {
-      ...runtime.config,
+      ...workCenterBaseConfig,
       model: resolvedModel.model,
       // WorkItem model policy is part of the frozen execution contract. The
       // Agent-level fallback would silently execute a different model while
@@ -1164,7 +1294,9 @@ export class WorkItemRunner {
         executionManifest: mainline ? {
           schemaVersion: 2,
           ledgerRevision: mainline.contextSnapshot.ledgerRevision,
-          planRevision: mainline.contextSnapshot.graph.planRevision,
+          planRevision: isDynamicWorkItem(workItem)
+            ? mainline.contextSnapshot.actionJournal.revision
+            : mainline.contextSnapshot.graph.planRevision,
           contractRevision: mainline.contextSnapshot.contract.revision,
           actionGeneration: mainline.contextSnapshot.action.generation,
           actionSpecHash: mainline.contextSnapshot.action.specHash,
@@ -1254,6 +1386,7 @@ export class WorkItemRunner {
       }
       return accepted;
     };
+    let activeProviderRequest = null;
     const prepareProviderRequest = ({ entries, system, messages, model }) => {
       const durableEntries = entries
         .filter(entry => entry?.durableInputId)
@@ -1265,6 +1398,7 @@ export class WorkItemRunner {
         { requestBody, dispatchCapability: 'unknown' },
       );
       if (!turn) throw new Error('Work Center could not persist the next provider turn');
+      activeProviderRequest = turn;
       return turn;
     };
     const startProviderRequest = turn => {
@@ -1277,10 +1411,12 @@ export class WorkItemRunner {
       if (!this.store.consumeEngineTurn?.(turn.id, ownerBootId, run.leaseEpoch, result)) {
         throw new Error('Work Center provider response lost its EngineTurn fence');
       }
+      if (activeProviderRequest?.id === turn.id) activeProviderRequest = null;
     };
     const failProviderRequest = (turn, error) => {
       if (!turn) return;
       const failure = this.store.failEngineTurn?.(turn.id, ownerBootId, run.leaseEpoch, error);
+      if (activeProviderRequest?.id === turn.id) activeProviderRequest = null;
       if (failure && failure.allowRetry === false) {
         error.retryable = false;
         error.workItemFailureKind = 'provider_dispatch_unknown';
@@ -1288,17 +1424,17 @@ export class WorkItemRunner {
       }
     };
     try {
-      const prompt = v2Execution
+      const prompt = mainlineExecution
         ? `${renderMainlineContextSnapshot(mainline.contextSnapshot)}${fixedPromptSuffix}`
         : `${executionAction.instruction}${dependencyBlock}${resumeBlock}${attachmentContext.promptBlock}${workspaceSessionBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
       const promptBytes = Buffer.byteLength(prompt, 'utf8');
-      if (v2Execution && promptBytes > MAINLINE_CONTEXT_HARD_LIMIT_BYTES) {
+      if (mainlineExecution && promptBytes > MAINLINE_CONTEXT_HARD_LIMIT_BYTES) {
         throw new Error(`Work Center Mainline prompt exceeds 64 KiB (${promptBytes} rendered UTF-8 bytes)`);
       }
       const promptParts = attachmentContext.promptParts.length > 0
         ? [{ type: 'text', text: prompt }, ...attachmentContext.promptParts]
         : null;
-      for await (const event of engine.query({
+      const query = engine.query({
         prompt,
         promptParts,
         messages: [],
@@ -1320,7 +1456,25 @@ export class WorkItemRunner {
         ),
 
         collabToolPolicy: 'single-vp',
-      })) {
+      });
+      const iterator = query[Symbol.asyncIterator]();
+      let stoppedByEngineEvent = false;
+      let stoppedAfterDispatch = false;
+      while (true) {
+        const step = await iterator.next();
+        if (step.done) break;
+        const event = step.value;
+        const control = await onEngineEvent?.(event, { iterator, engine, query });
+        if (control?.stop === true) {
+          // The durable in-flight turn, not an event label, is the authoritative
+          // dispatch boundary. `user_append` and other pre-request events can
+          // precede turn_start; only an active EngineTurn is unsafe to replay.
+          stoppedAfterDispatch = Boolean(activeProviderRequest);
+          if (stoppedAfterDispatch) engine.abort?.('work_item_consumer_stopped_after_dispatch');
+          await iterator.return();
+          stoppedByEngineEvent = true;
+          break;
+        }
         if (event?.type === 'loop') {
           loopCount += 1;
           this.store.appendRunLoop?.(run.id, ownerBootId, run.leaseEpoch, {
@@ -1352,6 +1506,32 @@ export class WorkItemRunner {
       // preserve Work Center's historical rejection semantics so Run fencing,
       // hazardous side-effect handling, and retry policy still see the failure.
       if (terminalEngineError) throw terminalEngineError;
+      if (stoppedByEngineEvent) {
+        const stopped = new Error(stoppedAfterDispatch
+          ? 'Work Center Engine consumer stopped after provider dispatch'
+          : 'Work Center Engine consumer stopped before provider dispatch');
+        stopped.name = 'WorkCenterEngineStoppedError';
+        if (stoppedAfterDispatch) {
+          // A visible provider event proves dispatch happened. The Engine's
+          // iterator close cannot safely replay that request, so terminally
+          // fence its durable turn before the watcher sees the failure.
+          const failed = this.store.failEngineTurn?.(
+            activeProviderRequest?.id,
+            ownerBootId,
+            run.leaseEpoch,
+            stopped,
+          );
+          activeProviderRequest = null;
+          stopped.retryable = false;
+          stopped.workItemFailureKind = failed?.status === 'unknown'
+            ? 'provider_dispatch_unknown'
+            : 'system_blocked';
+          stopped.workItemFailureCode = failed?.status === 'unknown'
+            ? 'engine_turn_dispatch_unknown'
+            : 'engine_turn_stop_failed';
+        }
+        throw stopped;
+      }
     } catch (error) {
       error.workItemExecutionStats = currentProgress();
       throw error;
@@ -1389,6 +1569,7 @@ export class WorkItemRunner {
     } : submittedExpansion ? {
       outcome: 'completed', summary: submittedExpansion.summary,
       evidence: submittedExpansion.evidence, acceptanceChecks: submittedExpansion.acceptanceChecks,
+      ...reviewPlanningResult(submittedExpansion, executionAction),
       planProposal: {
         proposalId: submittedExpansion.proposalId,
         basePlanRevision: submittedExpansion.basePlanRevision,
@@ -1398,6 +1579,7 @@ export class WorkItemRunner {
     } : submittedReplan ? {
       outcome: 'completed', summary: submittedReplan.summary,
       evidence: submittedReplan.evidence, acceptanceChecks: submittedReplan.acceptanceChecks,
+      ...reviewPlanningResult(submittedReplan, executionAction),
       replanRequest: {
         proposalId: submittedReplan.proposalId,
         basePlanRevision: submittedReplan.basePlanRevision,

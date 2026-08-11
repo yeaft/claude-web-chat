@@ -13,7 +13,6 @@ import { isRetiredYeaftConversation } from '../yeaft-conversation-generation.js'
 import { clearSessionLoading } from '../session.js';
 import { sameUserMessage } from '../dedup.js';
 import { ensureMessageUiKeys, maxDbMessageId } from '../messages.js';
-import { summarizeHistoricalToolMessages } from '../tool-window.js';
 import { t } from '../../../utils/i18n.js';
 import { recordPerfTrace, measureNextPaint } from '../perfTrace.js';
 import { activeYeaftHistoryIdentity } from '../yeaft-history-load.js';
@@ -22,8 +21,12 @@ import {
   yeaftOptimisticMessageIdentity,
   yeaftPersistedMessageIdentity,
 } from '../yeaft-history-identity.js';
-import { pruneYeaftHistoryCache } from '../yeaft-history-cache.js';
+import {
+  isDurableYeaftHistoryRow,
+  pruneYeaftHistoryCache,
+} from '../yeaft-history-cache.js';
 import { commitYeaftHistoryPage } from '../yeaft-history-pagination.js';
+import { conversationRepositoryFor } from '../conversation-repository.js';
 
 /** Filter out empty user messages — tool_result artifacts stored as empty user records in DB */
 function filterEmptyUserMessages(messages) {
@@ -57,13 +60,6 @@ function latestTodoSnapshot(toolCalls) {
     if (call?.name === 'TodoWrite' && Array.isArray(call?.input?.todos)) return call.input.todos;
   }
   return null;
-}
-
-function visibleToolSummaryCount(message) {
-  if (Array.isArray(message?.toolCalls)) {
-    return message.toolCalls.filter(call => call?.name !== 'TodoWrite').length;
-  }
-  return Number(message?.toolSummaryCount || 0) || 0;
 }
 
 function resolveGroupDefaultVpId(groupId) {
@@ -108,82 +104,35 @@ function normalizeHistoryRowIdentity(row, agentId = null) {
   return row;
 }
 
-function sortYeaftRowsBySequence(rows) {
+function isLiveYeaftHistoryRow(row) {
+  if (!row || row.isHistory === true) return false;
+  if (row.isStreaming || isOptimisticYeaftUserRow(row)) return true;
+  // Recent refresh preserves local rows newer than its persisted window. Those
+  // rows may predate clientMessageId stamping, but they still carry a local
+  // timestamp and no durable seq.
+  return !Number.isFinite(row.seq) && Number.isFinite(row.timestamp);
+}
+
+function yeaftHistorySortKey(row) {
+  const live = isLiveYeaftHistoryRow(row);
+  const seq = Number.isFinite(row?.seq) ? row.seq : null;
+  const timestamp = Number.isFinite(row?.timestamp) ? row.timestamp : 0;
+  // Use one lexicographic key for every row. Persisted rows with timestamps are
+  // chronological across storage generations. When timestamps are absent, the
+  // legacy rank sorts before sequenced storage; the live rank is always last.
+  if (live) return [2, timestamp, seq ?? 0];
+  return [1, timestamp, seq ?? -1];
+}
+
+export function __testSortYeaftRowsBySequence(rows) {
   rows.sort((a, b) => {
-    const aSeq = Number.isFinite(a?.seq) ? a.seq : null;
-    const bSeq = Number.isFinite(b?.seq) ? b.seq : null;
-    if (aSeq !== null && bSeq !== null && aSeq !== bSeq) return aSeq - bSeq;
-    if (aSeq !== null && bSeq === null) return -1;
-    if (aSeq === null && bSeq !== null) return 1;
-    return (a?.timestamp || 0) - (b?.timestamp || 0);
+    const aKey = yeaftHistorySortKey(a);
+    const bKey = yeaftHistorySortKey(b);
+    for (let index = 0; index < aKey.length; index += 1) {
+      if (aKey[index] !== bKey[index]) return aKey[index] - bKey[index];
+    }
+    return 0;
   });
-}
-
-function sameAssistantHistoryRow(existing, incoming) {
-  if (!existing || !incoming) return false;
-  if (existing.type !== 'assistant' || incoming.type !== 'assistant') return false;
-  if ((existing.sessionId ?? null) !== (incoming.sessionId ?? null)) return false;
-
-  const existingSpeaker = existing.speakerVpId || existing.vpId || '';
-  const incomingSpeaker = incoming.speakerVpId || incoming.vpId || '';
-  if (existingSpeaker && incomingSpeaker && existingSpeaker !== incomingSpeaker) return false;
-
-  const existingThread = existing.threadId || '';
-  const incomingThread = incoming.threadId || '';
-  if (existingThread && incomingThread && existingThread !== incomingThread) return false;
-
-  const canMergeLiveLocalRow = existing.isStreaming || existing.isHistory !== true;
-  if (!canMergeLiveLocalRow) return false;
-  if (incoming._hasPersistedTurnId !== true) return false;
-
-  const existingTurnId = existing.turnId || '';
-  const incomingTurnId = incoming.turnId || '';
-  if (!existingTurnId || !incomingTurnId || existingTurnId !== incomingTurnId) return false;
-
-  const existingText = typeof existing.content === 'string' ? existing.content : '';
-  const incomingText = typeof incoming.content === 'string' ? incoming.content : '';
-  return !!existingText && !!incomingText && (incomingText.startsWith(existingText) || existingText.startsWith(incomingText));
-}
-
-function upsertYeaftHistoryRows(existingRows, incomingRows) {
-  const indexById = new Map();
-  const userIndexByClientId = new Map();
-  existingRows.forEach((row, index) => {
-    const id = stableHistoryRowId(row);
-    if (id) indexById.set(id, index);
-    if (row?.type === 'user' && row.clientMessageId) userIndexByClientId.set(row.clientMessageId, index);
-  });
-
-  let inserted = 0;
-  for (const row of incomingRows) {
-    const id = stableHistoryRowId(row);
-    let index = id && indexById.has(id) ? indexById.get(id) : null;
-    if (index === null && row?.type === 'user' && row.clientMessageId && userIndexByClientId.has(row.clientMessageId)) {
-      index = userIndexByClientId.get(row.clientMessageId);
-    }
-    if (index === null && row?.type === 'assistant') {
-      index = existingRows.findIndex(existing => sameAssistantHistoryRow(existing, row));
-    }
-    if (index !== null && index >= 0) {
-      const existingId = stableHistoryRowId(existingRows[index]);
-      const existingUiKey = existingRows[index]?.uiKey || null;
-      existingRows[index] = {
-        ...existingRows[index],
-        ...row,
-        ...(existingUiKey ? { uiKey: existingUiKey } : {}),
-      };
-      if (id) indexById.set(id, index);
-      if (existingId && existingId !== id && indexById.get(existingId) === index) indexById.delete(existingId);
-      if (row?.type === 'user' && row.clientMessageId) userIndexByClientId.set(row.clientMessageId, index);
-    } else {
-      if (id) indexById.set(id, existingRows.length);
-      if (row?.type === 'user' && row.clientMessageId) userIndexByClientId.set(row.clientMessageId, existingRows.length);
-      existingRows.push(row);
-      inserted += 1;
-    }
-  }
-  sortYeaftRowsBySequence(existingRows);
-  return inserted;
 }
 
 function rowSessionId(row) {
@@ -199,42 +148,41 @@ function isOptimisticYeaftUserRow(row) {
   return id === row.clientMessageId;
 }
 
-function replaceYeaftRecentHistoryRows(existingRows, incomingRows, sessionId) {
+function replaceYeaftRecentHistoryRows(repository, conversationId, incomingRows, sessionId) {
+  const existingRows = repository.rows(conversationId);
   const hasVisibleCachedRows = existingRows.some(row => (
     row && (sessionId == null || rowSessionId(row) === sessionId)
   ));
-  // An empty recent projection is not a safe deletion signal. Background
-  // bootstrap/reconnect reads can transiently return no visible rows while the
-  // browser already has a committed Session window; replacing in that state
-  // makes the pane go blank until the next switch or manual reload. There is no
-  // history-delete operation on this wire, so keep stale rows and let a later
-  // non-empty recent response replace them atomically. A genuinely empty Session
-  // still completes its first load because it has no cached rows to preserve.
+  // An empty projection is not a deletion signal. Keep the committed window.
   if (incomingRows.length === 0 && hasVisibleCachedRows) {
     return { insertedRows: 0, preservedEmpty: true };
   }
 
+  // A recent replay is only a bounded tail snapshot. Durable rows outside that
+  // snapshot are immutable and may have come from explicit older pagination or
+  // the browser cache, so keep them. Non-durable stale bootstrap rows can still
+  // be discarded; live/optimistic rows remain until persistence catches up.
   const newestIncomingTs = incomingRows.reduce((max, row) => Math.max(max, row?.timestamp || 0), 0);
   const preserved = existingRows.filter((row) => {
     if (!row) return false;
     if (sessionId != null && rowSessionId(row) !== sessionId) return true;
+    if (isDurableYeaftHistoryRow(row)) return true;
     if (row.isStreaming) return true;
     if (row.type === 'tool-use' && row.toolName === 'AskUserQuestion'
         && (row.askAnswered || row.askPending || row.askExpired)) return true;
-    // A recent-history reply can race a just-sent optimistic user row. Do not
-    // delete that accepted input merely because the persisted window has not
-    // flushed it yet or the server clock is ahead of the browser clock.
     if (isOptimisticYeaftUserRow(row)) return true;
-    // A manual refresh can race a just-sent local row that is newer than the
-    // persisted recent window. Keep that live tail; the next delta/recent load
-    // will merge it by stable id once the agent has flushed it to disk.
     return newestIncomingTs > 0 && (row.timestamp || 0) > newestIncomingTs;
   });
-  existingRows.splice(0, existingRows.length, ...preserved);
-  upsertYeaftHistoryRows(existingRows, incomingRows);
-  return { insertedRows: incomingRows.length, preservedEmpty: false };
+  repository.replaceProjection(conversationId, preserved);
+  const result = repository.commitDurable({
+    conversationId,
+    sessionId,
+    rows: incomingRows,
+    mode: 'recent',
+    preserveEmpty: false,
+  });
+  return { insertedRows: result.insertedRows, preservedEmpty: false };
 }
-
 function isInternalControlHistoryContent(content) {
   if (typeof content !== 'string') return false;
   const text = content.trimStart();
@@ -439,11 +387,10 @@ export function handleConversationResumed(store, msg) {
   console.log('dbMessages received:', msg.dbMessages?.length || 0, 'dbMessageCount:', msg.dbMessageCount || 0);
   if (msg.dbMessages && msg.dbMessages.length > 0) {
     const formatted = filterEmptyUserMessages(
-      msg.dbMessages.map(m => store.formatDbMessageForHistoryHydration(m)).flat().filter(Boolean)
+      msg.dbMessages.map(m => store.formatDbMessage(m)).flat().filter(Boolean)
     );
-    const summarized = summarizeHistoricalToolMessages(formatted);
     const msgs = store.messagesMap[msg.conversationId] || [];
-    for (const m of summarized) {
+    for (const m of formatted) {
       msgs.push(m);
     }
   }
@@ -623,9 +570,9 @@ export function handleSyncMessagesResult(store, msg) {
   const isDeltaSync = msg.mode === 'delta' ||
     typeof msg.afterMessageId === 'number' && msg.afterMessageId > 0;
   if (msg.conversationId && store.activeConversations.includes(msg.conversationId)) {
-    const formatted = summarizeHistoricalToolMessages(filterEmptyUserMessages(
-      (msg.messages || []).map(m => store.formatDbMessageForHistoryHydration(m)).flat().filter(Boolean)
-    ));
+    const formatted = filterEmptyUserMessages(
+      (msg.messages || []).map(m => store.formatDbMessage(m)).flat().filter(Boolean)
+    );
 
     if (formatted.length > 0) {
       const firstDbMsg = msgs.find(m => m.dbMessageId);
@@ -742,23 +689,37 @@ export function handleYeaftHistoryWindow(store, msg) {
   if (!store.messagesMap[conversationId]) store.messagesMap[conversationId] = [];
 
   const sourceMessageIds = new Set(Array.isArray(msg.sourceMessageIds) ? msg.sourceMessageIds : []);
+  const residentMessageIds = new Set();
+  const randomAccessMessageIds = new Set();
   for (const row of store.messagesMap[conversationId]) {
+    if (rowSessionId(row) !== sessionId) continue;
     const persistedId = row?.persistedMessageId || row?.messageId || row?.id || null;
+    if (persistedId) residentMessageIds.add(persistedId);
+    if (persistedId && (row?._historyWindowPrefetched === true || row?._historyWindowDetached === true)) {
+      randomAccessMessageIds.add(persistedId);
+    }
     if (!msg.entryId || !sourceMessageIds.has(persistedId)) continue;
     row.historyEntryId = msg.entryId;
     if (Number.isFinite(msg.indexGeneration)) row.historyIndexGeneration = msg.indexGeneration;
   }
-  const windowMessages = msg.messages.map(message => (
-    msg.entryId && sourceMessageIds.has(message?.id)
-      ? {
-          ...message,
-          historyEntryId: msg.entryId,
-          ...(Number.isFinite(msg.indexGeneration)
-            ? { historyIndexGeneration: msg.indexGeneration }
-            : {}),
-        }
-      : message
-  ));
+  const windowMessages = msg.messages
+    .filter(message => (
+      msg.prefetch === true
+      || !residentMessageIds.has(message?.id)
+      || randomAccessMessageIds.has(message?.id)
+    ))
+    .map(message => (
+      msg.entryId && sourceMessageIds.has(message?.id)
+        ? {
+            ...message,
+            historyEntryId: msg.entryId,
+            ...(msg.prefetch === true ? { _historyWindowPrefetched: true } : {}),
+            ...(Number.isFinite(msg.indexGeneration)
+              ? { historyIndexGeneration: msg.indexGeneration }
+              : {}),
+          }
+        : message
+    ));
   const { formatted } = formatYeaftHistoryMessages(
     windowMessages,
     sessionId,
@@ -766,13 +727,50 @@ export function handleYeaftHistoryWindow(store, msg) {
     store.messagesMap[conversationId],
     sessionAgentId,
   );
-  upsertYeaftHistoryRows(store.messagesMap[conversationId], formatted);
+  const windowKey = `history-window:${msg.requestId || msg.anchorMessageId || Date.now()}`;
+  for (const row of formatted) {
+    row._historyWindowKey = windowKey;
+    row._historyWindowDetached = msg.prefetch !== true;
+    row._historyWindowPrefetched = msg.prefetch === true;
+  }
+  const repository = conversationRepositoryFor(store);
+  const projection = repository.rows(conversationId);
+  const responseMessageIds = new Set(msg.messages.map(message => message?.id).filter(Boolean));
+  const promoted = [];
+  if (msg.prefetch !== true) {
+    for (const row of projection) {
+      if (rowSessionId(row) !== sessionId) continue;
+      const persistedId = row?.persistedMessageId || row?.messageId || row?.id || null;
+      if (!responseMessageIds.has(persistedId)) continue;
+      // Validation may overlap the ordinary recent tail. Only promote a row
+      // that already belongs to a cache-only/detached random-access window;
+      // converting a normal recent row would make Latest permanently filter it.
+      if (row._historyWindowPrefetched !== true && row._historyWindowDetached !== true) continue;
+      row._historyWindowKey = windowKey;
+      row._historyWindowDetached = true;
+      row._historyWindowPrefetched = false;
+      promoted.push(row);
+    }
+    const retained = projection.filter(row => (
+      rowSessionId(row) !== sessionId
+      || row._historyWindowDetached !== true
+      || row._historyWindowKey === windowKey
+    ));
+    if (retained.length !== projection.length) repository.replaceProjection(conversationId, retained);
+  }
+  repository.commitDurable({
+    conversationId,
+    sessionId,
+    rows: formatted,
+    mode: 'window',
+  });
+  const incomingWindowRows = formatted.length > 0 ? formatted : promoted;
   const activeIdentity = activeYeaftHistoryIdentity(store);
   pruneYeaftHistoryCache(store, {
     conversationId,
     agentId: sessionAgentId,
     sessionId,
-    incomingRows: formatted,
+    incomingRows: incomingWindowRows,
     activeAgentId: activeIdentity.agentId,
     activeSessionId: activeIdentity.sessionId,
   });
@@ -870,6 +868,7 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
         ...(Array.isArray(m.attachments) && m.attachments.length > 0 ? { attachments: m.attachments } : {}),
         ...(m.quote ? { quote: m.quote } : {}),
         isStreaming: false,
+        isHistory: true,
       });
     } else if (m.role === 'assistant') {
       acceptedHistoryMessages += 1;
@@ -917,6 +916,31 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           toolName: 'TodoWrite',
           toolInput: { todos },
           timestamp,
+          startTime: timestamp || 0,
+          sessionId: rowSessionId,
+          turnId,
+          ...executionOriginMeta,
+          ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
+          isStreaming: false,
+          isHistory: true,
+          hasResult: true,
+        });
+      }
+      for (const [index, toolCall] of (Array.isArray(m.toolCalls) ? m.toolCalls : []).entries()) {
+        if (!toolCall || toolCall.name === 'TodoWrite') continue;
+        const toolIdentity = toolCall.id || `index:${index}`;
+        const toolIdentityKey = encodeURIComponent(String(toolIdentity));
+        formatted.push({
+          ...(stableId ? { id: `${stableId}:tool:${toolIdentityKey}`, messageId: `${stableId}:tool:${toolIdentityKey}`, persistedMessageId: stableId } : {}),
+          ...(durableKey ? { stableKey: `${durableKey}:tool:${toolIdentityKey}` } : {}),
+          ...historyEntryMeta,
+          seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
+          type: 'tool-use',
+          toolId: toolCall.id || null,
+          toolName: toolCall.name || 'unknown',
+          toolInput: toolCall.input || {},
+          timestamp,
+          startTime: timestamp || 0,
           sessionId: rowSessionId,
           turnId,
           ...executionOriginMeta,
@@ -960,6 +984,11 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
         if (existing) {
           Object.assign(existing, historyEntryMeta);
           applyAskUserHistoryResult(existing, result, questions);
+          const matchingToolIndex = formatted.findIndex(row => row?.type === 'tool-use'
+            && row.toolId === result.toolCallId
+            && (row.sessionId ?? row.groupId ?? null) === (existing.sessionId ?? existing.groupId ?? null)
+            && (row.turnId || '') === (existing.turnId || ''));
+          if (matchingToolIndex >= 0) formatted.splice(matchingToolIndex, 1);
           continue;
         }
         const askRow = applyAskUserHistoryResult({
@@ -979,26 +1008,12 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
         }, result, questions);
         const identity = askUserHistoryIdentity(askRow);
         if (!identity || !formatted.some(row => askUserHistoryIdentity(row) === identity)) formatted.push(askRow);
-      }
-      const toolSummaryCount = visibleToolSummaryCount(m);
-      if (toolSummaryCount > 0) {
-        formatted.push({
-          ...(stableId ? { id: `${stableId}:tool-summary`, messageId: `${stableId}:tool-summary`, persistedMessageId: stableId } : {}),
-          ...(durableKey ? { stableKey: `${durableKey}:tool-summary` } : {}),
-          ...historyEntryMeta,
-          seq: Number.isFinite(m.seq) ? m.seq : parsePersistedHistorySeq(stableId),
-          type: 'tool-summary',
-          count: toolSummaryCount,
-          omittedCount: toolSummaryCount,
-          source: 'history',
-          timestamp,
-          sessionId: rowSessionId,
-          turnId,
-          ...executionOriginMeta,
-          ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
-          isStreaming: false,
-          isHistory: true,
-        });
+        const matchingToolIndex = formatted.findIndex(row => row !== askRow
+          && row?.type === 'tool-use'
+          && row.toolId === result.toolCallId
+          && (row.sessionId ?? row.groupId ?? null) === (askRow.sessionId ?? askRow.groupId ?? null)
+          && (row.turnId || '') === (askRow.turnId || ''));
+        if (matchingToolIndex >= 0) formatted.splice(matchingToolIndex, 1);
       }
     }
   }
@@ -1018,8 +1033,31 @@ export function handleYeaftHistoryChunk(store, msg) {
   }
   if (msg.requestId && typeof store.isCurrentYeaftHistoryResponse === 'function'
       && !store.isCurrentYeaftHistoryResponse(msg)) return;
-  const mode = msg.mode === 'recent' || msg.mode === 'delta' ? msg.mode : 'older';
+  let mode = msg.mode === 'recent' || msg.mode === 'delta' ? msg.mode : 'older';
   const incomingMessages = Array.isArray(msg.messages) ? msg.messages : [];
+
+  const identityAgentId = msg.agentId || (msgSessionId && store.yeaftSessionAgentById?.[msgSessionId]) || null;
+  const identityStateKey = yeaftHistoryIdentityKey(identityAgentId, msgSessionId);
+  const cachedIdentity = store.yeaftSessionHistoryState?.[identityStateKey] || null;
+  const identityMismatch = typeof msg.streamId === 'string'
+    && typeof cachedIdentity?.streamId === 'string'
+    && (msg.streamId !== cachedIdentity.streamId
+      || (Number.isFinite(msg.revision) && Number.isFinite(cachedIdentity.revision)
+        && msg.revision !== cachedIdentity.revision));
+  if (identityMismatch) {
+    // An append cursor is unsafe after clear/recreate, folding, or an older
+    // visible-row update. Replace only durable history while keeping optimistic
+    // and live rows for the active turn.
+    mode = 'recent';
+    if (typeof store.clearYeaftHistoryMemory === 'function') {
+      store.clearYeaftHistoryMemory({
+        agentId: identityAgentId,
+        sessionId: msgSessionId,
+        preserveLiveRows: true,
+        preserveSessionOwner: true,
+      });
+    }
+  }
 
   if (msg.perfTraceId) {
     recordPerfTrace(store, {
@@ -1069,28 +1107,31 @@ export function handleYeaftHistoryChunk(store, msg) {
   );
   ensureMessageUiKeys(store, convId, formatted);
 
+  const repository = conversationRepositoryFor(store);
   let insertedRows = 0;
   let preservedEmptyRecent = false;
   if (mode === 'recent') {
     const recentResult = replaceYeaftRecentHistoryRows(
-      store.messagesMap[convId],
+      repository,
+      convId,
       formatted,
       msgSessionId ?? null,
     );
     insertedRows = recentResult.insertedRows;
     preservedEmptyRecent = recentResult.preservedEmpty;
   } else if (formatted.length > 0) {
-    if (mode === 'older') {
-      store.messagesMap[convId].splice(0, 0, ...formatted);
-      insertedRows = formatted.length;
-      if (typeof store.expandYeaftMessageWindow === 'function') {
-        // These rows were explicitly requested by scrolling upward. Keep them in
-        // the render window; the near-bottom path will prune again later.
-        const windowSessionId = store.yeaftActiveSessionFilter ? (msgSessionId ?? null) : null;
-        store.expandYeaftMessageWindow(windowSessionId, msg.turns || 10, sessionAgentId);
-      }
-    } else {
-      insertedRows = upsertYeaftHistoryRows(store.messagesMap[convId], formatted);
+    const committed = repository.commitDurable({
+      conversationId: convId,
+      sessionId: msgSessionId ?? null,
+      rows: formatted,
+      mode,
+    });
+    insertedRows = committed.insertedRows;
+    if (mode === 'older' && typeof store.expandYeaftMessageWindow === 'function') {
+      // These rows were explicitly requested by scrolling upward. Keep the
+      // compatibility window state aligned; its default no longer hides rows.
+      const windowSessionId = store.yeaftActiveSessionFilter ? (msgSessionId ?? null) : null;
+      store.expandYeaftMessageWindow(windowSessionId, msg.turns || 10, sessionAgentId);
     }
   }
 
@@ -1132,9 +1173,14 @@ export function handleYeaftHistoryChunk(store, msg) {
         cacheEpoch: cacheState?.rangeEpoch ?? msg.cacheEpoch ?? 0,
       });
   const nextLatest = (typeof msg.latestSeq === 'number') ? msg.latestSeq : (prevState.latestSeq ?? null);
-  const nextState = mode === 'delta'
+  const historyIdentity = {
+    streamId: typeof msg.streamId === 'string' ? msg.streamId : (prevState.streamId ?? null),
+    revision: Number.isFinite(msg.revision) ? msg.revision : (prevState.revision ?? null),
+  };
+  let nextState = mode === 'delta'
     ? {
         ...prevState,
+        ...historyIdentity,
         loaded: true,
         loading: false,
         latestSeq: nextLatest,
@@ -1143,6 +1189,7 @@ export function handleYeaftHistoryChunk(store, msg) {
       }
     : {
         ...committedPagination,
+        ...historyIdentity,
         loaded: true,
         loading: false,
         count: cacheState
@@ -1162,6 +1209,16 @@ export function handleYeaftHistoryChunk(store, msg) {
       ...store.yeaftSessionHistoryState,
       [sessionKey]: nextState,
     };
+  }
+  if (mode === 'delta' && msg.hasMoreAfter === true
+      && Number.isFinite(nextState.latestSeq)
+      && nextState.latestSeq > Number(msg.afterSeq ?? -1)
+      && typeof store.continueYeaftHistoryDelta === 'function') {
+    queueMicrotask(() => store.continueYeaftHistoryDelta(
+      msgSessionId,
+      sessionAgentId,
+      nextState.latestSeq,
+    ));
   }
   const activeIdentity = activeYeaftHistoryIdentity(store);
   const activeSessionMatches = activeIdentity.sessionId === (msgSessionId || null);

@@ -81,6 +81,11 @@ beforeEach(() => {
   chatStore.searchYeaftHistory.mockReset();
   chatStore.openYeaftTurnDebug.mockReset();
   chatStore.closeYeaftDebugPanel.mockReset();
+  chatStore.toggleWorkbench = vi.fn(() => {
+    chatStore.workbenchExpanded = !chatStore.workbenchExpanded;
+  });
+  chatStore.workbenchExpanded = false;
+  chatStore.workbenchMaximized = false;
   chatStore.yeaftDebugPanel = {
     open: false,
     status: 'idle',
@@ -98,8 +103,42 @@ afterEach(() => {
 });
 
 describe('YeaftPage setup', () => {
+  it('uses an accessible flat tab bar for Yeaft settings', () => {
+    const panel = readFileSync(resolve(import.meta.dirname, '../../web/components/SettingsPanel.js'), 'utf8');
+    const css = readFileSync(resolve(import.meta.dirname, '../../web/styles/settings.css'), 'utf8');
+
+    expect(panel).toContain('class="sp-subtab-bar" role="tablist"');
+    expect(panel).toContain('role="tab"');
+    expect(panel).toContain(':aria-selected="yeaftSubTab === st.key"');
+    expect(panel).toContain('role="tabpanel"');
+
+    expect(css).toMatch(/\.sp-subtab-bar\s*\{[^}]*border-bottom:\s*1px solid var\(--border-color\);/s);
+    expect(css).toMatch(/\.sp-subtab::after\s*\{[^}]*height:\s*2px;[^}]*background:\s*transparent;/s);
+    expect(css).toMatch(/\.sp-subtab\.active::after[^}]*\{[^}]*background:\s*var\(--text-primary\);/s);
+    expect(css).not.toMatch(/\.sp-subtab-bar\s*\{[^}]*border-radius:/s);
+    expect(css).not.toMatch(/\.sp-subtab\.active\s*\{[^}]*box-shadow:/s);
+
+    expect(panel).toContain(":class=\"{ 'settings-scroll-yeaft': activeTab === 'yeaft' }\"");
+    expect(css).toMatch(/\.settings-scroll-yeaft\s*\{[^}]*overflow-y:\s*hidden;/s);
+    expect(css).toMatch(/\.settings-scroll-yeaft\s+\.settings-pane-yeaft\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;/s);
+    expect(css).toMatch(/\.settings-scroll-yeaft\s+\.sp-subpane\s*\{[^}]*overflow-y:\s*auto;/s);
+  });
+
+  it('keeps automatic history hydration and Session inventory out of the manual refresh spinner', () => {
+    const source = YeaftPage.template;
+    const actionsStart = source.indexOf('<YeaftSessionActions');
+    const actionsEnd = source.indexOf('/>', actionsStart);
+    const actions = source.slice(actionsStart, actionsEnd);
+
+    expect(actions).toContain(':loading-more-history="store.yeaftManualHistoryRefreshLoading"');
+    expect(actions).not.toContain('store.yeaftLoadingMoreHistory');
+    expect(actions).not.toContain('yeaftSessionHydrateRequestId');
+    expect(actions).toContain('@reload-messages="reloadMessages"');
+  });
+
   it('defaults Session history search to the user without replacing an explicit sender choice', async () => {
     const page = YeaftPage.setup();
+
 
     expect(page.topbarSessionTitle.value).toBe('Conversation title');
     expect(page.topbarFolderPath.value).toBe('/home/user/projects/yeaft-web-code-agent');
@@ -166,101 +205,27 @@ describe('YeaftPage setup', () => {
     expect(chatStore.yeaftHistorySearchState.senderKey).toBe('user');
     expect(chatStore.searchYeaftHistory).toHaveBeenCalledWith('', { senderKey: 'user' });
 
-    page.onHistorySenderChange('vp:omni');
     page.toggleHistorySearch();
     page.toggleHistorySearch();
     await Vue.nextTick();
-    expect(chatStore.yeaftHistorySearchState.senderKey).toBe('vp:omni');
-    expect(chatStore.searchYeaftHistory).toHaveBeenLastCalledWith('', { senderKey: 'vp:omni' });
+    expect(chatStore.yeaftHistorySearchState.senderKey).toBe('user');
+    expect(chatStore.searchYeaftHistory).toHaveBeenLastCalledWith('', { senderKey: 'user' });
   });
 
-  it('keeps the current query through sender changes and lifecycle resets', async () => {
-    vi.useFakeTimers();
-    chatStore.yeaftHistorySearchState = { query: 'old query', senderKey: '' };
+  it('keeps debug scoped to finished AI messages and removes the header entry', () => {
     const page = YeaftPage.setup();
+    const source = YeaftPage.template;
+    const actionsStart = source.indexOf('<YeaftSessionActions');
+    const actionsEnd = source.indexOf('/>', actionsStart);
+    const actions = source.slice(actionsStart, actionsEnd);
 
-    page.onHistorySearchQuery('new query');
-    page.onHistorySenderChange('vp:omni');
-    vi.advanceTimersByTime(220);
-
-    expect(chatStore.searchYeaftHistory).toHaveBeenCalledTimes(1);
-    expect(chatStore.searchYeaftHistory).toHaveBeenCalledWith('new query', { senderKey: 'vp:omni' });
-
-    page.toggleHistorySearch();
-    page.toggleHistorySearch();
-    await Vue.nextTick();
-    expect(chatStore.yeaftHistorySearchState.senderKey).toBe('vp:omni');
-    expect(chatStore.searchYeaftHistory).toHaveBeenLastCalledWith('', { senderKey: 'vp:omni' });
-
-    saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-2', senderKey: 'user' });
-    chatStore.searchYeaftHistory.mockClear();
-    page.onHistorySenderInvalid();
-
-    expect(chatStore.searchYeaftHistory).toHaveBeenCalledWith('', { senderKey: 'user' });
-    expect(loadHistorySenderPreference({
-      agentId: 'agent-1', sessionId: 'session-1', validKeys: ['user'],
-    })).toBe('user');
-    expect(loadHistorySenderPreference({
-      agentId: 'agent-1', sessionId: 'session-2', validKeys: ['user'],
-    })).toBe('user');
-  });
-
-  it('keeps sender preferences isolated, valid, and storage-safe', () => {
-    vi.useFakeTimers();
-    chatStore.yeaftHistorySearchState = { query: 'old query', senderKey: '' };
-    const page = YeaftPage.setup();
-
-    page.onHistorySearchQuery('');
-    page.onHistorySenderChange('user');
-    vi.advanceTimersByTime(220);
-
-    expect(chatStore.searchYeaftHistory).toHaveBeenCalledTimes(1);
-    expect(chatStore.searchYeaftHistory).toHaveBeenCalledWith('', { senderKey: 'user' });
-    expect(saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1', senderKey: 'vp:omni' })).toBe(true);
-    expect(saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-2', senderKey: 'user' })).toBe(true);
-
-    expect(loadHistorySenderPreference({
-      agentId: 'agent-1', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
-    })).toBe('vp:omni');
-    expect(loadHistorySenderPreference({
-      agentId: 'agent-1', sessionId: 'session-2', validKeys: ['user', 'vp:omni'],
-    })).toBe('user');
-    expect(loadHistorySenderPreference({
-      agentId: 'agent-2', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
-    })).toBe('user');
-
-    expect(saveHistorySenderPreference({ agentId: 'agent-2', sessionId: 'session-1', senderKey: '' })).toBe(true);
-    expect(loadHistorySenderPreference({
-      agentId: 'agent-2', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
-    })).toBe('');
-
-    saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1', senderKey: 'vp:removed' });
-    expect(loadHistorySenderPreference({
-      agentId: 'agent-1', sessionId: 'session-1', validKeys: ['user', 'vp:omni'],
-    })).toBe('user');
-    expect(loadHistorySenderPreference({
-      agentId: 'agent-1', sessionId: 'session-2', validKeys: ['user'],
-    })).toBe('user');
-
-    const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-    Object.defineProperty(globalThis, 'localStorage', {
-      configurable: true,
-      get() { throw new DOMException('blocked', 'SecurityError'); },
-    });
-    try {
-      expect(loadHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1' })).toBe('user');
-      expect(saveHistorySenderPreference({ agentId: 'agent-1', sessionId: 'session-1', senderKey: 'user' })).toBe(false);
-    } finally {
-      Object.defineProperty(globalThis, 'localStorage', originalDescriptor);
-    }
-  });
-
-  it('follows the store debug panel state and routes header toggles through the panel actions', () => {
-    const page = YeaftPage.setup();
     expect(page.debugMode.value).toBe(false);
+    expect(actions).not.toContain(':debug-mode=');
+    expect(actions).not.toContain('@toggle-debug=');
+    expect(page.toggleDebug).toBeUndefined();
 
     // The per-turn debug icon opens the panel via the store; YeaftPage
-    // must render the detail panel as soon as the store opens it.
+    // renders the detail panel as soon as the store opens it.
     chatStore.yeaftDebugPanel = {
       open: true,
       status: 'loading',
@@ -271,18 +236,20 @@ describe('YeaftPage setup', () => {
       error: null,
     };
     expect(page.debugMode.value).toBe(true);
-
-    // Header entry closes the panel through the store, not a local ref.
-    page.toggleDebug();
+    page.closeDebug();
     expect(chatStore.closeYeaftDebugPanel).toHaveBeenCalled();
 
-    // Re-opening via the header opens an empty panel (no turn scoping).
     chatStore.yeaftDebugPanel.open = false;
-    page.toggleDebug();
-    expect(chatStore.openYeaftTurnDebug).toHaveBeenCalledWith({});
-    expect(page.debugMode.value).toBe(false);
+    chatStore.workbenchExpanded = true;
+    expect(page.sessionStatusVisible.value).toBe(false);
 
-    chatStore.yeaftDebugPanel.open = true;
-    expect(page.debugMode.value).toBe(true);
+    page.toggleSessionStatus();
+    expect(page.sessionStatusVisible.value).toBe(true);
+    expect(chatStore.toggleWorkbench).toHaveBeenCalledTimes(1);
+    expect(chatStore.closeYeaftDebugPanel).toHaveBeenCalledTimes(2);
+
+    page.toggleWorkbench();
+    expect(page.sessionStatusVisible.value).toBe(false);
+    expect(chatStore.toggleWorkbench).toHaveBeenCalledTimes(2);
   });
 });

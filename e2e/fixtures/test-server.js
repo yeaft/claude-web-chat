@@ -13,6 +13,8 @@ class TestServer {
       ...process.env,
       PORT: String(port),
       SKIP_AUTH: 'true',
+      SANDBOX_ENABLED: 'false',
+      BROWSER_RUNTIME_ENABLED: 'true',
       NODE_ENV: 'test',
       TEST_DB_DIR: `/tmp/e2e-test-${port}`
     };
