@@ -15,6 +15,7 @@ export default {
       configLoadError: '',
       configLoadedAgentId: null,
       configLoadGeneration: 0,
+      refreshGeneration: 0,
       saveGeneration: 0,
     };
   },
@@ -125,6 +126,7 @@ export default {
       immediate: true,
       handler(next) {
         ++this.configLoadGeneration;
+        ++this.refreshGeneration;
         ++this.saveGeneration;
         this.saving = false;
         this.error = '';
@@ -142,6 +144,7 @@ export default {
         this.activeCategory = 'all';
         if (!this.agentSupportsPlugins) {
           this.selection = null;
+          this.savedSelection = null;
           this.configLoading = false;
           this.configLoadError = this.$t('yeaft.plugins.upgradeRequired');
           this.configLoadedAgentId = null;
@@ -155,6 +158,7 @@ export default {
   methods: {
     loadConfig(agentId = this.agentId, generation = ++this.configLoadGeneration) {
       if (!agentId) return;
+      ++this.refreshGeneration;
       ++this.saveGeneration;
       this.saving = false;
       this.selection = null;
@@ -230,9 +234,21 @@ export default {
     },
     async refresh() {
       if (!this.agentId || !this.agentSupportsPlugins) return;
+      const targetAgentId = this.agentId;
+      const targetLoadGeneration = this.configLoadGeneration;
+      const targetRefreshGeneration = ++this.refreshGeneration;
+      const isCurrentRefresh = () => (
+        targetAgentId === this.agentId
+        && targetLoadGeneration === this.configLoadGeneration
+        && targetRefreshGeneration === this.refreshGeneration
+      );
       this.error = '';
-      const result = await this.store?.loadPluginCatalog?.(this.agentId);
-      if (result?.error) this.error = result.error;
+      try {
+        const result = await this.store?.loadPluginCatalog?.(targetAgentId);
+        if (isCurrentRefresh() && result?.error) this.error = result.error;
+      } catch (err) {
+        if (isCurrentRefresh()) this.error = err?.message || String(err);
+      }
     },
     async save() {
       if (this.saving || !this.agentId || !this.agentSupportsPlugins || !this.configReady) return;
