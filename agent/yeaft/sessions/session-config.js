@@ -28,7 +28,7 @@ const CONFIG_FILE = 'config.json';
 const MODEL_SOURCE_EXPLICIT = 'explicit';
 const WRITABLE_KEYS = new Set(['model', 'modelEffort']);
 const STORED_KEYS = new Set([...WRITABLE_KEYS, 'modelSource']);
-const ALLOWED_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const ALLOWED_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 
 export class SessionConfigError extends Error {
   constructor(code, message) {
@@ -99,7 +99,7 @@ export function validateSessionConfig(cfg) {
   }
   if ('modelEffort' in cfg && cfg.modelEffort !== null && cfg.modelEffort !== undefined && cfg.modelEffort !== '') {
     if (typeof cfg.modelEffort !== 'string' || !ALLOWED_EFFORTS.has(cfg.modelEffort.trim())) {
-      throw new SessionConfigError('invalid_model_effort', 'modelEffort must be minimal, low, medium, high, xhigh, or max');
+      throw new SessionConfigError('invalid_model_effort', 'modelEffort must be minimal, low, medium, high, xhigh, max, or ultra');
     }
   }
 }

@@ -2034,7 +2034,7 @@ describe('Engine', () => {
           if (calls === 2) {
             engine.refreshConfig({
               model: 'provider/current',
-              modelEffort: 'max',
+              modelEffort: 'ultra',
               maxOutputTokens: 222,
               llmRetry: { maxRetries: 1, baseDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 },
             });
@@ -2077,7 +2077,7 @@ describe('Engine', () => {
       expect(adapter.callLog.map(call => [call.maxTokens, call.effort])).toEqual([
         [111, 'low'],
         [222, 'high'],
-        [222, 'max'],
+        [222, 'ultra'],
       ]);
 
       const overrideAdapter = new MockAdapter();

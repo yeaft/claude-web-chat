@@ -254,7 +254,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
   // ─── Streaming ──────────────────────────────────────────
 
   /**
-   * @param {{ model: string, system: string, messages: import('./adapter.js').UnifiedMessage[], tools?: import('./adapter.js').UnifiedToolDef[], maxTokens?: number, effort?: 'minimal'|'low'|'medium'|'high'|'xhigh'|'max', effortSource?: 'user'|'auto', effortContext?: object, extraBody?: object, signal?: AbortSignal, onRawExchange?: ({rawRequest, rawResponse}) => void, onRequestStart?: () => void }} params
+   * @param {{ model: string, system: string, messages: import('./adapter.js').UnifiedMessage[], tools?: import('./adapter.js').UnifiedToolDef[], maxTokens?: number, effort?: 'minimal'|'low'|'medium'|'high'|'xhigh'|'max'|'ultra', effortSource?: 'user'|'auto', effortContext?: object, extraBody?: object, signal?: AbortSignal, onRawExchange?: ({rawRequest, rawResponse}) => void, onRequestStart?: () => void }} params
    *
    * NOTE on `extraBody`: any keys you spread here are merged verbatim into
    * the wire body and — because the verbatim debug feature is intentionally
