@@ -224,6 +224,7 @@ export const useBrowserStore = defineStore('browser', {
         connection: null,
         videoElement: nonReactive(videoElement),
         state: 'preparing',
+        remoteState: null,
         pendingCandidates: [],
         iceServerCount: null,
         attachTimer: null,
@@ -232,7 +233,7 @@ export const useBrowserStore = defineStore('browser', {
       this.peers[localKey] = peer;
       peer.attachTimer = setTimeout(() => {
         peer.attachTimer = null;
-        if (this.peers[localKey] !== peer || peer.state === 'connected') return;
+        if (this.peers[localKey] !== peer || peer.connection?.connectionState === 'connected') return;
         const code = peer.iceServerCount === 0
           ? 'browser_ice_servers_missing'
           : 'browser_peer_attach_timeout';
@@ -302,7 +303,7 @@ export const useBrowserStore = defineStore('browser', {
           if (!peer.disconnectedTimer) {
             peer.disconnectedTimer = setTimeout(() => {
               peer.disconnectedTimer = null;
-              if (this.peers[peer.localKey] !== peer || peer.state === 'connected') return;
+              if (this.peers[peer.localKey] !== peer || connection.connectionState === 'connected') return;
               const code = peer.iceServerCount === 0
                 ? 'browser_ice_servers_missing'
                 : 'browser_ice_connection_failed';
@@ -481,7 +482,7 @@ export const useBrowserStore = defineStore('browser', {
       } else if (message.type === 'browser_peer_ice_candidate') {
         this.acceptCandidate(peer, message).catch(error => this.failPeer(peer, error));
       } else if (message.type === 'browser_peer_state' && message.state) {
-        peer.state = message.state;
+        peer.remoteState = message.state;
         if (['failed', 'disconnected', 'closed'].includes(message.state)) {
           const code = peer.iceServerCount === 0
             ? 'browser_ice_servers_missing'

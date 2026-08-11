@@ -259,6 +259,48 @@ describe('Browser Runtime Web store', () => {
     expect(store.errorCodes['agent-a\0browser-a']).toBeUndefined();
   });
 
+  it('does not let an Agent connected frame mask a local disconnected timeout', async () => {
+    vi.useFakeTimers();
+    const store = useBrowserStore();
+    const video = {
+      srcObject: { id: 'remote-stream' },
+      play: vi.fn().mockResolvedValue(undefined),
+    };
+    const peer = await store.attach({
+      agentId: 'agent-a', browserSessionId: 'browser-a', videoElement: video,
+    });
+    await store.preparePeer(peer, {
+      peerId: 'peer-a', connectionGeneration: peer.connectionGeneration,
+      iceServers: [{ urls: ['turns:turn.example.test:443'] }], iceTransportPolicy: 'relay',
+    });
+
+    const connection = peerConnections[0];
+    connection.connectionState = 'connected';
+    connection.onconnectionstatechange();
+    connection.connectionState = 'disconnected';
+    connection.onconnectionstatechange();
+    store.handleMessage({
+      type: 'browser_peer_state', agentId: 'agent-a', browserSessionId: 'browser-a',
+      peerId: 'peer-a', connectionGeneration: peer.connectionGeneration, state: 'connected',
+    });
+
+    expect(connection.connectionState).toBe('disconnected');
+    expect(peer.state).toBe('disconnected');
+    expect(peer.remoteState).toBe('connected');
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(store.peers['agent-a\0browser-a']).toBeUndefined();
+    expect(store.errorCodes['agent-a\0browser-a']).toBe('browser_ice_connection_failed');
+    expect(connection.connectionState).toBe('closed');
+    expect(video.srcObject).toBeNull();
+    expect(peer.attachTimer).toBeNull();
+    expect(peer.disconnectedTimer).toBeNull();
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: 'browser_peer_detach', peerId: 'peer-a',
+      connectionGeneration: peer.connectionGeneration,
+    }));
+  });
+
   it('turns Agent-side terminal peer state into an actionable ICE failure', async () => {
     const store = useBrowserStore();
     const peer = await store.attach({
