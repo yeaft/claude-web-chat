@@ -21,6 +21,7 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/agent/yeaft/session-config.test.js',
   'test/agent/yeaft/session-recovery.test.js',
   'test/agent/yeaft/sessions/pre-flow.test.js',
+  'test/agent/yeaft/skills.test.js',
   'test/agent/yeaft/stdio-protocol.test.js',
   'test/agent/yeaft/task-result-reentry.test.js',
   'test/agent/yeaft/tasks/manager.test.js',
