@@ -57,6 +57,13 @@ import {
 const SIDEBAR_SECTION_SELECTOR = /\.(?:sidebar-section|projects-section|recents-section)(?![-\w])/;
 const CSS_ZERO = /^0(?:\.0+)?(?:[a-z%]+)?$/i;
 
+function translatePluginCenterMessage(key, values = {}) {
+  const template = enMessages[key] || key;
+  return Object.entries(values).reduce((text, [name, value]) => (
+    text.replaceAll(`{${name}}`, String(value))
+  ), template);
+}
+
 function sidebarSectionTopValues(css, property) {
   const declarationPattern = new RegExp(`(?:^|;)\\s*(${property}(?:-top)?)\\s*:\\s*([^;]+)`, 'g');
   return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
@@ -191,14 +198,14 @@ describe('message flow regressions', () => {
     const priorStore = globalThis.Pinia.useChatStore;
     globalThis.Pinia.useChatStore = () => pluginStore;
     const pluginCenter = mount(PluginCenterPage, {
-      global: { mocks: { $t: key => key } },
+      global: { mocks: { $t: translatePluginCenterMessage } },
     });
     await Vue.nextTick();
 
     expect(pluginStore.loadPluginConfig).not.toHaveBeenCalled();
     expect(pluginStore.loadPluginCatalog).not.toHaveBeenCalled();
-    expect(pluginCenter.text()).toContain('yeaft.plugins.upgradeRequired');
-    expect(pluginCenter.get('.btn-ghost').attributes('disabled')).toBeDefined();
+    expect(pluginCenter.text()).toContain(enMessages['yeaft.plugins.upgradeRequired']);
+    expect(pluginCenter.get('.plugin-center-icon-button').attributes('disabled')).toBeDefined();
     expect(pluginCenter.get('.btn-primary').attributes('disabled')).toBeDefined();
 
     pluginCenter.unmount();
@@ -2200,6 +2207,12 @@ describe('message flow regressions', () => {
     expect(workCenter).not.toContain('<select :value="agentId"');
     expect(workCenter).toContain("this.store.enterWorkCenter(nextAgentId)");
     expect(workCenterCss).toMatch(/\.work-center-agent-picker \.modern-select-trigger\s*\{[^}]*background:\s*var\(--bg-input\)/s);
+    const pluginCenterCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/plugin-center.css'), 'utf8');
+    expect(pluginCenterCss).toContain('background: var(--bg-main);');
+    expect(pluginCenterCss).toContain('background: var(--bg-sidebar);');
+    expect(pluginCenterCss).toContain('background: var(--session-active);');
+    expect(pluginCenterCss).toContain('background: var(--sidebar-hover);');
+    expect(pluginCenterCss).not.toMatch(/#[0-9a-f]{3,8}|rgba?\(/i);
     const workCenterStore = {
       workCenterAgentId: 'agent-a',
       currentAgent: 'agent-a',
@@ -2277,7 +2290,7 @@ describe('message flow regressions', () => {
     });
     globalThis.Pinia.useChatStore = () => pluginStore;
     const pluginCenter = mount(PluginCenterPage, {
-      global: { mocks: { $t: key => key } },
+      global: { mocks: { $t: translatePluginCenterMessage } },
     });
     await Vue.nextTick();
     expect(pluginCenter.findAll('input[type="checkbox"]').every(input => input.element.disabled)).toBe(true);
@@ -2323,6 +2336,28 @@ describe('message flow regressions', () => {
       skills: ['skill-b'],
     }, 'agent-a');
     expect(pluginCenter.vm.enabledCount).toBe(2);
+    expect(pluginCenter.vm.isDirty).toBe(false);
+    expect(pluginCenter.find('.plugin-center-save').attributes('disabled')).toBeDefined();
+
+    await pluginCenter.get('input[type="search"]').setValue('skill-b');
+    expect(pluginCenter.vm.visibleCategories).toEqual(['skills']);
+    expect(pluginCenter.vm.visibleResultCount).toBe(1);
+    expect(pluginCenter.findAll('.plugin-center-card')).toHaveLength(1);
+    expect(pluginCenter.text()).toContain('skill-b');
+
+    pluginCenter.vm.activeCategory = 'tools';
+    await Vue.nextTick();
+    expect(pluginCenter.vm.hasSearchResults).toBe(false);
+    expect(pluginCenter.find('.plugin-center-empty-search').exists()).toBe(true);
+
+    pluginCenter.vm.activeCategory = 'skills';
+    pluginCenter.vm.searchQuery = '';
+    await Vue.nextTick();
+    const skillToggle = pluginCenter.findAll('input[type="checkbox"]').find(input => input.element.checked);
+    await skillToggle.setValue(false);
+    expect(pluginCenter.vm.isDirty).toBe(true);
+    expect(pluginCenter.get('.plugin-center-save').attributes('disabled')).toBeUndefined();
+    expect(pluginCenter.text()).toContain(enMessages['yeaft.plugins.unsavedChanges']);
     pluginCenter.unmount();
 
     globalThis.Pinia.useChatStore = () => workCenterStore;

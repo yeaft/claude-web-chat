@@ -250,6 +250,15 @@ select option:checked {
   /* Fonts */
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  /* Plugins Center geometry; identical across light and dark themes. */
+  --plugin-center-header-padding: 20px 24px;
+  --plugin-center-header-gap: 16px;
+  --plugin-center-title-size: 22px;
+  --plugin-center-heading-max-width: 680px;
+  --plugin-center-agent-rail-min-width: 180px;
+  --plugin-center-agent-rail-max-width: 240px;
+  --plugin-center-content-padding: 20px 24px 24px;
+  --plugin-center-card-min-width: 220px;
 }
 
 /* Dark Theme - warm, eye-friendly tones */
@@ -426,6 +435,15 @@ select option:checked {
   --yeaft-model-menu-layer: 1300;
   --yeaft-header-folder-max-width: 280px;
   --yeaft-header-folder-font-size: 12px;
+  /* Plugins Center geometry; identical across light and dark themes. */
+  --plugin-center-header-padding: 20px 24px;
+  --plugin-center-header-gap: 16px;
+  --plugin-center-title-size: 22px;
+  --plugin-center-heading-max-width: 680px;
+  --plugin-center-agent-rail-min-width: 180px;
+  --plugin-center-agent-rail-max-width: 240px;
+  --plugin-center-content-padding: 20px 24px 24px;
+  --plugin-center-card-min-width: 220px;
 }
 
 .terminal-output {
