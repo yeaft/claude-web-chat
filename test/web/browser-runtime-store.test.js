@@ -172,6 +172,47 @@ describe('Browser Runtime Web store', () => {
     })));
   });
 
+  it('reports missing ICE infrastructure instead of a generic peer failure', async () => {
+    const store = useBrowserStore();
+    const peer = await store.attach({
+      agentId: 'agent-a', browserSessionId: 'browser-a',
+      videoElement: { srcObject: null, play: vi.fn() },
+    });
+    await store.preparePeer(peer, {
+      peerId: 'peer-a', connectionGeneration: peer.connectionGeneration,
+      iceServers: [], iceTransportPolicy: 'all',
+    });
+
+    const connection = peerConnections[0];
+    connection.connectionState = 'failed';
+    connection.onconnectionstatechange();
+
+    expect(store.peers['agent-a\0browser-a']).toBeUndefined();
+    expect(store.errorCodes['agent-a\0browser-a']).toBe('browser_ice_servers_missing');
+  });
+
+  it('turns Agent-side terminal peer state into an actionable ICE failure', async () => {
+    const store = useBrowserStore();
+    const peer = await store.attach({
+      agentId: 'agent-a', browserSessionId: 'browser-a',
+      videoElement: { srcObject: null, play: vi.fn() },
+    });
+    store.handleMessage({
+      type: 'browser_peer_prepared', agentId: 'agent-a', browserSessionId: 'browser-a',
+      peerId: 'peer-a', connectionGeneration: peer.connectionGeneration,
+      iceServers: [{ urls: ['turns:turn.example.test:443'] }], iceTransportPolicy: 'relay',
+    });
+    await vi.waitFor(() => expect(peerConnections).toHaveLength(1));
+
+    store.handleMessage({
+      type: 'browser_peer_state', agentId: 'agent-a', browserSessionId: 'browser-a',
+      peerId: 'peer-a', connectionGeneration: peer.connectionGeneration, state: 'failed',
+    });
+
+    expect(store.peers['agent-a\0browser-a']).toBeUndefined();
+    expect(store.errorCodes['agent-a\0browser-a']).toBe('browser_ice_connection_failed');
+  });
+
   it('buffers early ICE until the offer and drops a stale peer after transport reset', async () => {
     const store = useBrowserStore();
     const video = { srcObject: null, play: vi.fn() };

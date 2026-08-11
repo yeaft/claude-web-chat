@@ -34,6 +34,7 @@ export const useBrowserStore = defineStore('browser', {
     peers: {},
     cancelledPeers: {},
     errors: {},
+    errorCodes: {},
     runtimeStatus: {},
     installProgress: {},
     protocolSupported: null,
@@ -208,6 +209,7 @@ export const useBrowserStore = defineStore('browser', {
       if (!videoElement) throw new Error('Browser video element required');
       const localKey = sessionKey(agentId, browserSessionId);
       delete this.errors[localKey];
+      delete this.errorCodes[localKey];
       const connectionGeneration = Number(this.connectionEpoch || 0) + 1;
       this.connectionEpoch = connectionGeneration;
       const requestId = id();
@@ -222,12 +224,16 @@ export const useBrowserStore = defineStore('browser', {
         videoElement: nonReactive(videoElement),
         state: 'preparing',
         pendingCandidates: [],
+        iceServerCount: null,
         attachTimer: null,
       };
       this.peers[localKey] = peer;
       peer.attachTimer = setTimeout(() => {
         if (this.peers[localKey] !== peer || peer.state === 'connected') return;
-        this.failPeer(peer, new Error('Browser peer attach timed out'));
+        const code = peer.iceServerCount === 0
+          ? 'browser_ice_servers_missing'
+          : 'browser_peer_attach_timeout';
+        this.failPeer(peer, new Error(code), code);
       }, PEER_ATTACH_TIMEOUT_MS);
       this.send({
         type: 'browser_peer_attach',
@@ -253,8 +259,10 @@ export const useBrowserStore = defineStore('browser', {
         throw new Error('Browser peer identity changed during preparation');
       }
       peer.peerId = message.peerId;
+      const iceServers = Array.isArray(message.iceServers) ? message.iceServers : [];
+      peer.iceServerCount = iceServers.length;
       const connection = nonReactive(new RTCPeerConnection({
-        iceServers: Array.isArray(message.iceServers) ? message.iceServers : [],
+        iceServers,
         iceTransportPolicy: message.iceTransportPolicy === 'relay' ? 'relay' : 'all',
       }));
       peer.connection = connection;
@@ -282,7 +290,10 @@ export const useBrowserStore = defineStore('browser', {
         peer.state = connection.connectionState;
         if (connection.connectionState === 'connected') clearTimeout(peer.attachTimer);
         if (['failed', 'closed'].includes(connection.connectionState)) {
-          this.failPeer(peer, new Error(`Browser peer ${connection.connectionState}`));
+          const code = peer.iceServerCount === 0
+            ? 'browser_ice_servers_missing'
+            : 'browser_ice_connection_failed';
+          this.failPeer(peer, new Error(code), code);
         }
       };
     },
@@ -335,10 +346,12 @@ export const useBrowserStore = defineStore('browser', {
       if (peer.videoElement) peer.videoElement.srcObject = null;
     },
 
-    failPeer(peer, error) {
+    failPeer(peer, error, code = null) {
       if (this.peers[peer.localKey] !== peer) return;
       this.lastError = error?.message || String(error);
       this.errors[peer.localKey] = this.lastError;
+      if (code) this.errorCodes[peer.localKey] = code;
+      else delete this.errorCodes[peer.localKey];
       this.detach(peer.agentId, peer.browserSessionId, { notify: true });
     },
 
@@ -356,6 +369,8 @@ export const useBrowserStore = defineStore('browser', {
       this.peers = {};
       this.runtimeStatus = {};
       this.installProgress = {};
+      this.errors = {};
+      this.errorCodes = {};
       this.clearCancelledPeers();
     },
 
@@ -433,7 +448,7 @@ export const useBrowserStore = defineStore('browser', {
         return;
       }
       if (message.type === 'browser_peer_error') {
-        this.failPeer(peer, new Error(safeError(message, 'Browser peer failed')));
+        this.failPeer(peer, new Error(safeError(message, 'Browser peer failed')), message.code || null);
       } else if (message.type === 'browser_peer_prepared') {
         this.preparePeer(peer, message).catch(error => this.failPeer(peer, error));
       } else if (message.type === 'browser_peer_offer') {
@@ -442,6 +457,12 @@ export const useBrowserStore = defineStore('browser', {
         this.acceptCandidate(peer, message).catch(error => this.failPeer(peer, error));
       } else if (message.type === 'browser_peer_state' && message.state) {
         peer.state = message.state;
+        if (['failed', 'disconnected', 'closed'].includes(message.state)) {
+          const code = peer.iceServerCount === 0
+            ? 'browser_ice_servers_missing'
+            : 'browser_ice_connection_failed';
+          this.failPeer(peer, new Error(code), code);
+        }
       }
     },
   },

@@ -22,6 +22,31 @@ describe('Server production image runtime closure', () => {
     expect(example).toContain('set false to disable them globally');
   });
 
+  it('ships a separate authenticated TURN relay deployment for remote Browser viewers', () => {
+    const compose = readFileSync(resolve(root, 'deploy/browser-turn/docker-compose.yaml'), 'utf8');
+    const startup = readFileSync(resolve(root, 'deploy/browser-turn/start-turn.sh'), 'utf8');
+    const guide = readFileSync(resolve(root, 'deploy/browser-turn/README.md'), 'utf8');
+    const packageJson = readFileSync(resolve(root, 'package.json'), 'utf8');
+
+    expect(compose).toContain('image: coturn/coturn:4.17.2-r0@sha256:aa68aab64a3b929d57fc2924c98ea447bf996cf8dade2508e7b71eaf23f1f14e');
+    expect(compose).toContain('network_mode: host');
+    expect(compose).toContain('BROWSER_TURN_SECRET_FILE');
+    expect(compose).toContain('no-new-privileges:true');
+    expect(compose).toContain('- DAC_READ_SEARCH');
+    expect(compose).toContain('- SETPCAP');
+    expect(compose).toContain('- SETUID');
+    expect(compose).toContain('/run/yeaft-turn:rw,exec,nosuid,nodev');
+    expect(startup).toContain('cp /usr/bin/turnserver "$binary"');
+    expect(startup).toContain('--reuid=65534 --regid=65534');
+    expect(startup).toContain('--bounding-set=-all');
+    expect(startup).toContain('use-auth-secret');
+    expect(startup).toContain('static-auth-secret=$secret');
+    expect(startup).toContain('external-ip=$external_ip/$relay_ip');
+    expect(guide).toContain('BROWSER_ICE_TRANSPORT_POLICY=relay');
+    expect(guide).toContain('49160-49200/udp');
+    expect(packageJson).toContain('"smoke:browser-turn": "node scripts/smoke-browser-turn.mjs"');
+  });
+
   it('keeps Docker socket access opt-in with an explicit Sandbox compose override', () => {
     const baseCompose = readFileSync(resolve(root, 'docker-compose.yml'), 'utf8');
     const sandboxCompose = readFileSync(resolve(root, 'docker-compose.sandbox.yml'), 'utf8');

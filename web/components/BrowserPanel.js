@@ -201,7 +201,13 @@ export default {
     const snapshot = Vue.computed(() => browserSessionId.value ? browser.sessions[key.value] || null : null);
     const peer = Vue.computed(() => browserSessionId.value ? browser.peers[key.value] || null : null);
     const connected = Vue.computed(() => peer.value?.state === 'connected');
-    const peerError = Vue.computed(() => browser.errors[key.value] || '');
+    const peerError = Vue.computed(() => {
+      const code = browser.errorCodes[key.value];
+      if (code === 'browser_ice_servers_missing') return t('workbench.browserIceServersMissing');
+      if (code === 'browser_ice_connection_failed') return t('workbench.browserIceConnectionFailed');
+      if (code === 'browser_peer_attach_timeout') return t('workbench.browserPeerAttachTimeout');
+      return browser.errors[key.value] || '';
+    });
     const displayError = Vue.computed(() => viewerError.value || peerError.value);
     const connectionClass = Vue.computed(() => (
       connected.value ? 'connected'

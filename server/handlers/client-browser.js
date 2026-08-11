@@ -43,6 +43,7 @@ async function fail(client, msg, code, safeError = code) {
       : type.startsWith('browser_runtime_') ? 'browser_runtime_error'
         : 'browser_session_error',
     requestId: clean(msg.requestId) || null,
+    agentId: clean(msg.agentId) || null,
     browserSessionId: clean(msg.browserSessionId) || null,
     peerId: clean(msg.peerId) || null,
     connectionGeneration: Number(msg.connectionGeneration) || null,

@@ -187,8 +187,8 @@ The Agent reads environment variables on startup. Most values can also be set in
 | `AUTH_USERS` | — | — | `username:passwordHash:email,...` for bootstrap user list |
 | `BROWSER_RUNTIME_ENABLED` | — | `true` | Set to `false` to disable Browser setup, signaling, and viewer routes globally |
 | `BROWSER_STUN_URLS` | — | — | Comma-separated STUN URLs used by Browser WebRTC peers |
-| `BROWSER_TURN_URLS` | — | — | Comma-separated TURN URLs; requires `BROWSER_TURN_SECRET` |
-| `BROWSER_TURN_SECRET` | required with TURN URLs | — | coturn REST API shared secret for short-lived endpoint credentials |
+| `BROWSER_TURN_URLS` | — | — | Comma-separated TURN URLs; required for reliable remote Browser viewers across NATs/restrictive networks and requires `BROWSER_TURN_SECRET` |
+| `BROWSER_TURN_SECRET` | required with TURN URLs | — | coturn REST API shared secret for short-lived endpoint credentials; must match the TURN service and never be exposed to Web/Agent endpoints |
 | `BROWSER_TURN_TTL_SECONDS` | — | `600` | TURN credential TTL, clamped to `60–3600` seconds |
 | `BROWSER_ICE_TRANSPORT_POLICY` | — | `all` | `all` or `relay`; `relay` requires at least one TURN URL |
 | `BROWSER_ROUTE_TTL_MS` | — | `900000` | Browser peer route TTL, clamped to `60000–3600000` ms |

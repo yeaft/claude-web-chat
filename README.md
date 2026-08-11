@@ -134,7 +134,7 @@ The Workbench Browser viewer currently supports Linux x64 Agents. Browser routes
 1. Select the Agent in Yeaft and open **Workbench → Browser**. If Browser is not ready, the card says **Enable required** and the panel shows the pinned Chrome for Testing download size.
 2. Click **Enable Browser** once. Yeaft displays the real download percentage, verifies and installs the browser in that Agent instance's data directory, persists enablement, runs the media probe, refreshes capabilities, and opens the viewer automatically. No Agent restart or second enable action is required.
 
-Nothing downloads merely because Yeaft or the Agent was installed. Administrators can disable the entire Browser surface with `BROWSER_RUNTIME_ENABLED=false`. `BROWSER_STUN_URLS` is optional for direct ICE. For production across NATs or restrictive networks, configure `BROWSER_TURN_URLS` and `BROWSER_TURN_SECRET`; set `BROWSER_ICE_TRANSPORT_POLICY=relay` when direct candidates are forbidden.
+Nothing downloads merely because Yeaft or the Agent was installed. Administrators can disable the entire Browser surface with `BROWSER_RUNTIME_ENABLED=false`. The Agent media probe validates Chrome, tab capture, VP8, and local WebRTC; it cannot prove that a remote Web viewer has a reachable ICE path to the Agent. `BROWSER_STUN_URLS` is optional for direct ICE. For production across NATs or restrictive networks, deploy TURN and configure `BROWSER_TURN_URLS` plus `BROWSER_TURN_SECRET`; set `BROWSER_ICE_TRANSPORT_POLICY=relay` when direct candidates are forbidden. A hardened self-hosted template is available in [`deploy/browser-turn/`](deploy/browser-turn/README.md).
 
 For unattended setup, use the same named instance throughout:
 

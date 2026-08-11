@@ -187,8 +187,8 @@ Agent 启动时读环境变量。多数值也可以写在 Agent 的 `config.json
 | `AUTH_USERS` | — | — | `username:passwordHash:email,...` 启动期 bootstrap 用户列表 |
 | `BROWSER_RUNTIME_ENABLED` | — | `true` | 设置为 `false` 时全局关闭 Browser setup、信令和 viewer route |
 | `BROWSER_STUN_URLS` | — | — | Browser WebRTC peer 使用的 STUN URL，英文逗号分隔 |
-| `BROWSER_TURN_URLS` | — | — | TURN URL，英文逗号分隔；配置后必须同时设置 `BROWSER_TURN_SECRET` |
-| `BROWSER_TURN_SECRET` | 配置 TURN URL 时必填 | — | coturn REST API shared secret，用于生成短期 endpoint credential |
+| `BROWSER_TURN_URLS` | — | — | TURN URL，英文逗号分隔；跨 NAT/受限网络的远程 Browser Viewer 要稳定工作必须配置，并同时设置 `BROWSER_TURN_SECRET` |
+| `BROWSER_TURN_SECRET` | 配置 TURN URL 时必填 | — | coturn REST API shared secret，用于生成短期 endpoint credential；必须与 TURN 服务一致，且不能暴露给 Web/Agent endpoint |
 | `BROWSER_TURN_TTL_SECONDS` | — | `600` | TURN credential TTL，钳制到 `60–3600` 秒 |
 | `BROWSER_ICE_TRANSPORT_POLICY` | — | `all` | `all` 或 `relay`；`relay` 至少需要一个 TURN URL |
 | `BROWSER_ROUTE_TTL_MS` | — | `900000` | Browser peer route TTL，钳制到 `60000–3600000` ms |

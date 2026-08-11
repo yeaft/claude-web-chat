@@ -1,0 +1,45 @@
+services:
+  browser-turn:
+    image: coturn/coturn:4.17.2-r0@sha256:aa68aab64a3b929d57fc2924c98ea447bf996cf8dade2508e7b71eaf23f1f14e
+    container_name: ${BROWSER_TURN_CONTAINER:-yeaft-browser-turn}
+    network_mode: host
+    user: "0:0"
+    entrypoint: ["/bin/sh", "/usr/local/bin/start-yeaft-turn"]
+    environment:
+      BROWSER_TURN_EXTERNAL_IP: ${BROWSER_TURN_EXTERNAL_IP:?Set the public IPv4 address advertised by TURN}
+      BROWSER_TURN_RELAY_IP: ${BROWSER_TURN_RELAY_IP:?Set the host IPv4 address used for relay sockets}
+      BROWSER_TURN_REALM: ${BROWSER_TURN_REALM:?Set the TURN DNS realm}
+      BROWSER_TURN_LISTEN_PORT: ${BROWSER_TURN_LISTEN_PORT:-3478}
+      BROWSER_TURN_MIN_PORT: ${BROWSER_TURN_MIN_PORT:-49160}
+      BROWSER_TURN_MAX_PORT: ${BROWSER_TURN_MAX_PORT:-49200}
+      BROWSER_TURN_USER_QUOTA: ${BROWSER_TURN_USER_QUOTA:-8}
+      BROWSER_TURN_TOTAL_QUOTA: ${BROWSER_TURN_TOTAL_QUOTA:-128}
+      BROWSER_TURN_MAX_BPS: ${BROWSER_TURN_MAX_BPS:-8000000}
+      BROWSER_TURN_BPS_CAPACITY: ${BROWSER_TURN_BPS_CAPACITY:-64000000}
+    volumes:
+      - ./start-turn.sh:/usr/local/bin/start-yeaft-turn:ro
+      - ${BROWSER_TURN_SECRET_FILE:?Set an absolute path to the TURN shared-secret file}:/run/secrets/browser_turn_secret:ro
+    read_only: true
+    tmpfs:
+      - /run/yeaft-turn:rw,exec,nosuid,nodev,size=16m,mode=0755
+      - /tmp:size=16m,mode=1777
+      - /var/lib/coturn:size=16m,uid=65534,gid=65534,mode=0700
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_READ_SEARCH
+      - SETGID
+      - SETPCAP
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "turnutils_stunclient -p $${BROWSER_TURN_LISTEN_PORT:-3478} 127.0.0.1 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 2s
