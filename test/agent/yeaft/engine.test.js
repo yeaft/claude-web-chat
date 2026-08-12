@@ -4754,6 +4754,61 @@ describe('Engine', () => {
       ]));
     });
 
+    it('does not dispatch later parallel reads after abort during segment startup', async () => {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'abort-read-1', name: 'parallel_read', input: { index: 1 } },
+        { type: 'tool_call', id: 'abort-read-2', name: 'parallel_read', input: { index: 2 } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+
+      const controller = new AbortController();
+      const executions = [];
+      const registry = new ToolRegistry();
+      registry.register(defineTool({
+        name: 'parallel_read',
+        description: 'Read independently.',
+        parameters: { type: 'object' },
+        isReadOnly: () => true,
+        isConcurrencySafe: () => true,
+        async execute({ index }, { signal }) {
+          executions.push({ index, aborted: signal.aborted });
+          return `result-${index}`;
+        },
+      }));
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolRegistry: registry,
+      });
+
+      const events = [];
+      for await (const event of engine.query({
+        prompt: 'read two independent inputs',
+        signal: controller.signal,
+      })) {
+        events.push(event);
+        if (event.type === 'tool_start' && event.id === 'abort-read-1') controller.abort('user');
+      }
+
+      expect(executions).toEqual([]);
+      expect(events.filter(event => event.type === 'tool_start').map(event => event.id))
+        .toEqual(['abort-read-1']);
+      expect(events.filter(event => event.type === 'tool_end').map(event => ({
+        id: event.id,
+        skipped: event.skipped,
+        aborted: event.aborted,
+      }))).toEqual([
+        { id: 'abort-read-1', skipped: true, aborted: true },
+        { id: 'abort-read-2', skipped: true, aborted: true },
+      ]);
+      expect(events.filter(event => event.type === 'aborted')).toHaveLength(1);
+      expect(events.filter(event => event.type === 'turn_end').at(-1)).toMatchObject({
+        stopReason: 'aborted',
+        terminal: true,
+      });
+    });
+
     it('keeps read-only tools serial unless concurrency metadata explicitly opts in', async () => {
       mockAdapter.pushResponse([
         { type: 'tool_call', id: 'serial-read-1', name: 'serial_read', input: { index: 1 } },

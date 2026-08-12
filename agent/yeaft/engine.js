@@ -4239,7 +4239,7 @@ export class Engine {
        * Completed executions waiting for their original-order commit. Starting
        * a bounded read-only segment together removes wall-clock latency without
        * changing tool result, persistence, trace, or provider message order.
-       * @type {Map<string, { startedAt: number, durationMs: number, output?: string, error?: Error, toolErrorOutput?: string|null }>}
+       * @type {Map<string, { call: object, startedAt: number, durationMs: number, output?: string, error?: Error, toolErrorOutput?: string|null }>}
        */
       const parallelToolExecutions = new Map();
       const announcedParallelToolCalls = new Set();
@@ -4283,12 +4283,9 @@ export class Engine {
         const tc = toolCalls[toolCallIndex];
         const preparedParallelExecution = parallelToolExecutions.get(tc.id) || null;
         // task-325a: honour abort between tools. We don't cancel tools already
-        // running in a parallel segment; every started call still commits a
-        // paired result in provider order. No later segment is dispatched.
-        if (signal?.aborted && !toolBatchBarrier && !preparedParallelExecution) {
-          abortedDuringTools = true;
-          break;
-        }
+        // running in a parallel segment; every provider call still commits a
+        // paired result in provider order, but no not-yet-started call is
+        // dispatched after the abort boundary.
         if (signal?.aborted) abortedDuringTools = true;
 
         if (!preparedParallelExecution && !toolBatchBarrier && !signal?.aborted
@@ -4314,7 +4311,12 @@ export class Engine {
           }
 
           if (parallelCalls.length > 1) {
+            const executions = [];
             for (const call of parallelCalls) {
+              if (signal?.aborted) {
+                abortedDuringTools = true;
+                break;
+              }
               announcedParallelToolCalls.add(call.id);
               yield {
                 type: 'tool_start',
@@ -4323,25 +4325,29 @@ export class Engine {
                 input: call.input,
                 threadId: this.currentThreadId,
               };
-            }
-            const executions = parallelCalls.map(async (call) => {
-              const startedAt = Date.now();
-              const callContext = toolContextForCall(call);
-              const toolErrorOutput = this.#toolRegistry
-                ? this.#toolRegistry.get(call.name)?.errorOutput || null
-                : this.#tools.get(call.name)?.errorOutput || null;
-              try {
-                const output = this.#toolRegistry
-                  ? await this.#toolRegistry.execute(call.name, call.input, callContext)
-                  : normalizeToolOutput(await this.#tools.get(call.name).execute(call.input, callContext));
-                return { startedAt, durationMs: Date.now() - startedAt, output, toolErrorOutput };
-              } catch (error) {
-                return { startedAt, durationMs: Date.now() - startedAt, error, toolErrorOutput };
+              if (signal?.aborted) {
+                abortedDuringTools = true;
+                break;
               }
-            });
+              executions.push((async () => {
+                const startedAt = Date.now();
+                const callContext = toolContextForCall(call);
+                const toolErrorOutput = this.#toolRegistry
+                  ? this.#toolRegistry.get(call.name)?.errorOutput || null
+                  : this.#tools.get(call.name)?.errorOutput || null;
+                try {
+                  const output = this.#toolRegistry
+                    ? await this.#toolRegistry.execute(call.name, call.input, callContext)
+                    : normalizeToolOutput(await this.#tools.get(call.name).execute(call.input, callContext));
+                  return { call, startedAt, durationMs: Date.now() - startedAt, output, toolErrorOutput };
+                } catch (error) {
+                  return { call, startedAt, durationMs: Date.now() - startedAt, error, toolErrorOutput };
+                }
+              })());
+            }
             const completed = await Promise.all(executions);
-            for (let index = 0; index < parallelCalls.length; index += 1) {
-              parallelToolExecutions.set(parallelCalls[index].id, completed[index]);
+            for (const execution of completed) {
+              parallelToolExecutions.set(execution.call.id, execution);
             }
           }
         }
@@ -4349,7 +4355,10 @@ export class Engine {
         const readyParallelExecution = parallelToolExecutions.get(tc.id) || null;
         if (readyParallelExecution) announcedParallelToolCalls.delete(tc.id);
         const activeToolBatchBarrier = toolBatchBarrier;
-        const skipped = activeToolBatchBarrier != null && !readyParallelExecution;
+        const abortSkipped = Boolean(signal?.aborted && !readyParallelExecution);
+        if (abortSkipped) announcedParallelToolCalls.delete(tc.id);
+        const skipped = abortSkipped
+          || (activeToolBatchBarrier != null && !readyParallelExecution);
         const toolStartTime = readyParallelExecution?.startedAt || Date.now();
 
         // PR-L: duplicate-call detection. If this exact (toolName,
@@ -4415,7 +4424,20 @@ export class Engine {
           : new Set();
         const needsProjectDocReload = missingProjectDocScopes.size > 0;
 
-        if (skipped) {
+        if (abortSkipped) {
+          output = `Skipped ${tc.name} because the turn was aborted before this tool started.`;
+          isError = true;
+          yield {
+            type: 'tool_end',
+            id: tc.id,
+            name: tc.name,
+            output,
+            isError: true,
+            skipped: true,
+            aborted: true,
+            threadId: this.currentThreadId,
+          };
+        } else if (skipped) {
           const source = activeToolBatchBarrier.sourceToolName || 'a preceding tool';
           const sourceId = activeToolBatchBarrier.sourceToolCallId
             ? ` (${activeToolBatchBarrier.sourceToolCallId})`
