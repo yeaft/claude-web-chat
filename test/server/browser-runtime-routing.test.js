@@ -244,13 +244,14 @@ describe('Browser Runtime Server ownership and signaling', () => {
     sendToWebClient.mockClear();
     await handleClientBrowser(clientA, {
       type: 'browser_peer_attach', agentId: 'agent-a', browserSessionId: 'browser-session-a',
-      requestId: 'attach-a', connectionGeneration: 1,
+      requestId: 'attach-a', connectionGeneration: 1, role: 'interactive',
     }, async () => true);
     const prepare = sendToAgent.mock.calls.at(-1)[1];
     expect(prepare).toMatchObject({
       type: 'browser_peer_prepare',
       peerId: expect.any(String),
       connectionGeneration: 1,
+      role: 'interactive',
       serverIdentity: expect.objectContaining({ clientId: 'client-a' }),
     });
     expect(prepare.agentIceServers.at(-1).username).toBeTruthy();

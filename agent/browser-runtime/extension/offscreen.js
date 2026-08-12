@@ -112,6 +112,9 @@ function peerRecord(record, message) {
 function closePeer(record, peer, notify = false) {
   if (!record || !peer || record.peers.get(peer.peerId) !== peer) return false;
   record.peers.delete(peer.peerId);
+  for (const channel of Object.values(peer.channels || {})) {
+    try { channel.close(); } catch {}
+  }
   peer.connection.close();
   if (notify) bridgeSend(record, {
     type: 'peer_closed',
@@ -186,6 +189,7 @@ async function createPeer(record, message) {
     pendingCandidates: [],
     offerSent: false,
     localCandidates: [],
+    channels: {},
   };
   record.peers.set(peerId, peer);
   const isCurrent = () => peerRecord(record, peer) === peer;
@@ -209,6 +213,30 @@ async function createPeer(record, message) {
       state: connection.connectionState,
     });
   };
+  if (message.role === 'interactive') {
+    const control = connection.createDataChannel('browser.control.v1', { ordered: true });
+    const pointer = connection.createDataChannel('browser.pointer.v1', {
+      ordered: false,
+      maxRetransmits: 0,
+    });
+    peer.channels.control = control;
+    peer.channels.pointer = pointer;
+    for (const [channel, dataChannel] of Object.entries(peer.channels)) {
+      dataChannel.onmessage = event => {
+        if (!isCurrent() || typeof event.data !== 'string' || event.data.length > 32 * 1024) return;
+        let envelope;
+        try { envelope = JSON.parse(event.data); } catch { return; }
+        if (envelope?.version !== 1 || envelope.connectionGeneration !== connectionGeneration) return;
+        bridgeSend(record, {
+          type: 'peer_input',
+          peerId,
+          connectionGeneration,
+          channel,
+          envelope,
+        });
+      };
+    }
+  }
   const sender = connection.addTrack(record.track, record.stream);
   preferVp8(connection, sender);
   const parameters = sender.getParameters();
