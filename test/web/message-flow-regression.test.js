@@ -57,6 +57,13 @@ import {
 const SIDEBAR_SECTION_SELECTOR = /\.(?:sidebar-section|projects-section|recents-section)(?![-\w])/;
 const CSS_ZERO = /^0(?:\.0+)?(?:[a-z%]+)?$/i;
 
+function translatePluginCenterMessage(key, values = {}) {
+  const template = enMessages[key] || key;
+  return Object.entries(values).reduce((text, [name, value]) => (
+    text.replaceAll(`{${name}}`, String(value))
+  ), template);
+}
+
 function sidebarSectionTopValues(css, property) {
   const declarationPattern = new RegExp(`(?:^|;)\\s*(${property}(?:-top)?)\\s*:\\s*([^;]+)`, 'g');
   return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
@@ -263,18 +270,400 @@ describe('message flow regressions', () => {
     const priorStore = globalThis.Pinia.useChatStore;
     globalThis.Pinia.useChatStore = () => pluginStore;
     const pluginCenter = mount(PluginCenterPage, {
-      global: { mocks: { $t: key => key } },
+      global: { mocks: { $t: translatePluginCenterMessage } },
     });
     await Vue.nextTick();
 
     expect(pluginStore.loadPluginConfig).not.toHaveBeenCalled();
     expect(pluginStore.loadPluginCatalog).not.toHaveBeenCalled();
-    expect(pluginCenter.text()).toContain('yeaft.plugins.upgradeRequired');
-    expect(pluginCenter.get('.btn-ghost').attributes('disabled')).toBeDefined();
+    expect(pluginCenter.text()).toContain(enMessages['yeaft.plugins.upgradeRequired']);
+    expect(pluginCenter.get('.plugin-center-icon-button').attributes('disabled')).toBeDefined();
     expect(pluginCenter.get('.btn-primary').attributes('disabled')).toBeDefined();
 
     pluginCenter.unmount();
     globalThis.Pinia.useChatStore = priorStore;
+  });
+
+  it('keeps the active Agent selection intact when another Agent save resolves late', async () => {
+    const configRequests = [];
+    const saveRequests = [];
+    const pluginStore = Vue.reactive({
+      agents: [
+        { id: 'agent-a', name: 'Agent A', online: true, capabilities: ['yeaft_plugins'] },
+        { id: 'agent-b', name: 'Agent B', online: true, capabilities: ['yeaft_plugins'] },
+      ],
+      currentAgent: 'agent-a',
+      pluginCenterAgentId: 'agent-a',
+      pluginConfigByAgent: {
+        'agent-a': { loaded: true, plugins: { tools: ['A'] } },
+      },
+      pluginCatalogByKey: {
+        'agent-a:': { loading: false, catalog: { tools: [], skills: [], mcpServers: [] } },
+        'agent-b:': { loading: false, catalog: { tools: [], skills: [], mcpServers: [] } },
+      },
+      pluginCatalogKey: (agentId, workDir = '') => `${agentId}:${workDir}`,
+      loadPluginConfig: vi.fn(agentId => new Promise(resolve => {
+        configRequests.push({ agentId, resolve });
+      })),
+      loadPluginCatalog: vi.fn(() => Promise.resolve()),
+      savePluginConfig: vi.fn((plugins, agentId) => new Promise(resolve => {
+        saveRequests.push({ plugins, agentId, resolve });
+      })),
+    });
+    const priorStore = globalThis.Pinia.useChatStore;
+    globalThis.Pinia.useChatStore = () => pluginStore;
+    const pluginCenter = mount(PluginCenterPage, {
+      global: { mocks: { $t: translatePluginCenterMessage } },
+    });
+    await Vue.nextTick();
+
+    pluginCenter.vm.selection = { tools: ['A-draft'] };
+    const saveA = pluginCenter.vm.save();
+    expect(pluginStore.savePluginConfig).toHaveBeenLastCalledWith({ tools: ['A-draft'] }, 'agent-a');
+    expect(pluginCenter.vm.saving).toBe(true);
+
+    pluginStore.pluginCenterAgentId = 'agent-b';
+    await Vue.nextTick();
+    expect(pluginCenter.vm.selection).toBeNull();
+    expect(pluginCenter.vm.savedSelection).toBeNull();
+    expect(pluginCenter.vm.saving).toBe(false);
+    expect(configRequests).toHaveLength(1);
+    expect(configRequests[0].agentId).toBe('agent-b');
+
+    configRequests[0].resolve({ plugins: { tools: ['B'] } });
+    await vi.waitFor(() => expect(pluginCenter.vm.configReady).toBe(true));
+    expect(pluginCenter.vm.selection).toEqual({ tools: ['B'] });
+    expect(pluginCenter.vm.savedSelection).toEqual({ tools: ['B'] });
+
+    pluginCenter.vm.selection = { tools: ['B-draft'] };
+    expect(pluginCenter.vm.isDirty).toBe(true);
+    const saveB = pluginCenter.vm.save();
+    expect(pluginStore.savePluginConfig).toHaveBeenLastCalledWith({ tools: ['B-draft'] }, 'agent-b');
+    expect(pluginCenter.vm.saving).toBe(true);
+
+    saveRequests[0].resolve({ plugins: { tools: ['A'] } });
+    await saveA;
+    await Vue.nextTick();
+    expect(pluginCenter.vm.agentId).toBe('agent-b');
+    expect(pluginCenter.vm.selection).toEqual({ tools: ['B-draft'] });
+    expect(pluginCenter.vm.savedSelection).toEqual({ tools: ['B'] });
+    expect(pluginCenter.vm.isDirty).toBe(true);
+    expect(pluginCenter.vm.saving).toBe(true);
+    expect(pluginStore.savePluginConfig).toHaveBeenCalledTimes(2);
+
+    saveRequests[1].resolve({ plugins: { tools: ['B-draft'] } });
+    await saveB;
+    await Vue.nextTick();
+    expect(pluginCenter.vm.selection).toEqual({ tools: ['B-draft'] });
+    expect(pluginCenter.vm.savedSelection).toEqual({ tools: ['B-draft'] });
+    expect(pluginCenter.vm.isDirty).toBe(false);
+    expect(pluginCenter.vm.saving).toBe(false);
+
+    pluginCenter.unmount();
+    globalThis.Pinia.useChatStore = priorStore;
+  });
+
+  it('ignores a stale catalog refresh error after switching Agents', async () => {
+    let resolveRefreshA;
+    const pluginStore = Vue.reactive({
+      agents: [
+        { id: 'agent-a', name: 'Agent A', online: true, capabilities: ['yeaft_plugins'], capabilityMetadataProvided: true },
+        { id: 'agent-b', name: 'Agent B', online: true, capabilities: ['yeaft_plugins'], capabilityMetadataProvided: true },
+      ],
+      currentAgent: 'agent-a',
+      pluginCenterAgentId: 'agent-a',
+      pluginConfigByAgent: {
+        'agent-a': { loaded: true, plugins: { tools: ['A'] } },
+        'agent-b': { loaded: true, plugins: { tools: ['B'] } },
+      },
+      pluginCatalogByKey: {
+        'agent-a:': { loading: false, catalog: { tools: [{ id: 'A', label: 'A' }], skills: [], mcpServers: [] } },
+        'agent-b:': { loading: false, catalog: { tools: [{ id: 'B', label: 'B' }], skills: [], mcpServers: [] } },
+      },
+      pluginCatalogKey: (agentId, workDir = '') => `${agentId}:${workDir}`,
+      loadPluginConfig: vi.fn(() => Promise.resolve()),
+      loadPluginCatalog: vi.fn(() => Promise.resolve()),
+      savePluginConfig: vi.fn(),
+    });
+    const priorStore = globalThis.Pinia.useChatStore;
+    globalThis.Pinia.useChatStore = () => pluginStore;
+    const pluginCenter = mount(PluginCenterPage, {
+      global: { mocks: { $t: translatePluginCenterMessage } },
+    });
+    await Vue.nextTick();
+    expect(pluginCenter.vm.selection).toEqual({ tools: ['A'] });
+    expect(pluginCenter.vm.savedSelection).toEqual({ tools: ['A'] });
+
+    pluginStore.loadPluginCatalog.mockImplementationOnce(() => new Promise(resolve => {
+      resolveRefreshA = resolve;
+    }));
+    const refreshA = pluginCenter.vm.refresh();
+    expect(resolveRefreshA).toBeTypeOf('function');
+    expect(pluginStore.loadPluginCatalog).toHaveBeenLastCalledWith('agent-a');
+
+    pluginStore.pluginCenterAgentId = 'agent-b';
+    await Vue.nextTick();
+    expect(pluginCenter.vm.agentId).toBe('agent-b');
+    expect(pluginCenter.vm.configReady).toBe(true);
+    expect(pluginCenter.vm.selection).toEqual({ tools: ['B'] });
+    expect(pluginCenter.vm.savedSelection).toEqual({ tools: ['B'] });
+    expect(pluginCenter.vm.saving).toBe(false);
+    expect(pluginCenter.vm.error).toBe('');
+
+    resolveRefreshA({ error: 'Agent A catalog refresh failed' });
+    await refreshA;
+    await Vue.nextTick();
+    expect(pluginCenter.vm.error).toBe('');
+    expect(pluginCenter.vm.selection).toEqual({ tools: ['B'] });
+    expect(pluginCenter.vm.savedSelection).toEqual({ tools: ['B'] });
+    expect(pluginCenter.vm.saving).toBe(false);
+
+    pluginCenter.unmount();
+    globalThis.Pinia.useChatStore = priorStore;
+  });
+
+  it('ignores an older refresh error when a newer refresh for the same Agent finishes first', async () => {
+    const refreshRequests = [];
+    const pluginStore = Vue.reactive({
+      agents: [
+        { id: 'agent-a', name: 'Agent A', online: true, capabilities: ['yeaft_plugins'], capabilityMetadataProvided: true },
+      ],
+      currentAgent: 'agent-a',
+      pluginCenterAgentId: 'agent-a',
+      pluginConfigByAgent: {
+        'agent-a': { loaded: true, plugins: { tools: ['A'] } },
+      },
+      pluginCatalogByKey: {
+        'agent-a:': { loading: false, catalog: { tools: [{ id: 'A', label: 'A' }], skills: [], mcpServers: [] } },
+      },
+      pluginCatalogKey: (agentId, workDir = '') => `${agentId}:${workDir}`,
+      loadPluginConfig: vi.fn(() => Promise.resolve()),
+      loadPluginCatalog: vi.fn(() => Promise.resolve()),
+      savePluginConfig: vi.fn(),
+    });
+    const priorStore = globalThis.Pinia.useChatStore;
+    globalThis.Pinia.useChatStore = () => pluginStore;
+    const pluginCenter = mount(PluginCenterPage, {
+      global: { mocks: { $t: translatePluginCenterMessage } },
+    });
+    await Vue.nextTick();
+
+    pluginStore.loadPluginCatalog.mockImplementation(() => new Promise(resolve => {
+      refreshRequests.push(resolve);
+    }));
+    const olderRefresh = pluginCenter.vm.refresh();
+    const newerRefresh = pluginCenter.vm.refresh();
+    expect(refreshRequests).toHaveLength(2);
+
+    refreshRequests[1]({ error: 'Newer refresh failed' });
+    await newerRefresh;
+    expect(pluginCenter.vm.error).toBe('Newer refresh failed');
+
+    refreshRequests[0]({ error: 'Older refresh failed' });
+    await olderRefresh;
+    await Vue.nextTick();
+    expect(pluginCenter.vm.error).toBe('Newer refresh failed');
+    expect(pluginCenter.vm.selection).toEqual({ tools: ['A'] });
+    expect(pluginCenter.vm.savedSelection).toEqual({ tools: ['A'] });
+
+    pluginCenter.unmount();
+    globalThis.Pinia.useChatStore = priorStore;
+  });
+
+  it('clears the dirty baseline when switching to an explicitly unsupported Plugin Agent', async () => {
+    const pluginStore = Vue.reactive({
+      agents: [
+        { id: 'agent-a', name: 'Agent A', online: true, capabilities: ['yeaft_plugins'], capabilityMetadataProvided: true },
+        { id: 'agent-b', name: 'Agent B', online: true, capabilities: ['plaintext-ok'], capabilityMetadataProvided: true },
+      ],
+      currentAgent: 'agent-a',
+      pluginCenterAgentId: 'agent-a',
+      pluginConfigByAgent: {
+        'agent-a': { loaded: true, plugins: { tools: ['FileRead'] } },
+      },
+      pluginCatalogByKey: {
+        'agent-a:': { loading: false, catalog: { tools: [{ id: 'FileRead', label: 'FileRead' }], skills: [], mcpServers: [] } },
+      },
+      pluginCatalogKey: (agentId, workDir = '') => `${agentId}:${workDir}`,
+      loadPluginConfig: vi.fn(() => Promise.resolve()),
+      loadPluginCatalog: vi.fn(() => Promise.resolve()),
+      savePluginConfig: vi.fn(),
+    });
+    const priorStore = globalThis.Pinia.useChatStore;
+    globalThis.Pinia.useChatStore = () => pluginStore;
+    const pluginCenter = mount(PluginCenterPage, {
+      global: { mocks: { $t: translatePluginCenterMessage } },
+    });
+    await Vue.nextTick();
+    expect(pluginCenter.vm.savedSelection).toEqual({ tools: ['FileRead'] });
+
+    pluginStore.pluginCenterAgentId = 'agent-b';
+    await Vue.nextTick();
+    expect(pluginCenter.vm.agentSupportsPlugins).toBe(false);
+    expect(pluginCenter.vm.selection).toBeNull();
+    expect(pluginCenter.vm.savedSelection).toBeNull();
+    expect(pluginCenter.vm.isDirty).toBe(false);
+    expect(pluginCenter.find('.plugin-center-unsaved').exists()).toBe(false);
+    expect(pluginCenter.get('.plugin-center-save').attributes('disabled')).toBeDefined();
+    await pluginCenter.vm.save();
+    expect(pluginStore.savePluginConfig).not.toHaveBeenCalled();
+
+    pluginCenter.unmount();
+    globalThis.Pinia.useChatStore = priorStore;
+  });
+
+  it('keeps the latest same-key Plugin catalog cache when replies arrive out of order', async () => {
+    const store = useChatStore();
+    const key = store.pluginCatalogKey('agent-a');
+    store.agents = [{
+      id: 'agent-a', name: 'Agent A', online: true,
+      capabilities: ['yeaft_plugins'], capabilityMetadataProvided: true,
+    }];
+    store.currentAgent = 'agent-a';
+    store.pluginCenterAgentId = 'agent-a';
+    store.pluginCatalogByKey = {
+      [key]: {
+        catalog: { tools: [{ id: 'seed-tool' }], skills: [], mcpServers: [] },
+        loading: false,
+        error: null,
+        loaded: true,
+      },
+    };
+    store.pluginCatalogRequestByKey = {};
+    store._pluginPending = {};
+    store.sendWsMessage = vi.fn(() => true);
+
+    const older = store.loadPluginCatalog('agent-a');
+    const olderRequest = store.sendWsMessage.mock.calls.at(-1)[0];
+    const newer = store.loadPluginCatalog('agent-a');
+    const newerRequest = store.sendWsMessage.mock.calls.at(-1)[0];
+    expect(olderRequest.requestId).not.toBe(newerRequest.requestId);
+    expect(store.pluginCatalogRequestByKey[key]).toBe(newerRequest.requestId);
+
+    handleMessage(store, {
+      type: 'yeaft_plugin_catalog_result',
+      agentId: 'agent-a',
+      requestId: newerRequest.requestId,
+      catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+      error: null,
+    });
+    await expect(newer).resolves.toEqual({
+      catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+      error: null,
+    });
+    expect(store.pluginCatalogByKey[key]).toMatchObject({
+      catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+      loading: false,
+      error: null,
+    });
+
+    handleMessage(store, {
+      type: 'yeaft_plugin_catalog_result',
+      agentId: 'agent-a',
+      requestId: olderRequest.requestId,
+      catalog: { tools: [{ id: 'old-tool' }], skills: [], mcpServers: [] },
+      error: 'old request failed late',
+    });
+    await expect(older).resolves.toEqual({
+      catalog: { tools: [{ id: 'old-tool' }], skills: [], mcpServers: [] },
+      error: 'old request failed late',
+    });
+    expect(store.pluginCatalogRequestByKey[key]).toBe(newerRequest.requestId);
+    expect(store.pluginCatalogByKey[key]).toMatchObject({
+      catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+      loading: false,
+      error: null,
+    });
+    expect(store._pluginPending).toEqual({});
+  });
+
+  it('keeps a newer Plugin catalog cache after an older request times out and replies late', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = useChatStore();
+      const key = store.pluginCatalogKey('agent-a');
+      store.agents = [{
+        id: 'agent-a', name: 'Agent A', online: true,
+        capabilities: ['yeaft_plugins'], capabilityMetadataProvided: true,
+      }];
+      store.currentAgent = 'agent-a';
+      store.pluginCenterAgentId = 'agent-a';
+      store.pluginCatalogByKey = {
+        [key]: {
+          catalog: { tools: [{ id: 'seed-tool' }], skills: [], mcpServers: [] },
+          loading: false,
+          error: null,
+          loaded: true,
+        },
+      };
+      store.pluginCatalogRequestByKey = {};
+      store._pluginPending = {};
+      store.sendWsMessage = vi.fn(() => true);
+
+      const older = store.loadPluginCatalog('agent-a');
+      const olderRequest = store.sendWsMessage.mock.calls.at(-1)[0];
+      await vi.advanceTimersByTimeAsync(1);
+      const newer = store.loadPluginCatalog('agent-a');
+      const newerRequest = store.sendWsMessage.mock.calls.at(-1)[0];
+      expect(store.pluginCatalogRequestByKey[key]).toBe(newerRequest.requestId);
+
+      await vi.advanceTimersByTimeAsync(9_999);
+      await expect(older).resolves.toEqual({
+        catalog: { tools: [], skills: [], mcpServers: [] },
+        error: 'timeout',
+      });
+      expect(store.pluginCatalogByKey[key]).toMatchObject({
+        catalog: { tools: [{ id: 'seed-tool' }], skills: [], mcpServers: [] },
+        loading: true,
+        error: null,
+      });
+
+      handleMessage(store, {
+        type: 'yeaft_plugin_catalog_result',
+        agentId: 'agent-a',
+        requestId: 'unknown-catalog-result',
+        catalog: { tools: [{ id: 'unknown-tool' }], skills: [], mcpServers: [] },
+        error: 'unknown request error',
+      });
+      expect(store.pluginCatalogByKey[key]).toMatchObject({
+        catalog: { tools: [{ id: 'seed-tool' }], skills: [], mcpServers: [] },
+        loading: true,
+        error: null,
+      });
+
+      handleMessage(store, {
+        type: 'yeaft_plugin_catalog_result',
+        agentId: 'agent-a',
+        requestId: olderRequest.requestId,
+        catalog: { tools: [{ id: 'old-tool' }], skills: [], mcpServers: [] },
+        error: 'late old error',
+      });
+      expect(store.pluginCatalogByKey[key]).toMatchObject({
+        catalog: { tools: [{ id: 'seed-tool' }], skills: [], mcpServers: [] },
+        loading: true,
+        error: null,
+      });
+
+      handleMessage(store, {
+        type: 'yeaft_plugin_catalog_result',
+        agentId: 'agent-a',
+        requestId: newerRequest.requestId,
+        catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+        error: null,
+      });
+      await expect(newer).resolves.toEqual({
+        catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+        error: null,
+      });
+      expect(store.pluginCatalogByKey[key]).toMatchObject({
+        catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+        loading: false,
+        error: null,
+      });
+      expect(store._pluginPending).toEqual({});
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('distinguishes explicit Plugin incompatibility from missing capability metadata', async () => {
@@ -2283,6 +2672,16 @@ describe('message flow regressions', () => {
     expect(workCenter).not.toContain('<select :value="agentId"');
     expect(workCenter).toContain("this.store.enterWorkCenter(nextAgentId)");
     expect(workCenterCss).toMatch(/\.work-center-agent-picker \.modern-select-trigger\s*\{[^}]*background:\s*var\(--bg-input\)/s);
+    const pluginCenterCss = readFileSync(resolve(import.meta.dirname, '../../web/styles/plugin-center.css'), 'utf8');
+    expect(pluginCenterCss).toContain('background: var(--bg-main);');
+    expect(pluginCenterCss).toContain('background: var(--bg-sidebar);');
+    expect(pluginCenterCss).toContain('background: var(--session-active);');
+    expect(pluginCenterCss).toContain('background: var(--sidebar-hover);');
+    expect(pluginCenterCss).toContain('border-radius: var(--plugin-center-radius-lg);');
+    expect(pluginCenterCss).toContain('gap: var(--plugin-center-space-8);');
+    expect(pluginCenterCss).toContain('font-size: var(--plugin-center-font-size-md);');
+    expect(pluginCenterCss).not.toMatch(/#[0-9a-f]{3,8}|rgba?\(/i);
+    expect(pluginCenterCss).not.toMatch(/(?:^|[;{])\s*(?:gap|margin(?:-[a-z]+)?|padding(?:-[a-z]+)?|font-size|min-(?:width|height)|max-width|width|height|border(?:-(?:top|right|bottom|left))?|outline(?:-offset)?|border-radius)\s*:\s*-?\d+(?:\.\d+)?(?:px|rem|em)/im);
     const workCenterStore = {
       workCenterAgentId: 'agent-a',
       currentAgent: 'agent-a',
@@ -2360,7 +2759,7 @@ describe('message flow regressions', () => {
     });
     globalThis.Pinia.useChatStore = () => pluginStore;
     const pluginCenter = mount(PluginCenterPage, {
-      global: { mocks: { $t: key => key } },
+      global: { mocks: { $t: translatePluginCenterMessage } },
     });
     await Vue.nextTick();
     expect(pluginCenter.findAll('input[type="checkbox"]').every(input => input.element.disabled)).toBe(true);
@@ -2406,6 +2805,28 @@ describe('message flow regressions', () => {
       skills: ['skill-b'],
     }, 'agent-a');
     expect(pluginCenter.vm.enabledCount).toBe(2);
+    expect(pluginCenter.vm.isDirty).toBe(false);
+    expect(pluginCenter.find('.plugin-center-save').attributes('disabled')).toBeDefined();
+
+    await pluginCenter.get('input[type="search"]').setValue('skill-b');
+    expect(pluginCenter.vm.visibleCategories).toEqual(['skills']);
+    expect(pluginCenter.vm.visibleResultCount).toBe(1);
+    expect(pluginCenter.findAll('.plugin-center-card')).toHaveLength(1);
+    expect(pluginCenter.text()).toContain('skill-b');
+
+    pluginCenter.vm.activeCategory = 'tools';
+    await Vue.nextTick();
+    expect(pluginCenter.vm.hasSearchResults).toBe(false);
+    expect(pluginCenter.find('.plugin-center-empty-search').exists()).toBe(true);
+
+    pluginCenter.vm.activeCategory = 'skills';
+    pluginCenter.vm.searchQuery = '';
+    await Vue.nextTick();
+    const skillToggle = pluginCenter.findAll('input[type="checkbox"]').find(input => input.element.checked);
+    await skillToggle.setValue(false);
+    expect(pluginCenter.vm.isDirty).toBe(true);
+    expect(pluginCenter.get('.plugin-center-save').attributes('disabled')).toBeUndefined();
+    expect(pluginCenter.text()).toContain(enMessages['yeaft.plugins.unsavedChanges']);
     pluginCenter.unmount();
 
     globalThis.Pinia.useChatStore = () => workCenterStore;

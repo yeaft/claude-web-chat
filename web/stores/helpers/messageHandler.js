@@ -1137,6 +1137,7 @@ export function handleMessage(store, msg) {
 
     case 'yeaft_plugin_catalog_result': {
       const pending = msg.requestId ? store._pluginPending?.[msg.requestId] : null;
+      const catalogPending = pending?.kind === 'catalog' ? pending : null;
       const catalog = msg.catalog && typeof msg.catalog === 'object'
         ? {
             tools: Array.isArray(msg.catalog.tools) ? msg.catalog.tools : [],
@@ -1144,17 +1145,19 @@ export function handleMessage(store, msg) {
             mcpServers: Array.isArray(msg.catalog.mcpServers) ? msg.catalog.mcpServers : [],
           }
         : { tools: [], skills: [], mcpServers: [] };
-      const key = pending?.key || store.pluginCatalogKey?.(msg.agentId, '');
-      if (key) {
+      const key = catalogPending?.key;
+      // A catalog cache belongs to the latest request for its Agent/workDir key.
+      // Stale, expired, and unknown replies must not overwrite that cache.
+      if (key && store.pluginCatalogRequestByKey?.[key] === msg.requestId) {
         store.pluginCatalogByKey = {
           ...store.pluginCatalogByKey,
           [key]: { catalog, loading: false, error: msg.error || null, loaded: true, at: Date.now() },
         };
       }
-      if (pending) {
-        clearTimeout(pending.timer);
+      if (catalogPending) {
+        clearTimeout(catalogPending.timer);
         delete store._pluginPending[msg.requestId];
-        pending.resolve({ catalog, error: msg.error || null });
+        catalogPending.resolve({ catalog, error: msg.error || null });
       }
       break;
     }
