@@ -89,6 +89,13 @@ import {
 /** Maximum auto-continue turns when stopReason is 'max_tokens'. */
 const MAX_CONTINUE_TURNS = 3;
 
+/**
+ * Keep one provider tool batch from opening an unbounded number of filesystem,
+ * network, or subprocess reads. Only tools whose metadata explicitly declares
+ * both read-only and concurrency-safe execution enter this lane.
+ */
+const MAX_CONCURRENT_READ_ONLY_TOOLS = 4;
+
 /** Bound the best-effort post-turn AMS LLM call independently of the user turn. */
 const MAINTENANCE_CALL_TIMEOUT_MS = 30_000;
 
@@ -107,6 +114,16 @@ function toolDefinitionFor(engine, name) {
 function isReadOnlyTool(engine, name, input) {
   try {
     return toolDefinitionFor(engine, name)?.isReadOnly?.(input) === true;
+  } catch {
+    return false;
+  }
+}
+
+function isConcurrencySafeTool(engine, name, input) {
+  try {
+    const tool = toolDefinitionFor(engine, name);
+    return tool?.isReadOnly?.(input) === true
+      && tool?.isConcurrencySafe?.(input) === true;
   } catch {
     return false;
   }
@@ -4218,21 +4235,122 @@ export class Engine {
       let abortedDuringTools = false;
       /** @type {string[]} */
       const pendingDupReminders = [];
+      /**
+       * Completed executions waiting for their original-order commit. Starting
+       * a bounded read-only segment together removes wall-clock latency without
+       * changing tool result, persistence, trace, or provider message order.
+       * @type {Map<string, { startedAt: number, durationMs: number, output?: string, error?: Error, toolErrorOutput?: string|null }>}
+       */
+      const parallelToolExecutions = new Map();
+      const announcedParallelToolCalls = new Set();
+      const toolAllowedForRequest = (toolCall) => (this.#toolRegistry
+        ? this.#toolRegistry.isAllowed(toolCall.name, {
+            collabToolPolicy: effectiveCollabToolPolicy,
+            plugins: this.#config?.plugins,
+            activeToolNames,
+          })
+        : this.#tools.has(toolCall.name));
+      const toolContextForCall = (toolCall) => {
+        const stableToolCall = {
+          id: toolCall.id,
+          name: toolCall.name,
+          threadId: runtimeThreadId,
+        };
+        return {
+          ...toolCtx,
+          currentToolCall: () => ({ ...stableToolCall }),
+          askUser: typeof askUser === 'function'
+            ? input => askUser(input, { ...stableToolCall })
+            : toolCtx.askUser,
+          registerAsyncTask: (taskId, meta = {}) => {
+            this.#registerAsyncTask(taskId, { ...stableToolCall, ...(meta || {}) });
+          },
+          requestToolBatchBarrier: (reason) => {
+            if (toolBatchBarrier != null) return;
+            const detail = reason && typeof reason === 'object'
+              ? { ...reason }
+              : { message: String(reason || 'A preceding tool result invalidated the remaining batch.') };
+            toolBatchBarrier = {
+              ...detail,
+              sourceToolCallId: stableToolCall.id,
+              sourceToolName: stableToolCall.name,
+            };
+          },
+        };
+      };
 
-      for (const tc of toolCalls) {
-        // task-325a: honour abort between tools. We don't cancel a tool
-        // that's already running (the signal is passed in, tools decide
-        // themselves whether to bail early), but we stop dispatching
-        // any remaining tools the moment abort fires.
-        if (signal?.aborted && !toolBatchBarrier) {
+      for (let toolCallIndex = 0; toolCallIndex < toolCalls.length; toolCallIndex += 1) {
+        const tc = toolCalls[toolCallIndex];
+        const preparedParallelExecution = parallelToolExecutions.get(tc.id) || null;
+        // task-325a: honour abort between tools. We don't cancel tools already
+        // running in a parallel segment; every started call still commits a
+        // paired result in provider order. No later segment is dispatched.
+        if (signal?.aborted && !toolBatchBarrier && !preparedParallelExecution) {
           abortedDuringTools = true;
           break;
         }
         if (signal?.aborted) abortedDuringTools = true;
 
+        if (!preparedParallelExecution && !toolBatchBarrier && !signal?.aborted
+            && toolAllowedForRequest(tc) && isConcurrencySafeTool(this, tc.name, tc.input)
+            && !mayMutateWorkspaceAfterReturn(this, tc.name, tc.input)) {
+          const parallelCalls = [];
+          const segmentCacheKeys = new Set();
+          for (let candidateIndex = toolCallIndex;
+            candidateIndex < toolCalls.length && parallelCalls.length < MAX_CONCURRENT_READ_ONLY_TOOLS;
+            candidateIndex += 1) {
+            const candidate = toolCalls[candidateIndex];
+            if (!toolAllowedForRequest(candidate)
+                || !isConcurrencySafeTool(this, candidate.name, candidate.input)
+                || mayMutateWorkspaceAfterReturn(this, candidate.name, candidate.input)) break;
+            const candidateKey = `${candidate.name}\u001f${argsHashOf(candidate.input)}`;
+            const candidateCacheable = isCacheableTool(this, candidate.name, candidate.input);
+            // Keep identical cacheable reads on the serial commit path so the
+            // second call reuses the first result instead of duplicating I/O.
+            if (candidateCacheable
+                && (readOnlyToolResults.has(candidateKey) || segmentCacheKeys.has(candidateKey))) break;
+            parallelCalls.push(candidate);
+            if (candidateCacheable) segmentCacheKeys.add(candidateKey);
+          }
+
+          if (parallelCalls.length > 1) {
+            for (const call of parallelCalls) {
+              announcedParallelToolCalls.add(call.id);
+              yield {
+                type: 'tool_start',
+                id: call.id,
+                name: call.name,
+                input: call.input,
+                threadId: this.currentThreadId,
+              };
+            }
+            const executions = parallelCalls.map(async (call) => {
+              const startedAt = Date.now();
+              const callContext = toolContextForCall(call);
+              const toolErrorOutput = this.#toolRegistry
+                ? this.#toolRegistry.get(call.name)?.errorOutput || null
+                : this.#tools.get(call.name)?.errorOutput || null;
+              try {
+                const output = this.#toolRegistry
+                  ? await this.#toolRegistry.execute(call.name, call.input, callContext)
+                  : normalizeToolOutput(await this.#tools.get(call.name).execute(call.input, callContext));
+                return { startedAt, durationMs: Date.now() - startedAt, output, toolErrorOutput };
+              } catch (error) {
+                return { startedAt, durationMs: Date.now() - startedAt, error, toolErrorOutput };
+              }
+            });
+            const completed = await Promise.all(executions);
+            for (let index = 0; index < parallelCalls.length; index += 1) {
+              parallelToolExecutions.set(parallelCalls[index].id, completed[index]);
+            }
+          }
+        }
+
+        const readyParallelExecution = parallelToolExecutions.get(tc.id) || null;
+        if (readyParallelExecution) announcedParallelToolCalls.delete(tc.id);
         const activeToolBatchBarrier = toolBatchBarrier;
-        const skipped = activeToolBatchBarrier != null;
-        const toolStartTime = Date.now();
+        const skipped = activeToolBatchBarrier != null && !readyParallelExecution;
+        const toolStartTime = readyParallelExecution?.startedAt || Date.now();
 
         // PR-L: duplicate-call detection. If this exact (toolName,
         // argsHash) pair has already been executed DUP_TOOL_THRESHOLD
@@ -4381,22 +4499,32 @@ export class Engine {
               threadId: this.currentThreadId,
             };
           } else try {
-            yield { type: 'tool_start', id: tc.id, name: tc.name, input: tc.input, threadId: this.currentThreadId };
-            if (this.#toolRegistry) {
-              toolErrorOutput = this.#toolRegistry.get(tc.name)?.errorOutput || null;
-              output = await this.#toolRegistry.execute(tc.name, tc.input, toolCtx);
+            if (readyParallelExecution) {
+              parallelToolExecutions.delete(tc.id);
+              toolErrorOutput = readyParallelExecution.toolErrorOutput || null;
+              if (readyParallelExecution.error) throw readyParallelExecution.error;
+              output = readyParallelExecution.output;
             } else {
-              const tool = this.#tools.get(tc.name);
-              toolErrorOutput = tool.errorOutput || null;
-              // Pass the full toolCtx (cwd, workDir, signal, …) — not just
-              // `{ signal }`. Legacy registerTool() callers historically got
-              // a 1-field ctx, but that means tools like bash/file-read run
-              // in the agent process cwd instead of the group's workDir.
-              // Real production goes through #toolRegistry; the legacy path
-              // is exercised by tests and a few standalone tools. Aligning
-              // both paths keeps `ctx.cwd` semantics consistent.
-              const rawOutput = await tool.execute(tc.input, toolCtx);
-              output = normalizeToolOutput(rawOutput);
+              if (!announcedParallelToolCalls.delete(tc.id)) {
+                yield { type: 'tool_start', id: tc.id, name: tc.name, input: tc.input, threadId: this.currentThreadId };
+              }
+              const callToolCtx = toolContextForCall(tc);
+              if (this.#toolRegistry) {
+                toolErrorOutput = this.#toolRegistry.get(tc.name)?.errorOutput || null;
+                output = await this.#toolRegistry.execute(tc.name, tc.input, callToolCtx);
+              } else {
+                const tool = this.#tools.get(tc.name);
+                toolErrorOutput = tool.errorOutput || null;
+                // Pass the full toolCtx (cwd, workDir, signal, …) — not just
+                // `{ signal }`. Legacy registerTool() callers historically got
+                // a 1-field ctx, but that means tools like bash/file-read run
+                // in the agent process cwd instead of the group's workDir.
+                // Real production goes through #toolRegistry; the legacy path
+                // is exercised by tests and a few standalone tools. Aligning
+                // both paths keeps `ctx.cwd` semantics consistent.
+                const rawOutput = await tool.execute(tc.input, callToolCtx);
+                output = normalizeToolOutput(rawOutput);
+              }
             }
             displayImages = extractDisplayImages(tc.name, output);
             if (displayImages.length > 0) {
@@ -4443,7 +4571,7 @@ export class Engine {
 
         currentToolCallForAsyncTask = null;
 
-        const toolDurationMs = Date.now() - toolStartTime;
+        const toolDurationMs = readyParallelExecution?.durationMs ?? (Date.now() - toolStartTime);
 
         // feat-6af5f9f1 PR B: emit a structured `tool_exec` event for the
         // debug panel. Keep raw output here; the model-facing tool

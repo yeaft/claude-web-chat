@@ -4685,6 +4685,182 @@ describe('Engine', () => {
   });
 
   describe('multiple tool calls in one turn', () => {
+    it('runs explicitly safe read-only tools with a bounded parallel lane and commits in call order', async () => {
+      const calls = Array.from({ length: 5 }, (_, index) => ({
+        type: 'tool_call',
+        id: `parallel-read-${index + 1}`,
+        name: 'parallel_read',
+        input: { index },
+      }));
+      mockAdapter.pushResponse([
+        ...calls,
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'done' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      let active = 0;
+      let maxActive = 0;
+      let releaseFirstWave;
+      const firstWave = new Promise(resolve => { releaseFirstWave = resolve; });
+      const registry = new ToolRegistry();
+      registry.register(defineTool({
+        name: 'parallel_read',
+        description: 'Read independently.',
+        parameters: { type: 'object' },
+        isReadOnly: () => true,
+        isConcurrencySafe: () => true,
+        async execute({ index }) {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          if (active === 4) releaseFirstWave();
+          if (index < 4) await firstWave;
+          active -= 1;
+          return `result-${index + 1}`;
+        },
+      }));
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolRegistry: registry,
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'read five independent inputs' })) events.push(event);
+
+      expect(maxActive).toBe(4);
+      expect(events
+        .filter(event => event.type === 'tool_start' || event.type === 'tool_end')
+        .map(event => `${event.type}:${event.id}`)).toEqual([
+        'tool_start:parallel-read-1',
+        'tool_start:parallel-read-2',
+        'tool_start:parallel-read-3',
+        'tool_start:parallel-read-4',
+        'tool_end:parallel-read-1',
+        'tool_end:parallel-read-2',
+        'tool_end:parallel-read-3',
+        'tool_end:parallel-read-4',
+        'tool_start:parallel-read-5',
+        'tool_end:parallel-read-5',
+      ]);
+      expect(mockAdapter.callLog[1].messages
+        .filter(message => message.role === 'tool')
+        .map(message => [message.toolCallId, message.content])).toEqual(calls.map((call, index) => [
+        call.id,
+        `result-${index + 1}`,
+      ]));
+    });
+
+    it('keeps read-only tools serial unless concurrency metadata explicitly opts in', async () => {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'serial-read-1', name: 'serial_read', input: { index: 1 } },
+        { type: 'tool_call', id: 'serial-read-2', name: 'serial_read', input: { index: 2 } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'done' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const executionOrder = [];
+      const registry = new ToolRegistry();
+      registry.register(defineTool({
+        name: 'serial_read',
+        description: 'Read with ordering constraints.',
+        parameters: { type: 'object' },
+        isReadOnly: () => true,
+        async execute({ index }) {
+          executionOrder.push(`start-${index}`);
+          await Promise.resolve();
+          executionOrder.push(`end-${index}`);
+          return `result-${index}`;
+        },
+      }));
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolRegistry: registry,
+      });
+
+      for await (const _event of engine.query({ prompt: 'run constrained reads' })) { /* drain */ }
+
+      expect(executionOrder).toEqual(['start-1', 'end-1', 'start-2', 'end-2']);
+    });
+
+    it('uses unsafe tools as serial barriers between safe read-only segments', async () => {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'read-a', name: 'parallel_read', input: { id: 'a' } },
+        { type: 'tool_call', id: 'read-b', name: 'parallel_read', input: { id: 'b' } },
+        { type: 'tool_call', id: 'write', name: 'serial_write', input: {} },
+        { type: 'tool_call', id: 'read-c', name: 'parallel_read', input: { id: 'c' } },
+        { type: 'tool_call', id: 'read-d', name: 'parallel_read', input: { id: 'd' } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'done' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const executionOrder = [];
+      let releaseFirstPair;
+      let releaseSecondPair;
+      let firstPairActive = 0;
+      let secondPairActive = 0;
+      const firstPair = new Promise(resolve => { releaseFirstPair = resolve; });
+      const secondPair = new Promise(resolve => { releaseSecondPair = resolve; });
+      const registry = new ToolRegistry();
+      registry.register(defineTool({
+        name: 'parallel_read',
+        description: 'Read independently.',
+        parameters: { type: 'object' },
+        isReadOnly: () => true,
+        isConcurrencySafe: () => true,
+        async execute({ id }) {
+          executionOrder.push(`start-${id}`);
+          if (id === 'a' || id === 'b') {
+            firstPairActive += 1;
+            if (firstPairActive === 2) releaseFirstPair();
+            await firstPair;
+          } else {
+            secondPairActive += 1;
+            if (secondPairActive === 2) releaseSecondPair();
+            await secondPair;
+          }
+          executionOrder.push(`end-${id}`);
+          return id;
+        },
+      }));
+      registry.register(defineTool({
+        name: 'serial_write',
+        description: 'Mutate shared state.',
+        parameters: { type: 'object' },
+        isReadOnly: () => false,
+        isConcurrencySafe: () => false,
+        async execute() {
+          executionOrder.push('write');
+          return 'written';
+        },
+      }));
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolRegistry: registry,
+      });
+
+      for await (const _event of engine.query({ prompt: 'read, write, and reread' })) { /* drain */ }
+
+      const writeIndex = executionOrder.indexOf('write');
+      expect(writeIndex).toBeGreaterThan(executionOrder.indexOf('end-a'));
+      expect(writeIndex).toBeGreaterThan(executionOrder.indexOf('end-b'));
+      expect(writeIndex).toBeLessThan(executionOrder.indexOf('start-c'));
+      expect(writeIndex).toBeLessThan(executionOrder.indexOf('start-d'));
+    });
+
     async function verifyIdenticalReadReuse() {
       mockAdapter.pushResponse([
         { type: 'tool_call', id: 'read-1', name: 'read', input: { path: 'same.txt' } },
