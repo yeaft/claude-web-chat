@@ -41,6 +41,7 @@ import {
   resolveRuntimeIdentity,
   resolveServiceInstanceId,
   shouldLoadLegacyLocalConfig,
+  validateInstanceId,
 } from '../../agent/service/config.js';
 import { shouldLoadLegacyLocalConfig as shouldLoadLegacyLocalConfigFromService } from '../../agent/service.js';
 import { handleLocalCommand } from '../../agent/cli.js';
@@ -209,6 +210,15 @@ describe('agent ctx defaults and upgrade contract', () => {
     expect(resolveAgentWorkDir({ workDir: '/tmp/from-file' }, { WORK_DIR: '/tmp/from-env' }, 'named-agent'))
       .toBe('/tmp/from-env');
     expect(resolveAgentWorkDir({ workDir: '/tmp/from-file' }, {}, 'named-agent')).toBe('/tmp/from-file');
+    for (const dotSegment of ['.', '..']) {
+      expect(() => validateInstanceId(dotSegment)).toThrow('may not be');
+      expect(() => getDefaultWorkDir(dotSegment)).toThrow('may not be');
+      expect(() => getInstanceIdFromArgs(['--name', dotSegment], {})).toThrow('may not be');
+      expect(() => parseLocalArgs(['--name', dotSegment], {})).toThrow('may not be');
+      expect(() => resolveServiceInstanceId([], { AGENT_NAME: dotSegment })).toThrow('may not be');
+      expect(() => parseLocalArgs([], { AGENT_NAME: dotSegment })).toThrow('may not be');
+      expect(() => resolveRuntimeIdentity({}, { AGENT_NAME: dotSegment })).toThrow('may not be');
+    }
     expect(shouldLoadLegacyLocalConfig({})).toBe(true);
     expect(shouldLoadLegacyLocalConfig({ YEAFT_AGENT_INSTANCE: '' })).toBe(true);
     expect(shouldLoadLegacyLocalConfig({ YEAFT_AGENT_INSTANCE: 'server' })).toBe(false);
