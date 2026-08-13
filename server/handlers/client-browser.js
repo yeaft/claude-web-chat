@@ -234,6 +234,12 @@ export async function handleClientBrowser(client, msg, checkAgentAccess) {
       connectionGeneration: peer.connectionGeneration,
     };
     try {
+      // Commit the Web endpoint's scoped ICE credentials before the Agent can
+      // synchronously answer `browser_peer_prepare`. Otherwise a fast Agent
+      // may produce `browser_peer_prepared` while this field is still unset,
+      // causing the Web RTCPeerConnection to be created with no ICE servers.
+      peer.webIceServers = mintBrowserIceServers({ ...commonScope, endpointRole: 'web' });
+      peer.state = 'preparing';
       await sendToAgent(agent, {
         type: 'browser_peer_prepare',
         agentId,
@@ -247,8 +253,6 @@ export async function handleClientBrowser(client, msg, checkAgentAccess) {
         iceTransportPolicy: CONFIG.browserRuntime.iceTransportPolicy,
         agentIceServers: mintBrowserIceServers({ ...commonScope, endpointRole: 'agent' }),
       });
-      peer.webIceServers = mintBrowserIceServers({ ...commonScope, endpointRole: 'web' });
-      peer.state = 'preparing';
     } catch (error) {
       deleteBrowserPeer(peer.peerId);
       return fail(client, msg, 'browser_peer_prepare_failed', String(error?.message || error).slice(0, 500));
