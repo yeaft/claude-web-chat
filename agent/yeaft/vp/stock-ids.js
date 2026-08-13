@@ -32,8 +32,12 @@ const STOCK_VP_ID_LIST = Object.freeze([
   // strategy / business
   'sunzi', 'clausewitz', 'simaqian', 'harari',
   'buffett', 'munger', 'dalio', 'bezos', 'drucker',
+  // writing
+  'luxun', 'sudongpo', 'borges', 'haiyan', 'liufang', 'zhaona',
+  // science
+  'einstein',
   // arts / culture
-  'luxun', 'sudongpo', 'borges', 'einstein', 'kubrick', 'miyazaki',
+  'kubrick', 'miyazaki',
   // assistant
   'omni',
 ]);
