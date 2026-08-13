@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import ctx from '../../../agent/context.js';
@@ -332,6 +332,65 @@ describe('Yeaft managed Skill protocol', () => {
         error: 'the selected Session was not found',
       });
       expect(existsSync(join(workDir, '.yeaft', 'skills', 'local-group-json.md'))).toBe(false);
+    } finally {
+      ctx.ws = originalWs;
+      ctx.serverEncryptionRequired = originalEncryption;
+      ctx.messageBuffer = originalBuffer;
+      ctx.outboundSendQueue = originalQueue;
+      ctx.outboundSendQueueActive = originalQueueActive;
+    }
+  });
+
+  it('rejects a symlinked agent-local sessions root before project Skill create or remove', () => {
+    const root = makeDir();
+    const externalSessionRoot = tempRoot('yeaft-managed-skill-external-sessions-root-');
+    const externalWorkDir = tempRoot('yeaft-managed-skill-external-sessions-workdir-');
+    const sessionId = 'session_parent_link';
+    createSession(sessionsRoot(externalSessionRoot), {
+      id: sessionId,
+      name: 'External parent-link metadata',
+      roster: [],
+      defaultVpId: null,
+      workDir: externalWorkDir,
+    }).close();
+    const externalSkillPath = join(externalWorkDir, '.yeaft', 'skills', 'parent-link.md');
+    mkdirSync(dirname(externalSkillPath), { recursive: true });
+    writeFileSync(externalSkillPath, 'external Skill must survive', 'utf8');
+    try {
+      symlinkSync(sessionsRoot(externalSessionRoot), sessionsRoot(root), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (['EPERM', 'EACCES', 'ENOSYS'].includes(error?.code)) return;
+      throw error;
+    }
+    const originalWs = ctx.ws;
+    const originalEncryption = ctx.serverEncryptionRequired;
+    const originalBuffer = ctx.messageBuffer;
+    const originalQueue = ctx.outboundSendQueue;
+    const originalQueueActive = ctx.outboundSendQueueActive;
+    ctx.messageBuffer = [];
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = true;
+    ctx.CONFIG = { ...(originalConfig || {}), yeaftDir: root };
+    ctx.ws = { readyState: 1, send() {} };
+    ctx.serverEncryptionRequired = false;
+    __testSetSession({ yeaftDir: root, config: {}, skillManager: null, mcpManager: null, toolRegistry: null });
+
+    try {
+      handleYeaftManagedSkill({
+        requestId: 'parent-link-create', action: 'create', scope: 'project', sessionId,
+        skill: { name: 'parent-link', description: 'Must not follow linked session roots', content: 'Reject parent links.' },
+      });
+      expect(readFileSync(externalSkillPath, 'utf8')).toBe('external Skill must survive');
+      handleYeaftManagedSkill({
+        requestId: 'parent-link-remove', action: 'remove', scope: 'project', sessionId, name: 'parent-link',
+      });
+      expect(readFileSync(externalSkillPath, 'utf8')).toBe('external Skill must survive');
+      const responses = ctx.outboundSendQueue.map(item => item.msg)
+        .filter(frame => frame.type === 'yeaft_managed_skill_result');
+      expect(responses).toEqual([
+        expect.objectContaining({ requestId: 'parent-link-create', error: 'the selected Session was not found' }),
+        expect.objectContaining({ requestId: 'parent-link-remove', error: 'the selected Session was not found' }),
+      ]);
     } finally {
       ctx.ws = originalWs;
       ctx.serverEncryptionRequired = originalEncryption;

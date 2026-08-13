@@ -3284,7 +3284,17 @@ function resolveManagedSkillSession(yeaftDir, rawSessionId) {
   // agent-local canonical store, not the read-compatible resolver: that one
   // can consult bootstrap-only group-workdirs.json and project-local legacy
   // Session directories. Those sources are not valid write authorization.
-  const sessionDir = join(sessionsRoot(yeaftDir), sessionId);
+  const sessionRoot = sessionsRoot(yeaftDir);
+  try {
+    const sessionRootStat = lstatSync(sessionRoot);
+    if (!sessionRootStat.isDirectory() || sessionRootStat.isSymbolicLink()) {
+      throw new Error('the selected Session was not found');
+    }
+  } catch (err) {
+    if (err?.message === 'the selected Session was not found') throw err;
+    throw new Error('the selected Session was not found');
+  }
+  const sessionDir = join(sessionRoot, sessionId);
   // `loadSessionMeta()` deliberately supports legacy group.json for readers.
   // This mutation path needs the canonical agent-local session.json instead.
   const metaPath = join(sessionDir, SESSION_META_FILE);
