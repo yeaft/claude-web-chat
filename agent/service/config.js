@@ -10,10 +10,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export const SERVICE_NAME = 'yeaft-agent';
 export const DEFAULT_INSTANCE_ID = 'default';
 
+function assertSafeIdentitySegment(value, label) {
+  const normalized = String(value ?? '').trim();
+  if (normalized === '.' || normalized === '..') {
+    throw new Error(`${label} may not be "." or ".."`);
+  }
+  return normalized;
+}
+
 export function getDefaultAgentName(machineName = hostname()) {
   const raw = String(machineName || '');
   if (!raw) return DEFAULT_INSTANCE_ID;
-  return raw.replace(/[^A-Za-z0-9._-]/gu, '-');
+  return assertSafeIdentitySegment(raw.replace(/[^A-Za-z0-9._-]/gu, '-'), 'Agent name');
 }
 
 /**
@@ -57,7 +65,7 @@ export function isDefaultInstance(instanceId) {
 }
 
 export function validateInstanceId(instanceId) {
-  const normalized = normalizeInstanceId(instanceId);
+  const normalized = assertSafeIdentitySegment(normalizeInstanceId(instanceId), 'Instance id');
   if (!/^[A-Za-z0-9_.-]+$/.test(normalized)) {
     throw new Error('Instance id may only contain letters, numbers, dot, underscore, or dash');
   }
@@ -86,16 +94,28 @@ function readIdentityArgs(args = []) {
 
 export function resolveDisplayName(args = [], env = process.env, fallbackName = getDefaultAgentName()) {
   const { explicitName } = readIdentityArgs(args);
-  return explicitName
+  const resolved = explicitName
     || env.AGENT_NAME
     || fallbackName
     || getDefaultAgentName();
+  return assertSafeIdentitySegment(resolved, 'Agent name');
 }
 
 export function resolveRuntimeIdentity(fileConfig = {}, env = process.env) {
   const agentName = resolveDisplayName([], env, fileConfig.agentName || getDefaultAgentName());
   const instanceId = validateInstanceId(env.YEAFT_AGENT_INSTANCE || fileConfig.instanceId || DEFAULT_INSTANCE_ID);
   return { agentName, instanceId };
+}
+
+/** Resolve the default project working directory for an Agent display name. */
+export function getDefaultWorkDir(agentName = DEFAULT_INSTANCE_ID) {
+  const normalizedName = getDefaultAgentName(String(agentName || '').trim() || DEFAULT_INSTANCE_ID);
+  return join(homedir(), '.yeaft', 'instances', normalizedName);
+}
+
+/** Resolve explicit workDir configuration before falling back to the Agent root. */
+export function resolveAgentWorkDir(fileConfig = {}, env = process.env, agentName = DEFAULT_INSTANCE_ID) {
+  return env.WORK_DIR || fileConfig.workDir || getDefaultWorkDir(agentName);
 }
 
 export function shouldLoadLegacyLocalConfig(env = process.env) {

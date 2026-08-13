@@ -33,6 +33,8 @@ export {
   getLaunchdLabel,
   getLaunchdPlistPath,
   getDefaultYeaftDir,
+  getDefaultWorkDir,
+  resolveAgentWorkDir,
   install,
   uninstall,
   start,

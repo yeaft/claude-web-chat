@@ -13,6 +13,7 @@ import ctx from './context.js';
 import {
   getDefaultAgentName,
   getDefaultYeaftDir,
+  resolveAgentWorkDir,
   resolveRuntimeIdentity,
   getConfigPath,
   loadServiceConfig,
@@ -58,7 +59,7 @@ function loadConfig() {
   const defaults = {
     serverUrl: 'ws://localhost:3456',
     agentName: DEFAULT_AGENT_NAME,
-    workDir: process.cwd(),
+    workDir: '',
     reconnectInterval: 5000,
     agentSecret: 'agent-shared-secret'
   };
@@ -116,12 +117,23 @@ try {
 const agentSecret = process.env.AGENT_SECRET_FILE
   ? readFileSync(process.env.AGENT_SECRET_FILE, 'utf8').trim()
   : (process.env.AGENT_SECRET || fileConfig.agentSecret);
+const WORK_DIR = resolveAgentWorkDir(fileConfig, process.env, AGENT_NAME);
+if (!process.env.WORK_DIR && !fileConfig.workDir) {
+  try {
+    if (!existsSync(WORK_DIR)) {
+      mkdirSync(WORK_DIR, { recursive: true, mode: 0o700 });
+      console.log(`[Agent] Created default work dir: ${WORK_DIR}`);
+    }
+  } catch (err) {
+    console.warn(`[Agent] Could not ensure default work dir ${WORK_DIR}: ${err?.message || err}`);
+  }
+}
 
 const CONFIG = {
   instanceId: INSTANCE_ID,
   serverUrl: process.env.SERVER_URL || fileConfig.serverUrl,
   agentName: AGENT_NAME,
-  workDir: process.env.WORK_DIR || fileConfig.workDir || process.cwd(),
+  workDir: WORK_DIR,
   yeaftDir: YEAFT_DIR,
   telemetry: loadYeaftConfig({ dir: YEAFT_DIR }).telemetry,
   reconnectInterval: fileConfig.reconnectInterval,
