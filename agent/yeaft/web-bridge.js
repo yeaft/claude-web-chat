@@ -17,7 +17,7 @@
 
 import { delimiter, join } from 'node:path';
 import { COLLAB_TOOL_POLICY } from './tools/registry.js';
-import { existsSync } from 'node:fs';
+import { existsSync, lstatSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_YEAFT_DIR } from './init.js';
 import { buildDreamOutputSnapshot } from './dream/output-snapshot.js';
@@ -58,9 +58,8 @@ import {
   readWorkDirRegistry,
   migrateRegisteredWorkDirSessions,
   resolveSessionYeaftDir,
-  findExistingSessionYeaftDir,
 } from './sessions/session-crud.js';
-import { openSession, loadSessionMeta } from './sessions/session-store.js';
+import { openSession, loadSessionMeta, SESSION_META_FILE } from './sessions/session-store.js';
 import { validateSessionId } from './sessions/ids.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, SessionConfigError } from './sessions/session-config.js';
 import { updateSessionConfig } from './sessions/session-crud.js';
@@ -3281,11 +3280,27 @@ function resolveManagedSkillSession(yeaftDir, rawSessionId) {
   const validation = validateSessionId(sessionId);
   if (!validation.ok) throw new Error('invalid Session id');
 
-  // Do not use resolveSessionYeaftDir() here. Managed Skill operations are
-  // filesystem writes, so they must only inspect a registered Session and must
-  // never bootstrap or repair a path derived from browser input.
-  const sessionRoot = findExistingSessionYeaftDir(yeaftDir, sessionId);
-  const meta = loadSessionMeta(join(sessionsRoot(sessionRoot), sessionId));
+  // Skill mutation is a filesystem write. Its authority root is strictly the
+  // agent-local canonical store, not the read-compatible resolver: that one
+  // can consult bootstrap-only group-workdirs.json and project-local legacy
+  // Session directories. Those sources are not valid write authorization.
+  const sessionDir = join(sessionsRoot(yeaftDir), sessionId);
+  // `loadSessionMeta()` deliberately supports legacy group.json for readers.
+  // This mutation path needs the canonical agent-local session.json instead.
+  const metaPath = join(sessionDir, SESSION_META_FILE);
+  if (!existsSync(metaPath)) throw new Error('the selected Session was not found');
+  try {
+    const sessionDirStat = lstatSync(sessionDir);
+    const metaStat = lstatSync(metaPath);
+    if (!sessionDirStat.isDirectory() || sessionDirStat.isSymbolicLink()
+      || !metaStat.isFile() || metaStat.isSymbolicLink()) {
+      throw new Error('the selected Session was not found');
+    }
+  } catch (err) {
+    if (err?.message === 'the selected Session was not found') throw err;
+    throw new Error('the selected Session was not found');
+  }
+  const meta = loadSessionMeta(sessionDir);
   if (!meta || meta.id !== sessionId) throw new Error('the selected Session was not found');
 
   const workDir = normalizeSessionWorkDir(meta.workDir);

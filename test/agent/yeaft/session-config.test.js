@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -227,6 +227,219 @@ describe('Yeaft managed Skill protocol', () => {
       expect(existsSync(join(externalProject, '.yeaft', 'skills', 'escaped-project-traversal-forward.md'))).toBe(false);
       expect(existsSync(join(externalProject, '.yeaft', 'skills', 'escaped-project-traversal-backslash.md'))).toBe(false);
       expect(existsSync(join(root, '.yeaft', 'skills', 'escaped-project-missing.md'))).toBe(false);
+    } finally {
+      ctx.ws = originalWs;
+      ctx.serverEncryptionRequired = originalEncryption;
+      ctx.messageBuffer = originalBuffer;
+      ctx.outboundSendQueue = originalQueue;
+      ctx.outboundSendQueueActive = originalQueueActive;
+    }
+  });
+
+  it('rejects legacy-only registry metadata for project Skill create and remove', () => {
+    const root = makeDir();
+    const registeredProject = tempRoot('yeaft-managed-skill-registered-project-');
+    const externalTarget = tempRoot('yeaft-managed-skill-external-target-');
+    const sessionId = 'session_legacy_fallback';
+    const legacySessionRoot = join(registeredProject, '.yeaft');
+    createSession(sessionsRoot(legacySessionRoot), {
+      id: sessionId,
+      name: 'Legacy project-only metadata',
+      roster: [],
+      defaultVpId: null,
+      workDir: externalTarget,
+    }).close();
+    registerSessionWorkDir(root, sessionId, registeredProject);
+    const externalSkillPath = join(externalTarget, '.yeaft', 'skills', 'legacy-escape.md');
+    mkdirSync(join(externalTarget, '.yeaft', 'skills'), { recursive: true });
+    writeFileSync(externalSkillPath, 'legacy target must be preserved', 'utf8');
+
+    const originalWs = ctx.ws;
+    const originalEncryption = ctx.serverEncryptionRequired;
+    const originalBuffer = ctx.messageBuffer;
+    const originalQueue = ctx.outboundSendQueue;
+    const originalQueueActive = ctx.outboundSendQueueActive;
+    ctx.messageBuffer = [];
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = true;
+    ctx.CONFIG = { ...(originalConfig || {}), yeaftDir: root };
+    ctx.ws = { readyState: 1, send() {} };
+    ctx.serverEncryptionRequired = false;
+    __testSetSession({ yeaftDir: root, config: {}, skillManager: null, mcpManager: null, toolRegistry: null });
+
+    try {
+      handleYeaftManagedSkill({
+        requestId: 'legacy-only-create', action: 'create', scope: 'project', sessionId,
+        skill: { name: 'legacy-escape', description: 'Must not be written', content: 'Reject legacy-only metadata.' },
+      });
+      expect(readFileSync(externalSkillPath, 'utf8')).toBe('legacy target must be preserved');
+
+      handleYeaftManagedSkill({
+        requestId: 'legacy-only-remove', action: 'remove', scope: 'project', sessionId, name: 'legacy-escape',
+      });
+      expect(readFileSync(externalSkillPath, 'utf8')).toBe('legacy target must be preserved');
+
+      const responses = ctx.outboundSendQueue.map(item => item.msg)
+        .filter(frame => frame.type === 'yeaft_managed_skill_result');
+      expect(responses).toEqual([
+        expect.objectContaining({ requestId: 'legacy-only-create', error: 'the selected Session was not found' }),
+        expect.objectContaining({ requestId: 'legacy-only-remove', error: 'the selected Session was not found' }),
+      ]);
+      expect(readFileSync(externalSkillPath, 'utf8')).toBe('legacy target must be preserved');
+      expect(existsSync(join(root, 'sessions', sessionId))).toBe(false);
+    } finally {
+      ctx.ws = originalWs;
+      ctx.serverEncryptionRequired = originalEncryption;
+      ctx.messageBuffer = originalBuffer;
+      ctx.outboundSendQueue = originalQueue;
+      ctx.outboundSendQueueActive = originalQueueActive;
+    }
+  });
+
+  it('requires canonical agent-local session.json rather than a local group.json alias', () => {
+    const root = makeDir();
+    const workDir = tempRoot('yeaft-managed-skill-local-group-json-');
+    const sessionId = 'session_local_group_json';
+    const sessionDir = join(sessionsRoot(root), sessionId);
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, 'group.json'), JSON.stringify({
+      id: sessionId,
+      name: 'Legacy local metadata',
+      roster: [],
+      defaultVpId: null,
+      workDir,
+    }), 'utf8');
+    const originalWs = ctx.ws;
+    const originalEncryption = ctx.serverEncryptionRequired;
+    const originalBuffer = ctx.messageBuffer;
+    const originalQueue = ctx.outboundSendQueue;
+    const originalQueueActive = ctx.outboundSendQueueActive;
+    ctx.messageBuffer = [];
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = true;
+    ctx.CONFIG = { ...(originalConfig || {}), yeaftDir: root };
+    ctx.ws = { readyState: 1, send() {} };
+    ctx.serverEncryptionRequired = false;
+    __testSetSession({ yeaftDir: root, config: {}, skillManager: null, mcpManager: null, toolRegistry: null });
+
+    try {
+      handleYeaftManagedSkill({
+        requestId: 'local-group-json-create', action: 'create', scope: 'project', sessionId,
+        skill: { name: 'local-group-json', description: 'Must not trust compatibility metadata', content: 'Reject read-only aliases.' },
+      });
+      expect(ctx.outboundSendQueue.at(-1)?.msg).toMatchObject({
+        requestId: 'local-group-json-create',
+        error: 'the selected Session was not found',
+      });
+      expect(existsSync(join(workDir, '.yeaft', 'skills', 'local-group-json.md'))).toBe(false);
+    } finally {
+      ctx.ws = originalWs;
+      ctx.serverEncryptionRequired = originalEncryption;
+      ctx.messageBuffer = originalBuffer;
+      ctx.outboundSendQueue = originalQueue;
+      ctx.outboundSendQueueActive = originalQueueActive;
+    }
+  });
+
+  it('rejects symlinked agent-local Session metadata before project Skill writes', () => {
+    const root = makeDir();
+    const externalSessionRoot = tempRoot('yeaft-managed-skill-external-session-');
+    const externalWorkDir = tempRoot('yeaft-managed-skill-external-workdir-');
+    const sessionId = 'session_symlinked_metadata';
+    createSession(sessionsRoot(externalSessionRoot), {
+      id: sessionId,
+      name: 'External metadata',
+      roster: [],
+      defaultVpId: null,
+      workDir: externalWorkDir,
+    }).close();
+    const linkedSessionDir = join(sessionsRoot(root), sessionId);
+    mkdirSync(sessionsRoot(root), { recursive: true });
+    try {
+      symlinkSync(join(sessionsRoot(externalSessionRoot), sessionId), linkedSessionDir, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (['EPERM', 'EACCES', 'ENOSYS'].includes(error?.code)) return;
+      throw error;
+    }
+    const originalWs = ctx.ws;
+    const originalEncryption = ctx.serverEncryptionRequired;
+    const originalBuffer = ctx.messageBuffer;
+    const originalQueue = ctx.outboundSendQueue;
+    const originalQueueActive = ctx.outboundSendQueueActive;
+    ctx.messageBuffer = [];
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = true;
+    ctx.CONFIG = { ...(originalConfig || {}), yeaftDir: root };
+    ctx.ws = { readyState: 1, send() {} };
+    ctx.serverEncryptionRequired = false;
+    __testSetSession({ yeaftDir: root, config: {}, skillManager: null, mcpManager: null, toolRegistry: null });
+
+    try {
+      handleYeaftManagedSkill({
+        requestId: 'symlinked-session-create', action: 'create', scope: 'project', sessionId,
+        skill: { name: 'symlinked-session', description: 'Must not trust linked Session metadata', content: 'Reject linked metadata.' },
+      });
+      expect(ctx.outboundSendQueue.at(-1)?.msg).toMatchObject({
+        requestId: 'symlinked-session-create',
+        error: 'the selected Session was not found',
+      });
+      expect(existsSync(join(externalWorkDir, '.yeaft', 'skills', 'symlinked-session.md'))).toBe(false);
+    } finally {
+      ctx.ws = originalWs;
+      ctx.serverEncryptionRequired = originalEncryption;
+      ctx.messageBuffer = originalBuffer;
+      ctx.outboundSendQueue = originalQueue;
+      ctx.outboundSendQueueActive = originalQueueActive;
+    }
+  });
+
+  it('rejects a symlinked canonical session.json before project Skill writes', () => {
+    const root = makeDir();
+    const externalSessionRoot = tempRoot('yeaft-managed-skill-external-meta-');
+    const externalWorkDir = tempRoot('yeaft-managed-skill-external-meta-workdir-');
+    const sessionId = 'session_symlinked_session_json';
+    createSession(sessionsRoot(externalSessionRoot), {
+      id: sessionId,
+      name: 'External canonical metadata',
+      roster: [],
+      defaultVpId: null,
+      workDir: externalWorkDir,
+    }).close();
+    const sessionDir = join(sessionsRoot(root), sessionId);
+    mkdirSync(sessionDir, { recursive: true });
+    try {
+      symlinkSync(
+        join(sessionsRoot(externalSessionRoot), sessionId, 'session.json'),
+        join(sessionDir, 'session.json'),
+        'file',
+      );
+    } catch (error) {
+      if (['EPERM', 'EACCES', 'ENOSYS'].includes(error?.code)) return;
+      throw error;
+    }
+    const originalWs = ctx.ws;
+    const originalEncryption = ctx.serverEncryptionRequired;
+    const originalBuffer = ctx.messageBuffer;
+    const originalQueue = ctx.outboundSendQueue;
+    const originalQueueActive = ctx.outboundSendQueueActive;
+    ctx.messageBuffer = [];
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = true;
+    ctx.CONFIG = { ...(originalConfig || {}), yeaftDir: root };
+    ctx.ws = { readyState: 1, send() {} };
+    ctx.serverEncryptionRequired = false;
+    __testSetSession({ yeaftDir: root, config: {}, skillManager: null, mcpManager: null, toolRegistry: null });
+
+    try {
+      handleYeaftManagedSkill({
+        requestId: 'symlinked-session-json-create', action: 'create', scope: 'project', sessionId,
+        skill: { name: 'symlinked-session-json', description: 'Must not trust linked canonical metadata', content: 'Reject linked session.json.' },
+      });
+      expect(ctx.outboundSendQueue.at(-1)?.msg).toMatchObject({
+        requestId: 'symlinked-session-json-create',
+        error: 'the selected Session was not found',
+      });
+      expect(existsSync(join(externalWorkDir, '.yeaft', 'skills', 'symlinked-session-json.md'))).toBe(false);
     } finally {
       ctx.ws = originalWs;
       ctx.serverEncryptionRequired = originalEncryption;
