@@ -282,6 +282,37 @@ describe('Browser Runtime Server ownership and signaling', () => {
     }));
   });
 
+  it('publishes Web ICE before a fast Agent prepared event', async () => {
+    const clientA = client('client-a');
+    await createBrowserSession({ clientRecord: clientA });
+    sendToAgent.mockClear();
+    sendToWebClient.mockClear();
+    let prepare = null;
+    sendToAgent.mockImplementationOnce(async (_agent, message) => {
+      prepare = message;
+      await handleAgentBrowser('agent-a', agents.get('agent-a'), {
+        type: 'browser_peer_prepared',
+        browserSessionId: message.browserSessionId,
+        peerId: message.peerId,
+        connectionGeneration: message.connectionGeneration,
+      });
+    });
+
+    await handleClientBrowser(clientA, {
+      type: 'browser_peer_attach', agentId: 'agent-a', browserSessionId: 'browser-session-a',
+      requestId: 'attach-fast', connectionGeneration: 7,
+    }, async () => true);
+
+    expect(prepare).toMatchObject({ type: 'browser_peer_prepare', peerId: expect.any(String) });
+    expect(sendToWebClient).toHaveBeenCalledWith(clientA, expect.objectContaining({
+      type: 'browser_peer_prepared',
+      iceServers: expect.arrayContaining([
+        expect.objectContaining({ urls: ['stun:stun.example.test:3478'] }),
+      ]),
+      iceTransportPolicy: 'all',
+    }));
+  });
+
   it('holds offer and ICE until prepared, then targets only the peer socket', async () => {
     const clientA = client('client-a');
     const clientB = client('client-b');
@@ -289,6 +320,12 @@ describe('Browser Runtime Server ownership and signaling', () => {
     await createBrowserSession({ clientRecord: clientA });
     sendToAgent.mockClear();
     sendToWebClient.mockClear();
+    sendToAgent.mockImplementationOnce(async (_agent, message) => {
+      const peer = browserPeers.get(message.peerId);
+      expect(peer?.webIceServers).toEqual(expect.arrayContaining([
+        expect.objectContaining({ urls: ['stun:stun.example.test:3478'] }),
+      ]));
+    });
     await handleClientBrowser(clientA, {
       type: 'browser_peer_attach', agentId: 'agent-a', browserSessionId: 'browser-session-a',
       requestId: 'attach-a', connectionGeneration: 7,
@@ -312,6 +349,13 @@ describe('Browser Runtime Server ownership and signaling', () => {
     expect(sendToWebClient.mock.calls.map(([, message]) => message.type)).toEqual([
       'browser_peer_prepared', 'browser_peer_offer', 'browser_peer_ice_candidate',
     ]);
+    expect(sendToWebClient.mock.calls[0][1]).toMatchObject({
+      type: 'browser_peer_prepared',
+      iceServers: expect.arrayContaining([
+        { urls: ['stun:stun.example.test:3478'] },
+      ]),
+      iceTransportPolicy: 'all',
+    });
     expect(sendToWebClient.mock.calls.every(([target]) => target === clientA)).toBe(true);
     expect(sendToWebClient.mock.calls.every(([target]) => target !== clientB)).toBe(true);
 
