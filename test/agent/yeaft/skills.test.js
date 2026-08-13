@@ -1,8 +1,15 @@
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createManagedSkill, parseSkill, removeManagedSkill, SkillManager } from '../../../agent/yeaft/skills.js';
+import {
+  createManagedProjectSkill,
+  createManagedSkill,
+  parseSkill,
+  removeManagedProjectSkill,
+  removeManagedSkill,
+  SkillManager,
+} from '../../../agent/yeaft/skills.js';
 import { buildPluginCatalog } from '../../../agent/yeaft/plugins.js';
 
 const roots = [];
@@ -157,6 +164,33 @@ describe('managed native Skills', () => {
       // the traversal/duplicate/directory assertions above remain portable.
       if (!String(error?.code || '').includes('EPERM')) throw error;
     }
+  });
+
+  it('rejects create and remove when a project .yeaft ancestor is a symlink or junction', () => {
+    const workDir = tempRoot();
+    const externalYeaftDir = join(tempRoot(), 'external-yeaft');
+    const projectYeaftDir = join(workDir, '.yeaft');
+    mkdirSync(externalYeaftDir, { recursive: true });
+
+    try {
+      symlinkSync(externalYeaftDir, projectYeaftDir, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      // Windows can deny junction/symlink creation under restricted policies.
+      // Do not mask a real filesystem error on platforms where links work.
+      if (['EPERM', 'EACCES', 'ENOSYS'].includes(error?.code)) return;
+      throw error;
+    }
+
+    const externalSkill = join(externalYeaftDir, 'skills', 'parent-link.md');
+    expect(() => createManagedProjectSkill(workDir, {
+      name: 'parent-link', description: 'Must remain inside the project', content: 'Do not follow links.',
+    })).toThrow('symbolic link');
+    expect(existsSync(externalSkill)).toBe(false);
+
+    mkdirSync(dirname(externalSkill), { recursive: true });
+    writeFileSync(externalSkill, skill('parent-link'));
+    expect(() => removeManagedProjectSkill(workDir, 'parent-link')).toThrow('symbolic link');
+    expect(existsSync(externalSkill)).toBe(true);
   });
 
   it('marks only Yeaft native user and project files as manageable', () => {

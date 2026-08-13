@@ -127,7 +127,7 @@ describe('Yeaft managed Skill protocol', () => {
   it('writes user and Session-resolved project Skills without trusting a browser workDir', () => {
     const root = makeDir();
     const workDir = tempRoot('yeaft-managed-skill-project-');
-    const sessionId = 'session-managed-skill';
+    const sessionId = 'session_managed_skill';
     createSession(sessionsRoot(root), {
       id: sessionId,
       name: 'Managed Skill Project',
@@ -177,9 +177,68 @@ describe('Yeaft managed Skill protocol', () => {
     }
   });
 
+  it('rejects traversal and missing Session ids before any project Skill filesystem access', () => {
+    const root = makeDir();
+    const externalProject = tempRoot('yeaft-managed-skill-external-project-');
+    // This is deliberately outside `sessionsRoot(root)`. The old traversal
+    // would resolve `sessions/../external-session/session.json` and trust it.
+    createSession(root, {
+      id: 'external-session',
+      name: 'External session metadata',
+      roster: [],
+      defaultVpId: null,
+      workDir: externalProject,
+    }).close();
+    const originalWs = ctx.ws;
+    const originalEncryption = ctx.serverEncryptionRequired;
+    const originalBuffer = ctx.messageBuffer;
+    const originalQueue = ctx.outboundSendQueue;
+    const originalQueueActive = ctx.outboundSendQueueActive;
+    ctx.messageBuffer = [];
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = true;
+    ctx.CONFIG = { ...(originalConfig || {}), yeaftDir: root };
+    ctx.ws = { readyState: 1, send() {} };
+    ctx.serverEncryptionRequired = false;
+    __testSetSession({ yeaftDir: root, config: {}, skillManager: null, mcpManager: null, toolRegistry: null });
+
+    try {
+      for (const [requestId, sessionId] of [
+        ['project-traversal-forward', '../external-session'],
+        ['project-traversal-backslash', '..\\external-session'],
+        ['project-missing', 'session_missing'],
+      ]) {
+        handleYeaftManagedSkill({
+          requestId,
+          action: 'create',
+          scope: 'project',
+          sessionId,
+          skill: { name: `escaped-${requestId}`, description: 'Must not write outside a Session', content: 'Reject invalid Session ids.' },
+        });
+      }
+
+      const responses = ctx.outboundSendQueue.map(item => item.msg)
+        .filter(frame => frame.type === 'yeaft_managed_skill_result');
+      expect(responses).toEqual([
+        expect.objectContaining({ requestId: 'project-traversal-forward', error: 'invalid Session id' }),
+        expect.objectContaining({ requestId: 'project-traversal-backslash', error: 'invalid Session id' }),
+        expect.objectContaining({ requestId: 'project-missing', error: 'the selected Session was not found' }),
+      ]);
+      expect(existsSync(join(externalProject, '.yeaft', 'skills', 'escaped-project-traversal-forward.md'))).toBe(false);
+      expect(existsSync(join(externalProject, '.yeaft', 'skills', 'escaped-project-traversal-backslash.md'))).toBe(false);
+      expect(existsSync(join(root, '.yeaft', 'skills', 'escaped-project-missing.md'))).toBe(false);
+    } finally {
+      ctx.ws = originalWs;
+      ctx.serverEncryptionRequired = originalEncryption;
+      ctx.messageBuffer = originalBuffer;
+      ctx.outboundSendQueue = originalQueue;
+      ctx.outboundSendQueueActive = originalQueueActive;
+    }
+  });
+
   it('rejects a project Skill request when the Session has no project directory', () => {
     const root = makeDir();
-    const sessionId = 'session-no-workdir';
+    const sessionId = 'session_no_workdir';
     createSession(sessionsRoot(root), { id: sessionId, name: 'No Project', roster: [], defaultVpId: null }).close();
     const originalWs = ctx.ws;
     const originalEncryption = ctx.serverEncryptionRequired;

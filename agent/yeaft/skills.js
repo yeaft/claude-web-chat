@@ -353,6 +353,83 @@ export function removeManagedSkill(rootDir, rawName) {
   return { name, removed: true };
 }
 
+function managedProjectDirectory(parent, name, { create }) {
+  const candidate = join(parent, name);
+  if (!pathIsInside(candidate, parent)) throw new Error('invalid managed project Skill path');
+  if (!existsSync(candidate)) {
+    if (!create) return null;
+    // Create a single verified segment at a time. Recursive mkdir would follow
+    // a repository-controlled `.yeaft` link before we could inspect it.
+    mkdirSync(candidate);
+  }
+  let stat;
+  try {
+    stat = lstatSync(candidate);
+  } catch {
+    throw new Error('managed project Skill path could not be inspected safely');
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error('managed project Skill path must not contain a symbolic link');
+  }
+  let canonical;
+  try {
+    canonical = realpathSync(candidate);
+  } catch {
+    throw new Error('managed project Skill path could not be resolved safely');
+  }
+  if (!pathIsInside(canonical, parent) || canonical === parent) {
+    throw new Error('managed project Skill path escapes the project directory');
+  }
+  return canonical;
+}
+
+/**
+ * Resolve `<canonical workDir>/.yeaft/skills` without following any
+ * repository-controlled path segment. `workDir` itself is canonicalized first,
+ * so a configured workspace alias still identifies its real project root.
+ *
+ * @param {string} workDir
+ * @param {{ create?: boolean }} [options]
+ * @returns {string|null}
+ */
+export function resolveManagedProjectSkillRoot(workDir, { create = true } = {}) {
+  const lexicalWorkDir = resolve(workDir || '');
+  if (!workDir || lexicalWorkDir === resolve('.')) {
+    throw new Error('project directory is required for project-level skills');
+  }
+  let projectRoot;
+  try {
+    projectRoot = realpathSync(lexicalWorkDir);
+  } catch {
+    throw new Error('project directory could not be resolved safely');
+  }
+  let projectStat;
+  try {
+    projectStat = lstatSync(projectRoot);
+  } catch {
+    throw new Error('project directory could not be inspected safely');
+  }
+  if (!projectStat.isDirectory() || projectStat.isSymbolicLink()) {
+    throw new Error('project directory must be a non-symbolic-link directory');
+  }
+  const yeaftRoot = managedProjectDirectory(projectRoot, '.yeaft', { create });
+  if (!yeaftRoot) return null;
+  return managedProjectDirectory(yeaftRoot, 'skills', { create });
+}
+
+/** Create a native Skill in a verified project-level Yeaft root. */
+export function createManagedProjectSkill(workDir, input) {
+  const root = resolveManagedProjectSkillRoot(workDir, { create: true });
+  return createManagedSkill(root, input);
+}
+
+/** Remove a native Skill from a verified project-level Yeaft root. */
+export function removeManagedProjectSkill(workDir, name) {
+  const root = resolveManagedProjectSkillRoot(workDir, { create: false });
+  if (!root) return { name: typeof name === 'string' ? name.trim() : '', removed: false };
+  return removeManagedSkill(root, name);
+}
+
 function shouldIgnorePath(candidatePath, ignorePaths) {
   return ignorePaths.some(ignorePath => pathIsInside(candidatePath, ignorePath));
 }

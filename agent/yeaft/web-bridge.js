@@ -24,7 +24,13 @@ import { buildDreamOutputSnapshot } from './dream/output-snapshot.js';
 import { Engine } from './engine.js';
 import { loadSession } from './session.js';
 import { loadAgentMCPConfig, loadConfig, loadMCPConfig } from './config.js';
-import { createManagedSkill, createSkillManager, removeManagedSkill } from './skills.js';
+import {
+  createManagedProjectSkill,
+  createManagedSkill,
+  createSkillManager,
+  removeManagedProjectSkill,
+  removeManagedSkill,
+} from './skills.js';
 import { buildPluginCatalog, createPluginSkillManager, resolveMcpPluginPolicy } from './plugins.js';
 import { MCPManager } from './mcp.js';
 import { sendToServer } from '../connection/buffer.js';
@@ -52,8 +58,10 @@ import {
   readWorkDirRegistry,
   migrateRegisteredWorkDirSessions,
   resolveSessionYeaftDir,
+  findExistingSessionYeaftDir,
 } from './sessions/session-crud.js';
 import { openSession, loadSessionMeta } from './sessions/session-store.js';
+import { validateSessionId } from './sessions/ids.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, SessionConfigError } from './sessions/session-config.js';
 import { updateSessionConfig } from './sessions/session-crud.js';
 import { createCoordinator } from './sessions/coordinator.js';
@@ -3268,16 +3276,21 @@ function normalizedManagedSkillScope(value) {
   return MANAGED_SKILL_SCOPES.has(scope) ? scope : '';
 }
 
-function skillRootForScope({ scope, sessionId, yeaftDir }) {
-  if (scope === 'user') return join(yeaftDir, 'skills');
-  if (scope !== 'project') throw new Error('skill scope must be user or project');
-  const id = typeof sessionId === 'string' ? sessionId.trim() : '';
-  if (!id) throw new Error('a Session is required for project-level skills');
-  const sessionRoot = resolveSessionYeaftDir(yeaftDir, id);
-  const meta = loadSessionMeta(join(sessionsRoot(sessionRoot), id));
-  const workDir = normalizeSessionWorkDir(meta?.workDir);
+function resolveManagedSkillSession(yeaftDir, rawSessionId) {
+  const sessionId = typeof rawSessionId === 'string' ? rawSessionId.trim() : '';
+  const validation = validateSessionId(sessionId);
+  if (!validation.ok) throw new Error('invalid Session id');
+
+  // Do not use resolveSessionYeaftDir() here. Managed Skill operations are
+  // filesystem writes, so they must only inspect a registered Session and must
+  // never bootstrap or repair a path derived from browser input.
+  const sessionRoot = findExistingSessionYeaftDir(yeaftDir, sessionId);
+  const meta = loadSessionMeta(join(sessionsRoot(sessionRoot), sessionId));
+  if (!meta || meta.id !== sessionId) throw new Error('the selected Session was not found');
+
+  const workDir = normalizeSessionWorkDir(meta.workDir);
   if (!workDir) throw new Error('the selected Session has no project directory');
-  return join(workDir, '.yeaft', 'skills');
+  return { sessionId, workDir };
 }
 
 function currentRuntimeMatchesWorkDir(workDir) {
@@ -3285,27 +3298,20 @@ function currentRuntimeMatchesWorkDir(workDir) {
   return runtime && normalizeSessionWorkDir(runtime.workDir) === normalizeSessionWorkDir(workDir);
 }
 
-function reloadManagedSkillRuntime(scope, sessionId, yeaftDir) {
+function reloadManagedSkillRuntime(scope, workDir = '') {
   const owner = captureRuntimeOwner();
   if (!owner) return;
-  if (scope === 'project') {
-    const sessionRoot = resolveSessionYeaftDir(yeaftDir, sessionId);
-    const meta = loadSessionMeta(join(sessionsRoot(sessionRoot), sessionId));
-    const workDir = normalizeSessionWorkDir(meta?.workDir);
-    if (workDir && currentRuntimeMatchesWorkDir(workDir)) {
-      reloadActiveSkills(owner);
-      return;
-    }
+  if (scope === 'project' && currentRuntimeMatchesWorkDir(workDir)) {
+    reloadActiveSkills(owner);
+    return;
   }
   if (scope === 'user') reloadActiveSkills(owner);
 }
 
-function managedSkillCatalog(yeaftDir, sessionId) {
-  const sessionRoot = sessionId ? resolveSessionYeaftDir(yeaftDir, sessionId) : yeaftDir;
-  const meta = sessionId ? loadSessionMeta(join(sessionsRoot(sessionRoot), sessionId)) : null;
-  const workDir = normalizeSessionWorkDir(meta?.workDir);
-  const runtime = resolvePluginCatalogRuntime(workDir);
-  const manager = createSkillManager(yeaftDir, workDir || process.cwd());
+function managedSkillCatalog(yeaftDir, workDir = '') {
+  const normalizedWorkDir = normalizeSessionWorkDir(workDir);
+  const runtime = resolvePluginCatalogRuntime(normalizedWorkDir);
+  const manager = createSkillManager(yeaftDir, normalizedWorkDir || process.cwd());
   return buildPluginCatalog({ ...runtime, skillManager: manager });
 }
 
@@ -3331,15 +3337,21 @@ export function handleYeaftManagedSkill(msg = {}) {
     return;
   }
   try {
-    const root = skillRootForScope({ scope, sessionId, yeaftDir });
-    const result = action === 'create'
-      ? createManagedSkill(root, msg.skill || {})
-      : removeManagedSkill(root, msg.name);
-    reloadManagedSkillRuntime(scope, sessionId, yeaftDir);
-    const catalog = managedSkillCatalog(yeaftDir, sessionId);
-    respond({ scope, sessionId: sessionId || null, result, catalog, error: null });
+    const managedSession = scope === 'project'
+      ? resolveManagedSkillSession(yeaftDir, sessionId)
+      : null;
+    const result = scope === 'project'
+      ? (action === 'create'
+        ? createManagedProjectSkill(managedSession.workDir, msg.skill || {})
+        : removeManagedProjectSkill(managedSession.workDir, msg.name))
+      : (action === 'create'
+        ? createManagedSkill(join(yeaftDir, 'skills'), msg.skill || {})
+        : removeManagedSkill(join(yeaftDir, 'skills'), msg.name));
+    reloadManagedSkillRuntime(scope, managedSession?.workDir || '');
+    const catalog = managedSkillCatalog(yeaftDir, managedSession?.workDir || '');
+    respond({ scope, sessionId: managedSession?.sessionId || null, result, catalog, error: null });
   } catch (err) {
-    respond({ scope, sessionId: sessionId || null, catalog: { tools: [], skills: [], skillSources: [], mcpServers: [] }, error: err?.message || String(err) });
+    respond({ scope, sessionId: null, catalog: { tools: [], skills: [], skillSources: [], mcpServers: [] }, error: err?.message || String(err) });
   }
 }
 
