@@ -144,7 +144,7 @@ Agent 启动时读环境变量。多数值也可以写在 Agent 的 `config.json
 | `SERVER_URL` | `serverUrl` | — | Server WebSocket URL（如 `wss://chat.example.com`） |
 | `AGENT_NAME` | `agentName` | — | Agent 唯一名（server 端用来识别） |
 | `AGENT_SECRET` | `agentSecret` | — | 鉴权 secret；必须和 server 端配的一致 |
-| `WORK_DIR` | `workDir` | `process.cwd()` | provider session 默认工作目录 |
+| `WORK_DIR` | `workDir` | `~/.yeaft/instances/<agentName>` | provider session 默认工作目录；显式 env/file 配置优先 |
 
 ### Yeaft 引擎
 

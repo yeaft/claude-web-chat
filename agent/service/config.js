@@ -98,6 +98,17 @@ export function resolveRuntimeIdentity(fileConfig = {}, env = process.env) {
   return { agentName, instanceId };
 }
 
+/** Resolve the default project working directory for an Agent display name. */
+export function getDefaultWorkDir(agentName = DEFAULT_INSTANCE_ID) {
+  const normalizedName = getDefaultAgentName(String(agentName || '').trim() || DEFAULT_INSTANCE_ID);
+  return join(homedir(), '.yeaft', 'instances', normalizedName);
+}
+
+/** Resolve explicit workDir configuration before falling back to the Agent root. */
+export function resolveAgentWorkDir(fileConfig = {}, env = process.env, agentName = DEFAULT_INSTANCE_ID) {
+  return env.WORK_DIR || fileConfig.workDir || getDefaultWorkDir(agentName);
+}
+
 export function shouldLoadLegacyLocalConfig(env = process.env) {
   return !String(env.YEAFT_AGENT_INSTANCE || '').trim();
 }

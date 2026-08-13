@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { MockWebSocket, WS_CLOSED, WS_OPEN } from '../helpers/mockWs.js';
 import {
@@ -31,9 +31,11 @@ import {
 import {
   applyAgentIdentityToEnv,
   getDefaultAgentName,
+  getDefaultWorkDir,
   getDefaultYeaftDir,
   getInstanceIdFromArgs,
   parseServiceArgs,
+  resolveAgentWorkDir,
   resolveDisplayName,
   resolveYeaftDir,
   resolveRuntimeIdentity,
@@ -200,6 +202,13 @@ describe('agent ctx defaults and upgrade contract', () => {
       agentName: 'Display Name',
       instanceId: 'saved-instance',
     });
+    expect(getDefaultWorkDir()).toBe(join(homedir(), '.yeaft', 'instances', 'default'));
+    expect(getDefaultWorkDir('named-agent')).toBe(join(homedir(), '.yeaft', 'instances', 'named-agent'));
+    expect(getDefaultWorkDir('Agent Name/东')).toBe(join(homedir(), '.yeaft', 'instances', 'Agent-Name--'));
+    expect(resolveAgentWorkDir({}, {}, 'named-agent')).toBe(getDefaultWorkDir('named-agent'));
+    expect(resolveAgentWorkDir({ workDir: '/tmp/from-file' }, { WORK_DIR: '/tmp/from-env' }, 'named-agent'))
+      .toBe('/tmp/from-env');
+    expect(resolveAgentWorkDir({ workDir: '/tmp/from-file' }, {}, 'named-agent')).toBe('/tmp/from-file');
     expect(shouldLoadLegacyLocalConfig({})).toBe(true);
     expect(shouldLoadLegacyLocalConfig({ YEAFT_AGENT_INSTANCE: '' })).toBe(true);
     expect(shouldLoadLegacyLocalConfig({ YEAFT_AGENT_INSTANCE: 'server' })).toBe(false);

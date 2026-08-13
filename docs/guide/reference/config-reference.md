@@ -144,7 +144,7 @@ The Agent reads environment variables on startup. Most values can also be set in
 | `SERVER_URL` | `serverUrl` | — | Server WebSocket URL (e.g. `wss://chat.example.com`) |
 | `AGENT_NAME` | `agentName` | — | Unique agent name (server uses to identify) |
 | `AGENT_SECRET` | `agentSecret` | — | Auth secret; must match the server's expected value |
-| `WORK_DIR` | `workDir` | `process.cwd()` | Default working directory passed to provider sessions |
+| `WORK_DIR` | `workDir` | `~/.yeaft/instances/<agentName>` | Default working directory passed to provider sessions; explicit env/file values override it |
 
 ### Yeaft engine
 
