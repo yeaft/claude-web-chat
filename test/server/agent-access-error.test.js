@@ -20,6 +20,10 @@ import {
   requiresManualUpgradeBridge,
 } from '../../server/handlers/client-misc.js';
 import { routeSessionPin } from '../../server/handlers/session-pin-router.js';
+import {
+  YEAFT_MANAGED_SKILLS_CAPABILITY,
+  YEAFT_MANAGED_SKILLS_UNSUPPORTED_ERROR,
+} from '../../server/yeaft-managed-skill-capability.js';
 import { handleAgentConnection } from '../../server/ws-agent.js';
 import { MockWebSocket, WS_OPEN } from '../helpers/mockWs.js';
 
@@ -626,6 +630,49 @@ describe('resolveAgentAccessError', () => {
         error: YEAFT_PLUGINS_UNSUPPORTED_ERROR,
       }),
     ]);
+  });
+
+  it('rejects managed Skill mutation for Plugins-only and legacy Agents', async () => {
+    CONFIG.skipAuth = false;
+    const forwarded = [];
+    const client = {
+      userId: 'user-1', role: 'user', currentAgent: 'agent-skills', authenticated: true,
+      encryptOutbound: false,
+      sent: [],
+      ws: { readyState: WS_OPEN, send(payload) { client.sent.push(JSON.parse(payload)); }, close() {} },
+    };
+    agents.set('agent-skills', {
+      ownerId: 'user-1',
+      capabilities: [YEAFT_PLUGINS_CAPABILITY],
+      capabilityMetadataProvided: true,
+      encryptOutbound: false,
+      ws: { readyState: WS_OPEN, send(payload) { forwarded.push(JSON.parse(payload)); } },
+    });
+
+    await handleClientConversation('managed-skill-client', client, {
+      type: 'yeaft_managed_skill', agentId: 'agent-skills', requestId: 'managed-skill-old',
+      action: 'create', scope: 'user', skill: { name: 'safe', description: 'Safe', content: 'Safe.' },
+    }, async agentId => agentId === 'agent-skills');
+
+    expect(forwarded).toEqual([]);
+    expect(client.sent).toEqual([expect.objectContaining({
+      type: 'yeaft_managed_skill_result',
+      agentId: 'agent-skills',
+      requestId: 'managed-skill-old',
+      catalog: { tools: [], skills: [], skillSources: [], mcpServers: [] },
+      error: YEAFT_MANAGED_SKILLS_UNSUPPORTED_ERROR,
+    })]);
+
+    client.sent.length = 0;
+    agents.get('agent-skills').capabilities.push(YEAFT_MANAGED_SKILLS_CAPABILITY);
+    await handleClientConversation('managed-skill-client', client, {
+      type: 'yeaft_managed_skill', agentId: 'agent-skills', requestId: 'managed-skill-new',
+      action: 'create', scope: 'user', skill: { name: 'safe', description: 'Safe', content: 'Safe.' },
+    }, async agentId => agentId === 'agent-skills');
+    expect(forwarded).toEqual([expect.objectContaining({
+      type: 'yeaft_managed_skill', requestId: 'managed-skill-new', _requestClientId: 'managed-skill-client',
+    })]);
+    expect(client.sent).toEqual([]);
   });
 
   it('distinguishes missing and explicit empty URL capability metadata through a real Agent handshake', async () => {

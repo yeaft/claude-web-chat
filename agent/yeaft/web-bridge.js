@@ -24,7 +24,7 @@ import { buildDreamOutputSnapshot } from './dream/output-snapshot.js';
 import { Engine } from './engine.js';
 import { loadSession } from './session.js';
 import { loadAgentMCPConfig, loadConfig, loadMCPConfig } from './config.js';
-import { createSkillManager } from './skills.js';
+import { createManagedSkill, createSkillManager, removeManagedSkill } from './skills.js';
 import { buildPluginCatalog, createPluginSkillManager, resolveMcpPluginPolicy } from './plugins.js';
 import { MCPManager } from './mcp.js';
 import { sendToServer } from '../connection/buffer.js';
@@ -3259,6 +3259,88 @@ function loadPluginCatalogMcpConfig(yeaftDir) {
   // request so MCP CRUD is visible immediately, while keeping the
   // config.json -> mcp.json compatibility fallback.
   return loadAgentMCPConfig(yeaftDir);
+}
+
+const MANAGED_SKILL_SCOPES = new Set(['user', 'project']);
+
+function normalizedManagedSkillScope(value) {
+  const scope = typeof value === 'string' ? value.trim() : '';
+  return MANAGED_SKILL_SCOPES.has(scope) ? scope : '';
+}
+
+function skillRootForScope({ scope, sessionId, yeaftDir }) {
+  if (scope === 'user') return join(yeaftDir, 'skills');
+  if (scope !== 'project') throw new Error('skill scope must be user or project');
+  const id = typeof sessionId === 'string' ? sessionId.trim() : '';
+  if (!id) throw new Error('a Session is required for project-level skills');
+  const sessionRoot = resolveSessionYeaftDir(yeaftDir, id);
+  const meta = loadSessionMeta(join(sessionsRoot(sessionRoot), id));
+  const workDir = normalizeSessionWorkDir(meta?.workDir);
+  if (!workDir) throw new Error('the selected Session has no project directory');
+  return join(workDir, '.yeaft', 'skills');
+}
+
+function currentRuntimeMatchesWorkDir(workDir) {
+  const runtime = activeSkillRuntime(captureRuntimeOwner());
+  return runtime && normalizeSessionWorkDir(runtime.workDir) === normalizeSessionWorkDir(workDir);
+}
+
+function reloadManagedSkillRuntime(scope, sessionId, yeaftDir) {
+  const owner = captureRuntimeOwner();
+  if (!owner) return;
+  if (scope === 'project') {
+    const sessionRoot = resolveSessionYeaftDir(yeaftDir, sessionId);
+    const meta = loadSessionMeta(join(sessionsRoot(sessionRoot), sessionId));
+    const workDir = normalizeSessionWorkDir(meta?.workDir);
+    if (workDir && currentRuntimeMatchesWorkDir(workDir)) {
+      reloadActiveSkills(owner);
+      return;
+    }
+  }
+  if (scope === 'user') reloadActiveSkills(owner);
+}
+
+function managedSkillCatalog(yeaftDir, sessionId) {
+  const sessionRoot = sessionId ? resolveSessionYeaftDir(yeaftDir, sessionId) : yeaftDir;
+  const meta = sessionId ? loadSessionMeta(join(sessionsRoot(sessionRoot), sessionId)) : null;
+  const workDir = normalizeSessionWorkDir(meta?.workDir);
+  const runtime = resolvePluginCatalogRuntime(workDir);
+  const manager = createSkillManager(yeaftDir, workDir || process.cwd());
+  return buildPluginCatalog({ ...runtime, skillManager: manager });
+}
+
+/**
+ * Create or remove a native Yeaft Skill in an explicit user/project scope.
+ * The Session lookup is agent-local; browser-supplied filesystem paths are
+ * never trusted as a write target.
+ */
+export function handleYeaftManagedSkill(msg = {}) {
+  const requestId = msg.requestId || null;
+  const action = msg.action === 'remove' ? 'remove' : (msg.action === 'create' ? 'create' : '');
+  const scope = normalizedManagedSkillScope(msg.scope);
+  const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId.trim() : '';
+  const yeaftDir = ctx.CONFIG?.yeaftDir || session?.yeaftDir || DEFAULT_YEAFT_DIR;
+  const respond = (payload) => sendToServer({
+    type: 'yeaft_managed_skill_result',
+    requestId,
+    ...(msg._requestClientId ? { _requestClientId: msg._requestClientId } : {}),
+    ...payload,
+  });
+  if (!action || !scope) {
+    respond({ catalog: { tools: [], skills: [], skillSources: [], mcpServers: [] }, error: 'skill action must be create or remove and scope must be user or project' });
+    return;
+  }
+  try {
+    const root = skillRootForScope({ scope, sessionId, yeaftDir });
+    const result = action === 'create'
+      ? createManagedSkill(root, msg.skill || {})
+      : removeManagedSkill(root, msg.name);
+    reloadManagedSkillRuntime(scope, sessionId, yeaftDir);
+    const catalog = managedSkillCatalog(yeaftDir, sessionId);
+    respond({ scope, sessionId: sessionId || null, result, catalog, error: null });
+  } catch (err) {
+    respond({ scope, sessionId: sessionId || null, catalog: { tools: [], skills: [], skillSources: [], mcpServers: [] }, error: err?.message || String(err) });
+  }
 }
 
 /** Test-only: read the MCP catalog source without sending a bridge response. */

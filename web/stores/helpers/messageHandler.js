@@ -1135,6 +1135,32 @@ export function handleMessage(store, msg) {
       break;
     }
 
+    case 'yeaft_managed_skill_result': {
+      const pending = msg.requestId ? store._pluginPending?.[msg.requestId] : null;
+      const mutation = pending?.kind === 'managed-skill' ? pending : null;
+      const catalog = msg.catalog && typeof msg.catalog === 'object'
+        ? {
+            tools: Array.isArray(msg.catalog.tools) ? msg.catalog.tools : [],
+            skills: Array.isArray(msg.catalog.skills) ? msg.catalog.skills : [],
+            skillSources: Array.isArray(msg.catalog.skillSources) ? msg.catalog.skillSources : [],
+            mcpServers: Array.isArray(msg.catalog.mcpServers) ? msg.catalog.mcpServers : [],
+          }
+        : { tools: [], skills: [], skillSources: [], mcpServers: [] };
+      if (mutation && store.managedSkillRequestByKey?.[mutation.key] === msg.requestId) {
+        const catalogKey = store.pluginCatalogKey?.(mutation.agentId, mutation.workDir || '') || '';
+        store.pluginCatalogByKey = {
+          ...store.pluginCatalogByKey,
+          [catalogKey]: { catalog, loading: false, error: msg.error || null, loaded: true, at: Date.now() },
+        };
+      }
+      if (mutation) {
+        clearTimeout(mutation.timer);
+        delete store._pluginPending[msg.requestId];
+        mutation.resolve({ catalog, error: msg.error || null, result: msg.result || null });
+      }
+      break;
+    }
+
     case 'yeaft_plugin_catalog_result': {
       const pending = msg.requestId ? store._pluginPending?.[msg.requestId] : null;
       const catalogPending = pending?.kind === 'catalog' ? pending : null;
@@ -1142,9 +1168,10 @@ export function handleMessage(store, msg) {
         ? {
             tools: Array.isArray(msg.catalog.tools) ? msg.catalog.tools : [],
             skills: Array.isArray(msg.catalog.skills) ? msg.catalog.skills : [],
+            skillSources: Array.isArray(msg.catalog.skillSources) ? msg.catalog.skillSources : [],
             mcpServers: Array.isArray(msg.catalog.mcpServers) ? msg.catalog.mcpServers : [],
           }
-        : { tools: [], skills: [], mcpServers: [] };
+        : { tools: [], skills: [], skillSources: [], mcpServers: [] };
       const key = catalogPending?.key;
       // A catalog cache belongs to the latest request for its Agent/workDir key.
       // Stale, expired, and unknown replies must not overwrite that cache.

@@ -55,7 +55,7 @@
  * Reference: yeaft-yeaft-design.md §8, yeaft-yeaft-core-systems.md
  */
 
-import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync, mkdirSync, statSync, realpathSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync, mkdirSync, statSync, lstatSync, realpathSync } from 'fs';
 import { join, basename, sep, dirname, resolve, delimiter } from 'path';
 import { platform, homedir } from 'os';
 import { fileURLToPath } from 'url';
@@ -247,6 +247,112 @@ function pathIsInside(childPath, parentPath) {
   return child === parent || child.startsWith(parent + sep);
 }
 
+const MANAGED_SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
+const MAX_MANAGED_SKILL_TEXT_LENGTH = 64 * 1024;
+
+function normalizeManagedSkillInput(input = {}) {
+  const name = typeof input.name === 'string' ? input.name.trim() : '';
+  if (!MANAGED_SKILL_NAME_RE.test(name)) {
+    throw new Error('skill name must start with a letter or digit and use only letters, digits, dots, dashes, or underscores');
+  }
+  const description = typeof input.description === 'string' ? input.description.trim() : '';
+  const trigger = typeof input.trigger === 'string' ? input.trigger.trim() : '';
+  const content = typeof input.content === 'string' ? input.content.trim() : '';
+  if (!description) throw new Error('skill description is required');
+  if (!content) throw new Error('skill instructions are required');
+  if (/[\r\n]/.test(description) || /[\r\n]/.test(trigger)) {
+    throw new Error('skill description and trigger must be single-line text');
+  }
+  if ([description, trigger, content].some(value => value.length > MAX_MANAGED_SKILL_TEXT_LENGTH)) {
+    throw new Error('skill fields exceed the maximum allowed length');
+  }
+  return { name, description, trigger, content, mode: 'both' };
+}
+
+function assertNativeSkillRoot(rootDir, { create = true } = {}) {
+  const root = resolve(rootDir || '');
+  if (!root || root === resolve('.')) throw new Error('skill root is required');
+  if (existsSync(root)) {
+    const stat = lstatSync(root);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('skill root must be a non-symbolic-link directory');
+  } else if (create) {
+    mkdirSync(root, { recursive: true });
+  } else {
+    return null;
+  }
+  try {
+    return realpathSync(root);
+  } catch {
+    throw new Error('skill root could not be resolved safely');
+  }
+}
+
+function managedSkillFilePath(rootDir, name, options) {
+  if (!MANAGED_SKILL_NAME_RE.test(name)) throw new Error('invalid skill name');
+  const root = assertNativeSkillRoot(rootDir, options);
+  if (!root) return null;
+  const filePath = resolve(root, `${name}.md`);
+  if (!pathIsInside(filePath, root) || filePath === root) throw new Error('invalid skill path');
+  if (existsSync(filePath)) {
+    let stat;
+    try {
+      stat = lstatSync(filePath);
+    } catch {
+      throw new Error('skill path could not be inspected safely');
+    }
+    if (stat.isSymbolicLink()) throw new Error('skill path must not be a symbolic link');
+  }
+  return filePath;
+}
+
+function isRemovableNativeSkill(skillPath, rootDir) {
+  if (!skillPath || !rootDir || !pathIsInside(skillPath, rootDir)) return false;
+  try {
+    const stat = lstatSync(skillPath);
+    return stat.isFile() && !stat.isSymbolicLink() && skillPath.toLowerCase().endsWith('.md');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Create a native Yeaft single-file skill within an explicitly selected scope.
+ * This deliberately does not edit bundled or borrowed Claude/Codex sources.
+ *
+ * @param {string} rootDir
+ * @param {{ name: string, description: string, trigger?: string, content: string }} input
+ * @returns {{ name: string, path: string }}
+ */
+export function createManagedSkill(rootDir, input) {
+  const skill = normalizeManagedSkillInput(input);
+  const filePath = managedSkillFilePath(rootDir, skill.name);
+  if (existsSync(filePath)) throw new Error(`skill "${skill.name}" already exists in this scope`);
+  writeFileSync(filePath, serializeSkill(skill), { encoding: 'utf8', flag: 'wx' });
+  return { name: skill.name, path: filePath };
+}
+
+/**
+ * Remove only a native single-file skill from the selected Yeaft scope.
+ * Directory skills and borrowed/project compatibility roots are intentionally
+ * left untouched because they may own references and unrelated project files.
+ *
+ * @param {string} rootDir
+ * @param {string} rawName
+ * @returns {{ name: string, removed: boolean }}
+ */
+export function removeManagedSkill(rootDir, rawName) {
+  const name = typeof rawName === 'string' ? rawName.trim() : '';
+  const root = assertNativeSkillRoot(rootDir, { create: false });
+  if (!root) return { name, removed: false };
+  const filePath = managedSkillFilePath(root, name, { create: false });
+  if (!filePath || !existsSync(filePath)) return { name, removed: false };
+  if (!isRemovableNativeSkill(filePath, root)) {
+    throw new Error('only native single-file skills can be removed here');
+  }
+  unlinkSync(filePath);
+  return { name, removed: true };
+}
+
 function shouldIgnorePath(candidatePath, ignorePaths) {
   return ignorePaths.some(ignorePath => pathIsInside(candidatePath, ignorePath));
 }
@@ -344,6 +450,12 @@ function discoverWorkspaceSkills(workspaceRoot, skillsRelativeRoot, subPath = ''
   const errors = [];
   const relativeDir = subPath ? join(skillsRelativeRoot, subPath) : skillsRelativeRoot;
   const entries = listWorkspaceDirectory(workspaceRoot, relativeDir);
+  // The descriptor-based workspace reader is Linux-only. Project Skills still
+  // need to load on Windows/macOS; the root was already selected from a local
+  // Session workDir, so use the same lexical scanner there.
+  if (!entries && process.platform !== 'linux') {
+    return discoverSkills(resolve(workspaceRoot, relativeDir));
+  }
   if (!entries) return { skills, errors };
 
   for (const entry of entries) {
@@ -646,7 +758,7 @@ export class SkillManager {
    * surfaced for historic YAML compatibility.
    *
    * @param {string} [_mode] — deprecated, ignored
-   * @returns {Array<{ name: string, description: string, trigger: string, mode: string, category?: string, platforms?: string[], keywords?: string[], source: string, tier?: string, hasReferences: boolean, hasTemplates: boolean }>}
+   * @returns {Array<{ name: string, description: string, trigger: string, mode: string, category?: string, platforms?: string[], keywords?: string[], source: string, tier?: string, managed: boolean, hasReferences: boolean, hasTemplates: boolean }>}
    */
   list(_mode) {
     const skills = [...this.#skills.values()];
@@ -661,9 +773,50 @@ export class SkillManager {
       keywords: s.keywords || undefined,
       source: s._source,
       tier: s._tier || undefined,
+      managed: (s._tier === 'user' || s._tier === 'project')
+        && this.#nativeRootsForTier(s._tier).some(root => isRemovableNativeSkill(s._path, root)),
       hasReferences: (s._references && s._references.length > 0) || false,
       hasTemplates: (s._templates && s._templates.length > 0) || false,
     }));
+  }
+
+  #nativeRootsForTier(tier) {
+    return [...this.#tierByDir.entries()]
+      .filter(([, label]) => label === tier)
+      .map(([dir]) => dir);
+  }
+
+  /**
+   * Return every discovered Skill source, including lower-priority sources
+   * shadowed by an effective user or project override. Runtime callers keep
+   * using `list()`; this is strictly for management UIs that must not make a
+   * removable user Skill disappear just because a project overrides its name.
+   *
+   * @returns {Array<{ id: string, name: string, description: string, source: string, tier?: string, managed: boolean }>}
+   */
+  listSources() {
+    const sources = [];
+    for (const dir of this.#skillsDirs) {
+      const secure = this.#secureWorkspaceByDir.get(dir);
+      if (!secure && !existsSync(dir)) continue;
+      const { skills } = secure
+        ? discoverWorkspaceSkills(secure.workspaceRoot, secure.relativeRoot)
+        : discoverSkills(dir, '', { ignorePaths: this.#ignorePathsByDir.get(dir) || [] });
+      const tier = this.#tierByDir.get(dir) || basename(dir);
+      for (const skill of skills) {
+        if (!matchesPlatform(skill.platforms)) continue;
+        const path = skill._path || '';
+        sources.push({
+          id: `${tier}:${displaySkillPath(path)}`,
+          name: skill.name,
+          description: skill.description || '',
+          source: skill._source,
+          tier,
+          managed: (tier === 'user' || tier === 'project') && isRemovableNativeSkill(path, dir),
+        });
+      }
+    }
+    return sources;
   }
 
   /**

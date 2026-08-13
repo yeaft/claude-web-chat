@@ -133,16 +133,30 @@ export function buildPluginCatalog({ toolRegistry, skillManager, mcpConfig, mcpM
       .sort((a, b) => a.label.localeCompare(b.label))
     : [];
 
-  const skills = typeof skillManager?.list === 'function'
-    ? skillManager.list()
-      .map(skill => ({
-        id: skill.name,
-        label: skill.name,
-        description: skill.description || '',
-        category: skill.category || null,
-      }))
-      .sort((a, b) => a.label.localeCompare(b.label))
-    : [];
+  // Runtime authorization is keyed by Skill name, so this catalog must expose
+  // only the effective layered entry per name. Source-level rows belong to the
+  // management surface below; otherwise a project override would render two
+  // allowlist toggles that both mutate the same name.
+  const skills = (typeof skillManager?.list === 'function' ? skillManager.list() : [])
+    .map(skill => ({
+      id: skill.name,
+      label: skill.name,
+      description: skill.description || '',
+      category: skill.category || null,
+      tier: skill.tier || null,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+
+  const skillSources = (typeof skillManager?.listSources === 'function' ? skillManager.listSources() : [])
+    .map(skill => ({
+      id: skill.id,
+      name: skill.name,
+      label: skill.name,
+      description: skill.description || '',
+      tier: skill.tier || null,
+      managed: skill.managed === true,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label) || String(a.id).localeCompare(String(b.id)));
 
   const statusByName = new Map((mcpManager?.status?.() || [])
     .map(status => [status.name, status]));
@@ -166,5 +180,5 @@ export function buildPluginCatalog({ toolRegistry, skillManager, mcpConfig, mcpM
     })
     .sort((a, b) => a.label.localeCompare(b.label));
 
-  return { tools, skills, mcpServers };
+  return { tools, skills, skillSources, mcpServers };
 }

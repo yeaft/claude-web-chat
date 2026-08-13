@@ -1,4 +1,5 @@
 import { agentSupportsYeaftPlugins } from '../utils/yeaft-plugin-capability.js';
+import { agentSupportsYeaftManagedSkills } from '../utils/yeaft-managed-skill-capability.js';
 
 export default {
   name: 'PluginCenterPage',
@@ -17,6 +18,16 @@ export default {
       configLoadGeneration: 0,
       refreshGeneration: 0,
       saveGeneration: 0,
+      skillMutationLoading: false,
+      skillMutationError: '',
+      skillScope: 'user',
+      showSkillForm: false,
+      skillForm: {
+        name: '',
+        description: '',
+        trigger: '',
+        content: '',
+      },
     };
   },
   computed: {
@@ -35,15 +46,37 @@ export default {
     agentSupportsPlugins() {
       return agentSupportsYeaftPlugins(this.selectedAgent);
     },
+    agentSupportsManagedSkills() {
+      return agentSupportsYeaftManagedSkills(this.selectedAgent);
+    },
+    skillManagementUnavailableMessage() {
+      return this.selectedAgent?.capabilityMetadataProvided === true
+        ? this.$t('yeaft.plugins.skillManagementUpgradeRequired')
+        : this.$t('yeaft.plugins.skillManagementVersionUnknown');
+    },
+    activeSession() {
+      return this.store?.activePluginSession?.() || { sessionId: '', agentId: '', workDir: '' };
+    },
+    projectSkillAvailable() {
+      return this.activeSession.agentId === this.agentId && !!this.activeSession.sessionId && !!this.activeSession.workDir;
+    },
     configRecord() {
       return this.store?.pluginConfigByAgent?.[this.agentId] || null;
     },
+    catalogWorkDir() {
+      return this.projectSkillAvailable ? this.activeSession.workDir : '';
+    },
     catalogRecord() {
-      const key = this.store?.pluginCatalogKey?.(this.agentId, '');
+      const key = this.store?.pluginCatalogKey?.(this.agentId, this.catalogWorkDir);
       return key ? this.store?.pluginCatalogByKey?.[key] || null : null;
     },
     catalog() {
-      return this.catalogRecord?.catalog || { tools: [], skills: [], mcpServers: [] };
+      return this.catalogRecord?.catalog || { tools: [], skills: [], skillSources: [], mcpServers: [] };
+    },
+    managedSkillSources() {
+      return Array.isArray(this.catalog.skillSources)
+        ? this.catalog.skillSources.filter(item => item?.managed)
+        : [];
     },
     loading() {
       return this.agentSupportsPlugins
@@ -87,7 +120,7 @@ export default {
     filteredCatalog() {
       const matches = (item) => {
         if (!this.normalizedSearchQuery) return true;
-        const searchable = [item?.id, item?.label, item?.description];
+        const searchable = [item?.id, item?.name, item?.label, item?.description];
         if (Number.isFinite(item?.toolCount)) searchable.push(String(item.toolCount));
         return searchable
           .filter(Boolean)
@@ -122,6 +155,10 @@ export default {
     },
   },
   watch: {
+    catalogWorkDir(next, previous) {
+      if (next === previous || !this.agentId || !this.agentSupportsPlugins) return;
+      this.store?.loadPluginCatalog?.(this.agentId, next).catch(() => {});
+    },
     agentId: {
       immediate: true,
       handler(next) {
@@ -151,7 +188,7 @@ export default {
           return;
         }
         this.loadConfig(next);
-        this.store?.loadPluginCatalog?.(next).catch(() => {});
+        this.store?.loadPluginCatalog?.(next, this.catalogWorkDir).catch(() => {});
       },
     },
   },
@@ -213,18 +250,24 @@ export default {
       }
       return normalized;
     },
-    enabled(field, id) {
-      if (!this.selection || !Array.isArray(this.selection[field])) return true;
-      return this.selection[field].includes(id);
+    pluginName(field, item) {
+      return field === 'skills' ? (item?.name || item?.label || item?.id) : item?.id;
     },
-    toggle(field, id, checked) {
+    enabled(field, item) {
+      const name = this.pluginName(field, item);
+      if (!this.selection || !Array.isArray(this.selection[field])) return true;
+      return this.selection[field].includes(name);
+    },
+    toggle(field, item, checked) {
       if (!this.configReady || this.saving) return;
+      const name = this.pluginName(field, item);
+      if (!name) return;
       const selection = this.selection || {};
       const current = new Set(Array.isArray(selection[field])
         ? selection[field]
-        : this.catalog[field].map(item => item.id));
-      if (checked) current.add(id);
-      else current.delete(id);
+        : this.catalog[field].map(entry => this.pluginName(field, entry)));
+      if (checked) current.add(name);
+      else current.delete(name);
       this.selection = { ...selection, [field]: [...current] };
     },
     useAll() {
@@ -244,7 +287,7 @@ export default {
       );
       this.error = '';
       try {
-        const result = await this.store?.loadPluginCatalog?.(targetAgentId);
+        const result = await this.store?.loadPluginCatalog?.(targetAgentId, this.catalogWorkDir);
         if (isCurrentRefresh() && result?.error) this.error = result.error;
       } catch (err) {
         if (isCurrentRefresh()) this.error = err?.message || String(err);
@@ -276,6 +319,69 @@ export default {
         if (isCurrentSave()) this.error = err?.message || String(err);
       } finally {
         if (isCurrentSave()) this.saving = false;
+      }
+    },
+    resetSkillForm() {
+      this.skillForm.name = '';
+      this.skillForm.description = '';
+      this.skillForm.trigger = '';
+      this.skillForm.content = '';
+      this.skillMutationError = '';
+    },
+    async refreshCatalogForSkillScope() {
+      await this.store?.loadPluginCatalog?.(this.agentId, this.catalogWorkDir);
+    },
+    async createSkill() {
+      if (this.skillMutationLoading || !this.agentSupportsManagedSkills) return;
+      if (this.skillScope === 'project' && !this.projectSkillAvailable) {
+        this.skillMutationError = this.$t('yeaft.plugins.projectScopeUnavailable');
+        return;
+      }
+      this.skillMutationLoading = true;
+      this.skillMutationError = '';
+      try {
+        const result = await this.store?.mutateManagedSkill?.({
+          action: 'create',
+          scope: this.skillScope,
+          skill: { ...this.skillForm },
+          sessionId: this.skillScope === 'project' ? this.activeSession.sessionId : '',
+        }, this.agentId);
+        if (result?.error) {
+          this.skillMutationError = result.error;
+          return;
+        }
+        this.resetSkillForm();
+        this.showSkillForm = false;
+        await this.refreshCatalogForSkillScope();
+      } catch (err) {
+        this.skillMutationError = err?.message || String(err);
+      } finally {
+        this.skillMutationLoading = false;
+      }
+    },
+    async removeSkill(item) {
+      if (!item?.managed || this.skillMutationLoading || !this.agentSupportsManagedSkills) return;
+      const scope = item.tier === 'project' ? 'project' : 'user';
+      if (scope === 'project' && !this.projectSkillAvailable) {
+        this.skillMutationError = this.$t('yeaft.plugins.projectScopeUnavailable');
+        return;
+      }
+      if (!confirm(this.$t('yeaft.plugins.confirmRemoveSkill', { name: item.label }))) return;
+      this.skillMutationLoading = true;
+      this.skillMutationError = '';
+      try {
+        const result = await this.store?.mutateManagedSkill?.({
+          action: 'remove',
+          scope,
+          name: item.name || item.label,
+          sessionId: scope === 'project' ? this.activeSession.sessionId : '',
+        }, this.agentId);
+        if (result?.error) this.skillMutationError = result.error;
+        else await this.refreshCatalogForSkillScope();
+      } catch (err) {
+        this.skillMutationError = err?.message || String(err);
+      } finally {
+        this.skillMutationLoading = false;
       }
     },
     selectAgent(agentId) {
@@ -356,10 +462,6 @@ export default {
             <p>{{ $t('yeaft.plugins.loadError', { error: configLoadError }) }}</p>
             <button type="button" class="btn-secondary" @click="loadConfig(agentId)">{{ $t('yeaft.plugins.retry') }}</button>
           </div>
-          <div v-else-if="!hasCatalog" class="plugin-center-state">
-            <p>{{ $t('yeaft.plugins.empty') }}</p>
-          </div>
-
           <template v-else>
             <div class="plugin-center-toolbar">
               <label class="plugin-center-search">
@@ -385,13 +487,78 @@ export default {
               </button>
             </div>
 
-            <div v-if="!hasSearchResults" class="plugin-center-empty-search">
+            <section class="plugin-center-skill-management" aria-labelledby="plugin-manage-skills-title">
+              <div class="plugin-center-section-heading">
+                <div>
+                  <h2 id="plugin-manage-skills-title">{{ $t('yeaft.plugins.manageSkills') }}</h2>
+                  <p class="plugin-center-section-description">{{ $t('yeaft.plugins.manageSkillsDescription') }}</p>
+                </div>
+                <button type="button" class="btn-secondary plugin-center-skill-create" @click="showSkillForm = !showSkillForm" :disabled="skillMutationLoading || !agentSupportsManagedSkills">
+                  {{ showSkillForm ? $t('common.cancel') : $t('yeaft.plugins.createSkill') }}
+                </button>
+              </div>
+              <p v-if="!agentSupportsManagedSkills" class="plugin-center-scope-hint is-error">{{ skillManagementUnavailableMessage }}</p>
+              <div v-if="showSkillForm" class="plugin-center-skill-form">
+                <div class="plugin-center-scope-control">
+                  <span>{{ $t('yeaft.plugins.skillScope') }}</span>
+                  <div class="plugin-center-scope-options" role="radiogroup" :aria-label="$t('yeaft.plugins.skillScope')">
+                    <label>
+                      <input v-model="skillScope" type="radio" value="user" :disabled="skillMutationLoading">
+                      <span>{{ $t('yeaft.plugins.userScope') }}</span>
+                    </label>
+                    <label :class="{ 'is-disabled': !projectSkillAvailable }">
+                      <input v-model="skillScope" type="radio" value="project" :disabled="skillMutationLoading || !projectSkillAvailable">
+                      <span>{{ $t('yeaft.plugins.projectScope') }}</span>
+                    </label>
+                  </div>
+                </div>
+                <p class="plugin-center-scope-hint">
+                  {{ skillScope === 'project' ? $t('yeaft.plugins.projectScopeDescription') : $t('yeaft.plugins.userScopeDescription') }}
+                </p>
+                <label>
+                  <span>{{ $t('yeaft.plugins.skillName') }}</span>
+                  <input v-model="skillForm.name" type="text" :disabled="skillMutationLoading" autocomplete="off">
+                </label>
+                <label>
+                  <span>{{ $t('yeaft.plugins.skillDescriptionLabel') }}</span>
+                  <input v-model="skillForm.description" type="text" :disabled="skillMutationLoading">
+                </label>
+                <label>
+                  <span>{{ $t('yeaft.plugins.skillTrigger') }}</span>
+                  <input v-model="skillForm.trigger" type="text" :disabled="skillMutationLoading">
+                </label>
+                <label>
+                  <span>{{ $t('yeaft.plugins.skillInstructions') }}</span>
+                  <textarea v-model="skillForm.content" :disabled="skillMutationLoading" rows="5"></textarea>
+                </label>
+                <p v-if="skillMutationError" class="plugin-center-skill-error" role="alert">{{ skillMutationError }}</p>
+                <div class="plugin-center-skill-form-actions">
+                  <button type="button" class="btn-primary" @click="createSkill" :disabled="skillMutationLoading || !skillForm.name || !skillForm.description || !skillForm.content || !agentSupportsManagedSkills">
+                    {{ skillMutationLoading ? $t('common.saving') : $t('yeaft.plugins.createSkill') }}
+                  </button>
+                  <button type="button" class="btn-secondary" @click="resetSkillForm" :disabled="skillMutationLoading">{{ $t('yeaft.plugins.resetSkillForm') }}</button>
+                </div>
+              </div>
+              <div v-if="managedSkillSources.length" class="plugin-center-managed-skill-list">
+                <div v-for="item in managedSkillSources" :key="item.id" class="plugin-center-managed-skill-row">
+                  <span class="plugin-center-card-copy">
+                    <strong>{{ item.label }}</strong>
+                    <small>{{ $t('yeaft.plugins.skillTier.' + item.tier) }}</small>
+                  </span>
+                  <button type="button" class="plugin-center-skill-remove" :disabled="skillMutationLoading || !agentSupportsManagedSkills" @click="removeSkill(item)">
+                    {{ $t('yeaft.plugins.removeSkill') }}
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <div v-if="!hasSearchResults && hasCatalog" class="plugin-center-empty-search">
               <span class="plugin-center-empty-search-icon" aria-hidden="true">⌕</span>
               <h2>{{ $t('yeaft.plugins.noMatchesTitle') }}</h2>
               <p>{{ $t('yeaft.plugins.noMatchesBody') }}</p>
             </div>
 
-            <div v-else class="plugin-center-sections">
+            <div v-else-if="hasCatalog" class="plugin-center-sections">
               <section v-if="visibleCategories.includes('tools')" class="plugin-center-section" aria-labelledby="plugin-tools-title">
                 <div class="plugin-center-section-heading">
                   <div>
@@ -400,8 +567,8 @@ export default {
                   <span>{{ filteredCatalog.tools.length }}</span>
                 </div>
                 <div class="plugin-center-card-grid">
-                  <label v-for="item in filteredCatalog.tools" :key="item.id" class="plugin-center-card" :class="{ 'is-disabled': !configReady || saving || !enabled('tools', item.id) }">
-                    <input type="checkbox" :checked="enabled('tools', item.id)" :disabled="!configReady || saving" @change="toggle('tools', item.id, $event.target.checked)">
+                  <label v-for="item in filteredCatalog.tools" :key="item.id" class="plugin-center-card" :class="{ 'is-disabled': !configReady || saving || !enabled('tools', item) }">
+                    <input type="checkbox" :checked="enabled('tools', item)" :disabled="!configReady || saving" @change="toggle('tools', item, $event.target.checked)">
                     <span class="plugin-center-card-icon" aria-hidden="true">⌘</span>
                     <span class="plugin-center-card-copy">
                       <strong>{{ item.label }}</strong>
@@ -420,12 +587,13 @@ export default {
                   <span>{{ filteredCatalog.skills.length }}</span>
                 </div>
                 <div class="plugin-center-card-grid">
-                  <label v-for="item in filteredCatalog.skills" :key="item.id" class="plugin-center-card" :class="{ 'is-disabled': !configReady || saving || !enabled('skills', item.id) }">
-                    <input type="checkbox" :checked="enabled('skills', item.id)" :disabled="!configReady || saving" @change="toggle('skills', item.id, $event.target.checked)">
+                  <label v-for="item in filteredCatalog.skills" :key="item.id" class="plugin-center-card" :class="{ 'is-disabled': !configReady || saving || !enabled('skills', item) }">
+                    <input type="checkbox" :checked="enabled('skills', item)" :disabled="!configReady || saving" @change="toggle('skills', item, $event.target.checked)">
                     <span class="plugin-center-card-icon" aria-hidden="true">✦</span>
                     <span class="plugin-center-card-copy">
                       <strong>{{ item.label }}</strong>
                       <small>{{ item.description || $t('yeaft.plugins.skillDescription') }}</small>
+                      <small v-if="item.tier" class="plugin-center-skill-tier">{{ $t('yeaft.plugins.skillTier.' + item.tier) }}</small>
                     </span>
                     <span class="plugin-center-toggle" aria-hidden="true"></span>
                   </label>
@@ -440,8 +608,8 @@ export default {
                   <span>{{ filteredCatalog.mcpServers.length }}</span>
                 </div>
                 <div class="plugin-center-card-grid">
-                  <label v-for="item in filteredCatalog.mcpServers" :key="item.id" class="plugin-center-card" :class="{ 'is-disabled': !configReady || saving || !enabled('mcpServers', item.id) }">
-                    <input type="checkbox" :checked="enabled('mcpServers', item.id)" :disabled="!configReady || saving" @change="toggle('mcpServers', item.id, $event.target.checked)">
+                  <label v-for="item in filteredCatalog.mcpServers" :key="item.id" class="plugin-center-card" :class="{ 'is-disabled': !configReady || saving || !enabled('mcpServers', item) }">
+                    <input type="checkbox" :checked="enabled('mcpServers', item)" :disabled="!configReady || saving" @change="toggle('mcpServers', item, $event.target.checked)">
                     <span class="plugin-center-card-icon" aria-hidden="true">◌</span>
                     <span class="plugin-center-card-copy">
                       <strong>{{ item.label }}</strong>

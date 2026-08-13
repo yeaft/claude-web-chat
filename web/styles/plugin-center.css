@@ -728,3 +728,152 @@
     flex: 1 1 100%;
   }
 }
+
+/* Native Skill management. Existing Plugin Center cards stay untouched. */
+.plugin-center-skill-management {
+  margin-top: var(--plugin-center-space-20);
+  padding: var(--plugin-center-space-14) var(--plugin-center-space-16);
+  border: var(--plugin-center-space-1) solid var(--border-light);
+  border-radius: var(--plugin-center-radius-lg);
+  background: var(--bg-sidebar);
+}
+
+.plugin-center-section-description,
+.plugin-center-scope-hint {
+  margin: var(--plugin-center-space-4) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--plugin-center-font-size-sm);
+  line-height: var(--plugin-center-line-height-body);
+}
+
+.plugin-center-scope-hint.is-error,
+.plugin-center-skill-error {
+  color: var(--error);
+}
+
+.plugin-center-skill-form {
+  display: grid;
+  gap: var(--plugin-center-space-10);
+  margin-top: var(--plugin-center-space-14);
+}
+
+.plugin-center-skill-form > label {
+  display: grid;
+  gap: var(--plugin-center-space-6);
+  color: var(--text-secondary);
+  font-size: var(--plugin-center-font-size-sm);
+  font-weight: 500;
+}
+
+.plugin-center-skill-form input,
+.plugin-center-skill-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: var(--plugin-center-space-1) solid var(--border-color);
+  border-radius: var(--plugin-center-radius-md);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--plugin-center-font-size-md);
+  padding: var(--plugin-center-space-8) var(--plugin-center-space-10);
+}
+
+.plugin-center-skill-form textarea {
+  resize: vertical;
+  line-height: var(--plugin-center-line-height-copy);
+}
+
+.plugin-center-skill-form input:focus,
+.plugin-center-skill-form textarea:focus {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 var(--plugin-center-focus-ring-width) var(--focus-ring);
+  outline: 0;
+}
+
+.plugin-center-scope-control,
+.plugin-center-scope-options,
+.plugin-center-skill-form-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--plugin-center-space-8);
+}
+
+.plugin-center-scope-control {
+  justify-content: space-between;
+  color: var(--text-secondary);
+  font-size: var(--plugin-center-font-size-sm);
+  font-weight: 500;
+}
+
+.plugin-center-scope-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--plugin-center-space-4);
+  color: var(--text-primary);
+  font-size: var(--plugin-center-font-size-sm);
+  font-weight: 400;
+}
+
+.plugin-center-scope-options label.is-disabled {
+  color: var(--text-muted);
+}
+
+.plugin-center-skill-form-actions {
+  justify-content: flex-end;
+}
+
+.plugin-center-skill-error {
+  margin: 0;
+  font-size: var(--plugin-center-font-size-sm);
+  line-height: var(--plugin-center-line-height-body);
+}
+
+.plugin-center-managed-skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--plugin-center-space-4);
+  margin-top: var(--plugin-center-space-14);
+}
+
+.plugin-center-managed-skill-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--plugin-center-space-10);
+  padding: var(--plugin-center-space-8) var(--plugin-center-space-10);
+  border: var(--plugin-center-space-1) solid var(--border-light);
+  border-radius: var(--plugin-center-radius-md);
+  background: var(--bg-main);
+}
+
+.plugin-center-skill-tier {
+  color: var(--text-muted);
+}
+
+.plugin-center-skill-remove {
+  border: 0;
+  border-radius: var(--plugin-center-radius-sm);
+  background: transparent;
+  color: var(--error);
+  cursor: pointer;
+  padding: var(--plugin-center-space-4) var(--plugin-center-space-6);
+  font: inherit;
+  font-size: var(--plugin-center-font-size-xs);
+}
+
+.plugin-center-skill-remove:hover:not(:disabled) {
+  background: var(--error-bg);
+}
+
+.plugin-center-skill-remove:disabled {
+  cursor: not-allowed;
+  opacity: var(--plugin-center-disabled-opacity);
+}
+
+@media (max-width: 620px) {
+  .plugin-center-scope-control {
+    align-items: stretch;
+    flex-direction: column;
+    gap: var(--plugin-center-space-6);
+  }
+}

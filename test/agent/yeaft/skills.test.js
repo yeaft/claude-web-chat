@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { parseSkill, SkillManager } from '../../../agent/yeaft/skills.js';
+import { createManagedSkill, parseSkill, removeManagedSkill, SkillManager } from '../../../agent/yeaft/skills.js';
+import { buildPluginCatalog } from '../../../agent/yeaft/plugins.js';
 
 const roots = [];
 
@@ -78,6 +79,7 @@ describe('SkillManager discovery', () => {
     write(workspace, '.yeaft/skills/broken/SKILL.md', '# Missing frontmatter\n');
 
     const manager = new SkillManager(projectSkills, {
+      tierByDir: { [projectSkills]: 'project' },
       secureWorkspaceByDir: {
         [projectSkills]: { workspaceRoot: workspace, relativeRoot: '.yeaft/skills' },
       },
@@ -103,5 +105,91 @@ describe('SkillManager discovery', () => {
 
     expect(result).toMatchObject({ loaded: 1, errors: [] });
     expect(manager.get('brainstorming')).toMatchObject({ name: 'brainstorming', _tier: 'user' });
+  });
+});
+
+describe('managed native Skills', () => {
+  it('creates and removes only a native single-file Skill in the selected root', () => {
+    const root = tempRoot();
+
+    const created = createManagedSkill(root, {
+      name: 'release-check',
+      description: 'Checks a release candidate',
+      trigger: 'release candidate',
+      content: 'Verify tests and deployment inputs.',
+    });
+
+    expect(created.name).toBe('release-check');
+    expect(parseSkill(readFileSync(created.path, 'utf8'), 'release-check.md')).toMatchObject({
+      name: 'release-check',
+      description: 'Checks a release candidate',
+    });
+    expect(removeManagedSkill(root, 'release-check')).toEqual({ name: 'release-check', removed: true });
+    expect(removeManagedSkill(root, 'release-check')).toEqual({ name: 'release-check', removed: false });
+    expect(removeManagedSkill(join(root, 'missing-scope'), 'release-check')).toEqual({ name: 'release-check', removed: false });
+  });
+
+  it('rejects traversal, invalid names, duplicate writes, directories, and symlink targets', () => {
+    const root = tempRoot();
+    expect(() => createManagedSkill(root, {
+      name: '../escape', description: 'escape', content: 'never write outside the root',
+    })).toThrow('skill name');
+    expect(() => createManagedSkill(root, {
+      name: 'unsafe-frontmatter', description: 'line one\ntrigger: forged', content: 'never serialize forged fields',
+    })).toThrow('single-line');
+
+    createManagedSkill(root, { name: 'safe', description: 'safe', content: 'safe content' });
+    expect(() => createManagedSkill(root, { name: 'safe', description: 'safe', content: 'again' }))
+      .toThrow('already exists');
+
+    mkdirSync(join(root, 'directory-skill.md'));
+    expect(() => removeManagedSkill(root, 'directory-skill')).toThrow('only native single-file skills');
+
+    const external = join(tempRoot(), 'outside.md');
+    writeFileSync(external, skill('outside'));
+    const linked = join(root, 'linked.md');
+    try {
+      symlinkSync(external, linked, 'file');
+      expect(lstatSync(linked).isSymbolicLink()).toBe(true);
+      expect(() => removeManagedSkill(root, 'linked')).toThrow('symbolic link');
+    } catch (error) {
+      // Some Windows policies refuse symlink creation for unprivileged users;
+      // the traversal/duplicate/directory assertions above remain portable.
+      if (!String(error?.code || '').includes('EPERM')) throw error;
+    }
+  });
+
+  it('marks only Yeaft native user and project files as manageable', () => {
+    const bundled = tempRoot();
+    const user = tempRoot();
+    const project = tempRoot();
+    const borrowed = tempRoot();
+    write(bundled, 'bundled.md', skill('bundled'));
+    write(user, 'user.md', skill('user'));
+    write(project, 'project.md', skill('project'));
+    write(borrowed, 'borrowed/SKILL.md', skill('borrowed'));
+
+    const manager = new SkillManager([bundled, user, borrowed, project], {
+      userDir: user,
+      tierByDir: { [bundled]: 'bundled', [user]: 'user', [borrowed]: 'project-claude', [project]: 'project' },
+    });
+    manager.load();
+    const byName = Object.fromEntries(manager.list().map(item => [item.name, item]));
+
+    expect(byName.bundled.managed).toBe(false);
+    expect(byName.user.managed).toBe(true);
+    expect(byName.project.managed).toBe(true);
+    expect(byName.borrowed.managed).toBe(false);
+
+    const sourceNames = manager.listSources().map(item => item.name).sort();
+    expect(sourceNames).toEqual(['borrowed', 'bundled', 'project', 'user']);
+
+    write(project, 'user.md', skill('user', '# Project override'));
+    manager.load();
+    expect(manager.get('user')).toMatchObject({ _tier: 'project', content: '# Project override' });
+    expect(manager.listSources().filter(item => item.name === 'user')).toHaveLength(2);
+    const catalog = buildPluginCatalog({ skillManager: manager });
+    expect(catalog.skills.filter(item => item.label === 'user')).toHaveLength(1);
+    expect(catalog.skillSources.filter(item => item.name === 'user')).toHaveLength(2);
   });
 });

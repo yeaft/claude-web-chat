@@ -31,7 +31,7 @@ import {
 import { buildPluginCatalog } from '../../../agent/yeaft/plugins.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
 import { MCPManager } from '../../../agent/yeaft/mcp.js';
-import { __testGetOrCreateVpEngine, __testHooks, __testLoadPluginCatalogMcpConfig, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftLoadHistoryOutline, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftUpdateSessionConfig, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
+import { __testGetOrCreateVpEngine, __testHooks, __testLoadPluginCatalogMcpConfig, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftLoadHistoryOutline, handleYeaftManagedSkill, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftUpdateSessionConfig, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
 import { _resetAgentRegistry, getAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import { defineTool } from '../../../agent/yeaft/tools/types.js';
@@ -120,6 +120,94 @@ describe('Yeaft Session context lifetime', () => {
     expect(unused.close).toHaveBeenCalledTimes(1);
     __testHooks.clearSessionContextForTest(sessionId);
     expect(first.close).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Yeaft managed Skill protocol', () => {
+  it('writes user and Session-resolved project Skills without trusting a browser workDir', () => {
+    const root = makeDir();
+    const workDir = tempRoot('yeaft-managed-skill-project-');
+    const sessionId = 'session-managed-skill';
+    createSession(sessionsRoot(root), {
+      id: sessionId,
+      name: 'Managed Skill Project',
+      roster: [],
+      defaultVpId: null,
+      workDir,
+    }).close();
+    const originalWs = ctx.ws;
+    const originalEncryption = ctx.serverEncryptionRequired;
+    const originalBuffer = ctx.messageBuffer;
+    ctx.messageBuffer = [];
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = true;
+    ctx.CONFIG = { ...(originalConfig || {}), yeaftDir: root };
+    ctx.ws = { readyState: 1, send() {} };
+    ctx.serverEncryptionRequired = false;
+    __testSetSession({ yeaftDir: root, config: {}, skillManager: null, mcpManager: null, toolRegistry: null });
+
+    try {
+      handleYeaftManagedSkill({
+        requestId: 'user-create', action: 'create', scope: 'user',
+        skill: { name: 'user-check', description: 'User check', content: 'Check every repository.' },
+      });
+      handleYeaftManagedSkill({
+        requestId: 'project-create', action: 'create', scope: 'project', sessionId,
+        workDir: join(root, 'must-not-be-used'),
+        skill: { name: 'project-check', description: 'Project check', content: 'Check this repository only.' },
+      });
+
+      expect(readFileSync(join(root, 'skills', 'user-check.md'), 'utf8')).toContain('name: user-check');
+      expect(readFileSync(join(workDir, '.yeaft', 'skills', 'project-check.md'), 'utf8')).toContain('name: project-check');
+      const responses = ctx.outboundSendQueue.map(item => item.msg)
+        .filter(frame => frame.type === 'yeaft_managed_skill_result');
+      expect(responses).toEqual([
+        expect.objectContaining({ requestId: 'user-create', error: null, scope: 'user', catalog: expect.objectContaining({ skillSources: expect.any(Array) }) }),
+        expect.objectContaining({ requestId: 'project-create', error: null, scope: 'project', sessionId, catalog: expect.objectContaining({ skillSources: expect.any(Array) }) }),
+      ]);
+
+      handleYeaftManagedSkill({
+        requestId: 'project-remove', action: 'remove', scope: 'project', sessionId, name: 'project-check',
+      });
+      expect(existsSync(join(workDir, '.yeaft', 'skills', 'project-check.md'))).toBe(false);
+    } finally {
+      ctx.ws = originalWs;
+      ctx.serverEncryptionRequired = originalEncryption;
+      ctx.messageBuffer = originalBuffer;
+    }
+  });
+
+  it('rejects a project Skill request when the Session has no project directory', () => {
+    const root = makeDir();
+    const sessionId = 'session-no-workdir';
+    createSession(sessionsRoot(root), { id: sessionId, name: 'No Project', roster: [], defaultVpId: null }).close();
+    const originalWs = ctx.ws;
+    const originalEncryption = ctx.serverEncryptionRequired;
+    const originalBuffer = ctx.messageBuffer;
+    ctx.messageBuffer = [];
+    ctx.outboundSendQueue = [];
+    ctx.outboundSendQueueActive = true;
+    ctx.CONFIG = { ...(originalConfig || {}), yeaftDir: root };
+    ctx.ws = { readyState: 1, send() {} };
+    ctx.serverEncryptionRequired = false;
+    __testSetSession({ yeaftDir: root, config: {}, skillManager: null, mcpManager: null, toolRegistry: null });
+
+    try {
+      handleYeaftManagedSkill({
+        requestId: 'project-without-workdir', action: 'create', scope: 'project', sessionId,
+        skill: { name: 'blocked', description: 'Blocked', content: 'Must not be written.' },
+      });
+      expect(ctx.outboundSendQueue.at(-1)?.msg).toMatchObject({
+        type: 'yeaft_managed_skill_result',
+        requestId: 'project-without-workdir',
+        error: 'the selected Session has no project directory',
+      });
+      expect(existsSync(join(root, '.yeaft', 'skills', 'blocked.md'))).toBe(false);
+    } finally {
+      ctx.ws = originalWs;
+      ctx.serverEncryptionRequired = originalEncryption;
+      ctx.messageBuffer = originalBuffer;
+    }
   });
 });
 
