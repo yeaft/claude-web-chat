@@ -32,6 +32,7 @@ import { defineTool } from '../../../agent/yeaft/tools/types.js';
 import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
 import { isMultiVpEnabled, setMultiVpEnabled } from '../../../agent/yeaft/sessions/feature-flag.js';
+import { DEFAULT_VPS } from '../../../agent/yeaft/vp/seed-defaults.js';
 import { registerSessionWorkDir, renameSession, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
 import {
   createProject,
@@ -1994,7 +1995,7 @@ describe('Yeaft session-scoped model config', () => {
       const snapshot = frames.find(frame => frame.event?.type === 'vp_snapshot');
       expect(snapshot.requestId).toBe('vp-cold-start');
       expect(snapshot.event.emptyLibrary).toBe(false);
-      expect(snapshot.event.vps).toHaveLength(34);
+      expect(snapshot.event.vps).toHaveLength(DEFAULT_VPS.length);
       expect(snapshot.event.vps.some(vp => vp.vpId === 'omni')).toBe(true);
       expect(existsSync(join(seedRoot, 'virtual-persons', 'omni', 'role.md'))).toBe(true);
     } finally {
