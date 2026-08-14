@@ -4075,6 +4075,71 @@ describe('Engine', () => {
       });
     });
 
+    it('feeds the accepted AskUser answer into the next provider loop and durable history', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-ask-user-loop-'));
+      try {
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'call_ask_loop', name: 'ask_test', input: { question: 'Continue?' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'Continuing with the answer.' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+
+        const conversationStore = new ConversationStore(yeaftDir);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+        });
+        engine.registerTool({
+          name: 'ask_test',
+          description: 'Ask through the host',
+          parameters: { type: 'object' },
+          execute: async (input, ctx) => ctx.askUser(input),
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'ask me',
+          sessionId: 'session-ask-loop',
+          vpTurnId: 'turn-ask-loop',
+          askUser: async (_input, toolCall) => {
+            expect(toolCall).toMatchObject({ id: 'call_ask_loop', name: 'ask_test' });
+            return { Continue: 'Yes' };
+          },
+        })) events.push(event);
+
+        expect(events.find(event => event.type === 'tool_end')).toMatchObject({
+          id: 'call_ask_loop',
+          output: '{"Continue":"Yes"}',
+          isError: false,
+        });
+        expect(mockAdapter.callLog).toHaveLength(2);
+        expect(mockAdapter.callLog[1].messages).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            role: 'tool',
+            toolCallId: 'call_ask_loop',
+            content: '{"Continue":"Yes"}',
+          }),
+        ]));
+        expect(conversationStore.loadRecentBySession('session-ask-loop', 20)).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            role: 'tool',
+            toolCallId: 'call_ask_loop',
+            content: '{"Continue":"Yes"}',
+            sessionId: 'session-ask-loop',
+            turnId: 'turn-ask-loop',
+          }),
+        ]));
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
     it('marks structured tool error envelopes as failed executions', async () => {
       mockAdapter.pushResponse([
         { type: 'tool_call', id: 'call_structured_error', name: 'structured_error_tool', input: {} },

@@ -4762,11 +4762,9 @@ export const useChatStore = defineStore('chat', {
               existingRow.askQuestions = event.questions || [];
               existingRow.askCreatedAt = event.createdAt || null;
               existingRow.askExpiresAt = event.expiresAt || null;
-              if (event.replay) {
-                existingRow.askPending = false;
-                existingRow.pendingAnswers = null;
-                existingRow.askSubmitGeneration = null;
-              }
+              // A replay only refreshes the question metadata. It must not
+              // clear an answer that this tab submitted while the Agent's
+              // terminal confirmation is still in flight.
               existingRow.isHistory = false;
               const terminal = takeAskUserTerminal(this, identity);
               if (terminal) applyAskUserTerminal(existingRow, terminal);

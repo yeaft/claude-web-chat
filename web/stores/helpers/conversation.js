@@ -7,9 +7,6 @@ import { markAllToolsCompleted } from './handlers/conversationHandler.js';
 import { t } from '../../utils/i18n.js';
 import { EXPERT_ROLES, buildClientExpertMessage } from '../../utils/expert-roles.js';
 
-const YEAFT_ASK_SUBMIT_TIMEOUT_MS = 10_000;
-let yeaftAskSubmitGeneration = 0;
-
 function agentIdsForYeaftConversation(store, conversationId) {
   if (!conversationId || !store?.yeaftConversationIdsByAgent) return [];
   return Object.entries(store.yeaftConversationIdsByAgent)
@@ -491,17 +488,12 @@ export function answerUserQuestion(store, requestId, answers, conversationId) {
     chatMsg.askAnswered = true;
     chatMsg.selectedAnswers = answers;
   } else if (chatMsg && sent !== false) {
-    const submitGeneration = ++yeaftAskSubmitGeneration;
+    // Keep the submitted answer visible until the Agent sends the terminal
+    // `ask_user_answered`/`ask_user_expired` event. A timer here creates a
+    // false failure state: a slow provider or reconnect clears the optimistic
+    // marker while the request is still live, so the same question reopens.
     chatMsg.askPending = true;
     chatMsg.pendingAnswers = answers;
-    chatMsg.askSubmitGeneration = submitGeneration;
-    const timer = setTimeout(() => {
-      if (chatMsg.askSubmitGeneration !== submitGeneration || chatMsg.askPending !== true) return;
-      chatMsg.askPending = false;
-      chatMsg.pendingAnswers = null;
-      chatMsg.askSubmitGeneration = null;
-    }, YEAFT_ASK_SUBMIT_TIMEOUT_MS);
-    if (typeof timer?.unref === 'function') timer.unref();
   }
 
   // 立刻进入 processing 状态，显示"思考中"指示器
