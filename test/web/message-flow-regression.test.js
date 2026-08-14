@@ -116,6 +116,7 @@ globalThis.Pinia = {
   useSessionsStore: () => runtimeSessionsStore,
 };
 const { useChatStore } = await import('../../web/stores/chat.js');
+const { answerUserQuestion } = await import('../../web/stores/helpers/conversation.js');
 const { default: AssistantTurn } = await import('../../web/components/AssistantTurn.js');
 const { default: MessageItem } = await import('../../web/components/MessageItem.js');
 const { useSessionsStore } = await import('../../web/stores/sessions.js');
@@ -227,6 +228,100 @@ describe('app dialog contracts', () => {
 });
 
 describe('message flow regressions', () => {
+  it('keeps a submitted AskUser answer through replay until the Agent confirms it', () => {
+    vi.useFakeTimers();
+    try {
+      const conversationId = 'yeaft-ask-replay';
+      const sessionId = 'session-ask-replay';
+      const store = useChatStore();
+      store.currentView = 'yeaft';
+      store.currentAgent = 'agent-ask';
+      store.yeaftAgentId = 'agent-ask';
+      store.yeaftConversationId = conversationId;
+      store.yeaftConversationIdsByAgent = { 'agent-ask': conversationId };
+      store.yeaftActiveSessionFilter = sessionId;
+      store.messagesMap = {
+        [conversationId]: [{
+          id: 'ask-row',
+          type: 'tool-use',
+          toolName: 'AskUserQuestion',
+          toolId: 'call-ask-replay',
+          askRequestId: 'ask-replay',
+          askQuestions: [{ question: 'Continue?', options: [{ label: 'Yes', description: '' }] }],
+          sessionId,
+          vpId: 'vp-ask',
+          turnId: 'turn-ask',
+          threadId: 'main',
+          hasResult: false,
+        }],
+      };
+      const sendWsMessage = vi.fn(() => true);
+      store.sendWsMessage = sendWsMessage;
+
+      answerUserQuestion(store, 'ask-replay', { 'Continue?': 'Yes' }, conversationId);
+      expect(store.messagesMap[conversationId][0]).toMatchObject({
+        askPending: true,
+        pendingAnswers: { 'Continue?': 'Yes' },
+        askRequestId: 'ask-replay',
+      });
+
+      vi.advanceTimersByTime(10_001);
+      expect(store.messagesMap[conversationId][0]).toMatchObject({
+        askPending: true,
+        pendingAnswers: { 'Continue?': 'Yes' },
+        askRequestId: 'ask-replay',
+      });
+
+      store.handleYeaftOutput({
+        type: 'yeaft_output',
+        agentId: 'agent-ask',
+        conversationId,
+        sessionId,
+        vpId: 'vp-ask',
+        turnId: 'turn-ask',
+        threadId: 'main',
+        event: {
+          type: 'ask_user_question',
+          requestId: 'ask-replay',
+          toolCallId: 'call-ask-replay',
+          replay: true,
+          questions: [{ question: 'Continue?', options: [{ label: 'Yes', description: '' }] }],
+        },
+      });
+
+      expect(store.messagesMap[conversationId][0]).toMatchObject({
+        askPending: true,
+        pendingAnswers: { 'Continue?': 'Yes' },
+        askRequestId: 'ask-replay',
+      });
+
+      store.handleYeaftOutput({
+        type: 'yeaft_output',
+        agentId: 'agent-ask',
+        conversationId,
+        sessionId,
+        vpId: 'vp-ask',
+        turnId: 'turn-ask',
+        threadId: 'main',
+        event: {
+          type: 'ask_user_answered',
+          requestId: 'ask-replay',
+          toolCallId: 'call-ask-replay',
+          answers: { 'Continue?': 'Yes' },
+        },
+      });
+
+      expect(store.messagesMap[conversationId][0]).toMatchObject({
+        askAnswered: true,
+        selectedAnswers: { 'Continue?': 'Yes' },
+        askPending: false,
+        askRequestId: null,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('preserves the configured MCP cache when an error broadcast omits servers', () => {
     const store = useChatStore();
     store.yeaftMcpServers = [{ name: 'github', command: 'node', args: [], env: {} }];

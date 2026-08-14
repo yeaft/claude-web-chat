@@ -35,6 +35,7 @@ const {
   handleYeaftSessionRemoveMember,
   handleYeaftSessionSetDefaultVp,
   handleYeaftUpdateSession,
+  handleYeaftAskUserAnswer,
   __testHandleEngineEvent,
   __testGetRegisteredThreadIds,
   __testGroupHistory,
@@ -72,6 +73,33 @@ describe('Yeaft load-history first paint', () => {
     loadSession.mockClear();
     resolveLoadSession = null;
     ctx.CONFIG = null;
+  });
+
+  it('resolves the pending AskUser request with its answer identity', async () => {
+    const answerPromise = __testHooks.seedPendingUserPrompt({
+      requestId: 'ask-bridge-flow',
+      sessionId: 'session-bridge-flow',
+      vpId: 'vp-bridge-flow',
+      threadId: 'thread-bridge-flow',
+      turnId: 'turn-bridge-flow',
+      toolCallId: 'call-bridge-flow',
+    });
+
+    expect(handleYeaftAskUserAnswer({
+      requestId: 'ask-bridge-flow',
+      sessionId: 'session-bridge-flow',
+      vpId: 'vp-bridge-flow',
+      threadId: 'thread-bridge-flow',
+      turnId: 'turn-bridge-flow',
+      toolCallId: 'call-bridge-flow',
+      answers: { Continue: 'Yes' },
+    })).toBe(true);
+    await expect(answerPromise).resolves.toEqual({ Continue: 'Yes' });
+
+    expect(handleYeaftAskUserAnswer({
+      requestId: 'ask-bridge-flow',
+      answers: { Continue: 'No' },
+    })).toBe(false);
   });
 
   it('filters internal rows and uses a collision-resistant virtual conversation id', () => {
