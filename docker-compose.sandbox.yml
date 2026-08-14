@@ -5,6 +5,11 @@ services:
       SANDBOX_SERVER_URL: ${SANDBOX_SERVER_URL:?Set SANDBOX_SERVER_URL to a ws:// or wss:// URL reachable by the Agent container}
       SANDBOX_STATE_DIR: ${SANDBOX_STATE_DIR:-/var/lib/yeaft/container-agents}
       SANDBOX_AGENT_IMAGE: ${SANDBOX_AGENT_IMAGE:-ghcr.io/yeaft/yeaft-web-code-agent-agent:dev}
+      # Optional: shared cgroup slice created on the Host by
+      # `sudo yeaft-agent container setup-limits`. When set, every sandbox
+      # container joins the slice and the sum of their CPU/memory usage is
+      # capped (90% CPU / 70% memory of the Host by default).
+      SANDBOX_CGROUP_PARENT: ${SANDBOX_CGROUP_PARENT:-}
     volumes:
       # Opt-in only: Docker socket access is equivalent to root on the Host.
       - /var/run/docker.sock:/var/run/docker.sock

@@ -140,7 +140,11 @@ export const CONFIG = {
     enabled: process.env.SANDBOX_ENABLED === 'true',
     image: process.env.SANDBOX_AGENT_IMAGE || 'ghcr.io/yeaft/yeaft-web-code-agent-agent:dev',
     serverUrl: process.env.SANDBOX_SERVER_URL || '',
-    stateDir: process.env.SANDBOX_STATE_DIR || join(homedir(), '.yeaft', 'container-agents')
+    stateDir: process.env.SANDBOX_STATE_DIR || join(homedir(), '.yeaft', 'container-agents'),
+    // Shared cgroup slice (created by `yeaft-agent container setup-limits` on the
+    // Host) that caps the sum of all sandbox containers' CPU/memory usage. Empty
+    // means no cgroup-parent is passed and sandbox containers are unprotected.
+    cgroupParent: process.env.SANDBOX_CGROUP_PARENT || ''
   },
 
   // File upload settings
