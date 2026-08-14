@@ -196,7 +196,7 @@ export function updateLlmConfig(update, dir) {
  * stable shape — `normaliseYeaftSection` guarantees that.
  *
  * @param {string} [dir] — Yeaft data directory
- * @returns {{ maxConcurrentThreads: number, autoArchiveIdleDays: number, recentTurnsLimit: number } | { error: string }}
+ * @returns {{ maxConcurrentThreads: number, autoArchiveIdleDays: number, recentTurnsLimit: number, dream: object } | { error: string }}
  */
 export function getYeaftSettings(dir) {
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
@@ -215,14 +215,15 @@ export function getYeaftSettings(dir) {
  * Update the Yeaft-section of config.json. Merges into existing config
  * (LLM provider / model fields are untouched) and validates each field:
  * `maxConcurrentThreads` must be 1..50, `autoArchiveIdleDays` must be
- * 1..3650, `recentTurnsLimit` must be 1..500. Invalid values are rejected
+ * 1..3650, `recentTurnsLimit` must be 1..500. Dream limits are read-only
+ * runtime defaults here; invalid values are rejected
  * outright so the UI sees an error rather than silently reverting — a
  * silent revert would make "I set it to 100 and nothing happened"
  * impossible to debug.
  *
  * @param {{ maxConcurrentThreads?: number, autoArchiveIdleDays?: number, recentTurnsLimit?: number }} update
  * @param {string} [dir]
- * @returns {{ maxConcurrentThreads: number, autoArchiveIdleDays: number, recentTurnsLimit: number } | { error: string }}
+ * @returns {{ maxConcurrentThreads: number, autoArchiveIdleDays: number, recentTurnsLimit: number, dream: object } | { error: string }}
  */
 export function updateYeaftSettings(update, dir) {
   const root = dir || process.env.YEAFT_DIR || DEFAULT_YEAFT_DIR;
@@ -266,6 +267,9 @@ export function updateYeaftSettings(update, dir) {
           ? Math.floor(Number(update.recentTurnsLimit))
           : prev.recentTurnsLimit,
       };
+      if (existing.yeaft?.dream && typeof existing.yeaft.dream === 'object') {
+        merged.dream = existing.yeaft.dream;
+      }
       existing.yeaft = merged;
       return merged;
     });

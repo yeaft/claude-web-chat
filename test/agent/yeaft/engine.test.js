@@ -31,7 +31,7 @@ import { consolidateSessionTopics } from '../../../agent/yeaft/dream/topic-conso
 import { resolveTopicRedirect } from '../../../agent/yeaft/memory/topic-redirect.js';
 import { runDream } from '../../../agent/yeaft/dream/runner.js';
 import { classifySoft } from '../../../agent/yeaft/dream/triage.js';
-import { readSessionState } from '../../../agent/yeaft/dream/state.js';
+import { readSessionState, writeSessionState } from '../../../agent/yeaft/dream/state.js';
 import { extractAndWriteMemorySegments } from '../../../agent/yeaft/dream/segment-extract.js';
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
 import { defineTool } from '../../../agent/yeaft/tools/types.js';
@@ -1627,6 +1627,246 @@ describe('Engine memory prompt hygiene', () => {
         messageCount: 1,
       });
       expect(existsSync(join(root, 'sessions', sessionId, '.dream-last-error.json'))).toBe(false);
+
+      const secondPass = await runDream({
+        root,
+        manual: false,
+        llm: async () => { throw new Error('Dream must not reprocess the same cursor'); },
+        listSessions: async () => [sessionId],
+        countMessages: async () => 1,
+        loadSessionDiff: async () => { throw new Error('Dream must not load an already processed diff'); },
+        loadOverlapPreamble: async () => [],
+        listTopicSummaries: async () => [],
+        nowIso: () => '2026-08-07T09:00:00.000Z',
+      });
+      expect(secondPass.sessions).toEqual([
+        expect.objectContaining({ sessionId, status: 'skipped', reason: 'no-new-messages' }),
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps overlap context out of Apply sources', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-overlap-apply-'));
+    const calls = [];
+    try {
+      await writeSessionState(root, 'overlap-session', {
+        lastDreamMessageId: 'm1',
+        messageCount: 1,
+      });
+      const report = await runDream({
+        root,
+        manual: true,
+        llm: async ({ pass, prompt }) => {
+          calls.push({ pass, prompt });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (pass === 'update') return JSON.stringify({ content_md: 'updated', summary_md: 'summary' });
+          if (pass === 'extract-segments') return '[]';
+          return JSON.stringify({ groups: [] });
+        },
+        listSessions: async () => ['overlap-session'],
+        countMessages: async () => 2,
+        loadSessionDiff: async () => [{ id: 'm2', role: 'user', body: 'new durable message' }],
+        loadOverlapPreamble: async () => [{ id: 'm1', role: 'user', body: 'already Dreamed message' }],
+        listTopicSummaries: async () => [],
+        nowIso: () => '2026-08-07T09:00:00.000Z',
+      });
+      expect(report.targets).toEqual(expect.arrayContaining([
+        expect.objectContaining({ target: 'sessions/overlap-session', status: 'done' }),
+      ]));
+      const update = calls.find(call => call.pass === 'update');
+      expect(update.prompt).toContain('new durable message');
+      expect(update.prompt).not.toContain('already Dreamed message');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a Session cursor when one of its selected Apply targets fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-partial-target-'));
+    const sessionId = 'partial-target-session';
+    try {
+      const report = await runDream({
+        root,
+        manual: true,
+        scopeFilter: ['user', `sessions/${sessionId}`],
+        llm: async ({ pass, prompt }) => {
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (pass === 'update') {
+            if (prompt.includes('Scope: user')) throw new Error('synthetic user target failure');
+            return JSON.stringify({ content_md: 'session content', summary_md: 'session summary' });
+          }
+          if (pass === 'extract-segments') return '[]';
+          return JSON.stringify({ groups: [] });
+        },
+        listSessions: async () => [sessionId],
+        countMessages: async () => 1,
+        loadSessionDiff: async () => [{ id: 'm1', role: 'user', body: 'Keep the selected target retryable.' }],
+        loadOverlapPreamble: async () => [],
+        listTopicSummaries: async () => [],
+        nowIso: () => '2026-08-07T09:30:00.000Z',
+      });
+
+      expect(report.targets).toEqual(expect.arrayContaining([
+        expect.objectContaining({ target: `sessions/${sessionId}`, status: 'done' }),
+        expect.objectContaining({ target: 'user', status: 'error' }),
+      ]));
+      expect(await readSessionState(root, sessionId)).toEqual({
+        lastDreamMessageId: null,
+        lastDreamAt: null,
+        messageCount: 0,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a Session cursor when the only Apply target fails mid-batch', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-partial-batch-'));
+    const sessionId = 'partial-batch-session';
+    const messages = Array.from({ length: 12 }, (_, index) => ({
+      id: `m${index + 1}`,
+      role: 'user',
+      body: `durable batch message ${index + 1} ` + 'durable '.repeat(180),
+    }));
+    let updateCalls = 0;
+    try {
+      const report = await runDream({
+        root,
+        manual: true,
+        scopeFilter: ['user'],
+        limits: {
+          MAX_APPLY_TOKENS: 4_000,
+          MAX_DIFF_TOKENS_PER_TRIAGE: 16_000,
+          MAX_DREAM_PROMPT_CHARS: 32_000,
+        },
+        llm: async ({ pass }) => {
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (pass === 'update') {
+            updateCalls += 1;
+            if (updateCalls === 2) throw new Error('synthetic middle batch failure');
+            return JSON.stringify({ content_md: `batch ${updateCalls} content`, summary_md: `batch ${updateCalls} summary` });
+          }
+          if (pass === 'extract-segments') return '[]';
+          return JSON.stringify({ groups: [] });
+        },
+        listSessions: async () => [sessionId],
+        countMessages: async () => messages.length,
+        loadSessionDiff: async () => messages,
+        loadOverlapPreamble: async () => [],
+        listTopicSummaries: async () => [],
+        nowIso: () => '2026-08-07T09:45:00.000Z',
+      });
+
+      expect(updateCalls).toBeGreaterThanOrEqual(2);
+      expect(report.targets).toEqual([
+        expect.objectContaining({ target: 'user', status: 'error' }),
+      ]);
+      expect(await readSessionState(root, sessionId)).toEqual({
+        lastDreamMessageId: null,
+        lastDreamAt: null,
+        messageCount: 0,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('advances a Session cursor only after all selected Apply targets succeed', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-all-targets-'));
+    const sessionId = 'all-target-session';
+    try {
+      const report = await runDream({
+        root,
+        manual: true,
+        scopeFilter: ['user', `sessions/${sessionId}`],
+        llm: async ({ pass }) => {
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (pass === 'update') return JSON.stringify({ content_md: 'all targets content', summary_md: 'all targets summary' });
+          if (pass === 'extract-segments') return '[]';
+          return JSON.stringify({ groups: [] });
+        },
+        listSessions: async () => [sessionId],
+        countMessages: async () => 1,
+        loadSessionDiff: async () => [{ id: 'm1', role: 'user', body: 'All selected targets must complete.' }],
+        loadOverlapPreamble: async () => [],
+        listTopicSummaries: async () => [],
+        nowIso: () => '2026-08-07T10:00:00.000Z',
+      });
+
+      expect(report.targets).toEqual(expect.arrayContaining([
+        expect.objectContaining({ target: `sessions/${sessionId}`, status: 'done' }),
+        expect.objectContaining({ target: 'user', status: 'done' }),
+      ]));
+      expect(await readSessionState(root, sessionId)).toEqual({
+        lastDreamMessageId: 'm1',
+        lastDreamAt: '2026-08-07T10:00:00.000Z',
+        messageCount: 1,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds Dream request payloads and never replays tool history', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-request-boundary-'));
+    const toolPayload = 'TOOL_HISTORY_MUST_NOT_REACH_DREAM_' + 'x'.repeat(200_000);
+    const messages = [
+      ...Array.from({ length: 80 }, (_, index) => ({
+        id: `m${index + 1}`,
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        body: `durable message ${index + 1} ` + 'durable '.repeat(500),
+      })),
+      { id: 'm81', role: 'tool', body: toolPayload },
+    ];
+    const calls = [];
+    try {
+      const report = await runDream({
+        root,
+        manual: true,
+        limits: { MAX_DIFF_TOKENS_PER_TRIAGE: 12_000, MAX_APPLY_TOKENS: 12_000 },
+        llm: async ({ pass, prompt }) => {
+          calls.push({ pass, prompt });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (pass === 'extract-segments') return '[]';
+          return JSON.stringify({ content_md: 'compressed durable memory', summary_md: 'compressed summary' });
+        },
+        listSessions: async () => ['large-session'],
+        countMessages: async () => messages.length,
+        loadSessionDiff: async () => messages,
+        loadOverlapPreamble: async () => [],
+        listTopicSummaries: async () => [],
+        nowIso: () => '2026-08-07T10:00:00.000Z',
+      });
+
+      expect(report.sessions).toEqual([
+        expect.objectContaining({ sessionId: 'large-session', status: 'triaged' }),
+      ]);
+      expect(calls.length).toBeGreaterThan(10);
+      expect(calls.every(call => call.prompt.length < 100_000)).toBe(true);
+      expect(calls.every(call => !call.prompt.includes('TOOL_HISTORY_MUST_NOT_REACH_DREAM'))).toBe(true);
+      expect(await readSessionState(root, 'large-session')).toMatchObject({
+        lastDreamMessageId: 'm81',
+        messageCount: messages.length,
+      });
+
+      const callCount = calls.length;
+      const second = await runDream({
+        root,
+        manual: true,
+        llm: async () => { throw new Error('Dream must not reprocess the same cursor'); },
+        listSessions: async () => ['large-session'],
+        countMessages: async () => messages.length,
+        loadSessionDiff: async () => { throw new Error('Dream must not load an already processed diff'); },
+        loadOverlapPreamble: async () => [],
+        listTopicSummaries: async () => [],
+        nowIso: () => '2026-08-07T11:00:00.000Z',
+      });
+      expect(calls).toHaveLength(callCount);
+      expect(second.sessions).toEqual([
+        expect.objectContaining({ sessionId: 'large-session', status: 'skipped', reason: 'no-new-messages' }),
+      ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

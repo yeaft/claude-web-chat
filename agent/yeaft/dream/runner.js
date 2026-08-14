@@ -8,8 +8,7 @@
  *   enumerateSessions()                  via opts.listSessions()
  *     ↓
  *   for each session with newCount ≥ MIN_NEW_PER_GROUP (auto)
- *                    or > 0 (manual)
- *                    or prior messages in a scoped manual session rerun:
+ *                    or > 0 (manual):
  *       loadDiff()                     via opts.loadSessionDiff(sessionId, sinceId)
  *       applyOverlap()                 via opts.loadOverlapPreamble(...)
  *       segment()                      segmentDiff(...)
@@ -46,7 +45,11 @@ import {
   DEFAULT_LIMITS,
 } from './limits.js';
 import { clearDreamError, readSessionState, writeSessionState, writeDreamError } from './state.js';
-import { segmentDiff, truncateMessage, estimateMessagesTokens } from './segment.js';
+import {
+  segmentDiff,
+  compressDreamMessages,
+  selectDreamNewMessages,
+} from './segment.js';
 import { triageGroupSegments } from './triage.js';
 import { mergeByTarget } from './merge.js';
 import { applyMergedTarget } from './apply.js';
@@ -58,7 +61,7 @@ import { tsForBackup, pruneOldSnapshots } from './snapshot.js';
  * @typedef {Object} RunDreamOpts
  * @property {string} root                    — memory root, e.g. ~/.yeaft/memory
  * @property {boolean} [manual=false]         — manual trigger overrides newCount<20 skip
- * @property {string[]} [scopeFilter]         — optional: only dream these targets; scoped manual session triggers rerun the current session when there are prior messages but no new cursor delta ('*' allowed)
+ * @property {string[]} [scopeFilter]         — optional: only dream these targets ('*' allowed)
  * @property {(req: {pass:string, prompt:string, system:string}) => Promise<string>} llm
  * @property {() => Promise<Array<string>>} listSessions   — return all session ids (incl. '_no-session')
  * @property {(sessionId: string) => Promise<number>} countMessages   — total message count for a session
@@ -109,11 +112,9 @@ export async function runDream(opts) {
   };
 
   for (const sessionId of sessionIds) {
-    // Current-session manual dream passes are the one case where scopeFilter
-    // must constrain enumeration too: clicking the conversation header means
-    // "dream this session now", not "triage every session and then only apply
-    // sessions/<id>". Pure target filters such as ['user'] still triage every
-    // session so their hard-rule actions can contribute to the requested scope.
+    // A Session filter constrains enumeration; a pure target filter such as
+    // ['user'] still triages every Session so hard-rule actions can contribute
+    // to the requested scope.
     if (sessionFilter && !sessionFilter.has(sessionId)) {
       sessionsReport.push({ sessionId, new: 0, status: 'skipped', reason: 'scope-filtered' });
       continue;
@@ -122,13 +123,7 @@ export async function runDream(opts) {
     const beforeCount = await safeCall(() => opts.countMessages(sessionId), 0);
     const newCount = Math.max(0, beforeCount - (state.messageCount || 0));
 
-    const rerunScopedManual = !!opts.manual
-      && sessionFilter
-      && sessionFilter.has(sessionId)
-      && newCount === 0
-      && beforeCount > 0;
-
-    if (newCount === 0 && !rerunScopedManual) {
+    if (newCount === 0) {
       const topics = await resolveTopicSummaries(sessionId);
       if (opts.manual && topics.length >= 2) {
         try {
@@ -140,6 +135,7 @@ export async function runDream(opts) {
             language: opts.language,
             ts,
             segmentIndex: opts.segmentIndex || null,
+            maxPromptChars: limits.MAX_DREAM_PROMPT_CHARS,
           });
           sessionsReport.push({ sessionId, new: 0, status: 'consolidated', ...result });
         } catch (err) {
@@ -156,14 +152,14 @@ export async function runDream(opts) {
     }
 
     onProgress({ phase: 'load-diff', sessionId });
-    const diffCursor = rerunScopedManual ? null : state.lastDreamMessageId;
+    const diffCursor = state.lastDreamMessageId;
     const loadDiff = opts.loadSessionDiff || opts.loadGroupDiff;
     const diffNew = await safeCall(() => loadDiff(sessionId, diffCursor), []);
     if (!diffNew || diffNew.length === 0) {
       sessionsReport.push({ sessionId, new: newCount, status: 'skipped', reason: 'empty-diff' });
       continue;
     }
-    const overlapMessages = state.lastDreamMessageId && !rerunScopedManual
+    const overlapMessages = state.lastDreamMessageId
       ? await safeCall(
           () => opts.loadOverlapPreamble
             ? opts.loadOverlapPreamble(sessionId, state.lastDreamMessageId, limits.DREAM_OVERLAP)
@@ -171,11 +167,33 @@ export async function runDream(opts) {
           [],
         )
       : [];
-    const taggedOverlap = overlapMessages.map(m => ({ ...m, kind: 'overlap', body: truncateMessage(m.body || '') }));
-    const taggedNew = diffNew.map(m => ({ ...m, kind: 'new', body: truncateMessage(m.body || '') }));
+    const taggedOverlap = compressDreamMessages(overlapMessages)
+      .map(m => ({ ...m, kind: 'overlap' }));
+    const taggedNew = compressDreamMessages(diffNew)
+      .map(m => ({ ...m, kind: 'new' }));
     const fullDiff = [...taggedOverlap, ...taggedNew];
+    if (taggedNew.length === 0) {
+      // Tool-only traffic is intentionally not sent to Dream, but it still
+      // belongs to the processed transcript range. Advance the cursor so a
+      // failed/empty pass cannot replay the same execution history forever.
+      const tailId = lastMessageId(diffNew);
+      if (tailId) {
+        await writeSessionState(opts.root, sessionId, {
+          lastDreamMessageId: tailId,
+          lastDreamAt: nowIso,
+          messageCount: beforeCount,
+        });
+      }
+      sessionsReport.push({ sessionId, new: newCount, status: 'skipped', reason: 'no-durable-new-messages' });
+      continue;
+    }
 
-    const segments = segmentDiff(fullDiff, limits.MAX_DIFF_TOKENS_PER_TRIAGE, limits.DREAM_OVERLAP);
+    const segments = segmentDiff(
+      fullDiff,
+      limits.MAX_DIFF_TOKENS_PER_TRIAGE,
+      limits.DREAM_OVERLAP,
+      limits.MAX_DREAM_PROMPT_CHARS,
+    );
     onProgress({ phase: 'triage', sessionId, status: 'running', segments: segments.length });
 
     let actions;
@@ -186,6 +204,7 @@ export async function runDream(opts) {
         sessionId,
         segments,
         topicSummaries,
+        maxPromptChars: limits.MAX_DREAM_PROMPT_CHARS,
         llm: dreamLlmForSession(opts.llm, sessionId),
         onProgress,
         language: opts.language,
@@ -206,11 +225,15 @@ export async function runDream(opts) {
     }
 
     onProgress({ phase: 'triage', sessionId, status: 'done', actions: actions.length });
-    sessionTriages.push({ sessionId, diff: fullDiff, actions });
+    sessionTriages.push({
+      sessionId,
+      diff: selectDreamNewMessages(taggedNew),
+      actions,
+    });
 
     const tailId = lastMessageId(diffNew);
     processedSessions.push({ sessionId, tailId, beforeCount, newCount, segments: segments.length, actions: actions.length });
-    sessionsReport.push({ sessionId, new: newCount, segments: segments.length, actions: actions.length, status: 'triaged', rerun: rerunScopedManual || undefined });
+    sessionsReport.push({ sessionId, new: newCount, segments: segments.length, actions: actions.length, status: 'triaged' });
   }
 
   // 3. merge
@@ -277,6 +300,7 @@ export async function runDream(opts) {
         targets,
         llm: dreamLlmForSession(opts.llm, triage.sessionId),
         language: opts.language,
+        limits,
         nowIso: opts.nowIso || (() => nowIso),
         segmentIndex: opts.segmentIndex || null,
       });
@@ -310,6 +334,7 @@ export async function runDream(opts) {
         language: opts.language,
         ts,
         segmentIndex: opts.segmentIndex || null,
+        maxPromptChars: limits.MAX_DREAM_PROMPT_CHARS,
       });
       topicConsolidation.push({ sessionId, status: 'done', ...result });
       onProgress({ phase: 'topic-consolidation', sessionId, status: 'done', ...result });
@@ -324,17 +349,20 @@ export async function runDream(opts) {
     }
   }
 
-  // 7. bookkeep — only when at least one apply for this session's actions
-  // succeeded. We use a permissive policy: if ANY merged-target apply
-  // succeeded for a session's contributed actions, advance that session's
-  // cursor. (If everything errored, we keep the cursor so next run
-  // retries.)
-  const successfulTargets = new Set(targetsReport.filter(r => r.status === 'done').map(r => r.target));
+  // 7. bookkeep — advance a Session cursor only after every Apply target
+  // selected for that Session in this run completed successfully. Apply keeps
+  // all batch output in memory until the target's final canonical write, so a
+  // failed target has no durable progress that can safely move the cursor.
+  // Keeping the cursor on any target error lets the next run retry the failed
+  // target together with the same source diff.
+  const targetStatus = new Map(targetsReport.map(report => [report.target, report.status]));
   for (const pg of processedSessions) {
-    const contributed = (sessionTriages.find(g => g.sessionId === pg.sessionId) || { actions: [] })
-      .actions.map(a => a.scope);
-    const anySuccess = contributed.some(t => successfulTargets.has(t));
-    if (!anySuccess) continue;
+    const sessionTargets = targetsToApply
+      .filter(target => target.sources.some(source => source.sessionId === pg.sessionId))
+      .map(target => target.target);
+    if (sessionTargets.length === 0 || !sessionTargets.every(target => targetStatus.get(target) === 'done')) {
+      continue;
+    }
     if (pg.tailId) {
       await writeSessionState(opts.root, pg.sessionId, {
         lastDreamMessageId: pg.tailId,

@@ -36,7 +36,7 @@ import { isValidTopic } from '../memory/store.js';
  * below.)
  */
 
-import { truncateMessage } from './segment.js';
+import { boundDreamPrompt, truncateMessage } from './segment.js';
 import { render } from './prompts/index.js';
 import { resolveTopicRedirect } from '../memory/topic-redirect.js';
 
@@ -106,7 +106,7 @@ export function applyHardRules({ sessionId, chatId, messages }) {
 /**
  * Build the prompt used for Pass-1.
  *
- * @param {{ sessionId: string, messages: Array<object>, topicSummaries: Array<{ path: string, summary: string }> }} ctx
+ * @param {{ sessionId: string, messages: Array<object>, topicSummaries: Array<{ path: string, summary: string }>, maxPromptChars?: number }} ctx
  */
 export function buildPass1Prompt(ctx) {
   const topicSummaries = (!ctx.topicSummaries || ctx.topicSummaries.length === 0)
@@ -119,11 +119,11 @@ export function buildPass1Prompt(ctx) {
     conv.push(truncateMessage(m.body || ''));
     conv.push('');
   }
-  return render('triagePass1', {
+  return boundDreamPrompt(render('triagePass1', {
     sessionId: ctx.sessionId,
     topicSummaries,
     conversation: conv.join('\n').trimEnd(),
-  }, { language: ctx.language });
+  }, { language: ctx.language }), ctx.maxPromptChars);
 }
 
 /**
@@ -135,10 +135,10 @@ export function buildPass2Prompt(ctx) {
   const existingTopics = (!ctx.existingTopics || ctx.existingTopics.length === 0)
     ? (String(ctx.language || '').toLowerCase().startsWith('zh') ? '  （无）' : '  (none)')
     : ctx.existingTopics.map(t => `  - ${t.path} — ${oneLine(t.summary)}`).join('\n');
-  return render('triagePass2', {
+  return boundDreamPrompt(render('triagePass2', {
     description: ctx.description,
     existingTopics,
-  }, { language: ctx.language });
+  }, { language: ctx.language }), ctx.maxPromptChars);
 }
 
 /**
@@ -150,12 +150,13 @@ export function buildPass2Prompt(ctx) {
  *   messages: Array<object>,
  *   topicSummaries: Array<{ path: string, summary: string }>,
  *   llm: (req: { pass: string, prompt: string, system: string }) => Promise<string>,
+ *   maxPromptChars?: number,
  * }} args
  * @returns {Promise<Array<{ kind: 'update'|'create', scope: string }>>}
  */
-export async function classifySoft({ root, sessionId, messages, topicSummaries, llm, language }) {
+export async function classifySoft({ root, sessionId, messages, topicSummaries, llm, language, maxPromptChars }) {
   if (!llm) throw new Error('triage.classifySoft: llm callable required');
-  const pass1Prompt = buildPass1Prompt({ sessionId, messages, topicSummaries, language });
+  const pass1Prompt = buildPass1Prompt({ sessionId, messages, topicSummaries, language, maxPromptChars });
   const pass1Raw = await llm({ pass: 'triage-pass1', prompt: pass1Prompt, system: triageSystem(language) });
   const pass1 = parseJsonSafe(pass1Raw);
   const out = [];
@@ -174,6 +175,7 @@ export async function classifySoft({ root, sessionId, messages, topicSummaries, 
       description: description.trim(),
       existingTopics: topicSummaries || [],
       language,
+      maxPromptChars,
     });
     const pass2Raw = await llm({ pass: 'triage-pass2', prompt: pass2Prompt, system: triageSystem(language) });
     const pass2 = parseJsonSafe(pass2Raw);
@@ -224,11 +226,12 @@ export async function triageOneSegment(args) {
  *   segments: Array<{ messages: Array<object> }>,
  *   topicSummaries: Array<{ path: string, summary: string }>,
  *   llm: (req: { pass: string, prompt: string, system: string }) => Promise<string>,
+ *   maxPromptChars?: number,
  *   onProgress?: (event: object) => void,
  * }} args
  * @returns {Promise<Array<{ kind: 'update'|'create', scope: string }>>}
  */
-export async function triageGroupSegments({ root, sessionId, segments, topicSummaries, llm, onProgress, language }) {
+export async function triageGroupSegments({ root, sessionId, segments, topicSummaries, llm, onProgress, language, maxPromptChars }) {
   let acc = [];
   let i = 0;
   for (const seg of (segments || [])) {
@@ -241,6 +244,7 @@ export async function triageGroupSegments({ root, sessionId, segments, topicSumm
       topicSummaries,
       llm,
       language,
+      maxPromptChars,
     });
     acc = dedupeActions([...acc, ...segActions]);
   }

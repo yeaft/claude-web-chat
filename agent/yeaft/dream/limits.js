@@ -14,6 +14,10 @@ export const DREAM_INTERVAL_HOURS = 1;
 export const DREAM_OVERLAP = 3;
 export const MIN_NEW_PER_GROUP = 20;
 export const MAX_SINGLE_MESSAGE_CHARS = 8000;
+// Provider tokenizers differ substantially for CJK and serialized tool text.
+// Keep an independent character ceiling so the approximate token budget cannot
+// turn into a multi-million-token wire request.
+export const MAX_DREAM_PROMPT_CHARS = 96000;
 export const MAX_DIFF_TOKENS_PER_TRIAGE = 60000;
 export const MAX_APPLY_TOKENS = 80000;
 export const DREAM_BACKUP_KEEP = 7;
@@ -28,6 +32,7 @@ export const DEFAULT_LIMITS = Object.freeze({
   DREAM_OVERLAP,
   MIN_NEW_PER_GROUP,
   MAX_SINGLE_MESSAGE_CHARS,
+  MAX_DREAM_PROMPT_CHARS,
   MAX_DIFF_TOKENS_PER_TRIAGE,
   MAX_APPLY_TOKENS,
   DREAM_BACKUP_KEEP,

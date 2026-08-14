@@ -18,6 +18,7 @@ import {
   TOPIC_REDIRECT_FILE,
 } from '../memory/topic-redirect.js';
 import { render } from './prompts/index.js';
+import { boundDreamPrompt } from './segment.js';
 import { parseJsonSafe } from './triage.js';
 import { snapshotScope } from './snapshot.js';
 
@@ -54,9 +55,9 @@ export async function consolidateSessionTopics(opts) {
     const parsed = parseJsonSafe(await opts.llm({
       pass: 'topic-consolidation',
       system: topicConsolidationSystem(opts.language),
-      prompt: render('consolidateTopics', {
+      prompt: boundDreamPrompt(render('consolidateTopics', {
         topics: batch.map(topic => `- ${topic.path}: ${topic.summary}`).join('\n'),
-      }, { language: opts.language }),
+      }, { language: opts.language }), opts.maxPromptChars),
     }));
     if (!Array.isArray(parsed?.groups)) continue;
     groups.push(...validateGroups(parsed.groups, topics));
@@ -128,13 +129,13 @@ async function applyConsolidationGroup(group, opts) {
   const raw = await opts.llm({
     pass: 'topic-merge',
     system: topicConsolidationSystem(opts.language),
-    prompt: render('mergeTopics', {
+    prompt: boundDreamPrompt(render('mergeTopics', {
       canonical: canonical.path,
       topicContents: available.map(record => [
         `## ${record.path}`,
         record.content || record.memory || record.summary,
       ].join('\n')).join('\n\n'),
-    }, { language: opts.language }),
+    }, { language: opts.language }), opts.maxPromptChars),
   });
   const parsed = parseJsonSafe(raw);
   const mergedContent = String(parsed?.content_md || '').trim();

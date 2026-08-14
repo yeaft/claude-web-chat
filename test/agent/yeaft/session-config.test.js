@@ -21,7 +21,13 @@ import { handleMessage } from '../../../agent/connection/message-router.js';
 import { flushAllAgentPerfTraces } from '../../../agent/yeaft/perf-trace.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { closeConversationHistoryIndexes } from '../../../agent/yeaft/conversation/history-index.js';
-import { estimateTokens } from '../../../agent/yeaft/dream/segment.js';
+import {
+  estimateTokens,
+  compressDreamMessages,
+  selectDreamNewMessages,
+  boundDreamPrompt,
+  batchSourcesForApply,
+} from '../../../agent/yeaft/dream/segment.js';
 import { buildPluginCatalog } from '../../../agent/yeaft/plugins.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
 import { MCPManager } from '../../../agent/yeaft/mcp.js';
@@ -118,6 +124,40 @@ describe('Yeaft Session context lifetime', () => {
 });
 
 describe('Yeaft session-scoped model config', () => {
+  it('does not let Dream fall back from a provider-qualified Session model', async () => {
+    const root = makeDir();
+    const model = 'session-provider/session-model';
+    mkdirSync(join(root, 'sessions', 's1'), { recursive: true });
+    writeFileSync(join(root, 'sessions', 's1', 'config.json'), JSON.stringify({ model }));
+    const calls = [];
+    const adapter = { call: vi.fn(async params => {
+      calls.push(params);
+      return { text: JSON.stringify({ user_profile_signals: false, topics: [] }), usage: {} };
+    }) };
+    const session = {
+      yeaftDir: root,
+      adapter,
+      config: {
+        dir: root,
+        model: 'session-model',
+        primaryModel: 'session-provider/session-model',
+        language: 'en',
+      },
+    };
+    const opts = (await import('../../../agent/yeaft/dream/session-wiring.js')).buildRunDreamOpts(session);
+    const result = await opts.llm({
+      pass: 'triage-pass1',
+      prompt: `HEAD${'x'.repeat(120_000)}TAIL`,
+      system: 'system',
+      sessionId: 's1',
+    });
+    expect(result).toContain('user_profile_signals');
+    expect(calls[0].model).toBe(model);
+    expect(calls[0].messages[0].content.length).toBe(96_000);
+    expect(calls[0].messages[0].content.startsWith('HEAD')).toBe(true);
+    expect(calls[0].messages[0].content.endsWith('TAIL')).toBe(true);
+  });
+
   it('creates an empty-roster Session from the active Agent instance VP library', () => {
     const root = makeDir();
     const vpId = 'vp-instance-only';
@@ -460,6 +500,18 @@ describe('Yeaft session-scoped model config', () => {
     expect(persisted.primaryModel).toBe('proxy/model');
     expect(persisted.debug).toBe(true);
     expect(persisted.telemetry).toMatchObject({ flushIntervalMs: 250 });
+  });
+
+  it('loads bounded Dream limits from the Agent config', () => {
+    const root = makeDir();
+    writeFileSync(join(root, 'config.json'), JSON.stringify({
+      providers: [],
+      yeaft: { dream: { MAX_DREAM_PROMPT_CHARS: 32_000, MIN_NEW_PER_GROUP: 7 } },
+    }));
+    expect(loadConfig({ dir: root }).yeaft.dream).toMatchObject({
+      MAX_DREAM_PROMPT_CHARS: 32_000,
+      MIN_NEW_PER_GROUP: 7,
+    });
   });
 
   it('fails closed for an invalid config.json root and preserves every bad file', () => {
@@ -1514,6 +1566,35 @@ describe('Yeaft session-scoped model config', () => {
     expect(loadProjects(root).map(project => project.id)).toEqual([alpha.id]);
   });
 
+
+  it('projects only durable Dream messages and chunks one oversized source', () => {
+    const messages = [
+      { id: 'm1', role: 'user', body: 'Keep this user request.' },
+      { id: 'm2', role: 'tool', body: 'x'.repeat(10_000) },
+      { id: 'm3', role: 'assistant', body: 'Keep this assistant answer.', kind: 'overlap' },
+    ];
+    expect(compressDreamMessages(messages).map(message => message.id)).toEqual(['m1', 'm3']);
+    expect(selectDreamNewMessages([
+      { id: 'm1', kind: 'overlap' },
+      { id: 'm2', kind: 'new' },
+    ]).map(message => message.id)).toEqual(['m2']);
+    const bounded = boundDreamPrompt('HEAD' + 'x'.repeat(100) + 'TAIL', 32);
+    expect(bounded.length).toBe(32);
+    expect(bounded.startsWith('HEAD')).toBe(true);
+    expect(bounded.endsWith('TAIL')).toBe(true);
+
+    const batches = batchSourcesForApply({
+      memoryMd: 'current memory',
+      summaryMd: 'summary',
+      sources: [{ sessionId: 's1', diff: Array.from({ length: 20 }, (_, i) => ({
+        id: `m${i}`,
+        role: 'user',
+        body: 'message '.repeat(20),
+      })) }],
+    }, 40);
+    expect(batches.length).toBeGreaterThan(1);
+    expect(batches.flat().map(source => source.diff.length).reduce((sum, count) => sum + count, 0)).toBe(20);
+  });
 
   it('connects only allowlisted MCP servers for a normal Session', async () => {
     const root = makeDir();

@@ -14,7 +14,7 @@ This chapter is the **field-by-field** reference for an Agent instance's Yeaft `
 | --- | --- | --- | --- |
 | `providers` | `Provider[]` | — (required) | LLM provider list |
 | `primaryModel` | `string` | — (required) | Primary model `<provider>/<model-id>` |
-| `fastModel` | `string` | `primaryModel` | Lightweight model for internal tasks (dream / adjust) |
+| `fastModel` | `string` | `primaryModel` | Lightweight model for internal tasks such as compact, recall, and classification; Dream uses the Session's primary model |
 | `fallbackModel` | `string` | `null` | Model used when the primary fails with a retryable error |
 | `language` | `'en' \| 'zh'` | `'en'` | System prompt language |
 | `debug` | `boolean` | `false` | Verbose-log raw LLM req/resp + engine events to stdout |
@@ -61,7 +61,7 @@ Anything else on a model entry is silently ignored. UI affordances like display 
   "autoArchiveIdleDays":  30,
   "recentTurnsLimit":     20,
   "multiVp": { "enabled": true },
-  "dream":   { "DREAM_INTERVAL_HOURS": 1, "MIN_NEW_PER_GROUP": 20 }
+  "dream":   { "DREAM_INTERVAL_HOURS": 1, "MIN_NEW_PER_GROUP": 20, "MAX_DREAM_PROMPT_CHARS": 96000 }
 }
 ```
 
