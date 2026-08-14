@@ -352,6 +352,7 @@ test.describe('Workbench', () => {
   });
 
   test('creates a Browser Session and mounts the generation-fenced WebRTC viewer', async ({ chatPage, mockAgent }) => {
+    mockAgent.browserRuntimeReady = true;
     await openYeaftWorkbench(chatPage, mockAgent);
     await chatPage.evaluate(agentId => {
       class E2EPeerConnection {
@@ -386,6 +387,9 @@ test.describe('Workbench', () => {
     await expect(capability(panel, 'browser').locator('.workbench-capability-status')).toHaveText('Available');
     await capability(panel, 'browser').click();
     await expect(panel.locator('.browser-panel')).toBeVisible();
+    await expect(panel.locator('.browser-start-form')).toBeVisible();
+    await panel.locator('.browser-start-form input').fill('https://example.com/');
+    await panel.locator('.browser-start-form .btn-primary').click();
     await expect(panel.locator('.browser-video')).toBeVisible();
     await expect(panel.locator('iframe')).toHaveCount(0);
 

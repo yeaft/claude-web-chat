@@ -36,6 +36,7 @@ export const useBrowserStore = defineStore('browser', {
     cancelledPeers: {},
     errors: {},
     errorCodes: {},
+    peerDiagnostics: {},
     runtimeStatus: {},
     installProgress: {},
     protocolSupported: null,
@@ -225,22 +226,34 @@ export const useBrowserStore = defineStore('browser', {
         videoElement: nonReactive(videoElement),
         state: 'preparing',
         remoteState: null,
+        pendingOffer: null,
         pendingCandidates: [],
+        answerPromise: null,
         channels: {},
         controlSeq: 0,
         pointerSeq: 0,
         iceServerCount: null,
+        diagnostics: {
+          connectionState: 'new',
+          iceConnectionState: 'new',
+          iceGatheringState: 'new',
+          candidateErrors: 0,
+          lastCandidateError: null,
+        },
         attachTimer: null,
         disconnectedTimer: null,
       };
       this.peers[localKey] = peer;
+      this.peerDiagnostics[localKey] = peer.diagnostics;
       peer.attachTimer = setTimeout(() => {
         peer.attachTimer = null;
         if (this.peers[localKey] !== peer || peer.connection?.connectionState === 'connected') return;
-        const code = peer.iceServerCount === 0
+        const detail = peer.iceServerCount === 0
           ? 'browser_ice_servers_missing'
-          : 'browser_peer_attach_timeout';
-        this.failPeer(peer, new Error(code), code);
+          : peer.diagnostics.iceConnectionState === 'failed'
+            ? 'browser_ice_connection_failed'
+            : 'browser_peer_attach_timeout';
+        this.failPeer(peer, new Error(detail), detail);
       }, PEER_ATTACH_TIMEOUT_MS);
       this.send({
         type: 'browser_peer_attach',
@@ -273,6 +286,8 @@ export const useBrowserStore = defineStore('browser', {
         iceTransportPolicy: message.iceTransportPolicy === 'relay' ? 'relay' : 'all',
       }));
       peer.connection = connection;
+      peer.diagnostics.iceConnectionState = connection.iceConnectionState || 'new';
+      peer.diagnostics.iceGatheringState = connection.iceGatheringState || 'new';
       peer.state = 'prepared';
       connection.ondatachannel = event => {
         if (this.peers[peer.localKey] !== peer) return;
@@ -304,9 +319,31 @@ export const useBrowserStore = defineStore('browser', {
           });
         } catch {}
       };
+      connection.onicecandidateerror = event => {
+        if (this.peers[peer.localKey] !== peer) return;
+        peer.diagnostics.candidateErrors += 1;
+        peer.diagnostics.lastCandidateError = {
+          address: typeof event.address === 'string' ? event.address : null,
+          port: Number(event.port) || null,
+          url: typeof event.url === 'string' ? event.url : null,
+          errorCode: Number(event.errorCode) || null,
+          errorText: typeof event.errorText === 'string' ? event.errorText.slice(0, 256) : null,
+        };
+      };
+      connection.oniceconnectionstatechange = () => {
+        if (this.peers[peer.localKey] !== peer) return;
+        peer.diagnostics.iceConnectionState = connection.iceConnectionState || 'new';
+      };
+      connection.onicegatheringstatechange = () => {
+        if (this.peers[peer.localKey] !== peer) return;
+        peer.diagnostics.iceGatheringState = connection.iceGatheringState || 'new';
+      };
       connection.onconnectionstatechange = () => {
         if (this.peers[peer.localKey] !== peer) return;
         peer.state = connection.connectionState;
+        peer.diagnostics.connectionState = connection.connectionState || 'new';
+        peer.diagnostics.iceConnectionState = connection.iceConnectionState || 'new';
+        peer.diagnostics.iceGatheringState = connection.iceGatheringState || 'new';
         if (connection.connectionState === 'connected') {
           clearTimeout(peer.attachTimer);
           peer.attachTimer = null;
@@ -334,29 +371,56 @@ export const useBrowserStore = defineStore('browser', {
           this.failPeer(peer, new Error(code), code);
         }
       };
+      // A fast Agent/Server path can deliver the offer before the prepared
+      // frame has finished creating the Web RTCPeerConnection. Keep one
+      // generation-fenced offer and replay it after preparation instead of
+      // silently losing the only message that can produce the answer.
+      const pendingOffer = peer.pendingOffer;
+      peer.pendingOffer = null;
+      if (pendingOffer) await this.acceptOffer(peer, pendingOffer);
     },
 
     async acceptOffer(peer, message) {
-      if (!peer.connection || peer.peerId !== message.peerId
-          || peer.connectionGeneration !== message.connectionGeneration) return;
-      await peer.connection.setRemoteDescription(message.description);
-      await peer.connection.setLocalDescription(await peer.connection.createAnswer());
-      this.send({
-        type: 'browser_peer_answer',
-        agentId: peer.agentId,
-        browserSessionId: peer.browserSessionId,
-        peerId: peer.peerId,
-        connectionGeneration: peer.connectionGeneration,
-        description: peer.connection.localDescription,
-      });
-      for (const candidate of peer.pendingCandidates.splice(0)) {
-        await peer.connection.addIceCandidate(candidate);
+      if (this.peers[peer.localKey] !== peer
+          || peer.connectionGeneration !== Number(message.connectionGeneration)) return;
+      if (!peer.connection) {
+        if (!peer.peerId || peer.peerId === message.peerId) peer.pendingOffer ||= message;
+        return;
+      }
+      if (peer.peerId !== message.peerId) return;
+      if (peer.answerPromise) return peer.answerPromise;
+      peer.answerPromise = (async () => {
+        await peer.connection.setRemoteDescription(message.description);
+        await peer.connection.setLocalDescription(await peer.connection.createAnswer());
+        if (this.peers[peer.localKey] !== peer) return;
+        this.send({
+          type: 'browser_peer_answer',
+          agentId: peer.agentId,
+          browserSessionId: peer.browserSessionId,
+          peerId: peer.peerId,
+          connectionGeneration: peer.connectionGeneration,
+          description: peer.connection.localDescription,
+        });
+        for (const candidate of peer.pendingCandidates.splice(0)) {
+          await peer.connection.addIceCandidate(candidate);
+        }
+      })();
+      try {
+        await peer.answerPromise;
+      } finally {
+        peer.answerPromise = null;
       }
     },
 
     async acceptCandidate(peer, message) {
-      if (!peer.connection || peer.peerId !== message.peerId
-          || peer.connectionGeneration !== message.connectionGeneration || !message.candidate) return;
+      if (this.peers[peer.localKey] !== peer
+          || peer.connectionGeneration !== Number(message.connectionGeneration)
+          || !message.candidate) return;
+      if (!peer.connection) {
+        if (!peer.peerId || peer.peerId === message.peerId) peer.pendingCandidates.push(message.candidate);
+        return;
+      }
+      if (peer.peerId !== message.peerId) return;
       if (!peer.connection.remoteDescription) peer.pendingCandidates.push(message.candidate);
       else await peer.connection.addIceCandidate(message.candidate);
     },
@@ -416,6 +480,7 @@ export const useBrowserStore = defineStore('browser', {
           });
         } catch {}
       }
+      if (!this.errorCodes[localKey]) delete this.peerDiagnostics[localKey];
       for (const channel of Object.values(peer.channels || {})) {
         try { channel?.close?.(); } catch {}
       }
@@ -449,6 +514,7 @@ export const useBrowserStore = defineStore('browser', {
       this.installProgress = {};
       this.errors = {};
       this.errorCodes = {};
+      this.peerDiagnostics = {};
       this.clearCancelledPeers();
     },
 

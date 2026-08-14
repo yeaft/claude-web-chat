@@ -27,6 +27,8 @@ class FakePeerConnection {
     this.localDescription = null;
     this.remoteDescription = null;
     this.connectionState = 'new';
+    this.iceConnectionState = 'new';
+    this.iceGatheringState = 'new';
     this.addedCandidates = [];
     peerConnections.push(this);
   }
@@ -269,6 +271,40 @@ describe('Browser Runtime Web store', () => {
     })));
   });
 
+  it('replays an offer and candidates delivered before peer preparation', async () => {
+    const store = useBrowserStore();
+    const peer = await store.attach({
+      agentId: 'agent-a', browserSessionId: 'browser-a',
+      videoElement: { srcObject: null, play: vi.fn() },
+    });
+    const generation = peer.connectionGeneration;
+    store.handleMessage({
+      type: 'browser_peer_offer', agentId: 'agent-a', browserSessionId: 'browser-a',
+      peerId: 'peer-a', connectionGeneration: generation,
+      description: { type: 'offer', sdp: 'v=0\\no=agent-offer' },
+    });
+    store.handleMessage({
+      type: 'browser_peer_ice_candidate', agentId: 'agent-a', browserSessionId: 'browser-a',
+      peerId: 'peer-a', connectionGeneration: generation,
+      candidate: { candidate: 'candidate:early', sdpMid: '0', sdpMLineIndex: 0 },
+    });
+    expect(peer.pendingOffer).toMatchObject({ peerId: 'peer-a' });
+    expect(peer.pendingCandidates).toHaveLength(1);
+
+    store.handleMessage({
+      type: 'browser_peer_prepared', agentId: 'agent-a', browserSessionId: 'browser-a',
+      peerId: 'peer-a', connectionGeneration: generation,
+      iceServers: [], iceTransportPolicy: 'all',
+    });
+    await vi.waitFor(() => expect(sent).toContainEqual(expect.objectContaining({
+      type: 'browser_peer_answer', peerId: 'peer-a', connectionGeneration: generation,
+    })));
+    expect(peer.pendingOffer).toBeNull();
+    expect(peerConnections[0].addedCandidates).toEqual([
+      { candidate: 'candidate:early', sdpMid: '0', sdpMLineIndex: 0 },
+    ]);
+  });
+
   it('uses independent ordered control and lossy pointer channels after interactive attach', async () => {
     const store = useBrowserStore();
     const peer = await store.attach({
@@ -302,6 +338,37 @@ describe('Browser Runtime Web store', () => {
     expect(control.close).toHaveBeenCalledOnce();
     expect(pointer.close).toHaveBeenCalledOnce();
     expect(store.sendControl('agent-a', 'browser-a', { type: 'key', key: 'Enter' })).toBe(false);
+  });
+
+  it('records ICE state and candidate errors for a stuck relay connection', async () => {
+    const store = useBrowserStore();
+    const peer = await store.attach({
+      agentId: 'agent-a', browserSessionId: 'browser-a',
+      videoElement: { srcObject: null, play: vi.fn() },
+    });
+    await store.preparePeer(peer, {
+      peerId: 'peer-a', connectionGeneration: peer.connectionGeneration,
+      iceServers: [{ urls: ['turn:turn.example.test:3478?transport=udp'] }],
+      iceTransportPolicy: 'relay',
+    });
+    const connection = peerConnections[0];
+    connection.iceGatheringState = 'complete';
+    connection.onicegatheringstatechange();
+    connection.iceConnectionState = 'checking';
+    connection.oniceconnectionstatechange();
+    connection.onicecandidateerror({
+      address: 'turn.example.test', port: 3478,
+      url: 'turn:turn.example.test:3478?transport=udp',
+      errorCode: 701, errorText: 'STUN server unreachable',
+    });
+
+    expect(store.peerDiagnostics['agent-a\0browser-a']).toMatchObject({
+      connectionState: 'new',
+      iceConnectionState: 'checking',
+      iceGatheringState: 'complete',
+      candidateErrors: 1,
+      lastCandidateError: expect.objectContaining({ errorCode: 701 }),
+    });
   });
 
   it('reports missing ICE infrastructure instead of a generic peer failure', async () => {

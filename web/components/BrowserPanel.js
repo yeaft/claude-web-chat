@@ -139,7 +139,9 @@ export default {
             {{ $t('workbench.browserGo') }}
           </button>
         </form>
-        <span class="browser-status" role="status">{{ statusText }}</span>
+        <span class="browser-status" role="status">
+          {{ statusText }}<template v-if="peerDiagnosticText"> · {{ peerDiagnosticText }}</template>
+        </span>
         <button
           v-if="snapshot"
           type="button"
@@ -362,6 +364,13 @@ export default {
       if (code === 'browser_ice_connection_failed') return t('workbench.browserIceConnectionFailed');
       if (code === 'browser_peer_attach_timeout') return t('workbench.browserPeerAttachTimeout');
       return browser.errors[key.value] || '';
+    });
+    const peerDiagnosticText = Vue.computed(() => {
+      const diagnostics = browser.peerDiagnostics[key.value];
+      if (!diagnostics || connected.value || !snapshot.value) return '';
+      const state = diagnostics.iceConnectionState || diagnostics.connectionState || 'new';
+      const errors = Number(diagnostics.candidateErrors) || 0;
+      return errors > 0 ? `${state} · ICE ${errors}` : state;
     });
     const displayError = Vue.computed(() => viewerError.value || peerError.value);
     const connectionClass = Vue.computed(() => (
@@ -614,6 +623,7 @@ export default {
       address,
       setupError,
       displayError,
+      peerDiagnosticText,
       runtimeStatus,
       runtimeInstalling,
       setupInProgress,
