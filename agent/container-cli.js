@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -29,9 +30,10 @@ The secret is passed as an argument, like 'yeaft-agent install', and persisted b
 command to a private 0600 file before the container is created.
 
 Resource protection (default): install attaches the container to the shared
-'${DEFAULT_AGENT_SLICE}' cgroup slice created by 'setup-limits', which caps the sum of all
-Yeaft Agent containers at 90% of host CPU and 70% of host memory. Run setup-limits once
-as root before installing (or pass --no-slice to opt out of protection).
+'${DEFAULT_AGENT_SLICE}' cgroup slice, which caps the sum of all Yeaft Agent
+containers at 90% of host CPU and 70% of host memory. The slice is initialized
+automatically on first install (as root directly, otherwise via sudo; you are
+prompted for the sudo password once). Pass --no-slice to opt out of protection.
 
 --disk-size <size>: per-volume capacity quota for the data and workspace volumes, e.g.
   20G or 80% of the Docker data-root filesystem. Requires Docker overlay2 on xfs with
@@ -68,6 +70,56 @@ async function dockerDataRoot() {
   return result.stdout;
 }
 
+/**
+ * Initialize the shared agent slice during `container install` so users never
+ * have to run `setup-limits` by hand. Root can write the slice directly; a
+ * non-root user re-invokes this CLI via an interactive sudo so the password
+ * prompt happens inline. Non-interactive shells skip sudo and fail with
+ * guidance instead of hanging.
+ *
+ * @param {object} options { spawnImpl, interactive } overrides for tests
+ */
+export async function ensureAgentSliceAuto({
+  spawnImpl = spawn,
+  interactive = Boolean(process.stdin?.isTTY),
+} = {}) {
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    await ensureAgentSlice();
+    return;
+  }
+  if (!interactive) {
+    throw new Error(
+      `Agent slice '${DEFAULT_AGENT_SLICE}' is not initialized and this shell is not interactive; ` +
+      'run "sudo yeaft-agent container setup-limits" once, ' +
+      'or pass --no-slice to install without shared resource limits',
+    );
+  }
+  const code = await runSudoSetupLimits({ spawnImpl });
+  if (code !== 0) {
+    throw new Error(
+      `Failed to initialize Agent slice '${DEFAULT_AGENT_SLICE}' via sudo (exit ${code}); ` +
+      'run "sudo yeaft-agent container setup-limits" manually, ' +
+      'or pass --no-slice to install without shared resource limits',
+    );
+  }
+}
+
+function runSudoSetupLimits({ spawnImpl = spawn } = {}) {
+  return new Promise((resolvePromise, reject) => {
+    // `sudo env PATH=...` keeps user-installed runtimes (nvm etc.) reachable
+    // even when sudoers sets a secure_path. Re-invoking the current entry
+    // script avoids depending on the npm bin being in sudo's PATH.
+    const entry = process.argv[1] ? resolve(process.argv[1]) : null;
+    const args = ['env', `PATH=${process.env.PATH || ''}`];
+    if (entry) args.push(process.execPath, entry);
+    else args.push('yeaft-agent');
+    args.push('container', 'setup-limits');
+    const child = spawnImpl('sudo', args, { stdio: 'inherit' });
+    child.once('error', reject);
+    child.once('close', code => resolvePromise(code ?? 1));
+  });
+}
+
 export async function runContainerCli(args) {
   if (args.length === 0 || args[0] === 'help' || args[0] === '--help' || args[0] === '-h') return help();
   const { action, options } = parseContainerArgs(args);
@@ -87,11 +139,8 @@ export async function runContainerCli(args) {
     } else if (options.cgroupParent) {
       cgroupParent = String(options.cgroupParent).trim();
     } else if (!(await isAgentSliceReady())) {
-      throw new Error(
-        `Agent slice '${DEFAULT_AGENT_SLICE}' is not initialized; ` +
-        'run "sudo yeaft-agent container setup-limits" first, ' +
-        'or pass --no-slice to install without shared resource limits',
-      );
+      await ensureAgentSliceAuto();
+      cgroupParent = DEFAULT_AGENT_SLICE;
     } else {
       cgroupParent = DEFAULT_AGENT_SLICE;
     }

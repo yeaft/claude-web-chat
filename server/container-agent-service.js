@@ -5,7 +5,9 @@ import { userDb } from './database.js';
 import {
   checkContainerAgentRuntime,
   createContainerAgent,
+  ensureAgentSlice,
   inspectContainerAgent,
+  isAgentSliceReady,
   removeContainerAgent,
   startContainerAgent,
   stopContainerAgent,
@@ -15,7 +17,9 @@ import {
 const DEFAULT_RUNTIME = Object.freeze({
   check: checkContainerAgentRuntime,
   create: createContainerAgent,
+  ensureSlice: ensureAgentSlice,
   inspect: inspectContainerAgent,
+  isSliceReady: isAgentSliceReady,
   remove: removeContainerAgent,
   start: startContainerAgent,
   stop: stopContainerAgent,
@@ -100,6 +104,9 @@ export class ContainerAgentService {
       const name = this.nameForUser(user.id);
       const secretFile = join(this.config.stateDir, name, 'agent-secret');
       await this.runtime.writeSecret(secretFile, user.agent_secret);
+      if (this.config.cgroupParent) {
+        await this.ensureManagedSlice();
+      }
       await this.runtime.create({
         name,
         serverUrl: this.config.serverUrl,
@@ -119,6 +126,25 @@ export class ContainerAgentService {
       throw Object.assign(new Error('SANDBOX_DOCKER_UNAVAILABLE'), {
         code: 'SANDBOX_DOCKER_UNAVAILABLE',
       });
+    }
+  }
+
+  /**
+   * Make sure the shared cgroup slice exists before the first managed
+   * container is created. The Server process must have root access to
+   * /sys/fs/cgroup (typical for a systemd service); a containerized Server
+   * without cgroup access fails here with an explicit code instead of
+   * silently creating an unprotected container.
+   */
+  async ensureManagedSlice() {
+    if (await this.runtime.isSliceReady()) return;
+    try {
+      await this.runtime.ensureSlice();
+    } catch (error) {
+      throw Object.assign(
+        new Error('SANDBOX_CGROUP_SLICE_UNAVAILABLE'),
+        { code: 'SANDBOX_CGROUP_SLICE_UNAVAILABLE', cause: error },
+      );
     }
   }
 
