@@ -105,6 +105,7 @@ export class ContainerAgentService {
         serverUrl: this.config.serverUrl,
         secretFile,
         image: this.config.image,
+        ...(this.config.cgroupParent ? { cgroupParent: this.config.cgroupParent } : {}),
       });
       return { snapshot: await this.snapshot(user.id), replayed: false };
     });
