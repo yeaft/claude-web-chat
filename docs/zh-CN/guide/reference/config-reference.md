@@ -14,7 +14,7 @@
 | --- | --- | --- | --- |
 | `providers` | `Provider[]` | — (required) | LLM provider 列表 |
 | `primaryModel` | `string` | — (required) | 主 model 引用 `<provider>/<model-id>` |
-| `fastModel` | `string` | `primaryModel` | 内部任务（dream / adjust）用的轻量 model |
+| `fastModel` | `string` | `primaryModel` | compact、召回和分类等内部任务使用的轻量 model；Dream 使用 Session 的 primary model |
 | `fallbackModel` | `string` | `null` | 主 model 出现可重试错误时换用的 model |
 | `language` | `'en' \| 'zh'` | `'en'` | System prompt 语言 |
 | `debug` | `boolean` | `false` | 把 LLM raw req/resp + 引擎事件 verbose-log 到 stdout |

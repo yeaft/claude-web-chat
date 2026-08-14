@@ -691,7 +691,7 @@ export class Engine {
   /** @type {import('./stats/tool-usage.js').ToolUsageStats|null} — per-tool call/latency counters */
   #toolStats = null;
 
-  /** @type {object|null} — Config override for internal tasks (recall, consolidation, dream) using fastModel */
+  /** @type {object|null} — Config override for internal compact/recall tasks using fastModel; Dream uses the Session primary model */
   #fastConfig;
 
   /** @type {((agentId: string, evt: object) => void) | null} */
@@ -5437,7 +5437,7 @@ export class Engine {
   /** @returns {string|null} */
   get yeaftDir() { return this.#yeaftDir; }
 
-  /** @returns {object} — Config with fastModel as model (for internal tasks) */
+  /** @returns {object} — Config with fastModel as model (for compact and other non-Dream internal tasks) */
   get fastConfig() { return this.#fastConfig; }
 
   /**

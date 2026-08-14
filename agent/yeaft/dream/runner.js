@@ -349,17 +349,20 @@ export async function runDream(opts) {
     }
   }
 
-  // 7. bookkeep — only when at least one apply for this session's actions
-  // succeeded. We use a permissive policy: if ANY merged-target apply
-  // succeeded for a session's contributed actions, advance that session's
-  // cursor. (If everything errored, we keep the cursor so next run
-  // retries.)
-  const successfulTargets = new Set(targetsReport.filter(r => r.status === 'done').map(r => r.target));
+  // 7. bookkeep — advance a Session cursor only after every Apply target
+  // selected for that Session in this run completed successfully. Apply keeps
+  // all batch output in memory until the target's final canonical write, so a
+  // failed target has no durable progress that can safely move the cursor.
+  // Keeping the cursor on any target error lets the next run retry the failed
+  // target together with the same source diff.
+  const targetStatus = new Map(targetsReport.map(report => [report.target, report.status]));
   for (const pg of processedSessions) {
-    const contributed = (sessionTriages.find(g => g.sessionId === pg.sessionId) || { actions: [] })
-      .actions.map(a => a.scope);
-    const anySuccess = contributed.some(t => successfulTargets.has(t));
-    if (!anySuccess) continue;
+    const sessionTargets = targetsToApply
+      .filter(target => target.sources.some(source => source.sessionId === pg.sessionId))
+      .map(target => target.target);
+    if (sessionTargets.length === 0 || !sessionTargets.every(target => targetStatus.get(target) === 'done')) {
+      continue;
+    }
     if (pg.tailId) {
       await writeSessionState(opts.root, pg.sessionId, {
         lastDreamMessageId: pg.tailId,
