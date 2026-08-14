@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
 export const DEFAULT_AGENT_IMAGE = 'ghcr.io/yeaft/yeaft-web-code-agent-agent:dev';
@@ -181,9 +181,4 @@ export async function logsContainerAgent(name, { follow = false, ...runtime } = 
   if (follow) args.push('--follow');
   args.push(containerNameForAgent(name));
   return runDocker(args, { ...runtime, stdout: follow ? 'inherit' : 'pipe' });
-}
-
-export async function readSecretInput({ secret, secretFile }) {
-  if (secretFile) return (await readFile(resolve(secretFile), 'utf8')).trim();
-  return String(secret || '').trim();
 }

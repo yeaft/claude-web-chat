@@ -712,6 +712,7 @@ export default {
   'settings.security.agentSetupCommands': 'Agent 接入命令',
   'settings.security.agentCmdInstall': '安装 Agent',
   'settings.security.agentCmdService': '运行 Agent server',
+  'settings.security.agentCmdContainer': '在 Docker 中运行 Agent',
   'settings.security.agentCmdNeedsSecret': '请先生成 Agent 密钥，以创建包含 server 地址和密钥的命令。',
   'settings.security.agentCmdLlm': 'Copilot 手动兜底',
   'settings.security.agentCmdLlmDesc': '先运行安装命令；如果本机已有 GitHub Copilot token，Yeaft 会自动配置 github-copilot/gpt-5.5。Copilot 命令只作为兜底使用。',

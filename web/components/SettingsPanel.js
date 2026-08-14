@@ -1,6 +1,7 @@
 import { useAuthStore } from '../stores/auth.js';
 import { isMobile, isInAlipay, isInWeChat } from '../utils/device.js';
 import {
+  getAgentContainerCommand,
   getAgentInstallCommand,
   getAgentLlmCommand,
   getAgentName,
@@ -171,6 +172,16 @@ export default {
                     <template v-if="agentSecret">
                       <code class="sp-cmd">{{ agentServiceCommand }}</code>
                       <button class="sp-icon-btn" @click="copyText(agentServiceCommand)" :title="$t('common.copy')">
+                        <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                      </button>
+                    </template>
+                    <span v-else class="sp-cmd sp-cmd-placeholder">{{ $t('settings.security.agentCmdNeedsSecret') }}</span>
+                  </div>
+                  <div class="sp-cmd-row">
+                    <span class="sp-cmd-label">{{ $t('settings.security.agentCmdContainer') }}</span>
+                    <template v-if="agentSecret">
+                      <code class="sp-cmd">{{ agentContainerCommand }}</code>
+                      <button class="sp-icon-btn" @click="copyText(agentContainerCommand)" :title="$t('common.copy')">
                         <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
                       </button>
                     </template>
@@ -670,6 +681,13 @@ export default {
     },
     agentServiceCommand() {
       return getAgentServiceCommand({
+        profile: this.profile,
+        agentSecret: this.agentSecret,
+        serverWsUrl: this.serverWsUrl,
+      });
+    },
+    agentContainerCommand() {
+      return getAgentContainerCommand({
         profile: this.profile,
         agentSecret: this.agentSecret,
         serverWsUrl: this.serverWsUrl,

@@ -41,7 +41,7 @@ describe('Sandbox Settings contract', () => {
     expect(component).toContain("requestSandboxAction('start')");
     expect(component).toContain("requestSandboxAction('retry')");
     expect(component).toContain('confirmRemoveSandbox');
-    expect(component).toContain('window.confirm');
+    expect(component).toContain("confirmDialog(this.$t('settings.sandbox.removeConfirm')");
     expect(component).toContain('<button class="btn-secondary" @click="confirmRemoveSandbox"');
     expect(component).not.toContain("sandboxSnapshot.observedState !== 'recovery_required'");
   });
