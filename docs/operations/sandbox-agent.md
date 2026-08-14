@@ -39,10 +39,10 @@ Server 从现有用户 Agent secret 生成 Host 端 `0600` 文件。Docker 将�
 同一套 JavaScript lifecycle manager 也由 Agent CLI 复用：
 
 ```bash
-yeaft-agent container create \
+yeaft-agent container install \
   --server wss://your-yeaft-server.example \
   --name worker-1 \
-  --secret-file /secure/path/agent-secret \
+  --secret <your-secret> \
   --image ghcr.io/yeaft/yeaft-web-code-agent-agent:dev
 
 yeaft-agent container status --name worker-1
@@ -52,7 +52,7 @@ yeaft-agent container logs --name worker-1
 yeaft-agent container remove --name worker-1
 ```
 
-`remove` 默认删除容器及其两个持久卷；传 `--keep-volumes` 可保留数据。手动容器和 Server 管理容器必须使用不同名称，避免生命周期所有权冲突。
+secret 通过参数传递，与 `yeaft-agent install` 一致。CLI 会先把 secret 持久化为本机 `0600` 文件（`~/.yeaft/container-agents/<name>/agent-secret`），再创建容器；不再支持 `--secret-file <path>` 指定路径。`remove` 默认删除容器及其两个持久卷；传 `--keep-volumes` 可保留数据。手动容器和 Server 管理容器必须使用不同名称，避免生命周期所有权冲突。
 
 ## 发布与版本
 
@@ -60,9 +60,11 @@ Dev tag 发布 `ghcr.io/yeaft/yeaft-web-code-agent-agent:dev`。生产 release �
 
 ```bash
 docker run --rm \
-  --mount type=bind,src=/secure/path/agent-secret,dst=/run/yeaft-host-secret,readonly \
+  --mount type=bind,src=$HOME/.yeaft/container-agents/worker-1/agent-secret,dst=/run/yeaft-host-secret,readonly \
   ghcr.io/yeaft/yeaft-web-code-agent-agent:<tag> --version
 ```
+
+`agent-secret` 文件由 `container install` 自动创建；此处的 bind 仅演示容器内 secret 文件入口。
 
 ## 删除与旧数据兼容
 
