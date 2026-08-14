@@ -1,7 +1,7 @@
 /**
  * dream/segment.js.
  *
- * Three independent length-control concerns, kept pure so they can be
+ * Four independent length-control concerns, kept pure so they can be
  * unit-tested without touching disk or any LLM:
  *
  *   1. truncateMessage — clamp a single message body to
@@ -21,15 +21,21 @@
  *
  *   4. needsBatchedApply / batchSourcesForApply — when an Apply target's
  *      memory + summary + sources cumulatively exceed MAX_APPLY_TOKENS,
- *      split the sources (one source = one group's contribution) into
- *      batches; the LLM is then called once per batch, threading the
- *      written-back memory.md as input to the next batch. (§17.2)
+ *      split source messages into bounded batches; the LLM is then called
+ *      once per batch, threading the written-back memory.md as input to the
+ *      next batch. A single Session source may therefore produce multiple
+ *      ordered batches.
+ *
+ * Dream only needs durable user/assistant prose. Tool results are execution
+ * history and can be enormous; `compressDreamMessages()` drops them before
+ * triage/apply while preserving the original conversation on disk.
  *
  * No side-effects. All functions are deterministic given their inputs.
  */
 
 import {
   MAX_SINGLE_MESSAGE_CHARS,
+  MAX_DREAM_PROMPT_CHARS,
   MAX_DIFF_TOKENS_PER_TRIAGE,
   MAX_APPLY_TOKENS,
   DREAM_OVERLAP,
@@ -81,6 +87,67 @@ export function estimateMessagesTokens(msgs) {
 }
 
 /**
+ * Remove execution-only messages from the Dream input. The transcript remains
+ * the source of truth; this is only a prompt projection. Overlap messages are
+ * retained for triage context but never become new durable evidence.
+ *
+ * @param {Array<object>} messages
+ * @returns {Array<object>}
+ */
+export function compressDreamMessages(messages) {
+  if (!Array.isArray(messages)) return [];
+  return messages
+    .filter(message => message && typeof message === 'object')
+    .filter(message => ['user', 'assistant'].includes(String(message.role || '').toLowerCase()))
+    .map(message => ({
+      ...message,
+      body: truncateMessage(message.body || message.content || ''),
+    }))
+    .filter(message => String(message.body || '').trim());
+}
+
+/**
+ * Keep only newly observed messages when applying/extracting. Triage may use
+ * overlap context, but re-feeding it to Apply causes old Dreamed content to be
+ * processed again on every pass.
+ *
+ * @param {Array<object>} messages
+ * @returns {Array<object>}
+ */
+export function selectDreamNewMessages(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .filter(message => message && message.kind !== 'overlap');
+}
+
+/**
+ * Hard cap the final Dream prompt at the provider boundary. Keep both the
+ * prompt contract (head) and the JSON/output instruction (tail); discard only
+ * the middle source transcript. The durable transcript and canonical memory
+ * remain on disk.
+ *
+ * @param {string} prompt
+ * @param {number} [maxChars=MAX_DREAM_PROMPT_CHARS]
+ * @returns {string}
+ */
+export function boundDreamPrompt(prompt, maxChars = MAX_DREAM_PROMPT_CHARS) {
+  const text = String(prompt || '');
+  const cap = Number.isFinite(maxChars) && maxChars > 0
+    ? Math.floor(maxChars)
+    : MAX_DREAM_PROMPT_CHARS;
+  if (text.length <= cap) return text;
+  const marker = '\n\n[Dream prompt compressed: middle transcript omitted; durable source remains on disk]\n\n';
+  if (cap <= marker.length) {
+    const head = Math.ceil(cap / 2);
+    const tail = cap - head;
+    return text.slice(0, head) + (tail > 0 ? text.slice(-tail) : '');
+  }
+  const room = cap - marker.length;
+  const head = Math.ceil(room * 0.62);
+  const tail = room - head;
+  return text.slice(0, head) + marker + (tail > 0 ? text.slice(-tail) : '');
+}
+
+/**
  * Split a contiguous group diff into ≤MAX-token segments, with a
  * DREAM_OVERLAP-message tail/head overlap between consecutive segments.
  *
@@ -99,14 +166,19 @@ export function estimateMessagesTokens(msgs) {
  * @param {Array<{id?: string, role?: string, body?: string}>} diff
  * @param {number} [maxTokens=MAX_DIFF_TOKENS_PER_TRIAGE]
  * @param {number} [overlap=DREAM_OVERLAP]
+ * @param {number} [maxPromptChars=MAX_DREAM_PROMPT_CHARS]
  * @returns {Array<{ messages: Array<object>, overlapCount: number, newCount: number }>}
  */
-export function segmentDiff(diff, maxTokens = MAX_DIFF_TOKENS_PER_TRIAGE, overlap = DREAM_OVERLAP) {
+export function segmentDiff(diff, maxTokens = MAX_DIFF_TOKENS_PER_TRIAGE, overlap = DREAM_OVERLAP, maxPromptChars = MAX_DREAM_PROMPT_CHARS) {
   const msgs = Array.isArray(diff) ? diff : [];
+  const boundedPromptChars = Number.isFinite(maxPromptChars) && maxPromptChars > 0
+    ? maxPromptChars
+    : MAX_DREAM_PROMPT_CHARS;
+  const boundedMaxTokens = Math.min(maxTokens, Math.max(1, Math.floor(boundedPromptChars / 4) - 2048));
   if (msgs.length === 0) return [];
 
   // Fast path: whole diff fits in one segment.
-  if (estimateMessagesTokens(msgs) <= maxTokens) {
+  if (estimateMessagesTokens(msgs) <= boundedMaxTokens) {
     return [{ messages: msgs, overlapCount: 0, newCount: msgs.length }];
   }
 
@@ -120,7 +192,7 @@ export function segmentDiff(diff, maxTokens = MAX_DIFF_TOKENS_PER_TRIAGE, overla
     let end = cursor;
     while (end < msgs.length) {
       const cost = estimateTokens(msgs[end].body || '') + estimateTokens(msgs[end].role || '') + 2;
-      if (used + cost > maxTokens && end > cursor) break;
+      if (used + cost > boundedMaxTokens && end > cursor) break;
       used += cost;
       end += 1;
     }
@@ -161,9 +233,9 @@ function totalApplyTokens(merged) {
  * previous-batch output replaces memoryMd, so we account for the same
  * baseline cost in each batch.
  *
- * If a single source (one group's diff) alone would overflow, it still
- * goes into its own batch — we never split a source diff here (segment
- * happens earlier, in triage).
+ * Sources are split into ordered message chunks when one Session's diff is
+ * larger than the apply budget. This is required because a single Session
+ * can contribute thousands of messages after a long gap between Dream runs.
  *
  * @param {{ memoryMd?: string, summaryMd?: string, sources: Array<{ sessionId: string, diff: any }> }} merged
  * @param {number} [maxTokens=MAX_APPLY_TOKENS]
@@ -173,10 +245,11 @@ export function batchSourcesForApply(merged, maxTokens = MAX_APPLY_TOKENS) {
   const sources = Array.isArray(merged.sources) ? merged.sources : [];
   if (sources.length === 0) return [];
   const baseline = estimateTokens(merged.memoryMd || '') + estimateTokens(merged.summaryMd || '');
+  const sourceChunks = sources.flatMap(source => splitApplySource(source, Math.max(1, maxTokens - baseline)));
   const batches = [];
   let cur = [];
   let used = baseline;
-  for (const src of sources) {
+  for (const src of sourceChunks) {
     const cost = estimateMessagesTokens(src.diff || []);
     if (cur.length > 0 && used + cost > maxTokens) {
       batches.push(cur);
@@ -188,4 +261,24 @@ export function batchSourcesForApply(merged, maxTokens = MAX_APPLY_TOKENS) {
   }
   if (cur.length > 0) batches.push(cur);
   return batches;
+}
+
+function splitApplySource(source, budget) {
+  const messages = Array.isArray(source?.diff) ? source.diff : [];
+  if (messages.length === 0) return [{ ...source, diff: [] }];
+  const chunks = [];
+  let current = [];
+  let used = 0;
+  for (const message of messages) {
+    const cost = estimateMessagesTokens([message]);
+    if (current.length > 0 && used + cost > budget) {
+      chunks.push({ ...source, diff: current });
+      current = [];
+      used = 0;
+    }
+    current.push(message);
+    used += cost;
+  }
+  if (current.length > 0) chunks.push({ ...source, diff: current });
+  return chunks;
 }

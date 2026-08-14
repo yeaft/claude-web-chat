@@ -46,7 +46,8 @@ import { parseMessage, parseSeqFromId } from '../conversation/persist.js';
 import { loadSessionConfig, resolveSessionConfig } from '../sessions/session-config.js';
 import { listSessions as listSessionMetas } from '../sessions/session-store.js';
 import { readSessionState } from './state.js';
-import { DREAM_NUDGE_AFTER_MESSAGES, DREAM_INTERVAL_HOURS } from './limits.js';
+import { boundDreamPrompt } from './segment.js';
+import { DREAM_NUDGE_AFTER_MESSAGES, DREAM_INTERVAL_HOURS, loadLimitsFromConfig } from './limits.js';
 
 /**
  * Build the per-call options for runDream. Pure: takes a session and returns
@@ -83,6 +84,7 @@ export function buildRunDreamOpts(session, onProgress) {
     root: memoryRoot,
     language: session.config?.language || 'en',
     segmentIndex: session.memoryIndex || null,
+    limits: loadLimitsFromConfig(session.config),
     llm: makeLlm(session),
     listSessions: async () => {
       try { return listRegisteredSessions([sessionConversationsRoot, legacySessionConversationsRoot]); }
@@ -355,7 +357,11 @@ function makeLlm(session) {
   return async ({ pass, prompt, system, sessionId }) => {
     const adapter = session.adapter;
     const effectiveConfig = resolveDreamSessionConfig(session, sessionId);
-    const model = effectiveConfig?.model || effectiveConfig?.primaryModel;
+    // Session model overrides may be stored provider-qualified while the
+    // resolved config also exposes a provider-local `model` id. Dream must
+    // route through the exact Session selection first; otherwise a short id
+    // can resolve to another provider or fail as unsupported.
+    const model = effectiveConfig?.primaryModel || effectiveConfig?.model;
     if (!model) {
       throw new Error(`dream: no session model configured (pass=${pass}, sessionId=${sessionId || 'unknown'})`);
     }
@@ -371,11 +377,13 @@ function makeLlm(session) {
     const effectiveSystem = system || (String(effectiveConfig?.language || '').toLowerCase().startsWith('zh')
       ? `你是梦境流水线 — pass: ${pass}。请用中文生成自然语言内容；JSON key 保持英文。`
       : `You are the dream pipeline — pass: ${pass}.`);
+    const dreamLimits = loadLimitsFromConfig(effectiveConfig);
+    const boundedPrompt = boundDreamPrompt(prompt, dreamLimits.MAX_DREAM_PROMPT_CHARS);
 
     const r = await adapter.call({
       model,
       system: effectiveSystem,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [{ role: 'user', content: boundedPrompt }],
       maxTokens: 2048,
       modelEffort: effectiveConfig?.modelEffort || undefined,
     });
@@ -402,7 +410,8 @@ function makeLlm(session) {
       model: model || 'unknown',
       sessionId: sessionId || null,
       systemPrompt: effectiveSystem,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [{ role: 'user', content: boundedPrompt }],
+      promptChars: boundedPrompt.length,
       response: typeof r?.text === 'string' ? r.text : '',
       toolCalls: [],
       usage,

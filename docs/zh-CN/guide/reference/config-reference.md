@@ -61,7 +61,7 @@ model 项可以是裸字符串（`"gpt-5"`），也可以是对象：
   "autoArchiveIdleDays":  30,
   "recentTurnsLimit":     20,
   "multiVp": { "enabled": true },
-  "dream":   { "DREAM_INTERVAL_HOURS": 1, "MIN_NEW_PER_GROUP": 20 }
+  "dream":   { "DREAM_INTERVAL_HOURS": 1, "MIN_NEW_PER_GROUP": 20, "MAX_DREAM_PROMPT_CHARS": 96000 }
 }
 ```
 

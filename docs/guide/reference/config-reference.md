@@ -61,7 +61,7 @@ Anything else on a model entry is silently ignored. UI affordances like display 
   "autoArchiveIdleDays":  30,
   "recentTurnsLimit":     20,
   "multiVp": { "enabled": true },
-  "dream":   { "DREAM_INTERVAL_HOURS": 1, "MIN_NEW_PER_GROUP": 20 }
+  "dream":   { "DREAM_INTERVAL_HOURS": 1, "MIN_NEW_PER_GROUP": 20, "MAX_DREAM_PROMPT_CHARS": 96000 }
 }
 ```
 

@@ -29,6 +29,7 @@ import { normalizeKnownProviderForRuntime } from './llm/known-providers.js';
 import { createDenyAllPluginConfig, normalizePluginConfig } from './plugins.js';
 import { normaliseBrowserRuntimeSection } from '../browser-runtime/config.js';
 import { readWorkspaceFile } from './workspace-file.js';
+import { DEFAULT_LIMITS } from './dream/limits.js';
 
 /** Default configuration values. */
 const DEFAULTS = {
@@ -254,13 +255,14 @@ function isTruthy(val) {
  * bounds via `clampYeaftField`.
  *
  * @param {any} raw — jsonConfig.yeaft (may be undefined / malformed)
- * @returns {{ maxConcurrentThreads: number, autoArchiveIdleDays: number }}
+ * @returns {{ maxConcurrentThreads: number, autoArchiveIdleDays: number, recentTurnsLimit: number, dream: object }}
  */
 export function normaliseYeaftSection(raw) {
   const out = {
     maxConcurrentThreads: DEFAULTS.yeaftMaxConcurrentThreads,
     autoArchiveIdleDays: DEFAULTS.yeaftAutoArchiveIdleDays,
     recentTurnsLimit: DEFAULTS.yeaftRecentTurnsLimit,
+    dream: { ...DEFAULT_LIMITS },
   };
   if (!raw || typeof raw !== 'object') return out;
   const mc = clampYeaftField(raw.maxConcurrentThreads, 'maxConcurrentThreads');
@@ -269,6 +271,13 @@ export function normaliseYeaftSection(raw) {
   if (ad !== null) out.autoArchiveIdleDays = ad;
   const rt = clampYeaftField(raw.recentTurnsLimit, 'recentTurnsLimit');
   if (rt !== null) out.recentTurnsLimit = rt;
+  const dream = raw.dream;
+  if (dream && typeof dream === 'object' && !Array.isArray(dream)) {
+    for (const key of Object.keys(DEFAULT_LIMITS)) {
+      const value = Number(dream[key]);
+      if (Number.isFinite(value) && value > 0) out.dream[key] = Math.floor(value);
+    }
+  }
   return out;
 }
 

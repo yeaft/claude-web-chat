@@ -10,6 +10,7 @@ import { readScope, writeScope } from '../memory/segment-store.js';
 import { syncScope } from '../memory/segment-sync.js';
 import { makeSegment } from '../memory/segment.js';
 import { render, extractTemplateForScope } from './prompts/index.js';
+import { boundDreamPrompt } from './segment.js';
 import { parseJsonSafe } from './triage.js';
 
 const MAX_MESSAGES = 80;
@@ -40,6 +41,7 @@ const VALID_KINDS = new Set([
  *   language?: string,
  *   nowIso?: Function,
  *   segmentIndex?: import('../memory/index-db.js').SegmentIndex|null,
+ *   limits?: { MAX_DREAM_PROMPT_CHARS?: number },
  * }} opts
  */
 export async function extractAndWriteMemorySegments(opts) {
@@ -68,6 +70,7 @@ export async function extractAndWriteMemorySegments(opts) {
         language: opts.language,
         now,
         allowedSourceIds,
+        maxPromptChars: opts.limits?.MAX_DREAM_PROMPT_CHARS,
       });
     } catch (err) {
       errors.push({ scope, error: err.message, rawSnippet: err.rawSnippet || '' });
@@ -92,10 +95,13 @@ export async function extractAndWriteMemorySegments(opts) {
   return { scopes: scopeCount, segments: segmentCount, errors };
 }
 
-async function extractScopeSegments({ scope, sessionId, messages, llm, language, now, allowedSourceIds }) {
+async function extractScopeSegments({ scope, sessionId, messages, llm, language, now, allowedSourceIds, maxPromptChars }) {
   const template = extractTemplateForScope(scope);
   const base = render(template, templateVarsForScope(scope, sessionId), { language });
-  const prompt = `${base}\n\nTarget scope: ${scope}\n\nConversation diff, oldest first:\n${renderMessages(messages)}\n\nReturn only the JSON array. Do not wrap it in Markdown.`;
+  const prompt = boundDreamPrompt(
+    `${base}\n\nTarget scope: ${scope}\n\nConversation diff, oldest first:\n${renderMessages(messages)}\n\nReturn only the JSON array. Do not wrap it in Markdown.`,
+    maxPromptChars,
+  );
   const firstRaw = await llm({ pass: 'extract-segments', prompt, system: extractSystem(language) });
   const firstParsed = parseJsonSafe(firstRaw);
   if (Array.isArray(firstParsed)) {
@@ -104,7 +110,7 @@ async function extractScopeSegments({ scope, sessionId, messages, llm, language,
       .filter(Boolean);
   }
 
-  const retryPrompt = `${prompt}\n\nYour previous output was malformed JSON. Previous output snippet:\n${rawSnippet(firstRaw)}\n\nRetry now. Return only a strict JSON array.`;
+  const retryPrompt = boundDreamPrompt(`${prompt}\n\nYour previous output was malformed JSON. Previous output snippet:\n${rawSnippet(firstRaw)}\n\nRetry now. Return only a strict JSON array.`, maxPromptChars);
   const retryRaw = await llm({ pass: 'extract-segments-retry', prompt: retryPrompt, system: extractSystem(language) });
   const retryParsed = parseJsonSafe(retryRaw);
   if (!Array.isArray(retryParsed)) {

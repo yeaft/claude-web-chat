@@ -26,10 +26,16 @@ import { inspect } from 'util';
 import { writeContent, writeSummary, readContent, readMemory, readSummary } from '../memory/store.js';
 import { parseSegments } from '../memory/segment.js';
 import { syncScope } from '../memory/segment-sync.js';
-import { batchSourcesForApply, needsBatchedApply, truncateMessage } from './segment.js';
+import {
+  batchSourcesForApply,
+  boundDreamPrompt,
+  needsBatchedApply,
+  truncateMessage,
+} from './segment.js';
 import { snapshotScope } from './snapshot.js';
 import { parseJsonSafe } from './triage.js';
 import { render } from './prompts/index.js';
+import { MAX_DREAM_PROMPT_CHARS } from './limits.js';
 
 function malformedJsonError(message, raw) {
   const err = new Error(message);
@@ -239,7 +245,7 @@ export function targetToScope(target) {
  *   root: string,
  *   ts: string,                    // shared timestamp folder
  *   llm: (req: { pass: string, prompt: string, system: string }) => Promise<string>,
- *   limits?: { MAX_APPLY_TOKENS?: number },
+ *   limits?: { MAX_APPLY_TOKENS?: number, MAX_DREAM_PROMPT_CHARS?: number },
  *   snapshot?: typeof snapshotScope,
  *   nowIso?: () => string,
  *   onProgress?: (event: object) => void,
@@ -272,55 +278,81 @@ export async function applyMergedTarget(merged, opts) {
   }
 
   let batchesUsed = 0;
-  const maxApply = (opts.limits && opts.limits.MAX_APPLY_TOKENS) || undefined;
+  const maxApply = (opts.limits && opts.limits.MAX_APPLY_TOKENS) || 80000;
+  // Leave room for the prompt template and JSON framing. The bounded context
+  // and source chunks are prompt projections; canonical files remain complete.
+  const maxPromptChars = (opts.limits && opts.limits.MAX_DREAM_PROMPT_CHARS) || MAX_DREAM_PROMPT_CHARS;
+  const providerPromptBudget = Math.floor(maxPromptChars / 4) - 2048;
+  const promptBudget = Math.max(1024, Math.min(Math.floor(maxApply) - 2048, providerPromptBudget));
+  const initialContext = boundApplyContext(contentMd, summaryMd, promptBudget);
 
   if (merged.kind === 'create') {
     const siblings = opts.siblingTopicsFor ? await opts.siblingTopicsFor(merged.target) : [];
-    const prompt = buildCreatePrompt({
-      target: merged.target,
-      sources: merged.sources,
-      siblingTopics: siblings,
-      language: opts.language,
-    });
-    if (opts.onProgress) opts.onProgress({ phase: 'apply', target: merged.target, status: 'llm', batch: 1, of: 1 });
-    const raw = await opts.llm({ pass: 'create', prompt, system: applySystem(opts.language) });
-    const parsed = parseJsonSafe(raw);
-    const parsedContent = parsed && typeof parsed.content_md === 'string'
-      ? parsed.content_md
-      : (parsed && typeof parsed.memory_md === 'string' ? parsed.memory_md : null);
-    if (parsedContent === null) {
-      throw malformedJsonError(`apply: CREATE returned malformed JSON for ${merged.target}`, raw);
-    }
-    const ensured = ensurePrimarySessionOutput({
-      target: merged.target,
-      memoryMd: parsedContent,
-      summaryMd: typeof parsed.summary_md === 'string' ? parsed.summary_md : '',
-      sources: merged.sources,
-      language: opts.language,
-    });
-    contentMd = ensured.memoryMd;
-    summaryMd = ensured.summaryMd;
-    batchesUsed = 1;
-  } else {
-    // UPDATE — possibly batched.
-    const batches = needsBatchedApply(
-      { memoryMd: contentMd, summaryMd, sources: merged.sources },
-      maxApply,
+    const sourceBatches = needsBatchedApply(
+      { memoryMd: '', summaryMd: '', sources: merged.sources },
+      promptBudget,
     )
-      ? batchSourcesForApply({ memoryMd: contentMd, summaryMd, sources: merged.sources }, maxApply)
+      ? batchSourcesForApply({ memoryMd: '', summaryMd: '', sources: merged.sources }, promptBudget)
+      : [merged.sources];
+
+    let i = 0;
+    for (const batch of sourceBatches) {
+      i += 1;
+      const prompt = boundDreamPrompt(i === 1
+        ? buildCreatePrompt({
+          target: merged.target,
+          sources: batch,
+          siblingTopics: siblings,
+          language: opts.language,
+        })
+        : buildUpdatePrompt({
+          target: merged.target,
+          contentMd: boundApplyContext(contentMd, summaryMd, promptBudget).contentMd,
+          summaryMd: boundApplyContext(contentMd, summaryMd, promptBudget).summaryMd,
+          sources: batch,
+          batchInfo: { index: i, total: sourceBatches.length },
+          language: opts.language,
+        }), maxPromptChars);
+      if (opts.onProgress) opts.onProgress({ phase: 'apply', target: merged.target, status: 'llm', batch: i, of: sourceBatches.length });
+      const raw = await opts.llm({ pass: i === 1 ? 'create' : 'update', prompt, system: applySystem(opts.language) });
+      const parsed = parseJsonSafe(raw);
+      const parsedContent = parsed && typeof parsed.content_md === 'string'
+        ? parsed.content_md
+        : (parsed && typeof parsed.memory_md === 'string' ? parsed.memory_md : null);
+      if (parsedContent === null) {
+        throw malformedJsonError(`apply: ${i === 1 ? 'CREATE' : 'UPDATE'} batch ${i} returned malformed JSON for ${merged.target}`, raw);
+      }
+      const ensured = ensurePrimarySessionOutput({
+        target: merged.target,
+        memoryMd: parsedContent,
+        summaryMd: typeof parsed.summary_md === 'string' ? parsed.summary_md : summaryMd,
+        sources: batch,
+        language: opts.language,
+      });
+      contentMd = ensured.memoryMd;
+      summaryMd = ensured.summaryMd;
+    }
+    batchesUsed = sourceBatches.length;
+  } else {
+    // UPDATE — possibly batched. A single Session source may be split into
+    // many bounded batches; old overlap is never present in merged.sources.
+    const input = { ...initialContext, sources: merged.sources };
+    const batches = needsBatchedApply(input, promptBudget)
+      ? batchSourcesForApply(input, promptBudget)
       : [merged.sources];
 
     let i = 0;
     for (const batch of batches) {
       i += 1;
-      const prompt = buildUpdatePrompt({
+      const context = boundApplyContext(contentMd, summaryMd, promptBudget);
+      const prompt = boundDreamPrompt(buildUpdatePrompt({
         target: merged.target,
-        contentMd,
-        summaryMd,
+        contentMd: context.contentMd,
+        summaryMd: context.summaryMd,
         sources: batch,
         batchInfo: { index: i, total: batches.length },
         language: opts.language,
-      });
+      }), maxPromptChars);
       if (opts.onProgress) opts.onProgress({ phase: 'apply', target: merged.target, status: 'llm', batch: i, of: batches.length });
       const raw = await opts.llm({ pass: 'update', prompt, system: applySystem(opts.language) });
       const parsed = parseJsonSafe(raw);
@@ -391,6 +423,27 @@ function scopeRelDir(scope) {
 }
 
 function oneLine(s) { return String(s || '').replace(/\s+/g, ' ').trim().slice(0, 200); }
+
+function boundApplyContext(contentMd, summaryMd, budget) {
+  const maxChars = Math.max(4096, Math.floor(Math.max(1, budget) * 4));
+  const summary = truncatePromptText(summaryMd, Math.min(maxChars, 8_000));
+  const contentBudget = Math.max(0, maxChars - summary.length);
+  return {
+    contentMd: truncatePromptText(contentMd, contentBudget),
+    summaryMd: summary,
+  };
+}
+
+function truncatePromptText(value, maxChars) {
+  const text = String(value || '');
+  if (text.length <= maxChars) return text;
+  const marker = '\n\n[canonical memory clipped for Dream apply; durable source remains on disk]\n\n';
+  if (maxChars <= marker.length) return text.slice(0, Math.max(0, maxChars));
+  const room = maxChars - marker.length;
+  const head = Math.ceil(room * 0.62);
+  const tail = room - head;
+  return text.slice(0, head) + marker + (tail > 0 ? text.slice(-tail) : '');
+}
 
 function isLegacyCanonicalMemory(memoryMd, scope) {
   const raw = String(memoryMd || '').trim();
