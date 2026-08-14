@@ -80,7 +80,7 @@ yeaft-agent container install \
 - slice 的 `memory.max` 是包含所有后代的硬上限：容器合计超过 70% 宿主内存时，内核回收后仍超限则 OOM 杀死**容器内**进程（容器按 restart policy 重启），宿主内存始终安全。`memory.swap.max=0` 禁止容器借 swap 逃逸。
 - slice 的 `cpu.max` 限制所有 Yeaft 容器合计最多 90% 逻辑核；单个容器可突发吃满 slice 配额，但不会挤占宿主其余 10% CPU。
 - 未初始化 slice 时 `install` 会拒绝创建容器（防止"看似受保护、实际裸奔"），需要先跑 `setup-limits` 或显式 `--no-slice`。
-- cgroup v2 无法限制磁盘容量。如需磁盘配额，`install` 支持 `--disk-size <size>`（如 `20G` 或 `80%`，按 Docker data-root 所在文件系统计算）；它给数据卷和 workspace 卷各设一个容量上限，要求 Docker overlay2 且 data-root 位于 xfs（project quota），不支持的文件系统会在 `docker create` 时失败。
+- cgroup v2 无法限制磁盘容量。如需磁盘配额，`install` 支持 `--disk-size <size>`（如 `20G` 或 `80%`，按 Docker data-root 所在文件系统计算）；它给数据卷和 workspace 卷各设一个容量上限，要求 Docker overlay2 且 data-root 位于 xfs（project quota），不支持的文件系统会在 `docker create` 时失败。size 只在 volume **首次创建**时生效；volume 已存在时 Docker 会忽略该选项，因此复用旧卷重建（`remove --keep-volumes` + 重新 `install`）不会获得磁盘配额。
 
 **已存在容器不受 slice 影响**：`--cgroup-parent` 是创建时参数，`docker update` 无法修改 cgroup 归属。要保护已部署的容器，用 `remove --keep-volumes` 保留数据卷后重新 `install`（卷名固定为 `<name>-data` / `<name>-workspace`，数据自动复用）。
 

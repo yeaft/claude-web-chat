@@ -280,14 +280,18 @@ export async function ensureAgentSlice({
     // Treat missing controller list as "no controllers writable".
   }
   const wanted = ['cpu', 'memory', 'pids'].filter(name => controllers.includes(name));
-  await fsImpl.mkdir(slicePath, { recursive: true, mode: 0o755 });
-  if (wanted.length > 0) {
-    await fsImpl.writeFile(
-      `${slicePath}/cgroup.subtree_control`,
-      wanted.map(name => `+${name}`).join(' '),
-      'utf8',
+  if (wanted.length === 0) {
+    throw new ContainerAgentError(
+      'CONTAINER_AGENT_CGROUP_UNAVAILABLE',
+      'cgroup v2 controllers (cpu/memory/pids) are unavailable; setup-limits requires a host running cgroup v2 and root access to /sys/fs/cgroup',
     );
   }
+  await fsImpl.mkdir(slicePath, { recursive: true, mode: 0o755 });
+  await fsImpl.writeFile(
+    `${slicePath}/cgroup.subtree_control`,
+    wanted.map(name => `+${name}`).join(' '),
+    'utf8',
+  );
   const detected = resources || await detectHostResources({ readFileImpl: fsImpl.readFile });
   const limits = buildSliceLimits({ cpuPercent, memoryPercent, pidsLimit }, detected);
   if (wanted.includes('cpu') && limits.cpuQuotaUs > 0) {
@@ -329,7 +333,7 @@ export async function isAgentSliceReady({ slice = DEFAULT_AGENT_SLICE, readFileI
   }
 }
 
-const DISK_SIZE_RE = /^(\d+(?:\.\d+)?)\s*(%|[kmgt](?:ib)?|b)?$/i;
+const DISK_SIZE_RE = /^(\d+(?:\.\d+)?)\s*(%|[kmgt](?:i?b)?|b)?$/i;
 
 /**
  * Resolve a disk size like "20G" or "80%" to bytes. Percentages are computed

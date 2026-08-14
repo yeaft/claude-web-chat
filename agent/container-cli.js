@@ -35,7 +35,8 @@ as root before installing (or pass --no-slice to opt out of protection).
 
 --disk-size <size>: per-volume capacity quota for the data and workspace volumes, e.g.
   20G or 80% of the Docker data-root filesystem. Requires Docker overlay2 on xfs with
-  project quotas; unsupported filesystems fail docker create.
+  project quotas; unsupported filesystems fail docker create. Applies to newly created
+  volumes only (Docker ignores size for existing volumes).
 
 Use --keep-volumes with remove to preserve its Yeaft data and workspace volumes.
 `);

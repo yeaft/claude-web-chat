@@ -259,6 +259,21 @@ describe('container Agent manager', () => {
     expect(written.some(([path]) => path.endsWith('cpu.max'))).toBe(false);
   });
 
+  it('refuses to create a slice when no cgroup controllers are available', async () => {
+    const written = [];
+    const fsImpl = {
+      mkdir: async (path, opts) => { written.push(['mkdir', path, opts]); },
+      readFile: async () => { throw new Error('ENOENT'); },
+      writeFile: async (path, data) => { written.push(['write', path, String(data)]); },
+    };
+    await expect(ensureAgentSlice({
+      slice: 'yeaft.slice',
+      resources: { cpuCores: 2, memTotalBytes: 4 * 1024 ** 3 },
+      fsImpl,
+    })).rejects.toMatchObject({ code: 'CONTAINER_AGENT_CGROUP_UNAVAILABLE' });
+    expect(written).toEqual([]);
+  });
+
   it('reports slice readiness from the marker file', async () => {
     expect(await isAgentSliceReady({ readFileImpl: async () => '{}' })).toBe(true);
     expect(await isAgentSliceReady({ readFileImpl: async () => { throw new Error('ENOENT'); } })).toBe(false);
@@ -266,8 +281,11 @@ describe('container Agent manager', () => {
 
   it('resolves explicit disk sizes to bytes', async () => {
     expect(await resolveDiskSize('20G')).toBe(20 * 1024 ** 3);
+    expect(await resolveDiskSize('20GB')).toBe(20 * 1024 ** 3);
     expect(await resolveDiskSize('512M')).toBe(512 * 1024 ** 2);
+    expect(await resolveDiskSize('512MB')).toBe(512 * 1024 ** 2);
     expect(await resolveDiskSize('1t')).toBe(1024 ** 4);
+    expect(await resolveDiskSize('1tb')).toBe(1024 ** 4);
     expect(await resolveDiskSize(4096)).toBe(4096);
     await expect(resolveDiskSize('12GBQ')).rejects.toMatchObject({
       code: 'CONTAINER_AGENT_INVALID_DISK_SIZE',
