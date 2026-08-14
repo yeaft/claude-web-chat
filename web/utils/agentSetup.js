@@ -33,3 +33,13 @@ export function getAgentServiceCommand({
   const agentName = getAgentName(profile);
   return `yeaft-agent install --server ${serverWsUrl} --secret ${agentSecret} --name ${agentName}`;
 }
+
+export function getAgentContainerCommand({
+  profile = null,
+  agentSecret = '',
+  serverWsUrl = getServerWsUrl(),
+} = {}) {
+  if (!agentSecret) return '';
+  const agentName = getAgentName(profile);
+  return `yeaft-agent container install --server ${serverWsUrl} --secret ${agentSecret} --name ${agentName}`;
+}

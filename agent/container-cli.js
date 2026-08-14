@@ -5,7 +5,6 @@ import {
   createContainerAgent,
   inspectContainerAgent,
   logsContainerAgent,
-  readSecretInput,
   removeContainerAgent,
   startContainerAgent,
   stopContainerAgent,
@@ -15,10 +14,12 @@ import {
 function help() {
   console.log(`
 Usage:
-  yeaft-agent container create --server <ws-url> --name <name> (--secret <value> | --secret-file <path>) [--image <image>]
+  yeaft-agent container install --server <ws-url> --name <name> --secret <secret> [--image <image>]
   yeaft-agent container start|stop|status|remove|logs --name <name>
 
 The container is an ordinary yeaft-agent. This command only manages its Docker lifecycle.
+The secret is passed as an argument, like 'yeaft-agent install', and persisted by this
+command to a private 0600 file before the container is created.
 Use --keep-volumes with remove to preserve its Yeaft data and workspace volumes.
 `);
 }
@@ -48,11 +49,13 @@ export async function runContainerCli(args) {
   const { action, options } = parseContainerArgs(args);
   const name = options.name;
   let result;
-  if (action === 'create') {
-    const secret = await readSecretInput(options);
-    const secretFile = options.secretFile
-      ? resolve(options.secretFile)
-      : join(homedir(), '.yeaft', 'container-agents', name, 'agent-secret');
+  if (action === 'install' || action === 'create') {
+    if (options.secretFile) {
+      throw new Error('--secret-file is no longer supported; pass the secret directly with --secret');
+    }
+    const secret = String(options.secret || '').trim();
+    if (!secret) throw new Error('--secret <secret> is required');
+    const secretFile = join(homedir(), '.yeaft', 'container-agents', name, 'agent-secret');
     await writeAgentSecretFile(secretFile, secret);
     result = await createContainerAgent({
       name,

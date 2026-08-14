@@ -49,6 +49,7 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/server/yeaft-session-online-filter.test.js',
   'test/web/auth-bootstrap.test.js',
   'test/web/auth-fetch.test.js',
+  'test/web/agent-setup-commands.test.js',
   'test/web/browser-runtime-store.test.js',
   'test/web/history-sender-filter.test.js',
   'test/web/message-flow-regression.test.js',
@@ -73,6 +74,7 @@ export const CORE_TEST_FILES = Object.freeze([
 
 export const SANDBOX_TEST_FILES = Object.freeze([
   'test/agent/container-manager.test.js',
+  'test/agent/container-cli.test.js',
   'test/server/sandbox-routes.test.js',
   'test/web/sandbox-settings.test.js',
 ]);

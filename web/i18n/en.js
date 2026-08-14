@@ -747,6 +747,7 @@ export default {
   'settings.security.agentSetupCommands': 'Agent setup commands',
   'settings.security.agentCmdInstall': 'Install Agent',
   'settings.security.agentCmdService': 'Run Agent server',
+  'settings.security.agentCmdContainer': 'Run Agent in Docker',
   'settings.security.agentCmdNeedsSecret': 'Generate an Agent Secret first to create the server command.',
   'settings.security.agentCmdLlm': 'Manual Copilot fallback',
   'settings.security.agentCmdLlmDesc': 'Run the install command first. If an existing GitHub Copilot token is available, Yeaft configures github-copilot/gpt-5.5 automatically; use the Copilot command only as a fallback.',
