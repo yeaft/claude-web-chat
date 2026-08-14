@@ -187,6 +187,7 @@ export default {
                     </template>
                     <span v-else class="sp-cmd sp-cmd-placeholder">{{ $t('settings.security.agentCmdNeedsSecret') }}</span>
                   </div>
+                  <p class="sp-desc">{{ $t('settings.security.agentCmdContainerDesc') }}</p>
                   <div class="sp-cmd-row">
                     <span class="sp-cmd-label">{{ $t('settings.security.agentCmdLlm') }}</span>
                     <code class="sp-cmd">{{ agentLlmCommand }}</code>

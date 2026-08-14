@@ -680,6 +680,7 @@ export default {
   'settings.sandbox.error.SANDBOX_ACTION_FAILED': '无法安排 Sandbox 操作，请稍后重试。',
   'settings.sandbox.error.SANDBOX_OPERATION_TIMEOUT': '操作已超时，请重试或移除 Sandbox。',
   'settings.sandbox.error.SANDBOX_RUNTIME_FAILED': 'Sandbox 运行时报告失败。',
+  'settings.sandbox.error.SANDBOX_CGROUP_SLICE_UNAVAILABLE': '无法在宿主机初始化共享资源 slice（需要 cgroup v2 与 root 权限）。请联系管理员，或移除 SANDBOX_CGROUP_PARENT 以关闭资源上限。',
   // Settings - Account
   'settings.account.username': '用户名',
   'settings.account.role': '角色',
@@ -713,6 +714,7 @@ export default {
   'settings.security.agentCmdInstall': '安装 Agent',
   'settings.security.agentCmdService': '运行 Agent server',
   'settings.security.agentCmdContainer': '在 Docker 中运行 Agent',
+  'settings.security.agentCmdContainerDesc': '一条命令即可。首次运行会自动初始化共享 CPU/内存限制（会提示输入一次 sudo 密码）；传 --no-slice 可不启用资源保护。机器上需要已安装 Docker。',
   'settings.security.agentCmdNeedsSecret': '请先生成 Agent 密钥，以创建包含 server 地址和密钥的命令。',
   'settings.security.agentCmdLlm': 'Copilot 手动兜底',
   'settings.security.agentCmdLlmDesc': '先运行安装命令；如果本机已有 GitHub Copilot token，Yeaft 会自动配置 github-copilot/gpt-5.5。Copilot 命令只作为兜底使用。',

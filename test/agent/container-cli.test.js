@@ -1,7 +1,8 @@
+import { EventEmitter } from 'node:events';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { parseContainerArgs, runContainerCli } from '../../agent/container-cli.js';
+import { ensureAgentSliceAuto, parseContainerArgs, runContainerCli } from '../../agent/container-cli.js';
 import {
   createContainerAgent,
   DEFAULT_AGENT_SLICE,
@@ -70,12 +71,36 @@ describe('container CLI install', () => {
     });
   });
 
-  it('refuses to install when the shared slice is not initialized', async () => {
+  it('auto-initializes the slice when install runs as root', async () => {
+    if (typeof process.getuid !== 'function') return;
     isAgentSliceReady.mockResolvedValue(false);
-    await expect(runContainerCli([
-      'install', '--server', 'wss://example.test', '--name', 'worker', '--secret', 'top-secret',
-    ])).rejects.toThrow('setup-limits');
-    expect(createContainerAgent).not.toHaveBeenCalled();
+    const getuidSpy = vi.spyOn(process, 'getuid').mockReturnValue(0);
+    try {
+      await runContainerCli([
+        'install', '--server', 'wss://example.test', '--name', 'worker', '--secret', 'top-secret',
+      ]);
+      expect(ensureAgentSlice).toHaveBeenCalledTimes(1);
+      expect(createContainerAgent).toHaveBeenCalledWith(expect.objectContaining({
+        cgroupParent: DEFAULT_AGENT_SLICE,
+      }));
+    } finally {
+      getuidSpy.mockRestore();
+    }
+  });
+
+  it('fails fast without interactive sudo instead of hanging or creating an unprotected container', async () => {
+    if (typeof process.getuid !== 'function') return;
+    isAgentSliceReady.mockResolvedValue(false);
+    const getuidSpy = vi.spyOn(process, 'getuid').mockReturnValue(1000);
+    try {
+      await expect(runContainerCli([
+        'install', '--server', 'wss://example.test', '--name', 'worker', '--secret', 'top-secret',
+      ])).rejects.toThrow('--no-slice');
+      expect(ensureAgentSlice).not.toHaveBeenCalled();
+      expect(createContainerAgent).not.toHaveBeenCalled();
+    } finally {
+      getuidSpy.mockRestore();
+    }
   });
 
   it('skips the slice entirely with --no-slice', async () => {
@@ -182,5 +207,83 @@ describe('container CLI install', () => {
     } finally {
       getuidSpy.mockRestore();
     }
+  });
+
+  describe('ensureAgentSliceAuto', () => {
+    it('creates the slice directly when running as root', async () => {
+      if (typeof process.getuid !== 'function') return;
+      const getuidSpy = vi.spyOn(process, 'getuid').mockReturnValue(0);
+      try {
+        await ensureAgentSliceAuto();
+        expect(ensureAgentSlice).toHaveBeenCalledTimes(1);
+      } finally {
+        getuidSpy.mockRestore();
+      }
+    });
+
+    it('rejects in non-interactive shells with guidance instead of prompting sudo', async () => {
+      if (typeof process.getuid !== 'function') return;
+      const getuidSpy = vi.spyOn(process, 'getuid').mockReturnValue(1000);
+      try {
+        await expect(ensureAgentSliceAuto({ interactive: false }))
+          .rejects.toThrow('not interactive');
+        expect(ensureAgentSlice).not.toHaveBeenCalled();
+      } finally {
+        getuidSpy.mockRestore();
+      }
+    });
+
+    it('re-invokes this CLI through sudo on an interactive shell', async () => {
+      if (typeof process.getuid !== 'function') return;
+      const getuidSpy = vi.spyOn(process, 'getuid').mockReturnValue(1000);
+      try {
+        const child = new EventEmitter();
+        setTimeout(() => child.emit('close', 0), 0);
+        const spawnImpl = vi.fn(() => child);
+        await expect(ensureAgentSliceAuto({ spawnImpl, interactive: true })).resolves.toBeUndefined();
+        expect(spawnImpl).toHaveBeenCalledWith(
+          'sudo',
+          expect.arrayContaining(['env', 'container', 'setup-limits']),
+          expect.objectContaining({ stdio: 'inherit' }),
+        );
+        const args = spawnImpl.mock.calls[0][1];
+        expect(args[0]).toBe('env');
+        expect(args[1]).toMatch(/^PATH=/);
+        expect(args).toContain(process.execPath);
+        expect(ensureAgentSlice).not.toHaveBeenCalled();
+      } finally {
+        getuidSpy.mockRestore();
+      }
+    });
+
+    it('fails with a clear message when sudo exits non-zero', async () => {
+      if (typeof process.getuid !== 'function') return;
+      const getuidSpy = vi.spyOn(process, 'getuid').mockReturnValue(1000);
+      try {
+        const child = new EventEmitter();
+        setTimeout(() => child.emit('close', 1), 0);
+        await expect(ensureAgentSliceAuto({
+          spawnImpl: () => child,
+          interactive: true,
+        })).rejects.toThrow('exit 1');
+      } finally {
+        getuidSpy.mockRestore();
+      }
+    });
+
+    it('propagates spawn errors (sudo not installed)', async () => {
+      if (typeof process.getuid !== 'function') return;
+      const getuidSpy = vi.spyOn(process, 'getuid').mockReturnValue(1000);
+      try {
+        const child = new EventEmitter();
+        setTimeout(() => child.emit('error', new Error('sudo not found')), 0);
+        await expect(ensureAgentSliceAuto({
+          spawnImpl: () => child,
+          interactive: true,
+        })).rejects.toThrow('sudo not found');
+      } finally {
+        getuidSpy.mockRestore();
+      }
+    });
   });
 });

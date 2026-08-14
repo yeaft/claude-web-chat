@@ -58,13 +58,11 @@ secret 通过参数传递，与 `yeaft-agent install` 一致。CLI 会先把 sec
 
 容器默认**不限制** CPU/内存，单个容器可以吃满宿主资源。为防止失控容器拖垮机器，CLI 提供共享 cgroup slice 机制：所有 Yeaft 容器挂到同一个父 slice 下，**合计**消耗被宿主资源百分比封顶，而不是逐容器单独配额。
 
-先以 root 初始化一次（动态按当前机器计算）：
+**slice 由第一次 `container install` 自动初始化**，用户不需要手动执行 `setup-limits`：
 
-```bash
-sudo yeaft-agent container setup-limits
-# 默认：CPU 上限 = 90% × 逻辑核数；内存硬上限 = 70% × 宿主内存（无 swap 逃逸）；pids 上限 = 4096
-# 可覆盖：--cpu-percent 90 --memory-percent 70 --pids 4096
-```
+- 以 root 运行 install 时直接创建 slice；普通用户运行时会通过 `sudo` 内联提示一次密码，然后自动完成初始化。
+- 默认策略（按当前机器动态计算）：CPU 上限 = 90% × 逻辑核数；内存硬上限 = 70% × 宿主内存（无 swap 逃逸）；pids 上限 = 4096。可手动覆盖：`sudo yeaft-agent container setup-limits --cpu-percent 90 --memory-percent 70 --pids 4096`。
+- 非交互 shell（脚本、CI、后台服务）无法弹 sudo 密码，此时 install 会失败并提示：要么先手动执行一次 `sudo yeaft-agent container setup-limits`，要么显式 `--no-slice` 放弃保护。
 
 随后 `container install` 默认把容器挂到 `yeaft.slice`（`--cgroup-parent` 可指定其他 slice，`--no-slice` 显式放弃保护）：
 
@@ -79,12 +77,11 @@ yeaft-agent container install \
 
 - slice 的 `memory.max` 是包含所有后代的硬上限：容器合计超过 70% 宿主内存时，内核回收后仍超限则 OOM 杀死**容器内**进程（容器按 restart policy 重启），宿主内存始终安全。`memory.swap.max=0` 禁止容器借 swap 逃逸。
 - slice 的 `cpu.max` 限制所有 Yeaft 容器合计最多 90% 逻辑核；单个容器可突发吃满 slice 配额，但不会挤占宿主其余 10% CPU。
-- 未初始化 slice 时 `install` 会拒绝创建容器（防止"看似受保护、实际裸奔"），需要先跑 `setup-limits` 或显式 `--no-slice`。
 - cgroup v2 无法限制磁盘容量。如需磁盘配额，`install` 支持 `--disk-size <size>`（如 `20G` 或 `80%`，按 Docker data-root 所在文件系统计算）；它给数据卷和 workspace 卷各设一个容量上限，要求 Docker overlay2 且 data-root 位于 xfs（project quota），不支持的文件系统会在 `docker create` 时失败。size 只在 volume **首次创建**时生效；volume 已存在时 Docker 会忽略该选项，因此复用旧卷重建（`remove --keep-volumes` + 重新 `install`）不会获得磁盘配额。
 
 **已存在容器不受 slice 影响**：`--cgroup-parent` 是创建时参数，`docker update` 无法修改 cgroup 归属。要保护已部署的容器，用 `remove --keep-volumes` 保留数据卷后重新 `install`（卷名固定为 `<name>-data` / `<name>-workspace`，数据自动复用）。
 
-Server 管理的 sandbox 容器同样支持：设置 `SANDBOX_CGROUP_PARENT=yeaft.slice` 后，Server 创建的所有用户容器都挂入共享 slice（宿主机需先跑过 `setup-limits`）。
+Server 管理的 sandbox 容器同样支持：设置 `SANDBOX_CGROUP_PARENT=yeaft.slice` 后，Server 创建的所有用户容器都挂入共享 slice。Server 进程在创建第一个容器前会自动初始化 slice（需要 Server 服务账号具备宿主 /sys/fs/cgroup 写权限，即通常以 root/systemd 服务运行）；初始化失败时创建请求返回 `SANDBOX_CGROUP_SLICE_UNAVAILABLE`，不会静默创建不受保护的容器。
 
 ## 发布与版本
 

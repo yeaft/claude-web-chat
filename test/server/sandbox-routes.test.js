@@ -8,7 +8,9 @@ function createRuntime() {
   return {
     check: vi.fn(async () => ({ serverVersion: '28.5.1' })),
     create: vi.fn(),
+    ensureSlice: vi.fn(),
     inspect: vi.fn(async () => ({ exists: false, status: 'absent', running: false })),
+    isSliceReady: vi.fn(async () => true),
     remove: vi.fn(),
     start: vi.fn(),
     stop: vi.fn(),
@@ -200,6 +202,85 @@ describe('Sandbox status routes', () => {
 
     expect(runtime.check).toHaveBeenCalledOnce();
     await expect(access(marker)).resolves.toBeUndefined();
+  });
+
+  it('initializes the shared slice before the first managed create when configured', async () => {
+    const runtime = createRuntime();
+    runtime.isSliceReady.mockResolvedValue(false);
+    const service = new ContainerAgentService({
+      enabled: true,
+      stateDir: '/tmp/yeaft-test',
+      serverUrl: 'wss://example.test',
+      image: 'example.test/agent:dev',
+      cgroupParent: 'yeaft.slice',
+    }, runtime);
+
+    await service.create({ id: 'user-1', agent_secret: 'secret' });
+
+    expect(runtime.isSliceReady).toHaveBeenCalledTimes(1);
+    expect(runtime.ensureSlice).toHaveBeenCalledTimes(1);
+    expect(runtime.create).toHaveBeenCalledWith(expect.objectContaining({
+      cgroupParent: 'yeaft.slice',
+    }));
+  });
+
+  it('skips slice setup when the shared slice is already ready', async () => {
+    const runtime = createRuntime();
+    const service = new ContainerAgentService({
+      enabled: true,
+      stateDir: '/tmp/yeaft-test',
+      serverUrl: 'wss://example.test',
+      image: 'example.test/agent:dev',
+      cgroupParent: 'yeaft.slice',
+    }, runtime);
+
+    await service.create({ id: 'user-1', agent_secret: 'secret' });
+
+    expect(runtime.isSliceReady).toHaveBeenCalledTimes(1);
+    expect(runtime.ensureSlice).not.toHaveBeenCalled();
+  });
+
+  it('does not touch the slice when no cgroup parent is configured', async () => {
+    const runtime = createRuntime();
+    const service = new ContainerAgentService({
+      enabled: true,
+      stateDir: '/tmp/yeaft-test',
+      serverUrl: 'wss://example.test',
+      image: 'example.test/agent:dev',
+    }, runtime);
+
+    await service.create({ id: 'user-1', agent_secret: 'secret' });
+
+    expect(runtime.isSliceReady).not.toHaveBeenCalled();
+    expect(runtime.ensureSlice).not.toHaveBeenCalled();
+    expect(runtime.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects create with SANDBOX_CGROUP_SLICE_UNAVAILABLE when slice setup fails', async () => {
+    const runtime = createRuntime();
+    runtime.isSliceReady.mockResolvedValue(false);
+    runtime.ensureSlice.mockRejectedValue(new Error('cgroup v2 unavailable'));
+    const sandboxService = new ContainerAgentService({
+      enabled: true,
+      stateDir: '/tmp/yeaft-test',
+      serverUrl: 'wss://example.test',
+      image: 'example.test/agent:dev',
+      cgroupParent: 'yeaft.slice',
+    }, runtime);
+    const app = createFakeApp();
+    registerSandboxRoutes(app, {
+      requireAuth: (_req, _res, next) => next(),
+      sandboxService,
+      sandboxUserDb: createUserDb(),
+    });
+
+    const createResponse = await runRoute(app, 'POST /api/sandbox');
+
+    expect(createResponse).toMatchObject({
+      statusCode: 409,
+      body: { code: 'SANDBOX_CGROUP_SLICE_UNAVAILABLE' },
+    });
+    expect(runtime.create).not.toHaveBeenCalled();
   });
 
   it('admits an enabled public action route after the runtime probe', async () => {
