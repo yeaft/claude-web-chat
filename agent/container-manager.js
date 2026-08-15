@@ -17,6 +17,23 @@ export class ContainerAgentError extends Error {
   }
 }
 
+function isCgroupWritePermissionError(error) {
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || '');
+  return ['EACCES', 'EPERM', 'EROFS'].includes(code)
+    || /EACCES|EPERM|EROFS|permission denied|operation not permitted|read-only file system/i.test(message);
+}
+
+function wrapCgroupWriteError(error, slicePath) {
+  if (!isCgroupWritePermissionError(error)) return error;
+  return new ContainerAgentError(
+    'CONTAINER_AGENT_CGROUP_PERMISSION_DENIED',
+    `Cannot write cgroup v2 slice at ${slicePath} (${error.code || 'permission denied'}). ` +
+      'The host cgroup hierarchy is not writable or delegated to this process; ' +
+      'run setup-limits as host root with a read-write cgroup v2 mount, or pass --no-slice to install without shared resource limits',
+  );
+}
+
 export function normalizeContainerAgentName(name) {
   const value = String(name || '').trim();
   if (!NAME_PATTERN.test(value)) throw new ContainerAgentError('CONTAINER_AGENT_INVALID_NAME');
@@ -276,8 +293,9 @@ export async function ensureAgentSlice({
   try {
     const text = await fsImpl.readFile('/sys/fs/cgroup/cgroup.controllers', 'utf8');
     controllers = String(text || '').trim().split(/\s+/).filter(Boolean);
-  } catch {
-    // Treat missing controller list as "no controllers writable".
+  } catch (error) {
+    if (isCgroupWritePermissionError(error)) throw wrapCgroupWriteError(error, '/sys/fs/cgroup');
+    // Treat a missing controller list as "no controllers writable".
   }
   const wanted = ['cpu', 'memory', 'pids'].filter(name => controllers.includes(name));
   if (wanted.length === 0) {
@@ -286,35 +304,39 @@ export async function ensureAgentSlice({
       'cgroup v2 controllers (cpu/memory/pids) are unavailable; setup-limits requires a host running cgroup v2 and root access to /sys/fs/cgroup',
     );
   }
-  await fsImpl.mkdir(slicePath, { recursive: true, mode: 0o755 });
-  await fsImpl.writeFile(
-    `${slicePath}/cgroup.subtree_control`,
-    wanted.map(name => `+${name}`).join(' '),
-    'utf8',
-  );
-  const detected = resources || await detectHostResources({ readFileImpl: fsImpl.readFile });
-  const limits = buildSliceLimits({ cpuPercent, memoryPercent, pidsLimit }, detected);
-  if (wanted.includes('cpu') && limits.cpuQuotaUs > 0) {
-    await fsImpl.writeFile(`${slicePath}/cpu.max`, `${limits.cpuQuotaUs} ${limits.cpuPeriodUs}`, 'utf8');
+  try {
+    await fsImpl.mkdir(slicePath, { recursive: true, mode: 0o755 });
+    await fsImpl.writeFile(
+      `${slicePath}/cgroup.subtree_control`,
+      wanted.map(name => `+${name}`).join(' '),
+      'utf8',
+    );
+    const detected = resources || await detectHostResources({ readFileImpl: fsImpl.readFile });
+    const limits = buildSliceLimits({ cpuPercent, memoryPercent, pidsLimit }, detected);
+    if (wanted.includes('cpu') && limits.cpuQuotaUs > 0) {
+      await fsImpl.writeFile(`${slicePath}/cpu.max`, `${limits.cpuQuotaUs} ${limits.cpuPeriodUs}`, 'utf8');
+    }
+    if (wanted.includes('memory') && limits.memoryMaxBytes > 0) {
+      await fsImpl.writeFile(`${slicePath}/memory.max`, String(limits.memoryMaxBytes), 'utf8');
+      // No swap escape hatch: the 70% RAM hard cap is the whole memory budget.
+      await fsImpl.writeFile(`${slicePath}/memory.swap.max`, '0', 'utf8');
+    }
+    if (wanted.includes('pids') && limits.pidsMax > 0) {
+      await fsImpl.writeFile(`${slicePath}/pids.max`, String(limits.pidsMax), 'utf8');
+    }
+    const marker = {
+      slice,
+      cpuQuotaUs: limits.cpuQuotaUs,
+      cpuPeriodUs: limits.cpuPeriodUs,
+      memoryMaxBytes: limits.memoryMaxBytes,
+      pidsMax: limits.pidsMax,
+      updatedAt: new Date().toISOString(),
+    };
+    await fsImpl.writeFile(`${slicePath}/${SLICE_READY_MARKER}`, JSON.stringify(marker, null, 2), 'utf8');
+    return { slice, limits, controllers: wanted };
+  } catch (error) {
+    throw wrapCgroupWriteError(error, slicePath);
   }
-  if (wanted.includes('memory') && limits.memoryMaxBytes > 0) {
-    await fsImpl.writeFile(`${slicePath}/memory.max`, String(limits.memoryMaxBytes), 'utf8');
-    // No swap escape hatch: the 70% RAM hard cap is the whole memory budget.
-    await fsImpl.writeFile(`${slicePath}/memory.swap.max`, '0', 'utf8');
-  }
-  if (wanted.includes('pids') && limits.pidsMax > 0) {
-    await fsImpl.writeFile(`${slicePath}/pids.max`, String(limits.pidsMax), 'utf8');
-  }
-  const marker = {
-    slice,
-    cpuQuotaUs: limits.cpuQuotaUs,
-    cpuPeriodUs: limits.cpuPeriodUs,
-    memoryMaxBytes: limits.memoryMaxBytes,
-    pidsMax: limits.pidsMax,
-    updatedAt: new Date().toISOString(),
-  };
-  await fsImpl.writeFile(`${slicePath}/${SLICE_READY_MARKER}`, JSON.stringify(marker, null, 2), 'utf8');
-  return { slice, limits, controllers: wanted };
 }
 
 /**

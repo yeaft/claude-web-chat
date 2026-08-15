@@ -259,6 +259,50 @@ describe('container Agent manager', () => {
     expect(written.some(([path]) => path.endsWith('cpu.max'))).toBe(false);
   });
 
+  it('reports a cgroup permission failure with host remediation instead of raw EACCES', async () => {
+    const fsImpl = {
+      mkdir: async () => { throw Object.assign(new Error('permission denied'), { code: 'EACCES' }); },
+      readFile: async (path) => {
+        if (path === '/sys/fs/cgroup/cgroup.controllers') return 'cpu memory pids\n';
+        throw new Error('ENOENT');
+      },
+      writeFile: async () => {},
+    };
+    await expect(ensureAgentSlice({
+      slice: 'yeaft.slice',
+      resources: { cpuCores: 2, memTotalBytes: 4 * 1024 ** 3 },
+      fsImpl,
+    })).rejects.toMatchObject({
+      code: 'CONTAINER_AGENT_CGROUP_PERMISSION_DENIED',
+      message: expect.stringContaining('read-write cgroup v2 mount'),
+    });
+  });
+
+  it('also recognizes a literal EACCES message from a cgroup filesystem shim', async () => {
+    const fsImpl = {
+      mkdir: async () => { throw new Error('EACCES'); },
+      readFile: async (path) => {
+        if (path === '/sys/fs/cgroup/cgroup.controllers') return 'cpu memory pids\n';
+        throw new Error('ENOENT');
+      },
+      writeFile: async () => {},
+    };
+    await expect(ensureAgentSlice({ fsImpl })).rejects.toMatchObject({
+      code: 'CONTAINER_AGENT_CGROUP_PERMISSION_DENIED',
+    });
+  });
+
+  it('does not classify a missing cgroup controller file as a permission error', async () => {
+    const fsImpl = {
+      mkdir: async () => {},
+      readFile: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+      writeFile: async () => {},
+    };
+    await expect(ensureAgentSlice({ fsImpl })).rejects.toMatchObject({
+      code: 'CONTAINER_AGENT_CGROUP_UNAVAILABLE',
+    });
+  });
+
   it('refuses to create a slice when no cgroup controllers are available', async () => {
     const written = [];
     const fsImpl = {

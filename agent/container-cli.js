@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   createContainerAgent,
   DEFAULT_AGENT_SLICE,
@@ -17,6 +18,25 @@ import {
   stopContainerAgent,
   writeAgentSecretFile,
 } from './container-manager.js';
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function agentCliEntry() {
+  return fileURLToPath(new URL('./cli.js', import.meta.url));
+}
+
+export function setupLimitsCommand() {
+  return `sudo ${shellQuote(process.execPath)} ${shellQuote(agentCliEntry())} container setup-limits`;
+}
+
+export function formatContainerError(error) {
+  const code = String(error?.code || '').trim();
+  const message = String(error?.message || '').trim();
+  if (code && message && code !== message) return `${code}: ${message}`;
+  return code || message || String(error);
+}
 
 function help() {
   console.log(`
@@ -34,6 +54,8 @@ Resource protection (default): install attaches the container to the shared
 containers at 90% of host CPU and 70% of host memory. The slice is initialized
 automatically on first install (as root directly, otherwise via sudo; you are
 prompted for the sudo password once). Pass --no-slice to opt out of protection.
+If setup-limits must be run manually for a user-local install, use the
+absolute Node/CLI path printed by this command: ${setupLimitsCommand()}.
 
 --disk-size <size>: per-volume capacity quota for the data and workspace volumes, e.g.
   20G or 80% of the Docker data-root filesystem. Requires Docker overlay2 on xfs with
@@ -90,7 +112,7 @@ export async function ensureAgentSliceAuto({
   if (!interactive) {
     throw new Error(
       `Agent slice '${DEFAULT_AGENT_SLICE}' is not initialized and this shell is not interactive; ` +
-      'run "sudo yeaft-agent container setup-limits" once, ' +
+      `run ${setupLimitsCommand()} once, ` +
       'or pass --no-slice to install without shared resource limits',
     );
   }
@@ -98,7 +120,7 @@ export async function ensureAgentSliceAuto({
   if (code !== 0) {
     throw new Error(
       `Failed to initialize Agent slice '${DEFAULT_AGENT_SLICE}' via sudo (exit ${code}); ` +
-      'run "sudo yeaft-agent container setup-limits" manually, ' +
+      `run ${setupLimitsCommand()} manually, ` +
       'or pass --no-slice to install without shared resource limits',
     );
   }
@@ -106,14 +128,10 @@ export async function ensureAgentSliceAuto({
 
 function runSudoSetupLimits({ spawnImpl = spawn } = {}) {
   return new Promise((resolvePromise, reject) => {
-    // `sudo env PATH=...` keeps user-installed runtimes (nvm etc.) reachable
-    // even when sudoers sets a secure_path. Re-invoking the current entry
-    // script avoids depending on the npm bin being in sudo's PATH.
-    const entry = process.argv[1] ? resolve(process.argv[1]) : null;
-    const args = ['env', `PATH=${process.env.PATH || ''}`];
-    if (entry) args.push(process.execPath, entry);
-    else args.push('yeaft-agent');
-    args.push('container', 'setup-limits');
+    // Use absolute paths for both the runtime and this installed module. This
+    // bypasses sudo's secure_path entirely and works for npm-global installs
+    // that only exist in the invoking user's PATH.
+    const args = [process.execPath, agentCliEntry(), 'container', 'setup-limits'];
     const child = spawnImpl('sudo', args, { stdio: 'inherit' });
     child.once('error', reject);
     child.once('close', code => resolvePromise(code ?? 1));
@@ -161,7 +179,7 @@ export async function runContainerCli(args) {
     });
   } else if (action === 'setup-limits') {
     if (typeof process.getuid === 'function' && process.getuid() !== 0) {
-      throw new Error('setup-limits must run as root; use sudo');
+      throw new Error(`setup-limits must run as root; use ${setupLimitsCommand()}`);
     }
     const resources = await detectHostResources();
     result = await ensureAgentSlice({
@@ -191,7 +209,7 @@ export async function runContainerCli(args) {
 
 if (process.argv[1] && import.meta.url === new URL(`file://${resolve(process.argv[1])}`).href) {
   runContainerCli(process.argv.slice(2)).catch(error => {
-    console.error(`Container Agent failed: ${error.code || error.message}`);
+    console.error(`Container Agent failed: ${formatContainerError(error)}`);
     process.exitCode = 1;
   });
 }

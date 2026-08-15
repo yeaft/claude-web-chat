@@ -2,7 +2,12 @@ import { EventEmitter } from 'node:events';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ensureAgentSliceAuto, parseContainerArgs, runContainerCli } from '../../agent/container-cli.js';
+import {
+  ensureAgentSliceAuto,
+  parseContainerArgs,
+  runContainerCli,
+  setupLimitsCommand,
+} from '../../agent/container-cli.js';
 import {
   createContainerAgent,
   DEFAULT_AGENT_SLICE,
@@ -243,17 +248,20 @@ describe('container CLI install', () => {
         await expect(ensureAgentSliceAuto({ spawnImpl, interactive: true })).resolves.toBeUndefined();
         expect(spawnImpl).toHaveBeenCalledWith(
           'sudo',
-          expect.arrayContaining(['env', 'container', 'setup-limits']),
+          [process.execPath, expect.stringMatching(/\/agent\/cli\.js$/), 'container', 'setup-limits'],
           expect.objectContaining({ stdio: 'inherit' }),
         );
-        const args = spawnImpl.mock.calls[0][1];
-        expect(args[0]).toBe('env');
-        expect(args[1]).toMatch(/^PATH=/);
-        expect(args).toContain(process.execPath);
+        expect(spawnImpl.mock.calls[0][1][0]).toBe(process.execPath);
+        expect(setupLimitsCommand()).toContain('setup-limits');
         expect(ensureAgentSlice).not.toHaveBeenCalled();
       } finally {
         getuidSpy.mockRestore();
       }
+    });
+
+    it('builds a manual command that does not depend on sudo secure_path', () => {
+      expect(setupLimitsCommand()).toMatch(/^sudo .*\/agent\/cli\.js.* container setup-limits$/);
+      expect(setupLimitsCommand()).not.toContain('sudo yeaft-agent container');
     });
 
     it('fails with a clear message when sudo exits non-zero', async () => {
