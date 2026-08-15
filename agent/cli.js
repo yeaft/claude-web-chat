@@ -74,11 +74,13 @@ if (command === 'doctor') {
 } else if (command === 'local') {
   await handleLocalCommand(subArgs);
 } else if (command === 'container') {
+  let formatContainerError = error => error.code || error.message;
   try {
-    const { runContainerCli } = await import('./container-cli.js');
-    await runContainerCli(subArgs);
+    const containerCli = await import('./container-cli.js');
+    formatContainerError = containerCli.formatContainerError;
+    await containerCli.runContainerCli(subArgs);
   } catch (error) {
-    console.error(`Container Agent failed: ${error.code || error.message}`);
+    console.error(`Container Agent failed: ${formatContainerError(error)}`);
     process.exit(1);
   }
 } else if (command === 'upgrade') {

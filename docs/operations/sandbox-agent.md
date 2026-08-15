@@ -61,8 +61,8 @@ secret 通过参数传递，与 `yeaft-agent install` 一致。CLI 会先把 sec
 **slice 由第一次 `container install` 自动初始化**，用户不需要手动执行 `setup-limits`：
 
 - 以 root 运行 install 时直接创建 slice；普通用户运行时会通过 `sudo` 内联提示一次密码，然后自动完成初始化。
-- 默认策略（按当前机器动态计算）：CPU 上限 = 90% × 逻辑核数；内存硬上限 = 70% × 宿主内存（无 swap 逃逸）；pids 上限 = 4096。可手动覆盖：`sudo yeaft-agent container setup-limits --cpu-percent 90 --memory-percent 70 --pids 4096`。
-- 非交互 shell（脚本、CI、后台服务）无法弹 sudo 密码，此时 install 会失败并提示：要么先手动执行一次 `sudo yeaft-agent container setup-limits`，要么显式 `--no-slice` 放弃保护。
+- 默认策略（按当前机器动态计算）：CPU 上限 = 90% × 逻辑核数；内存硬上限 = 70% × 宿主内存（无 swap 逃逸）；pids 上限 = 4096。可手动覆盖：复制 CLI 错误中打印的绝对 Node/CLI 命令，并在末尾追加 `--cpu-percent 90 --memory-percent 70 --pids 4096`。若命令在 PATH 中可见，也可以使用 `sudo env "PATH=$PATH" yeaft-agent container setup-limits --cpu-percent 90 --memory-percent 70 --pids 4096`。
+- 非交互 shell（脚本、CI、后台服务）无法弹 sudo 密码，此时 install 会失败并打印当前安装的 Node/CLI 绝对路径命令；也可以手动执行 `sudo env "PATH=$PATH" yeaft-agent container setup-limits`。若宿主 cgroup 挂载为只读或没有委派给当前 root，初始化仍会失败，此时应修复宿主 cgroup 权限，或显式 `--no-slice` 放弃保护。
 
 随后 `container install` 默认把容器挂到 `yeaft.slice`（`--cgroup-parent` 可指定其他 slice，`--no-slice` 显式放弃保护）：
 
@@ -81,7 +81,7 @@ yeaft-agent container install \
 
 **已存在容器不受 slice 影响**：`--cgroup-parent` 是创建时参数，`docker update` 无法修改 cgroup 归属。要保护已部署的容器，用 `remove --keep-volumes` 保留数据卷后重新 `install`（卷名固定为 `<name>-data` / `<name>-workspace`，数据自动复用）。
 
-Server 管理的 sandbox 容器同样支持：设置 `SANDBOX_CGROUP_PARENT=yeaft.slice` 后，Server 创建的所有用户容器都挂入共享 slice。Server 进程在创建第一个容器前会自动初始化 slice（需要 Server 服务账号具备宿主 /sys/fs/cgroup 写权限，即通常以 root/systemd 服务运行）；初始化失败时创建请求返回 `SANDBOX_CGROUP_SLICE_UNAVAILABLE`，不会静默创建不受保护的容器。
+Server 管理的 sandbox 容器同样支持：设置 `SANDBOX_CGROUP_PARENT=yeaft.slice` 后，Server 创建的所有用户容器都挂入共享 slice。应先在 Docker Host 上用 CLI 输出的绝对 Node/CLI 命令初始化 slice；Server 创建第一个容器前也会再次检查并尝试初始化（需要 Server 服务账号具备宿主 `/sys/fs/cgroup` 写权限，即通常以 root/systemd 服务运行）。初始化失败时创建请求返回 `SANDBOX_CGROUP_SLICE_UNAVAILABLE`，不会静默创建不受保护的容器。
 
 ## 发布与版本
 
@@ -103,5 +103,6 @@ docker run --rm \
 
 - `SANDBOX_DOCKER_UNAVAILABLE`：Docker CLI、daemon、socket 或 Server 服务账号权限不可用。
 - `CONTAINER_AGENT_DOCKER_FAILED`：Docker 生命周期命令失败；检查 daemon 日志、镜像、Server URL 和状态目录权限。
+- `CONTAINER_AGENT_CGROUP_PERMISSION_DENIED`：root 也无法写 cgroup v2 层级，通常是 cgroup 挂载只读、运行在未委派 cgroup 的容器/虚拟化环境，或宿主使用了不兼容的 cgroup 配置。必须在宿主上提供可写 cgroup v2 并重新运行 setup-limits；不需要共享资源保护时可使用 `--no-slice`。
 - 容器 restart loop：运行 `docker logs yeaft-agent-<name>`，重点检查 secret 文件读取和 Server 连接错误。
 - 删除失败：先解决 Docker daemon 或卷引用问题，再重试；不要直接删除用户数据库行。
