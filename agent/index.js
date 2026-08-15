@@ -24,6 +24,7 @@ import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
 import { SAFE_REMOTE_UPGRADE_CAPABILITY } from './upgrade-command.js';
 import { loadConfig as loadYeaftConfig } from './yeaft/config.js';
+import { initYeaftDir } from './yeaft/init.js';
 import { updateBrowserRuntimeSettings } from './yeaft/config-api.js';
 import { bootBrowserRuntime, shutdownBrowserRuntime } from './browser-runtime/index.js';
 import {
@@ -106,12 +107,15 @@ const { agentName: AGENT_NAME, instanceId: INSTANCE_ID } = resolveRuntimeIdentit
 // WebSocket connection goes live, so downstream code can assume a real path.
 const YEAFT_DIR = process.env.YEAFT_DIR || fileConfig.yeaftDir || getDefaultYeaftDir(INSTANCE_ID);
 try {
-  if (!existsSync(YEAFT_DIR)) {
-    mkdirSync(YEAFT_DIR, { recursive: true, mode: 0o700 });
-    console.log(`[Agent] Created yeaft dir: ${YEAFT_DIR}`);
+  const initResult = initYeaftDir(YEAFT_DIR);
+  for (const warning of initResult.warnings || []) {
+    console.warn(`[Agent] ${warning}`);
+  }
+  if (initResult.created?.length > 0) {
+    console.log(`[Agent] Initialized yeaft dir: ${YEAFT_DIR}`);
   }
 } catch (err) {
-  console.warn(`[Agent] Could not ensure yeaft dir ${YEAFT_DIR}: ${err?.message || err}`);
+  console.warn(`[Agent] Could not initialize yeaft dir ${YEAFT_DIR}: ${err?.message || err}`);
 }
 
 const agentSecret = process.env.AGENT_SECRET_FILE
