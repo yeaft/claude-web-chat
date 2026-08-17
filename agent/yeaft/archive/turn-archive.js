@@ -1,7 +1,7 @@
 /**
  * archive/turn-archive.js — DESIGN.md §4.2 + §4.4.
  *
- * When compact archives a cooling turn-group, the full content is
+ * When a durable archive operation stores a turn-group, the full content is
  * written to `…/archive/<turnId>.md` so a worker can later replay it via
  * `message_trace({turnId})`. Each archived turn is one markdown file
  * with a YAML-ish header followed by JSON-encoded message bodies. We

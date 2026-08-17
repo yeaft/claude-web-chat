@@ -284,7 +284,6 @@ describe('route_forward thread ownership', () => {
       conversationStore: {
         append: record => record,
         loadRecentBySession: () => [],
-        readCompactSummary: () => '',
       },
       toolRegistry: new ToolRegistry(),
       trace: new NullTrace(),

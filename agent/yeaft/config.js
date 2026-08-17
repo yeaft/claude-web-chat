@@ -51,9 +51,8 @@ const DEFAULTS = {
   yeaftAutoArchiveIdleDays: 30,
   // Cold-start replay window: how many of the most recent turns
   // ConversationStore.loadRecentBySession / loadSessionHistoryForVp
-  // bring back when no compact summary exists for the session. Raise
-  // this if your sessions routinely outgrow the 20-turn window
-  // before compaction fires. Range: 1–500.
+  // bring back after boot or reconnect. Older transcript remains available
+  // through history pagination/search. Range: 1–500.
   yeaftRecentTurnsLimit: 20,
   // CLAUDE.md / AGENTS.md project-doc cap, in bytes. Mirrors Codex's
   // `project_doc_max_bytes`. 0 disables the feature (no project-doc

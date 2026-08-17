@@ -48,8 +48,8 @@ function addUsage(total, usage) {
  * reports once after its event stream finishes or aborts, and every
  * non-streaming side call reports once whether it succeeds or fails.
  *
- * Parent VP engines, sub-agent engines, Dream, compact, reflection, AMS, and
- * classifiers all reuse this adapter, so none need their own accounting hook.
+ * Parent VP engines, sub-agent engines, Dream, reflection, AMS, and classifiers
+ * all reuse this adapter, so none need their own accounting hook.
  */
 export class UsageAccountingAdapter extends LLMAdapter {
   #adapter;

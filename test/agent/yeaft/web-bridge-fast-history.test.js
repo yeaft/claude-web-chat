@@ -24,6 +24,10 @@ vi.mock('../../../agent/yeaft/status-cache.js', () => ({
 
 const ctx = (await import('../../../agent/context.js')).default;
 const { ConversationStore } = await import('../../../agent/yeaft/conversation/persist.js');
+const { AnthropicAdapter } = await import('../../../agent/yeaft/llm/anthropic.js');
+const { trimSnapshotForBudget } = await import('../../../agent/yeaft/history-window.js');
+const { pairSanitize } = await import('../../../agent/yeaft/pair-sanitize.js');
+const { filterSnapshotForVp } = await import('../../../agent/yeaft/snapshot-filter.js');
 const {
   handleYeaftLoadHistory,
   handleYeaftLoadHistoryOutline,
@@ -39,6 +43,7 @@ const {
   __testHandleEngineEvent,
   __testGetRegisteredThreadIds,
   __testGroupHistory,
+  __testAppendTurnToSessionHistory,
   __testResetVpState,
   __testSeedAbortController,
   __testSetSession,
@@ -973,6 +978,136 @@ describe('Yeaft load-history first paint', () => {
           responseKind: 'result',
         }),
       ]);
+    } finally {
+      __testSetSession(null);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('hydrates signed thinking blocks from the real store and preserves the owner wire arc after restart', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-signed-hydrate-'));
+    const originalFetch = global.fetch;
+    const calls = [];
+    try {
+      const store = new ConversationStore(dir);
+      const thinkingBlocks = [{ thinking: 'restart-safe reasoning', signature: 'restart-signature' }];
+      store.append({ role: 'user', content: 'use the tool', sessionId: 'session-signed', turnId: 'turn-signed' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'session-signed',
+        turnId: 'turn-signed',
+        speakerVpId: 'vp-linus',
+        toolCalls: [{ id: 'call-signed', name: 'Inspect', input: { path: 'README.md' } }],
+        thinkingBlocks,
+      });
+      store.append({
+        role: 'tool',
+        content: 'tool result after restart',
+        sessionId: 'session-signed',
+        turnId: 'turn-signed',
+        speakerVpId: 'vp-linus',
+        toolCallId: 'call-signed',
+      });
+
+      __testSetSession({
+        conversationStore: new ConversationStore(dir),
+        config: { model: 'claude-sonnet-4.5', language: 'en', messageTokenBudget: 32_768 },
+        status: { skills: 0, mcpServers: [], tools: 0 },
+      });
+      const hydrated = __testGroupHistory('session-signed');
+      const ownerSnapshot = trimSnapshotForBudget(
+        pairSanitize(filterSnapshotForVp(hydrated, 'vp-linus')),
+        { messageTokenBudget: 32_768 },
+      );
+      expect(ownerSnapshot).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          role: 'assistant',
+          toolCalls: [{ id: 'call-signed', name: 'Inspect', input: { path: 'README.md' } }],
+          thinkingBlocks,
+        }),
+        expect.objectContaining({ role: 'tool', toolCallId: 'call-signed' }),
+      ]));
+
+      global.fetch = vi.fn(async (url, init) => {
+        calls.push({ url, body: JSON.parse(init.body) });
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: async () => ({ content: [{ type: 'text', text: 'restarted' }], usage: {} }),
+          text: async () => '',
+        };
+      });
+      const adapter = new AnthropicAdapter({ apiKey: 'key', baseUrl: 'https://anthropic.test' });
+      await adapter.call({ model: 'claude-sonnet-4.5', system: '', messages: ownerSnapshot });
+      const assistantWire = calls[0].body.messages.find(message => message.role === 'assistant');
+      expect(assistantWire.content).toEqual([
+        { type: 'thinking', thinking: 'restart-safe reasoning', signature: 'restart-signature' },
+        { type: 'tool_use', id: 'call-signed', name: 'Inspect', input: { path: 'README.md' } },
+      ]);
+      expect(calls[0].body.messages.at(-1)).toMatchObject({
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'call-signed', content: 'tool result after restart', is_error: false }],
+      });
+    } finally {
+      global.fetch = originalFetch;
+      __testSetSession(null);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds the shared runtime history cache without changing the durable store', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-runtime-cache-bound-'));
+    try {
+      ctx.CONFIG = { yeaftDir: dir };
+      const store = new ConversationStore(dir);
+      __testSetSession({
+        conversationStore: store,
+        config: { model: 'test-model', language: 'en' },
+        status: { skills: 0, mcpServers: [], tools: 0 },
+      });
+
+      for (let index = 0; index < 40; index += 1) {
+        const callId = `call-${index}`;
+        __testAppendTurnToSessionHistory(
+          'session-cache',
+          'main',
+          'vp-linus',
+          [`question ${index}`],
+          [`answer ${index}`],
+          [{ id: callId, name: 'Bash', input: { command: 'pwd' } }],
+          [{ toolCallId: callId, content: 'x'.repeat(200_000), isError: false }],
+          [],
+          { turnId: `turn-${index}` },
+        );
+      }
+
+      const normalHistory = __testGroupHistory('session-cache');
+      expect(normalHistory.length).toBeLessThanOrEqual(256);
+      expect(normalHistory.every(message => message.content === undefined || typeof message.content === 'string' || Array.isArray(message.content))).toBe(true);
+      expect(normalHistory.some(message => message.content === 'question 39')).toBe(true);
+      expect(normalHistory.some(message => message.content === 'answer 39')).toBe(true);
+
+      __testAppendTurnToSessionHistory(
+        'session-cache',
+        'main',
+        'vp-linus',
+        ['thinking question'],
+        ['thinking answer'],
+        [],
+        [],
+        [{ thinking: 'x'.repeat(200_000), signature: 'opaque-signature' }],
+        { turnId: 'turn-thinking' },
+      );
+
+      const runtimeHistory = __testGroupHistory('session-cache');
+      expect(runtimeHistory.length).toBeLessThanOrEqual(256);
+      expect(JSON.stringify(runtimeHistory)).not.toContain('opaque-signature');
+      expect(JSON.stringify(runtimeHistory)).not.toContain('x'.repeat(1_000));
+      // This helper only changes the runtime cache. It never writes the
+      // direct test appends to ConversationStore or deletes durable rows.
+      expect(store.loadAllBySession('session-cache')).toEqual([]);
     } finally {
       __testSetSession(null);
       rmSync(dir, { recursive: true, force: true });

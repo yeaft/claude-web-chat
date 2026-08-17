@@ -17,7 +17,7 @@
  *   /history             — Show conversation history
  *   /history [n]         — Show last N messages from conversation
  *   /search <keyword>    — Search conversation history
- *   /compact             — Trigger manual consolidation
+ *   /compact             — Retired for native Yeaft; inspect history or Memory instead
  *   /tools               — List registered tools
  *   /skills              — List loaded skills
  *   Conversation persistence across REPL sessions
@@ -380,13 +380,17 @@ async function runREPL(config, args) {
 
   // Load persisted conversation as initial messages. `loadRecent` is now
   // turn-based (one user round-trip = one turn; multi-VP fan-out collapses
-  // into one turn). 20 turns is the bootstrap window — the engine-level
-  // compactor in `history-compact.js` is the authoritative size limiter.
+  // into one turn). 20 turns is the bootstrap window. Provider requests
+  // apply deterministic history-window trimming; persisted history stays
+  // authoritative and no LLM conversation summary is generated.
   let conversationMessages = conversationStore.loadRecent().map(m => ({
     role: m.role,
     content: m.content,
     ...(m.toolCallId && { toolCallId: m.toolCallId }),
     ...(m.toolCalls && { toolCalls: m.toolCalls }),
+    ...(Array.isArray(m.thinkingBlocks) && m.thinkingBlocks.length > 0
+      ? { thinkingBlocks: m.thinkingBlocks.map(block => ({ ...block })) }
+      : {}),
   }));
 
   const hotCount = conversationStore.countHot();
@@ -445,7 +449,7 @@ async function runREPL(config, args) {
           console.log('  /trace <stats|recent>    — Query debug trace');
           console.log('  /history [n]             — Show last N messages');
           console.log('  /search <keyword>        — Search conversation history');
-          console.log('  /compact                 — Trigger consolidation');
+          console.log('  /compact                 — Retired; native Yeaft keeps transcript + Memory');
           console.log('  /context                 — Show context info');
           console.log('  /dry-run                 — Toggle dry-run mode');
           console.log('  /stats                   — Show session stats');
@@ -516,7 +520,7 @@ async function runREPL(config, args) {
         }
 
         case 'compact': {
-          console.log('The /compact REPL command is retired. Compaction is driven automatically by the engine when the hot-window budget is exceeded.');
+          console.log('The /compact REPL command is retired. Native Yeaft keeps the transcript authoritative and uses Memory plus a deterministic provider history window.');
           break;
         }
 
@@ -756,13 +760,6 @@ async function runREPL(config, args) {
               process.stderr.write(`[recall] ${event.entryCount} entries${event.cached ? ' (cached)' : ''}\n`);
             }
             break;
-          case 'consolidate':
-            if (session.config.debug) {
-              process.stderr.write(`[consolidate] archived=${event.archivedCount}, extracted=${event.extractedCount}\n`);
-            } else {
-              process.stderr.write(`[compact] Memory consolidated\n`);
-            }
-            break;
           case 'fallback':
             process.stderr.write(`\n[fallback] ${event.from} → ${event.to}: ${event.reason}\n`);
             break;
@@ -911,6 +908,9 @@ async function runStreamJson(config, args) {
     content: message.content,
     ...(message.toolCallId && { toolCallId: message.toolCallId }),
     ...(message.toolCalls && { toolCalls: message.toolCalls }),
+    ...(Array.isArray(message.thinkingBlocks) && message.thinkingBlocks.length > 0
+      ? { thinkingBlocks: message.thinkingBlocks.map(block => ({ ...block })) }
+      : {}),
   }));
 
   // An ad-hoc stream-json conversation has exactly one Engine and no VP roster.
@@ -1263,6 +1263,9 @@ async function runOnce(config, args) {
       content: m.content,
       ...(m.toolCallId && { toolCallId: m.toolCallId }),
       ...(m.toolCalls && { toolCalls: m.toolCalls }),
+      ...(Array.isArray(m.thinkingBlocks) && m.thinkingBlocks.length > 0
+        ? { thinkingBlocks: m.thinkingBlocks.map(block => ({ ...block })) }
+        : {}),
     }));
 
     let terminalEngineError = null;
@@ -1290,11 +1293,6 @@ async function runOnce(config, args) {
         case 'recall':
           if (args.verbose || args.debug) {
             process.stderr.write(`[recall] ${event.entryCount} entries${event.cached ? ' (cached)' : ''}\n`);
-          }
-          break;
-        case 'consolidate':
-          if (args.verbose || args.debug) {
-            process.stderr.write(`[consolidate] archived=${event.archivedCount}, extracted=${event.extractedCount}\n`);
           }
           break;
         case 'fallback':

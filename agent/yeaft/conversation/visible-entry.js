@@ -101,7 +101,7 @@ function flushAssistantEntries(sessionId, entries, boundaryMessageId = null) {
  * bucket above it. That boundary lets interleaved VP rows (A-B-A) coalesce by
  * explicit turnId + speaker without scanning the whole transcript. Legacy
  * assistant rows without a turnId remain separate because guessing from
- * adjacency would make their identity change after prepend or compaction.
+ * adjacency would make their identity change after prepend or transcript edits.
  */
 export function* iterateCanonicalVisibleEntriesNewestFirst(messages, sessionId) {
   const seenMessageIds = new Set();

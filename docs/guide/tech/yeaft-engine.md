@@ -23,23 +23,23 @@ agent/yeaft/
   tasks/                persistent background shell jobs
   work-center/          WorkItem/Action/Run planner, store, watcher, runner
   tool-folding/         turn reflection and long tool-arc folding
-  compact/              context compaction
+  history-window.js     deterministic provider history window
   dream/                background memory maintenance
-  archive/              large/raw turn and tool-result archive helpers
+  archive/              large/raw tool-result archive helpers
   templates/            bilingual base, unified, dream, plan, persona prompts
 ```
 
 ## One native turn
 
-A normal VP turn follows this shape:
+A normal VP turn follows this shape. `history-window.js` is deterministic and never produces a persisted summary:
 
 1. **Pre-query** — resolve Agent/Session/VP/Project identity, project instructions, runtime platform, pending child-agent notifications, project docs, and H2-AMS recall.
-2. **Build context** — combine the system prompt, VP persona, compact summary, budgeted history, current user content, and supported attachments.
+2. **Build context** — combine the system prompt, VP persona, deterministic budgeted history window, current user content, and supported attachments. The Web Session source is a bounded disposable runtime cache; the complete transcript stays in ConversationStore, and no LLM conversation summary is loaded from disk.
 3. **Stream LLM** — select the configured provider/model and call either the Anthropic Messages or OpenAI Responses adapter.
 4. **Execute tools** — run allowed calls through `ToolRegistry`, append result blocks, and continue streaming.
 5. **Fold long arcs** — periodically reflect tool batches and summarize long turns while retaining raw output in persistence/debug paths.
-6. **Finish** — persist messages, usage, traces, task state, and terminal result; acknowledge injected notifications; then trigger AMS adjustment, Dream, or compact checks.
-7. **Recover** — auto-continue `max_tokens` responses within the configured limit, force compact on context errors, and use an eligible fallback model for classified retryable failures.
+6. **Finish** — persist messages, usage, traces, task state, and terminal result; acknowledge injected notifications; Dream remains responsible for background semantic-memory maintenance.
+7. **Recover** — auto-continue `max_tokens` responses within the configured limit; surface context errors without a hidden summary call; use an eligible fallback model for classified retryable failures.
 
 An abort signal is threaded through the adapter and tools. The engine distinguishes user aborts, auth errors, rate limits, server failures, idle timeouts, and context failures instead of treating every stop as a generic error.
 
@@ -146,7 +146,7 @@ Older wire aliases, payload identifiers, and storage scope prefixes remain where
 
 The test tree is organized by subsystem rather than historical phase files:
 
-- `test/agent/yeaft/` covers compact, conversation, memory, Sessions, sub-agents, tasks, tool folding, Work Center, and related modules;
+- `test/agent/yeaft/` covers history-window, conversation, memory, Sessions, sub-agents, tasks, tool folding, Work Center, and related modules;
 - `test/agent/yeaft-*.test.js` covers cross-module native-engine behavior;
 - `test/server/yeaft-*.test.js` and `test/web/yeaft-*.test.js` cover relay and UI integration;
 - `e2e/` covers browser-visible flows.

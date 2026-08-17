@@ -3,9 +3,9 @@
  * slice so it can be safely fed to the LLM adapter.
  *
  * Why this exists:
- *   `agent/yeaft/conversation/persist.js#loadRecentBySession` and
- *   `agent/yeaft/history-compact.js#compactHistory` both produce
- *   sub-slices of a longer message stream. Both paths can — depending on
+ *   `agent/yeaft/conversation/persist.js#loadRecentBySession` and the
+ *   deterministic provider history window both produce sub-slices of a longer
+ *   message stream. Both paths can — depending on
  *   where the cut lands — produce one of two illegal shapes:
  *     1. A `role: 'tool'` message whose owning assistant `tool_use` is
  *        no longer in the slice.

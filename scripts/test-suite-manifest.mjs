@@ -15,6 +15,7 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/agent/yeaft/config-api-debug.test.js',
   'test/agent/yeaft/deepseek-effort.test.js',
   'test/agent/yeaft/engine.test.js',
+  'test/agent/yeaft/history-window.test.js',
   'test/agent/yeaft/llm-adapter-errors.test.js',
   'test/agent/yeaft/llm-auth-headers.test.js',
   'test/agent/yeaft/project-sessions-migrate.test.js',

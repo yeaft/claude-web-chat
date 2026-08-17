@@ -521,7 +521,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
   // ─── Non-streaming call() ───────────────────────────────
 
   /**
-   * Side-query (consolidate / dream / recall / light) entry point. Does
+   * Side-query (dream / recall / light) entry point. Does
    * NOT accept `onRawExchange` — these calls intentionally don't surface
    * in the user-facing debug panel. If a future product change wants to
    * expose them, mirror the stream() instrumentation. Parity with

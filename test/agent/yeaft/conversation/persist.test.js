@@ -2308,29 +2308,6 @@ legacy session`, { encoding: 'utf8' });
     });
   });
 
-  describe('compact summary', () => {
-    it('should write and read compact summary', () => {
-      store.replaceCompactSummary('User discussed TypeScript.');
-      const summary = store.readCompactSummary();
-      expect(summary).toContain('User discussed TypeScript.');
-    });
-
-    it('should overwrite on each call (rewrite-in-place semantics)', () => {
-      // Each compact pass rewrites the running summary. Appending was
-      // the legacy behaviour but produced an unbounded prompt block —
-      // see persist.js#replaceCompactSummary.
-      store.replaceCompactSummary('First summary.');
-      store.replaceCompactSummary('Second summary.');
-      const summary = store.readCompactSummary();
-      expect(summary).not.toContain('First summary.');
-      expect(summary).toContain('Second summary.');
-    });
-
-    it('should return empty string when no compact', () => {
-      expect(store.readCompactSummary()).toBe('');
-    });
-  });
-
   describe('JSONL cold rows', () => {
     it('keeps archived session rows readable while excluding them from hot counts', () => {
       const user = store.append({ role: 'user', content: 'cold question', sessionId: 'session_cold', threadId: 'main' });
@@ -2396,13 +2373,11 @@ legacy session`, { encoding: 'utf8' });
         { role: 'assistant', content: 'B' },
       ]);
       store.moveToCold('m0001');
-      store.replaceCompactSummary('Summary');
 
       store.clear();
 
       expect(store.countHot()).toBe(0);
       expect(store.countCold()).toBe(0);
-      expect(store.readCompactSummary()).toBe('');
     });
 
     it('should reset sequence numbering', () => {

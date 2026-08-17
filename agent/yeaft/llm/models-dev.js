@@ -184,7 +184,8 @@ export async function listProviderModels(providerId, { yeaftDir = null } = {}) {
  *     that provider's numbers verbatim — the caller knew which gateway it
  *     was talking to.
  *   • Otherwise we take the MIN of every provider's `context` and `output`.
- *     Context is a ceiling: under-shooting risks an early compact (bad);
+ *     Context is a ceiling: under-shooting risks an unnecessarily small
+ *     request window; over-shooting risks an LLMContextError mid-query (worse);
  *     over-shooting risks an LLMContextError mid-query (worse). Min picks
  *     the safer side. Users who know better can pin numbers explicitly via
  *     `providers[].models[].contextWindow` in `~/.yeaft/config.json`.

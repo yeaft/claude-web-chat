@@ -54,7 +54,7 @@ export class LLMAdapter {
 | --- | --- | --- | --- |
 | `LLMRateLimitError` | 429 / 529 | Rate-limited | Exponential backoff |
 | `LLMAuthError` | 401 / 403 | Auth failure | No retry, surface to user |
-| `LLMContextError` | 413 / API-specific | Context too long | Force compact then retry |
+| `LLMContextError` | 413 / API-specific | Context too long | Surface terminal error; no hidden summary call |
 | `LLMServerError` | 500 / 502 / 503 | Server error | Retry |
 | `LLMAbortError` | — | Signal aborted | No retry |
 

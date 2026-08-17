@@ -163,7 +163,7 @@ export function classifyPolicyError(statusCode, responseBody = '', details = {})
   return new LLMPolicyError(signals.message, status, details);
 }
 
-/** Context too long error (413 or API-specific) — need compaction. */
+/** Context too long error (413 or API-specific). */
 export class LLMContextError extends Error {
   constructor(message) {
     super(message);

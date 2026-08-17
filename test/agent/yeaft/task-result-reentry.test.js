@@ -422,7 +422,6 @@ describe('task result re-entry', () => {
           return { id: `persisted-${persisted.length}`, ...record };
         },
         loadRecentBySession() { return []; },
-        readCompactSummary() { return ''; },
       },
       memoryIndex: null,
       amsRegistry: null,
@@ -838,7 +837,6 @@ describe('task result re-entry', () => {
         return persisted[index];
       },
       loadRecentBySession() { return []; },
-      readCompactSummary() { return ''; },
     };
     const registry = new ToolRegistry();
     registry.register({
@@ -988,7 +986,6 @@ describe('task result re-entry', () => {
         return persisted[index];
       },
       loadRecentBySession() { return []; },
-      readCompactSummary() { return ''; },
     };
     const registry = new ToolRegistry();
     let childRegistryCalls = 0;

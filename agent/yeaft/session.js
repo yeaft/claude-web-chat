@@ -27,8 +27,6 @@ import { resolveMcpPluginPolicy } from './plugins.js';
 import { createFullRegistry } from './tools/index.js';
 import { buildMcpFlattenedTools } from './tools/mcp-tools.js';
 import { Engine } from './engine.js';
-import { Compactor } from './compact/compactor.js';
-import { resolveContextWindow } from './models.js';
 import { ToolUsageStats } from './stats/tool-usage.js';
 import { TaskManager } from './tasks/manager.js';
 // H2.f.5 removed the old user-facing thread pipeline/dispatcher. The base
@@ -60,18 +58,6 @@ import { join } from 'path';
 import { existsSync as existsSyncSafe, readFileSync as readFileSyncSafe, mkdirSync as mkdirSyncSafe } from 'fs';
 
 /**
- * Application-wide default for `Compactor`'s trigger ratio (the
- * "fraction of model context" gate). The user-stated requirement is
- * "model context 的 70%"; this is the canonical literal for it. Lives
- * in session.js (not in compactor.js) because `Compactor` is also used
- * by test fixtures that intentionally skip the ratio injector to
- * exercise the library default (`history-compact.js#DEFAULT_TOKEN_FRACTION`).
- * The two defaults are kept separate on purpose — see the Compactor
- * constructor JSDoc for the boundary.
- */
-const DEFAULT_COMPACT_TRIGGER_RATIO = 0.7;
-
-/**
  * @typedef {Object} SessionOptions
  * @property {string} [dir] — Yeaft data directory override (default: ~/.yeaft)
  * @property {string} [workDir] — Session workDir; used only for project-tier assets such as skills/MCP, while Session data stays under the user-level dir
@@ -88,7 +74,6 @@ const DEFAULT_COMPACT_TRIGGER_RATIO = 0.7;
 /**
  * @typedef {Object} Session
  * @property {Engine} engine — The wired engine, ready for .query()
- * @property {import('./compact/compactor.js').Compactor} compactor — Per-group history compactor
  * @property {import('./llm/adapter.js').LLMAdapter} adapter — The LLM adapter
  * @property {object} config — Resolved configuration
  * @property {ConversationStore} conversationStore — Conversation persistence
@@ -481,41 +466,6 @@ export async function loadSession(options = {}) {
     managedCliReady: managedCliInstall,
   });
 
-  // ─── 9a-pre. Create per-group history Compactor ────────
-  // Owns the post-turn single-flight + race-guarded compactor that used
-  // to live inline in web-bridge.js. Bridge keeps history ownership and
-  // wires the WS sink (`yeaft_history_compacted`) via
-  // `compactor.setOnCompacted` from `installYeaftRuntimeBridge`.
-  const compactor = new Compactor({
-    summarize: ({ system, prompt, maxTokens } = {}) =>
-      engine.summarizeForCompact({ system, prompt, maxTokens }),
-    // Resolve the model's true context window (GPT-5 256K vs Claude 200K
-    // etc.) instead of pinning to a flat `config.maxContextTokens`.
-    // The 70% threshold then floats with the model in use — the
-    // user-stated requirement ("超过 model context 70% 这一个约束").
-    getMaxContextTokens: () =>
-      resolveContextWindow(
-        typeof config.model === 'string' && config.model
-          ? config.model
-          : (config.primaryModel || ''),
-        config
-      ),
-    // Trigger ratio knob. Defaults to DEFAULT_COMPACT_TRIGGER_RATIO (0.7)
-    // per the user directive; a finite number in (0, 1) wins. Anything
-    // else (NaN, ≤0, ≥1, missing) falls back to the default so a typo in
-    // config.json can't disable compact.
-    getTriggerRatio: () => {
-      const r = Number(config?.compactTriggerRatio);
-      return Number.isFinite(r) && r > 0 && r < 1 ? r : DEFAULT_COMPACT_TRIGGER_RATIO;
-    },
-    // Live-read: `config.language` is mutated in place by
-    // `engine.setLanguage()` (which broadcastLanguageChange fans out to
-    // every per-VP engine). The compactor must see the post-broadcast
-    // value, not a boot-time snapshot, so the summary prompt + the
-    // "session continued" wrapper render in the user's current locale.
-    getLanguage: () =>
-      typeof config.language === 'string' ? config.language : undefined,
-  });
 
   // ─── 9a. Create dream scheduler ────────────
   // The legacy R6 dream-scheduler was retired alongside recall-r6;
@@ -626,7 +576,6 @@ export async function loadSession(options = {}) {
     config,
     conversationStore,
     dreamScheduler,
-    compactor,
     skillManager,
     mcpManager,
     toolRegistry,

@@ -7,10 +7,9 @@
  *
  * Two concerns this module unifies:
  *
- *   1. `compact/turn-group.js` already does atomicity grouping —
- *      `[user, assistant, tool…]` triples that must move as a unit
- *      so we don't split tool_use/tool_result pairs. That's storage-
- *      invariant work.
+ *   1. Tool turns are grouped atomically — `[user, assistant, tool…]`
+ *      triples must move as a unit so we don't split tool_use/tool_result
+ *      pairs. That's storage-invariant work.
  *
  *   2. THIS module does turn IDENTITY — "is the next user-role message
  *      the start of a new conversational turn, or is it just another
@@ -87,7 +86,8 @@ export function countTurns(messages) {
  * Find the index of the message that opens the (n)-th-from-end turn.
  * Returns -1 if there aren't n turns in the history.
  *
- * Algorithm (mirrors `history-compact.js#findCutIndex`):
+ * Algorithm: walk user-role boundaries from the end while counting
+ * distinct canonical turns.
  *   - Walk user-role messages from END backwards, counting DISTINCT
  *     turns by canonical text.
  *   - When `turnsFromEnd === n`, record the index. Keep walking — the

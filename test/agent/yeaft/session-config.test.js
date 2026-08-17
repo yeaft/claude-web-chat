@@ -2263,7 +2263,6 @@ describe('Yeaft session-scoped model config', () => {
       conversationStore: {
         append: record => ({ id: `message-${record.role}`, ...record }),
         loadRecentBySession: () => [],
-        readCompactSummary: () => '',
       },
       memoryIndex: null,
       amsRegistry: null,
@@ -2351,7 +2350,7 @@ describe('Yeaft session-scoped model config', () => {
       config: currentConfig,
       adapter,
       trace: new NullTrace(),
-      conversationStore: { loadRecentBySession: () => [], readCompactSummary: () => '' },
+      conversationStore: { loadRecentBySession: () => [] },
       memoryIndex: null,
       amsRegistry: null,
       toolRegistry: null,
@@ -2427,7 +2426,7 @@ describe('Yeaft session-scoped model config', () => {
         _readOnly: true,
       },
       engine: { refreshConfig: vi.fn() },
-      conversationStore: { loadRecentBySession: () => [], readCompactSummary: () => '' },
+      conversationStore: { loadRecentBySession: () => [] },
       memoryIndex: null,
       amsRegistry: null,
       toolRegistry: null,
@@ -2444,7 +2443,6 @@ describe('Yeaft session-scoped model config', () => {
     expect(streamCalls).toHaveLength(1);
     expect(streamCalls[0].model).toBe('github-copilot/gpt-new');
     expect(streamCalls[0].model).not.toBe('github-copilot/gpt-old');
-    expect(engine.fastConfig.model).toBe('gpt-new');
     expect(loadSessionConfig(root, sessionId)).toEqual({});
   });
 
