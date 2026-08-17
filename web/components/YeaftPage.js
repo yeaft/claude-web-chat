@@ -667,6 +667,7 @@ export default {
     const onSelectGroupV2 = (g) => {
       const id = g && g.id ? g.id : null;
       if (!id) return;
+      if (isMobile.value) closeSessionStatus();
       store.setActiveSessionFilter(id, { agentId: g.agentId || null });
       if (isMobile.value) store.closeSessionSidebar();
     };
@@ -729,12 +730,26 @@ export default {
     // cause a noisy component/storage churn. New user-facing behavior is
     // Session-status oriented.
 
-    // User-controlled show/hide. The consolidated Session status pane must
-    // default open for everyone, including users who previously hid the old
-    // VP roster pane, so this PR switches to a new preference key instead of
-    // inheriting the legacy `yeaft-vp-timeline-visible` value.
+    // User-controlled show/hide. Desktop keeps the persisted preference, but
+    // mobile starts every page on the conversation because the status pane is
+    // a full-screen overlay there. The status button can still open it for the
+    // current Session.
     const SESSION_STATUS_VISIBLE_KEY = 'yeaft-session-status-visible';
+    const MOBILE_QUERY = '(max-width: 768px)';
+    const NARROW_DETAIL_QUERY = '(max-width: 1024px)';
+    const isMobileViewport = () => {
+      if (typeof window === 'undefined') return false;
+      try {
+        if (typeof window.matchMedia === 'function') {
+          return window.matchMedia(MOBILE_QUERY).matches;
+        }
+        return Number(window.innerWidth) <= 768;
+      } catch (_) {
+        return false;
+      }
+    };
     const readSessionStatusVisible = () => {
+      if (isMobileViewport()) return false;
       try {
         const v = localStorage.getItem(SESSION_STATUS_VISIBLE_KEY);
         if (v === '0' || v === 'false') return false;
@@ -744,6 +759,9 @@ export default {
     const sessionStatusVisible = Vue.ref(readSessionStatusVisible());
     const setSessionStatusVisible = (visible) => {
       sessionStatusVisible.value = !!visible;
+      // Mobile visibility is intentionally transient. Do not overwrite the
+      // desktop preference when the same browser is resized or reused.
+      if (isMobileViewport()) return;
       try {
         localStorage.setItem(SESSION_STATUS_VISIBLE_KEY, sessionStatusVisible.value ? '1' : '0');
       } catch (_) {}
@@ -811,8 +829,6 @@ export default {
     // Reading window.innerWidth directly can drift from @media evaluation on
     // real phones (browser chrome / visual viewport / device emulation), which
     // leaves .yeaft-detail hidden while the Debug button toggles state.
-    const MOBILE_QUERY = '(max-width: 768px)';
-    const NARROW_DETAIL_QUERY = '(max-width: 1024px)';
     const mobileMedia = typeof window.matchMedia === 'function' ? window.matchMedia(MOBILE_QUERY) : null;
     const narrowDetailMedia = typeof window.matchMedia === 'function' ? window.matchMedia(NARROW_DETAIL_QUERY) : null;
     const matchesMedia = (media, fallbackWidth) => media ? media.matches : window.innerWidth <= fallbackWidth;
@@ -822,8 +838,10 @@ export default {
       isMobile.value ? !store.sessionSidebarOpen : store.sidebarCollapsed
     );
     const syncResponsiveFlags = () => {
+      const wasMobile = isMobile.value;
       isMobile.value = matchesMedia(mobileMedia, 768);
       isNarrowDetail.value = matchesMedia(narrowDetailMedia, 1024);
+      if (isMobile.value && !wasMobile) closeSessionStatus();
     };
     const onResize = () => {
       syncResponsiveFlags();
@@ -958,6 +976,7 @@ export default {
       }
     });
     Vue.watch(() => [store.currentAgent, store.yeaftActiveSessionFilter], () => {
+      if (isMobile.value) closeSessionStatus();
       closeHistorySearch();
       resetHistorySearchState(rememberedHistorySender());
     });
