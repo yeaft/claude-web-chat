@@ -216,6 +216,40 @@ describe('YeaftPage setup', () => {
     expect(chatStore.searchYeaftHistory).toHaveBeenLastCalledWith('', { senderKey: 'user' });
   });
 
+  it('defaults mobile Session navigation to conversation and only opens status explicitly', async () => {
+    const originalMatchMedia = window.matchMedia;
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(query => ({
+        matches: query === '(max-width: 768px)' || query === '(max-width: 1024px)',
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    });
+    localStorage.setItem('yeaft-session-status-visible', '1');
+    try {
+      const page = YeaftPage.setup();
+
+      expect(page.isMobile.value).toBe(true);
+      expect(page.sessionStatusVisible.value).toBe(false);
+
+      page.toggleSessionStatus();
+      expect(page.sessionStatusVisible.value).toBe(true);
+      expect(localStorage.getItem('yeaft-session-status-visible')).toBe('1');
+
+      chatStore.yeaftActiveSessionFilter = 'session-2';
+      await Vue.nextTick();
+      expect(page.sessionStatusVisible.value).toBe(false);
+    } finally {
+      chatStore.yeaftActiveSessionFilter = 'session-1';
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+    }
+  });
+
   it('keeps debug scoped to finished AI messages and removes the header entry', () => {
     const page = YeaftPage.setup();
     const source = YeaftPage.template;
