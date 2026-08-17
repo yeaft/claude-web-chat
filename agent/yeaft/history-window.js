@@ -31,12 +31,44 @@ const TEXT_CHARS_PER_TOKEN = 4;
 const BINARY_CHARS_PER_TOKEN = 16;
 const OVERSIZED_ATTACHMENT_MARKER = '[attachment omitted from provider context budget]';
 
-function safeJsonTokenEstimate(value) {
+function serializeJsonValue(value) {
+  if (typeof value === 'string') return value;
   try {
-    return estimateTokens(JSON.stringify(value ?? ''));
+    const serialized = JSON.stringify(value ?? '');
+    return typeof serialized === 'string' ? serialized : String(value ?? '');
   } catch {
-    return 0;
+    return String(value ?? '');
   }
+}
+
+function safeJsonTokenEstimate(value) {
+  return estimateTokens(serializeJsonValue(value));
+}
+
+function thinkingBlockWirePart(block) {
+  if (!block || typeof block !== 'object') return null;
+  if (typeof block.signature !== 'string' || !block.signature) return null;
+  if (block.redacted) {
+    if (typeof block.data !== 'string') return null;
+    return { type: 'redacted_thinking', data: block.data, signature: block.signature };
+  }
+  if (typeof block.thinking !== 'string') return null;
+  return { type: 'thinking', thinking: block.thinking, signature: block.signature };
+}
+
+function validThinkingBlocks(blocks) {
+  if (!Array.isArray(blocks)) return [];
+  return blocks.filter(block => thinkingBlockWirePart(block));
+}
+
+function estimateThinkingBlockTokens(block) {
+  const part = thinkingBlockWirePart(block);
+  return part ? estimateContentPartTokens(part) : safeJsonTokenEstimate(block);
+}
+
+function estimateThinkingBlocksTokens(blocks) {
+  if (!Array.isArray(blocks) || blocks.length === 0) return 0;
+  return blocks.reduce((total, block) => total + estimateThinkingBlockTokens(block), CONTENT_PART_FRAME_TOKENS);
 }
 
 function binaryPayloadTokenEstimate(value) {
@@ -69,9 +101,11 @@ export function estimateContentPartTokens(part) {
   if (type === 'text' || type === 'input_text' || type === 'output_text') {
     return estimateTokens(typeof part.text === 'string' ? part.text : '');
   }
-  if (type === 'thinking') return estimateTokens(part.thinking || '');
+  if (type === 'thinking') {
+    return 4 + estimateTokens(part.thinking || '') + estimateTokens(part.signature || '');
+  }
   if (type === 'redacted_thinking') {
-    return estimateTokens(part.data || '') + 4;
+    return 4 + estimateTokens(part.data || '') + estimateTokens(part.signature || '');
   }
   if (type === 'image' || type === 'input_image') {
     const source = part.source && typeof part.source === 'object' ? part.source : part;
@@ -91,7 +125,7 @@ export function estimateContentPartTokens(part) {
     return 4 + estimateContentTokens(part.content);
   }
   if (type === 'function_call_output') {
-    return 4 + estimateTokens(typeof part.output === 'string' ? part.output : '');
+    return 4 + estimateTokens(serializeJsonValue(part.output));
   }
   return safeJsonTokenEstimate(part);
 }
@@ -121,6 +155,7 @@ export function estimateContentTokens(content) {
 export function estimateMessageTokens(message) {
   if (!message || typeof message !== 'object') return 0;
   let total = 2 + estimateContentTokens(message.content);
+  total += estimateThinkingBlocksTokens(message.thinkingBlocks);
   if (Array.isArray(message.toolCalls)) {
     for (const toolCall of message.toolCalls) {
       total += 4;
@@ -221,7 +256,15 @@ function attachmentMarkerPart(remainingTokens) {
 function fitContentToBudget(content, tokenBudget) {
   if (tokenBudget <= 0) return typeof content === 'string' ? '' : [];
   if (typeof content === 'string') return truncateTextToTokens(content, tokenBudget);
-  if (!Array.isArray(content)) return content;
+  if (!Array.isArray(content)) {
+    if (content && typeof content === 'object') {
+      const serialized = serializeJsonValue(content);
+      return estimateTokens(serialized) <= tokenBudget
+        ? content
+        : truncateTextToTokens(serialized, tokenBudget);
+    }
+    return content;
+  }
 
   let remaining = Math.max(0, tokenBudget - CONTENT_PART_FRAME_TOKENS);
   const out = [];
@@ -286,11 +329,66 @@ function messageOverheadTokens(message) {
   return estimateMessageTokens({ ...message, content: '' });
 }
 
+function hasProviderContent(content) {
+  if (typeof content === 'string') return content.trim().length > 0;
+  if (Array.isArray(content)) {
+    return content.some(part => {
+      if (typeof part === 'string') return part.trim().length > 0;
+      if (!part || typeof part !== 'object') return part != null;
+      if (typeof part.text === 'string') return part.text.trim().length > 0;
+      return part.type !== 'tool_use' && part.type !== 'tool_result'
+        && part.type !== 'function_call' && part.type !== 'function_call_output';
+    });
+  }
+  return content != null;
+}
+
+function dropEmptyAssistantRows(messages) {
+  if (!Array.isArray(messages)) return [];
+  return messages.filter(message => {
+    if (!message || message.role !== 'assistant') return true;
+    return hasProviderContent(message.content)
+      || (Array.isArray(message.toolCalls) && message.toolCalls.length > 0)
+      || (Array.isArray(message.thinkingBlocks) && message.thinkingBlocks.length > 0);
+  });
+}
+
 function shrinkMessageToBudget(message, tokenBudget) {
   if (!message || typeof message !== 'object') return message;
   const next = { ...message };
-  const contentBudget = Math.max(0, tokenBudget - messageOverheadTokens(message));
+  const hadThinkingBlocks = Array.isArray(message.thinkingBlocks) && message.thinkingBlocks.length > 0;
+  const originalThinkingBlocks = validThinkingBlocks(message.thinkingBlocks);
+  const messageWithoutThinking = { ...message };
+  delete messageWithoutThinking.thinkingBlocks;
+  const contentBudget = Math.max(0, tokenBudget - messageOverheadTokens(messageWithoutThinking));
   next.content = fitContentToBudget(message.content, contentBudget);
+
+  // Anthropic signed thinking blocks are atomic. Never truncate their payload
+  // or signature. Keep the complete block set only if it fits; otherwise omit
+  // the private replay state from this provider copy. Historical text/tool
+  // context remains usable, and the durable transcript remains untouched.
+  let thinkingBlocksKept = false;
+  if (hadThinkingBlocks && originalThinkingBlocks.length === 0) {
+    delete next.thinkingBlocks;
+  } else if (estimateMessageTokens({ ...next, thinkingBlocks: originalThinkingBlocks }) <= tokenBudget) {
+    if (originalThinkingBlocks.length > 0) {
+      next.thinkingBlocks = originalThinkingBlocks;
+      thinkingBlocksKept = true;
+    } else {
+      delete next.thinkingBlocks;
+    }
+  } else {
+    delete next.thinkingBlocks;
+  }
+
+  // Anthropic requires the signed thinking blocks that precede a tool_use
+  // within the same assistant turn. If the atomic thinking replay cannot fit,
+  // drop the complete tool arc from this provider copy; pairSanitize removes
+  // its role:'tool' rows below. Keeping toolCalls without their signed prefix
+  // would produce a protocol-invalid request.
+  if (hadThinkingBlocks && !thinkingBlocksKept && Array.isArray(next.toolCalls)) {
+    delete next.toolCalls;
+  }
 
   // If tool metadata alone exceeds the allowance, remove the tool calls from
   // this provider copy. pairSanitize will remove any now-orphaned tool rows;
@@ -304,35 +402,88 @@ function shrinkMessageToBudget(message, tokenBudget) {
 function dropOldestHistoryUntilBudget(messages, tokenBudget) {
   let out = pairSanitize(messages);
   let turns = countTurns(out);
-  while (estimateMessagesTokens(out) > tokenBudget && out.length > 1) {
-    if (turns > 1) {
-      const next = pairSanitize(sliceLastNTurns(out, turns - 1));
-      if (next.length < out.length) {
-        out = next;
-        turns = countTurns(out);
-        continue;
-      }
-    }
-    out = pairSanitize(out.slice(1));
+  while (estimateMessagesTokens(out) > tokenBudget && out.length > 0 && turns > 1) {
+    const next = pairSanitize(sliceLastNTurns(out, turns - 1));
+    if (next.length === out.length) break;
+    out = next;
     turns = countTurns(out);
   }
   return out;
 }
 
-function fitMessagesToBudget(messages, tokenBudget) {
-  let out = dropOldestHistoryUntilBudget(messages, tokenBudget);
-  if (estimateMessagesTokens(out) <= tokenBudget) return out;
+function providerUnits(messages) {
+  const units = [];
+  for (let index = 0; index < messages.length;) {
+    const message = messages[index];
+    if (message?.role !== 'assistant' || !Array.isArray(message.toolCalls) || message.toolCalls.length === 0) {
+      units.push([message]);
+      index += 1;
+      continue;
+    }
 
-  // One latest turn can itself exceed the budget (notably a multimodal user
-  // message). Shrink message content deterministically instead of allowing a
-  // single message to bypass the budget floor.
-  for (let index = 0; index < out.length && estimateMessagesTokens(out) > tokenBudget; index += 1) {
-    const otherTokens = estimateMessagesTokens(out)
-      - estimateMessageTokens(out[index]);
-    out[index] = shrinkMessageToBudget(out[index], Math.max(0, tokenBudget - otherTokens));
-    out = pairSanitize(out);
+    const callIds = new Set(message.toolCalls.map(call => call?.id).filter(Boolean));
+    const unit = [message];
+    let nextIndex = index + 1;
+    while (nextIndex < messages.length && messages[nextIndex]?.role === 'tool') {
+      const toolMessage = messages[nextIndex];
+      if (callIds.has(toolMessage.toolCallId)) unit.push(toolMessage);
+      nextIndex += 1;
+    }
+    units.push(unit);
+    index = nextIndex;
   }
-  return out;
+  return units;
+}
+
+function fitProviderUnit(unit, tokenBudget) {
+  if (!Array.isArray(unit) || unit.length === 0 || tokenBudget <= 0) return [];
+  const [owner, ...toolMessages] = unit;
+  const isToolUnit = owner?.role === 'assistant'
+    && Array.isArray(owner.toolCalls)
+    && owner.toolCalls.length > 0
+    && toolMessages.length > 0;
+  if (!isToolUnit) {
+    const fitted = shrinkMessageToBudget(owner, tokenBudget);
+    return dropEmptyAssistantRows([fitted]);
+  }
+
+  // Fit the assistant owner first. Signed thinking blocks are atomic; when
+  // they cannot fit, shrinkMessageToBudget removes the toolCalls as well, and
+  // this whole unit is dropped so no tool_result can become orphaned.
+  const fittedOwner = shrinkMessageToBudget(owner, tokenBudget);
+  if (!Array.isArray(fittedOwner.toolCalls) || fittedOwner.toolCalls.length === 0) return [];
+
+  const fitted = [fittedOwner];
+  let remaining = Math.max(0, tokenBudget - estimateMessageTokens(fittedOwner));
+  for (const toolMessage of toolMessages) {
+    if (messageOverheadTokens(toolMessage) > remaining) return [];
+    const fittedTool = shrinkMessageToBudget(toolMessage, remaining);
+    const fittedToolTokens = estimateMessageTokens(fittedTool);
+    if (fittedToolTokens > remaining) return [];
+    fitted.push(fittedTool);
+    remaining -= fittedToolTokens;
+  }
+  return fitted;
+}
+
+function fitMessagesToBudget(messages, tokenBudget) {
+  let out = dropOldestHistoryUntilBudget(pairSanitize(messages), tokenBudget);
+  if (estimateMessagesTokens(out) <= tokenBudget) return dropEmptyAssistantRows(out);
+
+  // Treat assistant(toolCalls)+tool rows as one provider unit. The newest unit
+  // gets the remaining budget first, but its paired tool results share that
+  // budget with the assistant owner. This preserves valid tool protocol shape
+  // while bounding serialized object output and signed thinking together.
+  const units = providerUnits(out);
+  const fittedUnits = Array.from({ length: units.length }, () => []);
+  let reserved = 0;
+  for (let index = units.length - 1; index >= 0; index -= 1) {
+    const fitted = fitProviderUnit(units[index], Math.max(0, tokenBudget - reserved));
+    fittedUnits[index] = fitted;
+    reserved += estimateMessagesTokens(fitted);
+  }
+  out = fittedUnits.flat();
+  return dropEmptyAssistantRows(pairSanitize(out));
 }
 
 function truncateToolResultsForModel(messages, options = {}) {

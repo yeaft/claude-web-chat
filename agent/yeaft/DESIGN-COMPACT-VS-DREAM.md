@@ -24,6 +24,18 @@
 
 已有的旧 summary 文件不会被运行时读取。后续如需清理，应使用独立的、非 LLM、可回滚的迁移；本改动不触碰用户运行时数据。
 
+## Provider-private signed block 语义
+
+`thinkingBlocks` 是 Anthropic provider 返回的 signed replay state，不是普通文本。History window 会计算完整 thinking/data + signature 的大小，但绝不截断 signed block。若完整 block 在当前预算内放不下：
+
+- 没有 tool call 的历史 assistant row：只保留可安全重放的普通文本，省略 thinking block；
+- 带 tool call 的 assistant row：连同配对 tool result 一起从本次 provider 副本移除，避免发送没有完整 signed thinking 前缀的非法 tool arc；
+- ConversationStore 中的完整原文和签名不变，下一次请求仍可从持久 transcript 重新形成 bounded window。
+
+这是一条确定性的 provider-request recovery 规则，不是 LLM 摘要，也不改变历史权威数据。
+
+`function_call_output` 等 provider 会在 wire 边界执行 `JSON.stringify` 的对象，history window 也按 serialized JSON 计费；超预算时只在 provider 副本中裁剪为 bounded string。
+
 ## Context overflow 语义
 
 Context overflow **不是**另一个 compact 入口。

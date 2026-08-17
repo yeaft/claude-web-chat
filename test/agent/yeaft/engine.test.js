@@ -2038,6 +2038,37 @@ describe('Engine memory prompt hygiene', () => {
 
 describe('Engine', () => {
   describe('constructor', () => {
+    it('bounds signed thinking and object tool output in the actual Engine adapter request', async () => {
+      const adapter = new MockAdapter();
+      adapter.pushResponse([
+        { type: 'text_delta', text: 'done' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      const engine = new Engine({
+        adapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024, messageTokenBudget: 100 },
+      });
+      const priorMessages = [
+        { role: 'user', content: 'prior' },
+        {
+          role: 'assistant',
+          content: '',
+          thinkingBlocks: [{ thinking: 'x'.repeat(100_000), signature: 'opaque-signature' }],
+          toolCalls: [{ id: 'call-object-output', name: 'Inspect', input: {} }],
+        },
+        { role: 'tool', toolCallId: 'call-object-output', content: { payload: 'z'.repeat(100_000) } },
+      ];
+
+      for await (const _event of engine.query({ prompt: 'next', messages: priorMessages })) { /* drain */ }
+
+      const request = adapter.callLog[0];
+      expect(JSON.stringify(request.messages)).not.toContain('opaque-signature');
+      expect(JSON.stringify(request.messages)).not.toContain('x'.repeat(1_000));
+      expect(JSON.stringify(request.messages)).not.toContain('z'.repeat(1_000));
+      expect(request.messages.at(-1)).toMatchObject({ role: 'user', content: 'next' });
+    });
+
     it('should create an engine with trace ID', () => {
       const engine = new Engine({
         adapter: mockAdapter,

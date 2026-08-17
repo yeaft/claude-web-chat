@@ -1006,11 +1006,28 @@ describe('Yeaft load-history first paint', () => {
         );
       }
 
+      const normalHistory = __testGroupHistory('session-cache');
+      expect(normalHistory.length).toBeLessThanOrEqual(256);
+      expect(normalHistory.every(message => message.content === undefined || typeof message.content === 'string' || Array.isArray(message.content))).toBe(true);
+      expect(normalHistory.some(message => message.content === 'question 39')).toBe(true);
+      expect(normalHistory.some(message => message.content === 'answer 39')).toBe(true);
+
+      __testAppendTurnToSessionHistory(
+        'session-cache',
+        'main',
+        'vp-linus',
+        ['thinking question'],
+        ['thinking answer'],
+        [],
+        [],
+        [{ thinking: 'x'.repeat(200_000), signature: 'opaque-signature' }],
+        { turnId: 'turn-thinking' },
+      );
+
       const runtimeHistory = __testGroupHistory('session-cache');
       expect(runtimeHistory.length).toBeLessThanOrEqual(256);
-      expect(runtimeHistory.every(message => message.content === undefined || typeof message.content === 'string' || Array.isArray(message.content))).toBe(true);
-      expect(runtimeHistory.some(message => message.content === 'question 39')).toBe(true);
-      expect(runtimeHistory.some(message => message.content === 'answer 39')).toBe(true);
+      expect(JSON.stringify(runtimeHistory)).not.toContain('opaque-signature');
+      expect(JSON.stringify(runtimeHistory)).not.toContain('x'.repeat(1_000));
       // This helper only changes the runtime cache. It never writes the
       // direct test appends to ConversationStore or deletes durable rows.
       expect(store.loadAllBySession('session-cache')).toEqual([]);

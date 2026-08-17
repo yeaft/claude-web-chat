@@ -11,6 +11,7 @@ import {
   anthropicAuthHeaderModeForProvider,
 } from '../../../agent/yeaft/llm/router.js';
 import { classifyAuthError } from '../../../agent/yeaft/llm/adapter.js';
+import { estimateMessagesTokens, trimSnapshotForBudget } from '../../../agent/yeaft/history-window.js';
 import { _resetCacheForTests } from '../../../agent/yeaft/llm/credentials/github-copilot.js';
 
 const originalFetch = global.fetch;
@@ -336,6 +337,62 @@ describe('LLM adapter auth headers', () => {
       },
     ]);
     expect(JSON.stringify(openAiCalls[0].body)).not.toContain('responseKind');
+  });
+
+  it('omits an oversized signed thinking block atomically before Anthropic wire replay', async () => {
+    const calls = [];
+    global.fetch = vi.fn(async (url, init) => {
+      calls.push({ url, body: JSON.parse(init.body) });
+      return anthropicResponse();
+    });
+
+    const messages = trimSnapshotForBudget([{
+      role: 'assistant',
+      content: 'prior answer',
+      thinkingBlocks: [{ thinking: 'x'.repeat(100_000), signature: 'opaque-signature' }],
+    }], { messageTokenBudget: 100 });
+    expect(estimateMessagesTokens(messages)).toBeLessThanOrEqual(100);
+
+    const adapter = new AnthropicAdapter({ apiKey: 'key', baseUrl: 'https://anthropic.test' });
+    await adapter.call({ model: 'claude-sonnet-4.5', system: '', messages });
+
+    expect(calls[0].body.messages).toEqual([{
+      role: 'assistant',
+      content: [{ type: 'text', text: 'prior answer' }],
+    }]);
+    expect(JSON.stringify(calls[0].body)).not.toContain('opaque-signature');
+    expect(JSON.stringify(calls[0].body)).not.toContain('x'.repeat(1_000));
+  });
+
+  it('bounds object-valued tool output before Responses JSON serialization', async () => {
+    const calls = [];
+    global.fetch = vi.fn(async (url, init) => {
+      calls.push({ url, body: JSON.parse(init.body) });
+      return jsonResponse({ output_text: 'ok', usage: { input_tokens: 1, output_tokens: 1 } });
+    });
+
+    const messages = trimSnapshotForBudget([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'call-object-output', name: 'Inspect', input: {} }],
+      },
+      {
+        role: 'tool',
+        toolCallId: 'call-object-output',
+        content: { payload: 'z'.repeat(100_000) },
+      },
+    ], { messageTokenBudget: 100 });
+    expect(estimateMessagesTokens(messages)).toBeLessThanOrEqual(100);
+
+    const adapter = new OpenAIResponsesAdapter({ apiKey: 'key', baseUrl: 'https://openai.test/v1' });
+    await adapter.call({ model: 'gpt-5.5', system: '', messages });
+
+    const output = calls[0].body.input.find(item => item.type === 'function_call_output');
+    expect(output).toBeDefined();
+    expect(typeof output.output).toBe('string');
+    expect(output.output).not.toContain('z'.repeat(1_000));
+    expect(output.output.length).toBeLessThan(500);
   });
 
   it('translates PDF document blocks to Responses input_file content', async () => {
