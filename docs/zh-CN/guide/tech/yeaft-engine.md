@@ -34,7 +34,7 @@ agent/yeaft/
 普通 VP turn 按以下步骤运行：
 
 1. **Pre-query** — 解析 Agent/Session/VP/Project identity、project instruction、runtime platform、pending child-agent notification、project docs 与 H2-AMS recall。
-2. **构造 context** — 组合 system prompt、VP persona、确定性的有预算 history window、当前 user content 和支持的 attachment。不再从磁盘加载 LLM 对话摘要。
+2. **构造 context** — 组合 system prompt、VP persona、确定性的有预算 history window、当前 user content 和支持的 attachment。Web Session 只保留有界的临时 runtime cache，完整 transcript 仍由 ConversationStore 持有；不再从磁盘加载 LLM 对话摘要。
 3. **Stream LLM** — 选择配置的 provider/model，调用 Anthropic Messages 或 OpenAI Responses adapter。
 4. **执行工具** — 通过 `ToolRegistry` 运行允许的 call，append result block 并继续 stream。
 5. **Fold 长 arc** — 周期性 reflect tool batch，并 summary 长 turn，同时在 persistence/debug 路径保留 raw output。

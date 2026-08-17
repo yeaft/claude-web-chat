@@ -34,7 +34,7 @@ agent/yeaft/
 A normal VP turn follows this shape. `history-window.js` is deterministic and never produces a persisted summary:
 
 1. **Pre-query** — resolve Agent/Session/VP/Project identity, project instructions, runtime platform, pending child-agent notifications, project docs, and H2-AMS recall.
-2. **Build context** — combine the system prompt, VP persona, deterministic budgeted history window, current user content, and supported attachments. No LLM conversation summary is loaded from disk.
+2. **Build context** — combine the system prompt, VP persona, deterministic budgeted history window, current user content, and supported attachments. The Web Session source is a bounded disposable runtime cache; the complete transcript stays in ConversationStore, and no LLM conversation summary is loaded from disk.
 3. **Stream LLM** — select the configured provider/model and call either the Anthropic Messages or OpenAI Responses adapter.
 4. **Execute tools** — run allowed calls through `ToolRegistry`, append result blocks, and continue streaming.
 5. **Fold long arcs** — periodically reflect tool batches and summarize long turns while retaining raw output in persistence/debug paths.

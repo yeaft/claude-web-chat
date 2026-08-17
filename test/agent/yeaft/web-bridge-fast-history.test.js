@@ -39,6 +39,7 @@ const {
   __testHandleEngineEvent,
   __testGetRegisteredThreadIds,
   __testGroupHistory,
+  __testAppendTurnToSessionHistory,
   __testResetVpState,
   __testSeedAbortController,
   __testSetSession,
@@ -973,6 +974,46 @@ describe('Yeaft load-history first paint', () => {
           responseKind: 'result',
         }),
       ]);
+    } finally {
+      __testSetSession(null);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds the shared runtime history cache without changing the durable store', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-runtime-cache-bound-'));
+    try {
+      ctx.CONFIG = { yeaftDir: dir };
+      const store = new ConversationStore(dir);
+      __testSetSession({
+        conversationStore: store,
+        config: { model: 'test-model', language: 'en' },
+        status: { skills: 0, mcpServers: [], tools: 0 },
+      });
+
+      for (let index = 0; index < 40; index += 1) {
+        const callId = `call-${index}`;
+        __testAppendTurnToSessionHistory(
+          'session-cache',
+          'main',
+          'vp-linus',
+          [`question ${index}`],
+          [`answer ${index}`],
+          [{ id: callId, name: 'Bash', input: { command: 'pwd' } }],
+          [{ toolCallId: callId, content: 'x'.repeat(200_000), isError: false }],
+          [],
+          { turnId: `turn-${index}` },
+        );
+      }
+
+      const runtimeHistory = __testGroupHistory('session-cache');
+      expect(runtimeHistory.length).toBeLessThanOrEqual(256);
+      expect(runtimeHistory.every(message => message.content === undefined || typeof message.content === 'string' || Array.isArray(message.content))).toBe(true);
+      expect(runtimeHistory.some(message => message.content === 'question 39')).toBe(true);
+      expect(runtimeHistory.some(message => message.content === 'answer 39')).toBe(true);
+      // This helper only changes the runtime cache. It never writes the
+      // direct test appends to ConversationStore or deletes durable rows.
+      expect(store.loadAllBySession('session-cache')).toEqual([]);
     } finally {
       __testSetSession(null);
       rmSync(dir, { recursive: true, force: true });

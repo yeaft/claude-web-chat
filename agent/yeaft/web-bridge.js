@@ -65,7 +65,7 @@ import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, Sessio
 import { updateSessionConfig } from './sessions/session-crud.js';
 import { createCoordinator } from './sessions/coordinator.js';
 import { seedDefaultSession } from './sessions/seed-default.js';
-import { trimSnapshotForBudget } from './history-window.js';
+import { trimHistoryCacheForRuntime, trimSnapshotForBudget } from './history-window.js';
 import { persistYeaftAttachments, attachmentsForPersistence, persistedAttachmentPreviewPayload } from './attachments.js';
 import { normalizeSessionMessageQuote, sessionMessageQuotePrompt } from './session-message-quote.js';
 import { ConversationStore, parseSeqFromId, projectVisibleSessionMessages } from './conversation/persist.js';
@@ -1247,9 +1247,10 @@ let _vpUnsubscribe = null;
  * of which group it belonged to. Disk was group-tagged correctly, but
  * the in-memory tape was unified.
  *
- * Post-refactor: each GroupContext owns its own `history`, lazily
- * hydrated from `conversationStore.loadRecentBySession(sessionId)` on first
- * access. Group-A and group-B are isolated.
+ * Post-refactor: each Session context owns its own bounded `history` cache,
+ * lazily hydrated from `conversationStore.loadRecentBySession(sessionId)` on
+ * first access. Group-A and group-B are isolated; the durable transcript is
+ * never replaced by the cache trim.
  *
  * @typedef {Array<{role:'user'|'assistant'|'tool', content:string|Array, toolCalls?:Array, toolCallId?:string, isError?:boolean}>} GroupHistory
  */
@@ -1259,7 +1260,7 @@ let _vpUnsubscribe = null;
  * @property {object|null} coord — group coordinator (lazily built by getOrCreateSessionContext)
  * @property {object|null} router — message router (lazily built by getOrCreateSessionContext)
  * @property {object|null} sessionHandle — opened group handle (lazily built by getOrCreateSessionContext)
- * @property {GroupHistory} history — per-group conversation tape
+ * @property {GroupHistory} history — per-Session bounded runtime history cache
  * @property {boolean} historyHydrated — true once history has been loaded
  *   from disk (or explicitly assigned). The flag is required because an
  *   empty array is legitimate post-clear state and
@@ -1637,6 +1638,12 @@ function hydrateGroupHistory(sessionId) {
   return out;
 }
 
+function boundRuntimeSessionHistory(history) {
+  return trimHistoryCacheForRuntime(history, {
+    language: session?.config?.language,
+  });
+}
+
 /**
  * Get-or-create the per-group history array. Used everywhere the bridge
  * needs to read/append/snapshot a group's conversation tape. Lazily
@@ -1666,7 +1673,7 @@ function getOrCreateSessionHistory(sessionId) {
     entry = makeGroupContextStub();
     sessionContexts.set(sessionId, entry);
   }
-  entry.history = hydrateGroupHistory(sessionId);
+  entry.history = boundRuntimeSessionHistory(hydrateGroupHistory(sessionId));
   entry.historyHydrated = true;
   return entry.history;
 }
@@ -1690,7 +1697,7 @@ function setGroupHistory(sessionId, next) {
     entry = makeGroupContextStub();
     sessionContexts.set(sessionId, entry);
   }
-  entry.history = next;
+  entry.history = boundRuntimeSessionHistory(Array.isArray(next) ? next : []);
   entry.historyHydrated = true;
 }
 
@@ -1936,7 +1943,7 @@ function getOrCreateSessionContext(sessionId, sessionHandle) {
   // having gone through `getOrCreateSessionHistory` first: a partial entry
   // could exist with `historyHydrated:false`, so do the load now.
   if (!entry.historyHydrated) {
-    entry.history = hydrateGroupHistory(sessionId);
+    entry.history = boundRuntimeSessionHistory(hydrateGroupHistory(sessionId));
     entry.historyHydrated = true;
   }
   return entry;
@@ -5843,11 +5850,12 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
  * raw user prompt(s) + the per-VP assistant text + tool results. Related
  * appends consumed by Engine loop-boundary hooks are passed in the prompt list
  * exactly once, with the same threadId as the running thread. The
- * engine's own `conversationMessages` (with T1/T2 collapse applied)
+ * engine's own `conversationMessages` (with T1/T2 tool-arc folding applied)
  * is persisted to disk via stop-hooks, so the next turn's history is
  * read from disk via `loadRecentBySession` on next session boot. Within
- * a session, this in-memory tape carries the un-collapsed form — which
- * is fine because each VP turn's `engine.query` re-collapses on the fly.
+ * a session, this in-memory tape is a bounded deterministic cache; the
+ * complete transcript remains in ConversationStore and each provider request
+ * applies its own pair-safe history window.
  */
 function buildTurnHistoryEntries(threadId, vpId, prompts, assistantTextParts, toolCallsAccum, toolResultsAccum, thinkingBlocksAccum, opts = {}) {
   const entries = [];
@@ -5932,6 +5940,11 @@ function appendTurnToSessionHistory(sessionId, threadId, vpId, prompts, assistan
   } else {
     history.push(...nextEntries);
   }
+  // The runtime tape is a disposable bounded cache. ConversationStore already
+  // owns the complete transcript, so replacing this reference cannot lose
+  // durable history. Keep the cache bounded after every partial/final append,
+  // including large tool outputs from a long-running turn.
+  setGroupHistory(sessionId, history);
 }
 
 /**

@@ -1,11 +1,50 @@
 import { describe, expect, it } from 'vitest';
 import {
+  estimateContentPartTokens,
+  estimateMessageTokens,
   estimateMessagesTokens,
   stripToolNoiseFromOlderTurns,
   trimSnapshotForBudget,
 } from '../../../agent/yeaft/history-window.js';
 
 describe('deterministic provider history window', () => {
+  it('counts text, image, and document content parts instead of treating arrays as zero', () => {
+    const textPart = { type: 'text', text: 'x'.repeat(100_000) };
+    const imagePart = {
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'a'.repeat(100_000) },
+    };
+    const documentPart = {
+      type: 'document',
+      title: 'requirements.pdf',
+      source: { type: 'base64', media_type: 'application/pdf', data: 'b'.repeat(100_000) },
+    };
+
+    expect(estimateContentPartTokens(textPart)).toBeGreaterThan(10_000);
+    expect(estimateContentPartTokens(imagePart)).toBeGreaterThan(6_000);
+    expect(estimateContentPartTokens(documentPart)).toBeGreaterThan(6_000);
+    expect(estimateMessageTokens({ role: 'user', content: [textPart, imagePart, documentPart] })).toBeGreaterThan(20_000);
+  });
+
+  it('bounds a single oversized multimodal message without sending the full part', () => {
+    const messages = [{
+      role: 'user',
+      content: [{
+        type: 'text',
+        text: 'x'.repeat(100_000),
+      }, {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: 'a'.repeat(100_000) },
+      }],
+    }];
+
+    const window = trimSnapshotForBudget(messages, { messageTokenBudget: 100 });
+
+    expect(estimateMessagesTokens(window)).toBeLessThanOrEqual(100);
+    expect(JSON.stringify(window)).not.toContain('a'.repeat(1_000));
+    expect(messages[0].content[0].text).toHaveLength(100_000);
+  });
+
   it('keeps the newest complete turns without generating a summary', () => {
     const messages = [
       { role: 'user', content: 'old question' },

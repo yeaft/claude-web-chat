@@ -8,7 +8,7 @@
 | 层 | 权威数据 | 运行时职责 | 是否调用 LLM | 是否改写 transcript |
 | --- | --- | --- | --- | --- |
 | Agent transcript | ConversationStore JSONL segments + index | 保存完整 user/assistant/tool 历史；重启读取最近 turns；旧记录通过分页/搜索获取 | 否 | 只在正常消息 durability / tool reflection 边界按既有规则写入 |
-| Provider history window | 当前 query 的消息副本 | `agent/yeaft/history-window.js` 按 turn/token 边界裁剪旧消息、工具噪音和过大的 tool result；保证 tool pair 安全 | 否 | 否 |
+| Runtime history cache + Provider history window | Runtime cache 是 bounded disposable source；provider request 再对消息副本按 turn/token 边界裁剪旧消息、工具噪音、tool result 和 multimodal parts；保证 tool pair 安全 | 否 | 否；只替换内存 cache |
 | Memory / Dream | 每个 scope 的 `memory.md` + `summary.md`，SQLite FTS 为可重建索引 | Dream 后台维护长期事实、偏好、决策；AMS 在 prompt 的 Memory outlet 注入 | 是，按 Dream 自己的 pipeline | 不写 conversation summary |
 | Browser history | 当前可见窗口和分页缓存 | 展示最近连续窗口，向上分页加载旧 transcript | 否 | 否 |
 
