@@ -134,6 +134,27 @@ db.exec(`
     PRIMARY KEY (user_id, agent_instance_id, metric_epoch)
   );
 
+  -- Durable last-known Agent inventory for admin operations. online is not
+  -- stored here: it is derived from the current owner-scoped WebSocket map.
+  -- Keeping the inventory separate from sessions preserves historical Agents
+  -- after their socket disconnects and across Server restarts.
+  CREATE TABLE IF NOT EXISTS agent_inventory (
+    id TEXT PRIMARY KEY,
+    instance_id TEXT,
+    owner_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    work_dir TEXT,
+    version TEXT,
+    platform TEXT,
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    capability_metadata_provided INTEGER NOT NULL DEFAULT 0,
+    metrics_json TEXT NOT NULL DEFAULT '{}',
+    metrics_updated_at INTEGER,
+    last_seen_at INTEGER NOT NULL,
+    last_connected_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
   -- 基本索引（不依赖迁移列）
   CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
@@ -152,6 +173,7 @@ db.exec(`
   -- concurrent reads continue during the build; writers will block briefly.
   CREATE INDEX IF NOT EXISTS idx_messages_session_role_id ON messages(session_id, role, id DESC);
   CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date);
+  CREATE INDEX IF NOT EXISTS idx_agent_inventory_owner_seen ON agent_inventory(owner_id, last_seen_at DESC);
 
   -- Managed Sandbox control-plane state. Runtime resources are deliberately
   -- not created on this mixed-use Server Host; qualified Controllers report
@@ -1264,6 +1286,43 @@ export const stmts = {
       cache_write_tokens = excluded.cache_write_tokens,
       total_tokens = excluded.total_tokens,
       updated_at = excluded.updated_at
+  `),
+
+  // Durable Admin Agent inventory. `online` is derived from context.agents.
+  upsertAgentInventory: db.prepare(`
+    INSERT INTO agent_inventory (
+      id, instance_id, owner_id, name, work_dir, version, platform,
+      capabilities_json, capability_metadata_provided, metrics_json,
+      metrics_updated_at, last_seen_at, last_connected_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, '{}'), ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      instance_id = excluded.instance_id,
+      owner_id = excluded.owner_id,
+      name = excluded.name,
+      work_dir = excluded.work_dir,
+      version = excluded.version,
+      platform = excluded.platform,
+      capabilities_json = excluded.capabilities_json,
+      capability_metadata_provided = excluded.capability_metadata_provided,
+      metrics_json = CASE WHEN excluded.metrics_updated_at IS NULL THEN agent_inventory.metrics_json ELSE excluded.metrics_json END,
+      metrics_updated_at = COALESCE(excluded.metrics_updated_at, agent_inventory.metrics_updated_at),
+      last_seen_at = excluded.last_seen_at,
+      last_connected_at = excluded.last_connected_at,
+      updated_at = excluded.updated_at
+  `),
+
+  touchAgentInventory: db.prepare(`
+    UPDATE agent_inventory SET last_seen_at = ?, updated_at = ? WHERE id = ?
+  `),
+
+  updateAgentInventoryMetrics: db.prepare(`
+    UPDATE agent_inventory
+    SET metrics_json = ?, metrics_updated_at = ?, updated_at = ?
+    WHERE id = ?
+  `),
+
+  getAllAgentInventory: db.prepare(`
+    SELECT * FROM agent_inventory ORDER BY last_seen_at DESC, name ASC, id ASC
   `),
 
   // Identity 操作 (multi-provider SSO)

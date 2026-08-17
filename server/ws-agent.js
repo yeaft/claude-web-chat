@@ -5,7 +5,7 @@ import { verifyAgent } from './auth.js';
 
 import { encodeKey } from './encryption.js';
 import { agents, pendingAgentConnections } from './context.js';
-import { userDb } from './database.js';
+import { agentInventoryDb, userDb } from './database.js';
 import {
   parseMessage, broadcastAgentList, clearAgentDirCache
 } from './ws-utils.js';
@@ -49,6 +49,35 @@ function pruneAgentConnectionGenerations() {
       return pending.skipAgentAuth ? pending.agentId === agentId : true;
     });
     if (!hasPotentiallyOlderConnection) latestAgentConnectionGenerations.delete(agentId);
+  }
+}
+
+function persistAgentInventory(agentId, agent) {
+  if (!agentInventoryDb?.upsert || !agent?.name) return;
+  try {
+    agentInventoryDb.upsert({
+      ...agent,
+      id: agentId,
+      lastSeenAt: agent.lastSeenAt,
+      lastConnectedAt: agent.lastConnectedAt,
+    });
+  } catch (error) {
+    // The inventory is an admin read model. Never reject a live Agent because
+    // this best-effort durability write failed.
+    console.error(`[AgentInventory] Failed to persist ${agentId}:`, error.message);
+  }
+}
+
+function persistAgentHeartbeat(agentId, agent, now = Date.now()) {
+  if (!agentInventoryDb?.touch || !agent) return;
+  const lastPersistedAt = Number(agent.inventoryLastPersistedAt) || 0;
+  if (lastPersistedAt && now - lastPersistedAt < 10_000) return;
+  agent.inventoryLastPersistedAt = now;
+  try {
+    const touched = agentInventoryDb.touch(agentId, now);
+    if (touched === false) persistAgentInventory(agentId, agent);
+  } catch (error) {
+    console.error(`[AgentInventory] Failed to persist heartbeat for ${agentId}:`, error.message);
   }
 }
 
@@ -183,7 +212,9 @@ export function handleAgentConnection(ws, url) {
         ws.close(1008, 'Account disabled');
         return;
       }
-      markAgentHeartbeatSeen(agent);
+      const now = Date.now();
+      markAgentHeartbeatSeen(agent, now);
+      persistAgentHeartbeat(resolvedAgentId, agent, now);
       const msg = await parseMessage(data, agent.sessionKey);
       if (msg) {
         console.log(`[Agent] Received message from ${resolvedAgentId}: ${msg.type}`);
@@ -235,6 +266,9 @@ export function handleAgentConnection(ws, url) {
 function handleAgentDisconnect(agentId, agentName, ws) {
   const agent = agents.get(agentId);
   if (!agent || agent.ws !== ws) return;
+  // Capture the last in-memory heartbeat before removing the live socket. The
+  // durable row remains an offline historical record; it never grants access.
+  persistAgentInventory(agentId, agent);
   // Phase 4: 清理目录缓存
   clearAgentDirCache(agentId);
   clearWorkbenchCorrelationsForAgent(agentId);
@@ -280,6 +314,7 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
     sessionKey,
     isAlive: true,
     lastSeenAt: Date.now(),
+    lastConnectedAt: Date.now(),
     capabilities: effectiveCapabilities,
     // The fallback list supports old UI features but cannot prove that an
     // Agent made an explicit capability claim.
@@ -305,6 +340,7 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
     }
   }, 30000);
   agents.get(agentId)._syncTimeout = syncTimeout;
+  persistAgentInventory(agentId, agents.get(agentId));
 
   if (existingAgent?.ws && existingAgent.ws !== ws) {
     clearBrowserRuntimeForAgent(agentId);
@@ -315,7 +351,9 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
   ws.on('pong', () => {
     const agent = agents.get(agentId);
     if (agent?.ws === ws) {
-      markAgentHeartbeatSeen(agent);
+      const now = Date.now();
+      markAgentHeartbeatSeen(agent, now);
+      persistAgentHeartbeat(agentId, agent, now);
       if (agent.pingSentAt) {
         agent.latency = Date.now() - agent.pingSentAt;
         agent.pingSentAt = null;

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const { getByPeriod, getAllUsers, getDashboardTotals, getDashboardTokenTotals, getTodayActiveUsers, getTodayMessages } = vi.hoisted(() => ({
+const { getByPeriod, getAllUsers, getAgentInventory, getDashboardTotals, getDashboardTokenTotals, getTodayActiveUsers, getTodayMessages } = vi.hoisted(() => ({
   getByPeriod: vi.fn(),
   getAllUsers: vi.fn(() => []),
+  getAgentInventory: vi.fn(() => []),
   getDashboardTotals: vi.fn(() => ({ total_users: 1, total_sessions: 0, total_messages: 3 })),
   getDashboardTokenTotals: vi.fn(() => ({ total_tokens: 0 })),
   getTodayActiveUsers: vi.fn(() => 0),
@@ -10,6 +11,7 @@ const { getByPeriod, getAllUsers, getDashboardTotals, getDashboardTokenTotals, g
 }));
 
 vi.mock('../../server/database.js', () => ({
+  agentInventoryDb: { getAll: getAgentInventory },
   userDb: { getAll: getAllUsers },
   userStatsDb: {
     getByPeriod,
@@ -56,6 +58,8 @@ afterEach(() => {
   getByPeriod.mockReset();
   getAllUsers.mockReset();
   getAllUsers.mockReturnValue([]);
+  getAgentInventory.mockReset();
+  getAgentInventory.mockReturnValue([]);
 });
 
 describe('Dashboard user statistics', () => {
@@ -155,5 +159,92 @@ describe('Dashboard user statistics', () => {
     route({}, res);
 
     expect(res.body.onlineUsers).toBe(1);
+  });
+
+  it('merges durable historical Agents with the current live socket overlay', () => {
+    getAllUsers.mockReturnValue([{ id: 'owner-1', username: 'alice' }]);
+    getAgentInventory.mockReturnValue([
+      {
+        id: 'agent-offline',
+        instanceId: 'offline-instance',
+        ownerId: 'owner-1',
+        name: 'Offline Agent',
+        workDir: '/offline',
+        version: '1.0.1',
+        platform: 'linux',
+        capabilities: ['terminal'],
+        capabilityMetadataProvided: true,
+        metrics: { totalTurns: 4, totalTokens: 9 },
+        metricsUpdatedAt: 400,
+        lastSeenAt: 100,
+        lastConnectedAt: 90,
+        updatedAt: 100,
+      },
+      {
+        id: 'agent-live',
+        instanceId: 'live-instance',
+        ownerId: 'owner-1',
+        name: 'Stale Live Name',
+        workDir: '/stale',
+        version: '0.0.1',
+        capabilities: [],
+        metrics: {},
+        lastSeenAt: 200,
+        lastConnectedAt: 190,
+        updatedAt: 200,
+      },
+    ]);
+    agents.set('agent-live', {
+      ws: { readyState: 1 },
+      name: 'Live Agent',
+      instanceId: 'live-instance',
+      workDir: '/live',
+      ownerId: 'owner-1',
+      ownerUsername: 'alice',
+      version: '1.2.3',
+      platform: 'linux',
+      capabilities: ['browser_runtime'],
+      status: 'ready',
+      lastSeenAt: 300,
+      lastConnectedAt: 250,
+      conversations: new Map([['conversation-1', {}]]),
+      metrics: { totalTurns: 8 },
+      metricsUpdatedAt: 301,
+    });
+    agents.set('agent-unpersisted', {
+      ws: { readyState: 1 },
+      name: 'Unpersisted Agent',
+      ownerId: null,
+      capabilities: [],
+      conversations: new Map(),
+      metrics: {},
+    });
+
+    const route = installRoutes().get('/api/admin/agents');
+    const res = response();
+    route({}, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toHaveLength(3);
+    expect(res.body.find(row => row.id === 'agent-offline')).toMatchObject({
+      name: 'Offline Agent',
+      ownerUsername: 'alice',
+      online: false,
+      status: 'offline',
+      lastSeenAt: 100,
+      metrics: { totalTurns: 4, totalTokens: 9 },
+    });
+    expect(res.body.find(row => row.id === 'agent-live')).toMatchObject({
+      name: 'Live Agent',
+      online: true,
+      status: 'ready',
+      conversationCount: 1,
+      version: '1.2.3',
+      lastSeenAt: 300,
+    });
+    expect(res.body.find(row => row.id === 'agent-unpersisted')).toMatchObject({
+      name: 'Unpersisted Agent',
+      online: true,
+    });
   });
 });

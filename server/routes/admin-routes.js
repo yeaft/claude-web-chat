@@ -1,5 +1,5 @@
 import { WebSocket } from 'ws';
-import { userDb, userStatsDb } from '../database.js';
+import { agentInventoryDb, userDb, userStatsDb } from '../database.js';
 import { agents, webClients, userStatsDeltas } from '../context.js';
 
 const toNumber = (value) => Number(value) || 0;
@@ -190,25 +190,52 @@ export function registerAdminRoutes(app, { requireAuth, requireAdmin }) {
     }
   });
 
-  // GET /api/admin/agents — full agent list (no owner filtering)
+  // GET /api/admin/agents — durable inventory with live connection overlay.
+  // The route is admin-only; `online` still comes exclusively from the current
+  // owner-scoped WebSocket in `agents`, never from persisted inventory state.
   app.get('/api/admin/agents', requireAuth, requireAdmin, (req, res) => {
     try {
-      const agentList = Array.from(agents.entries()).map(([id, agent]) => ({
+      const liveAgents = new Map(Array.from(agents.entries()).map(([id, agent]) => [id, {
         id,
+        instanceId: agent.instanceId || null,
         name: agent.name,
         workDir: agent.workDir,
-        online: agent.ws.readyState === WebSocket.OPEN,
+        online: agent.ws?.readyState === WebSocket.OPEN,
         status: agent.status || 'ready',
         latency: agent.latency || null,
         version: agent.version || null,
+        platform: agent.platform || null,
         ownerId: agent.ownerId || null,
         ownerUsername: agent.ownerUsername || null,
         capabilities: agent.capabilities || [],
+        capabilityMetadataProvided: agent.capabilityMetadataProvided === true,
         conversationCount: agent.conversations?.size || 0,
         lastSeenAt: agent.lastSeenAt || null,
+        lastConnectedAt: agent.lastConnectedAt || null,
         metrics: safeAgentMetrics(agent.metrics || {}),
-        metricsUpdatedAt: agent.metricsUpdatedAt || null
-      }));
+        metricsUpdatedAt: agent.metricsUpdatedAt || null,
+      }]));
+      const ownerUsernames = new Map(userDb.getAll().map(user => [user.id, user.username]));
+      const inventory = agentInventoryDb.getAll();
+      const agentList = inventory.map(record => {
+        const live = liveAgents.get(record.id);
+        if (!live) {
+          return {
+            ...record,
+            ownerUsername: record.ownerId ? (ownerUsernames.get(record.ownerId) || null) : null,
+            online: false,
+            status: 'offline',
+            latency: null,
+            conversationCount: 0,
+            metrics: safeAgentMetrics(record.metrics || {}),
+          };
+        }
+        liveAgents.delete(record.id);
+        return live;
+      });
+      // Keep a best-effort fallback for a live record whose initial inventory
+      // write failed; the next heartbeat/connection write repairs the row.
+      agentList.push(...liveAgents.values());
       res.json(agentList);
     } catch (e) {
       console.error('[Admin] Agents error:', e.message);

@@ -65,6 +65,23 @@ const SCHEMA = `
     FOREIGN KEY (used_by) REFERENCES users(id)
   );
 
+  CREATE TABLE IF NOT EXISTS agent_inventory (
+    id TEXT PRIMARY KEY,
+    instance_id TEXT,
+    owner_id TEXT,
+    name TEXT NOT NULL,
+    work_dir TEXT,
+    version TEXT,
+    platform TEXT,
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    capability_metadata_provided INTEGER NOT NULL DEFAULT 0,
+    metrics_json TEXT NOT NULL DEFAULT '{}',
+    metrics_updated_at INTEGER,
+    last_seen_at INTEGER NOT NULL,
+    last_connected_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
   CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
@@ -106,7 +123,8 @@ const POST_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)',
   'CREATE INDEX IF NOT EXISTS idx_users_agent_secret ON users(agent_secret)',
   // feat-chat-load-perf: composite covering index for role='user' filters.
-  'CREATE INDEX IF NOT EXISTS idx_messages_session_role_id ON messages(session_id, role, id DESC)'
+  'CREATE INDEX IF NOT EXISTS idx_messages_session_role_id ON messages(session_id, role, id DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_agent_inventory_owner_seen ON agent_inventory(owner_id, last_seen_at DESC)'
 ];
 
 export function createTestDb() {

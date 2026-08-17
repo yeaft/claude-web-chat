@@ -41,6 +41,7 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/server/auth-token-uniqueness.test.js',
   'test/server/browser-runtime-routing.test.js',
   'test/server/dashboard-stats.test.js',
+  'test/server/agent-inventory.test.js',
   'test/server/request-auth.test.js',
   'test/server/server-image-runtime.test.js',
   'test/server/upload-routes.test.js',
