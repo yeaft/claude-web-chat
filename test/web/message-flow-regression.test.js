@@ -228,6 +228,18 @@ describe('app dialog contracts', () => {
 });
 
 describe('message flow regressions', () => {
+  it('keeps container upgrade guidance separate from the npm manual-upgrade path', () => {
+    for (const messages of [enMessages, zhCNMessages]) {
+      const text = messages['chat.agent.containerImageUpgradeRequired'];
+      expect(text).toContain('docker pull');
+      expect(text).toContain('/home/yeaft/.yeaft');
+      expect(text).toContain('/workspace');
+      expect(text).toContain('agent-secret');
+      expect(text).toMatch(/Do not remove|不要删除|不要在重建时删除/);
+      expect(text).not.toMatch(/npm install -g/);
+    }
+  });
+
   it('keeps a submitted AskUser answer through replay until the Agent confirms it', () => {
     vi.useFakeTimers();
     try {
@@ -2404,6 +2416,17 @@ describe('message flow regressions', () => {
     });
     await Vue.nextTick();
     expect(dialogModule.useDialogState().message).toBe('chat.agent.manualUpgradeRequired');
+    dialogElement('.app-dialog-confirm').click();
+    window.dispatchEvent(new CustomEvent('agent-upgrade-ack', {
+      detail: {
+        agentId: 'agent-a',
+        success: false,
+        reason: 'container_image_upgrade_required',
+        version: '1.0.415',
+      },
+    }));
+    await Vue.nextTick();
+    expect(dialogModule.useDialogState().message).toBe('chat.agent.containerImageUpgradeRequired');
     dialogElement('.app-dialog-confirm').click();
     parentStore.mutateProject.mockResolvedValueOnce({ ok: false, error: { code: 'timeout' } });
     chatPage.vm.onUnifiedCreateInProject({ project: parentStore.sessionProjects[0] });

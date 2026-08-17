@@ -8,6 +8,10 @@ import { getConfigDir, getServiceName, getPm2AppName, getLaunchdPlistPath, DEFAU
 import {
   buildUpgradeInstallCommand,
   buildUpgradeMetadataArgs,
+  buildContainerImageUpgradeMessage,
+  CONTAINER_AGENT_CAPABILITY,
+  CONTAINER_IMAGE_UPGRADE_REASON,
+  isContainerAgentRuntime,
   createWindowsUpgradeRun,
   launchWindowsUpgradeScript,
   prepareWindowsUpgradeRunner,
@@ -175,6 +179,20 @@ function compareCmp(cur, cmp) {
 }
 
 export async function handleUpgradeAgent() {
+  if (isContainerAgentRuntime() || ctx.agentCapabilities?.includes(CONTAINER_AGENT_CAPABILITY)) {
+    const version = ctx.agentVersion || null;
+    const error = buildContainerImageUpgradeMessage(version);
+    console.warn(`[Agent] Upgrade rejected (${CONTAINER_IMAGE_UPGRADE_REASON}): ${error}`);
+    await sendToServer({
+      type: 'upgrade_agent_ack',
+      success: false,
+      reason: CONTAINER_IMAGE_UPGRADE_REASON,
+      error,
+      version,
+    });
+    return;
+  }
+
   console.log('[Agent] Upgrade requested, checking for updates...');
   try {
     const pkgName = ctx.pkgName || '@yeaft/webchat-agent';

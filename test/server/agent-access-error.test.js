@@ -13,6 +13,8 @@ import { handleAgentOutput } from '../../server/handlers/agent-output.js';
 import { handleAgentConversation } from '../../server/handlers/agent-conversation.js';
 import { handleClientConversation } from '../../server/handlers/client-conversation.js';
 import {
+  CONTAINER_AGENT_CAPABILITY,
+  CONTAINER_IMAGE_UPGRADE_REASON,
   SAFE_REMOTE_UPGRADE_CAPABILITY,
   YEAFT_PLUGINS_CAPABILITY,
   YEAFT_PLUGINS_UNSUPPORTED_ERROR,
@@ -512,6 +514,41 @@ describe('resolveAgentAccessError', () => {
       agentId: 'agent-linux-legacy',
     }, async () => true);
     expect(legacyLinuxCommands).toEqual([{ type: 'upgrade_agent' }]);
+  });
+
+  it('returns the Docker image upgrade contract without forwarding an npm command', async () => {
+    const client = {
+      encryptOutbound: false,
+      sent: [],
+      ws: {
+        readyState: WS_OPEN,
+        send(payload) { client.sent.push(JSON.parse(payload)); },
+      },
+    };
+    const forwarded = [];
+    agents.set('agent-container', {
+      version: '1.0.415',
+      capabilities: ['plaintext-ok', CONTAINER_AGENT_CAPABILITY],
+      encryptOutbound: false,
+      ws: { readyState: WS_OPEN, send(payload) { forwarded.push(JSON.parse(payload)); } },
+    });
+
+    await handleClientMisc('client-container', client, {
+      type: 'upgrade_agent',
+      agentId: 'agent-container',
+    }, async () => true);
+
+    expect(forwarded).toEqual([]);
+    expect(client.sent.at(-1)).toMatchObject({
+      type: 'upgrade_agent_ack',
+      agentId: 'agent-container',
+      success: false,
+      reason: CONTAINER_IMAGE_UPGRADE_REASON,
+      version: '1.0.415',
+      requiredCapability: CONTAINER_AGENT_CAPABILITY,
+    });
+    expect(client.sent.at(-1).error).toContain('Docker image');
+    expect(client.sent.at(-1).error).not.toContain('npm install -g');
   });
 
   it('preserves safe self-upgrades through the real SKIP_AUTH registration handshake', async () => {

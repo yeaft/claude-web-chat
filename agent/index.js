@@ -20,7 +20,9 @@ import {
 import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
 import { loadMcpServers } from './mcp.js';
-import { SAFE_REMOTE_UPGRADE_CAPABILITY } from './upgrade-command.js';
+import {
+  getAgentUpgradeCapability,
+} from './upgrade-command.js';
 import { loadConfig as loadYeaftConfig } from './yeaft/config.js';
 import { initYeaftDir } from './yeaft/init.js';
 import { updateBrowserRuntimeSettings } from './yeaft/config-api.js';
@@ -173,7 +175,8 @@ async function detectCapabilities() {
   // agent build can speak plaintext WS frames. New servers see this and
   // flip `agent.encryptOutbound = false`, stopping outbound encryption
   // to this peer. Old servers ignore the unknown capability token.
-  const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'workbench_session_routes', SAFE_REMOTE_UPGRADE_CAPABILITY, 'work_center', 'work_center_message_v2', 'session_history_search', 'session_history_outline', 'session_history_window_prefetch', 'file_reference_resolution', 'yeaft_plugins', 'yeaft_managed_skills'];
+  const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'workbench_session_routes', 'work_center', 'work_center_message_v2', 'session_history_search', 'session_history_outline', 'session_history_window_prefetch', 'file_reference_resolution', 'yeaft_plugins', 'yeaft_managed_skills'];
+  capabilities.push(getAgentUpgradeCapability());
   if (process.platform === 'linux') capabilities.push('work_item_attachments');
   const pty = await loadNodePty();
   if (pty) capabilities.push('terminal');
