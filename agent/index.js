@@ -6,8 +6,6 @@ import { homedir } from 'os';
 import { createAssetOutbox } from './yeaft/asset-outbox.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, chmodSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import ctx from './context.js';
 import {
@@ -33,14 +31,12 @@ import {
   runAfterManagedCliRuntimeCleanup,
   summarizeManagedCliResults,
 } from './yeaft/managed-cli.js';
-
-const execAsync = promisify(exec);
-
-// Startup maintenance is non-interactive. Without windowsHide, each exec()
-// creates a visible cmd.exe window on Windows before the Agent connects.
-function execHiddenAsync(command, options = {}) {
-  return execAsync(command, { ...options, windowsHide: true });
-}
+import {
+  execHiddenFileAsync,
+  resolveNpmInvocation,
+  shouldRunPeriodicCheck,
+  writePeriodicCheckMarker,
+} from './startup-maintenance.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -199,7 +195,8 @@ async function ensureDependencies() {
   if (!existsSync(nodeModulesPath)) {
     console.log('[Startup] node_modules not found, running npm install...');
     try {
-      await execHiddenAsync('npm install', { cwd: agentDir, timeout: 120000 });
+      const npm = resolveNpmInvocation();
+      await execHiddenFileAsync(npm.command, [...npm.argsPrefix, 'install'], { cwd: agentDir, timeout: 120000 });
       console.log('[Startup] npm install completed');
     } catch (e) {
       console.warn('[Startup] npm install failed:', e.message);
@@ -222,6 +219,7 @@ async function ensureYeaftSkills() {
   const installedFile = join(pluginsDir, 'installed_plugins.json');
   const settingsFile = join(claudeDir, 'settings.json');
   const cacheDir = join(pluginsDir, 'cache', MARKETPLACE_NAME, PLUGIN_NAME, PLUGIN_VERSION);
+  const updateCheckMarker = join(pluginsDir, '.yeaft-skills-update-check.json');
 
   try {
     // --- Layer 1: Clone or update the marketplace repo ---
@@ -230,38 +228,49 @@ async function ensureYeaftSkills() {
     if (!existsSync(installDir)) {
       console.log('[Startup] yeaft-skills not found, installing as marketplace plugin...');
       mkdirSync(marketplacesDir, { recursive: true });
-      await execHiddenAsync(`git clone ${REPO_URL} "${installDir}"`, { timeout: 60000 });
+      await execHiddenFileAsync('git', ['clone', REPO_URL, installDir], { timeout: 60000 });
+      writePeriodicCheckMarker(updateCheckMarker);
       needsCacheUpdate = true;
       console.log('[Startup] yeaft-skills installed');
     } else {
-      console.log('[Startup] yeaft-skills found, checking for updates...');
-      // Record HEAD before pull to detect changes
-      let headBefore = '';
-      try {
-        const { stdout: h } = await execHiddenAsync('git rev-parse HEAD', { cwd: installDir, timeout: 5000 });
-        headBefore = h.trim();
-      } catch { /* ignore */ }
-      const { stdout } = await execHiddenAsync('git pull --ff-only', {
-        cwd: installDir,
-        timeout: 30000
-      });
-      if (stdout.includes('Already up to date')) {
-        console.log('[Startup] yeaft-skills is up to date');
-      } else {
-        needsCacheUpdate = true;
-        console.log('[Startup] yeaft-skills updated');
-      }
-      // Double-check: compare HEAD after pull
-      if (!needsCacheUpdate && headBefore) {
+      if (shouldRunPeriodicCheck(updateCheckMarker)) {
+        console.log('[Startup] yeaft-skills found, checking for updates...');
+        // Record HEAD before pull to detect changes
+        let headBefore = '';
         try {
-          const { stdout: h2 } = await execHiddenAsync('git rev-parse HEAD', { cwd: installDir, timeout: 5000 });
-          if (h2.trim() !== headBefore) needsCacheUpdate = true;
+          const { stdout: h } = await execHiddenFileAsync('git', ['rev-parse', 'HEAD'], { cwd: installDir, timeout: 5000 });
+          headBefore = h.trim();
         } catch { /* ignore */ }
+        try {
+          const { stdout } = await execHiddenFileAsync('git', ['pull', '--ff-only'], {
+            cwd: installDir,
+            timeout: 30000
+          });
+          if (stdout.includes('Already up to date')) {
+            console.log('[Startup] yeaft-skills is up to date');
+          } else {
+            needsCacheUpdate = true;
+            console.log('[Startup] yeaft-skills updated');
+          }
+          writePeriodicCheckMarker(updateCheckMarker);
+        } catch (e) {
+          writePeriodicCheckMarker(updateCheckMarker);
+          console.warn('[Startup] yeaft-skills update check failed; using cached checkout:', e.message);
+        }
+        // Double-check: compare HEAD after pull
+        if (!needsCacheUpdate && headBefore) {
+          try {
+            const { stdout: h2 } = await execHiddenFileAsync('git', ['rev-parse', 'HEAD'], { cwd: installDir, timeout: 5000 });
+            if (h2.trim() !== headBefore) needsCacheUpdate = true;
+          } catch { /* ignore */ }
+        }
+      } else {
+        console.log('[Startup] yeaft-skills update check skipped; recently checked');
       }
     }
     // Get current commit SHA for installed_plugins.json
     try {
-      const { stdout: sha } = await execHiddenAsync('git rev-parse HEAD', { cwd: installDir, timeout: 5000 });
+      const { stdout: sha } = await execHiddenFileAsync('git', ['rev-parse', 'HEAD'], { cwd: installDir, timeout: 5000 });
       gitSha = sha.trim();
     } catch { /* non-critical */ }
 
