@@ -274,9 +274,10 @@ describe('agent ctx defaults and upgrade contract', () => {
     expect(doctorSource).toContain('getSystemdServicePath(instanceId)');
     expect(doctorSource).toContain('getLaunchdPlistPath(instanceId)');
     expect(doctorSource).toContain('getEcosystemPath(instanceId)');
-    const startupCommands = [...agentSource.matchAll(/await execHiddenAsync\(/g)];
+    const startupCommands = [...agentSource.matchAll(/await execHiddenFileAsync\(/g)];
     expect(startupCommands).toHaveLength(6);
-    expect(agentSource).toContain('return execAsync(command, { ...options, windowsHide: true });');
+    expect(agentSource).toContain('execHiddenFileAsync');
+    expect(agentSource).not.toContain('execHiddenAsync');
     expect(agentSource).not.toMatch(/await execAsync\(/);
 
     // The actual default is set in agent/context.js. Mirror the contract.
