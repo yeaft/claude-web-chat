@@ -494,7 +494,7 @@ describe('message flow regressions', () => {
     }));
     const refreshA = pluginCenter.vm.refresh();
     expect(resolveRefreshA).toBeTypeOf('function');
-    expect(pluginStore.loadPluginCatalog).toHaveBeenLastCalledWith('agent-a');
+    expect(pluginStore.loadPluginCatalog).toHaveBeenLastCalledWith('agent-a', '');
 
     pluginStore.pluginCenterAgentId = 'agent-b';
     await Vue.nextTick();
@@ -639,15 +639,15 @@ describe('message flow regressions', () => {
       type: 'yeaft_plugin_catalog_result',
       agentId: 'agent-a',
       requestId: newerRequest.requestId,
-      catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+      catalog: { tools: [{ id: 'new-tool' }], skills: [], skillSources: [], mcpServers: [] },
       error: null,
     });
     await expect(newer).resolves.toEqual({
-      catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+      catalog: { tools: [{ id: 'new-tool' }], skills: [], skillSources: [], mcpServers: [] },
       error: null,
     });
     expect(store.pluginCatalogByKey[key]).toMatchObject({
-      catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+      catalog: { tools: [{ id: 'new-tool' }], skills: [], skillSources: [], mcpServers: [] },
       loading: false,
       error: null,
     });
@@ -656,16 +656,16 @@ describe('message flow regressions', () => {
       type: 'yeaft_plugin_catalog_result',
       agentId: 'agent-a',
       requestId: olderRequest.requestId,
-      catalog: { tools: [{ id: 'old-tool' }], skills: [], mcpServers: [] },
+      catalog: { tools: [{ id: 'old-tool' }], skills: [], skillSources: [], mcpServers: [] },
       error: 'old request failed late',
     });
     await expect(older).resolves.toEqual({
-      catalog: { tools: [{ id: 'old-tool' }], skills: [], mcpServers: [] },
+      catalog: { tools: [{ id: 'old-tool' }], skills: [], skillSources: [], mcpServers: [] },
       error: 'old request failed late',
     });
     expect(store.pluginCatalogRequestByKey[key]).toBe(newerRequest.requestId);
     expect(store.pluginCatalogByKey[key]).toMatchObject({
-      catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+      catalog: { tools: [{ id: 'new-tool' }], skills: [], skillSources: [], mcpServers: [] },
       loading: false,
       error: null,
     });
@@ -730,7 +730,7 @@ describe('message flow regressions', () => {
         type: 'yeaft_plugin_catalog_result',
         agentId: 'agent-a',
         requestId: olderRequest.requestId,
-        catalog: { tools: [{ id: 'old-tool' }], skills: [], mcpServers: [] },
+        catalog: { tools: [{ id: 'old-tool' }], skills: [], skillSources: [], mcpServers: [] },
         error: 'late old error',
       });
       expect(store.pluginCatalogByKey[key]).toMatchObject({
@@ -743,15 +743,15 @@ describe('message flow regressions', () => {
         type: 'yeaft_plugin_catalog_result',
         agentId: 'agent-a',
         requestId: newerRequest.requestId,
-        catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+        catalog: { tools: [{ id: 'new-tool' }], skills: [], skillSources: [], mcpServers: [] },
         error: null,
       });
       await expect(newer).resolves.toEqual({
-        catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+        catalog: { tools: [{ id: 'new-tool' }], skills: [], skillSources: [], mcpServers: [] },
         error: null,
       });
       expect(store.pluginCatalogByKey[key]).toMatchObject({
-        catalog: { tools: [{ id: 'new-tool' }], skills: [], mcpServers: [] },
+        catalog: { tools: [{ id: 'new-tool' }], skills: [], skillSources: [], mcpServers: [] },
         loading: false,
         error: null,
       });
@@ -2831,7 +2831,7 @@ describe('message flow regressions', () => {
 
     const pluginConfigRequests = [];
     const pluginStore = Vue.reactive({
-      agents: [{ id: 'agent-a', name: 'Agent A', online: true, capabilities: ['yeaft_plugins'] }],
+      agents: [{ id: 'agent-a', name: 'Agent A', online: true, capabilities: ['yeaft_plugins', 'yeaft_managed_skills'], capabilityMetadataProvided: true }],
       currentAgent: 'agent-a',
       pluginCenterAgentId: 'agent-a',
       pluginConfigByAgent: {},
@@ -2840,12 +2840,21 @@ describe('message flow regressions', () => {
           loading: false,
           catalog: {
             tools: [{ id: 'FileRead', label: 'FileRead' }],
-            skills: [{ id: 'skill-a', label: 'skill-a' }, { id: 'skill-b', label: 'skill-b' }],
+            skills: [
+              { id: 'skill-a', label: 'skill-a', tier: 'user' },
+              { id: 'skill-b', label: 'skill-b', tier: 'project' },
+            ],
+            skillSources: [
+              { id: 'user:skill-a', name: 'skill-a', label: 'skill-a', tier: 'user', managed: true },
+              { id: 'project:skill-b', name: 'skill-b', label: 'skill-b', tier: 'project', managed: true },
+            ],
             mcpServers: [],
           },
         },
       },
       pluginCatalogKey: (agentId, workDir = '') => `${agentId}:${workDir}`,
+      activePluginSession: () => ({ sessionId: 'session-a', agentId: 'agent-a', workDir: '' }),
+      mutateManagedSkill: vi.fn(() => Promise.resolve({ result: { name: 'created-skill' }, catalog: { tools: [], skills: [], skillSources: [], mcpServers: [] }, error: null })),
       loadPluginConfig: vi.fn(() => new Promise(resolve => {
         pluginConfigRequests.push(resolve);
       })),
@@ -2859,7 +2868,7 @@ describe('message flow regressions', () => {
     await Vue.nextTick();
     expect(pluginCenter.findAll('input[type="checkbox"]').every(input => input.element.disabled)).toBe(true);
     expect(pluginCenter.get('.btn-primary').attributes('disabled')).toBeDefined();
-    pluginCenter.vm.toggle('skills', 'skill-a', false);
+    pluginCenter.vm.toggle('skills', { name: 'skill-a', label: 'skill-a' }, false);
     await pluginCenter.vm.save();
     expect(pluginStore.savePluginConfig).not.toHaveBeenCalled();
 
@@ -2889,17 +2898,38 @@ describe('message flow regressions', () => {
     await Vue.nextTick();
     expect(pluginCenter.vm.configReady).toBe(true);
     expect(pluginCenter.vm.selection).toEqual({ tools: ['FileRead'] });
-    pluginCenter.vm.toggle('skills', 'skill-a', false);
+    Object.assign(pluginCenter.vm.skillForm, {
+      name: 'allow-all-skill', description: 'Created while Skills inherit allow-all', content: 'Keep inherited policy.',
+    });
+    await pluginCenter.vm.createSkill();
+    expect(pluginCenter.vm.selection).toEqual({ tools: ['FileRead'] });
+    expect(pluginCenter.vm.selection).not.toHaveProperty('skills');
+
+    pluginCenter.vm.toggle('skills', { name: 'skill-a', label: 'skill-a' }, false);
     expect(pluginCenter.vm.selection).toEqual({
       tools: ['FileRead'],
       skills: ['skill-b'],
     });
+    expect(pluginCenter.get('.plugin-center-skill-remove').text()).toBe(enMessages['yeaft.plugins.removeSkill']);
+    expect(pluginCenter.vm.projectSkillAvailable).toBe(false);
+    pluginCenter.vm.skillScope = 'project';
+    await pluginCenter.vm.createSkill();
+    expect(pluginCenter.vm.skillMutationError).toBe(enMessages['yeaft.plugins.projectScopeUnavailable']);
+    pluginCenter.vm.skillScope = 'user';
+    Object.assign(pluginCenter.vm.skillForm, {
+      name: 'created-skill', description: 'Created in UI', content: 'Use this Skill.',
+    });
+    await pluginCenter.vm.createSkill();
+    expect(pluginStore.mutateManagedSkill).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'create', scope: 'user', sessionId: '',
+    }), 'agent-a');
+    expect(pluginCenter.vm.selection.skills).toEqual(['skill-b', 'created-skill']);
     await pluginCenter.vm.save();
     expect(pluginStore.savePluginConfig).toHaveBeenCalledWith({
       tools: ['FileRead'],
-      skills: ['skill-b'],
+      skills: ['skill-b', 'created-skill'],
     }, 'agent-a');
-    expect(pluginCenter.vm.enabledCount).toBe(2);
+    expect(pluginCenter.vm.enabledCount).toBe(3);
     expect(pluginCenter.vm.isDirty).toBe(false);
     expect(pluginCenter.find('.plugin-center-save').attributes('disabled')).toBeDefined();
 

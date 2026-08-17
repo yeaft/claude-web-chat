@@ -9,6 +9,7 @@ import {
 } from './helpers/work-center-browser-state.js';
 import { setLocale, getLocale } from '../utils/i18n.js';
 import { agentSupportsYeaftPlugins } from '../utils/yeaft-plugin-capability.js';
+import { agentSupportsYeaftManagedSkills } from '../utils/yeaft-managed-skill-capability.js';
 
 // Helper modules
 import * as wsHelpers from './helpers/websocket.js';
@@ -730,6 +731,7 @@ export const useChatStore = defineStore('chat', {
     pluginConfigByAgent: {},
     pluginCatalogByKey: {},
     pluginCatalogRequestByKey: {},
+    managedSkillRequestByKey: {},
     _pluginPending: {},
     // Yeaft 分页状态 (parallel to the Chat-mode flags above):
     //  - yeaftHasMoreHistory: server told us there's at least one earlier
@@ -1745,6 +1747,48 @@ export const useChatStore = defineStore('chat', {
         }, 10_000);
         this._pluginPending[requestId] = { resolve, timer, kind: 'save', agentId };
         this.sendWsMessage({ type: 'update_yeaft_plugins', agentId, requestId, plugins });
+      });
+    },
+    activePluginSession() {
+      const sessionId = this.yeaftActiveSessionFilter || getSessionsStore()?.activeSessionId || null;
+      if (!sessionId) return { sessionId: '', workDir: '' };
+      const agentId = resolveAgentIdForSession(this, sessionId);
+      const row = getSessionsStore()?.sessionById?.(sessionId, agentId) || null;
+      return {
+        sessionId,
+        agentId: row?.agentId || agentId || '',
+        workDir: typeof row?.workDir === 'string' ? row.workDir.trim() : '',
+      };
+    },
+    managedSkillRequestKey(agentId, scope, sessionId) {
+      return `${agentId || ''}\u001f${scope || ''}\u001f${sessionId || ''}`;
+    },
+    mutateManagedSkill({ action, scope, skill, name, sessionId = '' } = {}, agentId = this.pluginCenterAgentId || this.currentAgent) {
+      if (!agentId) return Promise.resolve({ catalog: { tools: [], skills: [], skillSources: [], mcpServers: [] }, error: 'no agent' });
+      const target = this.agents.find(agent => agent?.id === agentId);
+      if (!agentSupportsYeaftManagedSkills(target)) {
+        return Promise.resolve({ catalog: { tools: [], skills: [], skillSources: [], mcpServers: [] }, error: 'The selected Agent does not support Skill management; upgrade and restart the Agent' });
+      }
+      const requestId = `managed-skill-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const key = this.managedSkillRequestKey(agentId, scope, sessionId);
+      this.managedSkillRequestByKey = { ...this.managedSkillRequestByKey, [key]: requestId };
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          const pending = this._pluginPending?.[requestId];
+          if (!pending) return;
+          delete this._pluginPending[requestId];
+          resolve({ catalog: { tools: [], skills: [], skillSources: [], mcpServers: [] }, error: 'timeout' });
+        }, 10_000);
+        this._pluginPending[requestId] = {
+          resolve, timer, kind: 'managed-skill', agentId, key,
+          workDir: scope === 'project' ? (this.activePluginSession().workDir || '') : '',
+        };
+        this.sendWsMessage({
+          type: 'yeaft_managed_skill', agentId, requestId, action, scope,
+          ...(sessionId ? { sessionId } : {}),
+          ...(skill ? { skill } : {}),
+          ...(name ? { name } : {}),
+        });
       });
     },
     loadPluginCatalog(agentId = this.pluginCenterAgentId || this.currentAgent, workDir = '') {

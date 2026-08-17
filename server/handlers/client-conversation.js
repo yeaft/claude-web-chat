@@ -31,6 +31,10 @@ import {
   agentSupportsYeaftPlugins,
   YEAFT_PLUGINS_UNSUPPORTED_ERROR,
 } from '../yeaft-plugin-capability.js';
+import {
+  agentSupportsYeaftManagedSkills,
+  YEAFT_MANAGED_SKILLS_UNSUPPORTED_ERROR,
+} from '../yeaft-managed-skill-capability.js';
 
 
 function isRetiredCollabSessionId(id) {
@@ -52,6 +56,14 @@ function emptyYeaftPluginCatalog(error = null) {
   return {
     type: 'yeaft_plugin_catalog_result',
     catalog: { tools: [], skills: [], mcpServers: [] },
+    ...(error ? { error } : {}),
+  };
+}
+
+function emptyYeaftManagedSkillResult(error = null) {
+  return {
+    type: 'yeaft_managed_skill_result',
+    catalog: { tools: [], skills: [], skillSources: [], mcpServers: [] },
     ...(error ? { error } : {}),
   };
 }
@@ -1650,6 +1662,15 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           });
           return true;
         }
+        if (relayType === 'yeaft_managed_skill'
+            && !agentSupportsYeaftManagedSkills(agents.get(relayAgentId))) {
+          await sendToWebClient(client, {
+            ...emptyYeaftManagedSkillResult(YEAFT_MANAGED_SKILLS_UNSUPPORTED_ERROR),
+            agentId: relayAgentId,
+            requestId: msg.requestId || null,
+          });
+          return true;
+        }
         const relayAgent = agents.get(relayAgentId);
         if (!relayAgent || relayAgent.ws?.readyState !== 1) {
           if (relayType === 'yeaft_fetch_tool_stats') {
@@ -1676,7 +1697,9 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         // Direct catalog replies are request-scoped. Carry the browser client
         // identity through the Agent so another owner tab cannot accidentally
         // consume a response for this picker request.
-        if (relayType === 'yeaft_plugin_catalog') rest._requestClientId = clientId;
+        if (relayType === 'yeaft_plugin_catalog' || relayType === 'yeaft_managed_skill') {
+          rest._requestClientId = clientId;
+        }
         if (rest.type === 'yeaft_session_send' || rest.type === 'yeaft_session_chat') {
           trackUserTurn(client.userId, Buffer.byteLength(JSON.stringify(msg)));
           const sessionId = typeof rest.sessionId === 'string' ? rest.sessionId.trim() : '';
