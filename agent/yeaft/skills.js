@@ -521,17 +521,20 @@ function secureWorkspacePath(workspaceRoot, relativePath, type) {
   const lexicalTarget = resolve(lexicalRoot, relativePath);
   if (!pathIsInside(lexicalTarget, lexicalRoot) || lexicalTarget === lexicalRoot) return null;
 
-  let canonicalRoot;
+  let canonicalCurrent;
+  let expectedCurrent;
   let current = lexicalRoot;
   try {
     const rootStat = lstatSync(current);
     if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return null;
-    canonicalRoot = realpathSync(current);
+    canonicalCurrent = realpathSync(current);
+    expectedCurrent = canonicalCurrent;
     for (const component of relativePath.split(/[\\/]+/)) {
       if (!component || component === '.' || component === '..') return null;
       current = join(current, component);
+      expectedCurrent = join(expectedCurrent, component);
       const stat = lstatSync(current);
-      if (stat.isSymbolicLink() || !pathIsInside(realpathSync(current), canonicalRoot)) return null;
+      if (stat.isSymbolicLink() || realpathSync(current) !== expectedCurrent) return null;
       if (current !== lexicalTarget && !stat.isDirectory()) return null;
       if (current === lexicalTarget && ((type === 'directory' && !stat.isDirectory()) || (type === 'file' && !stat.isFile()))) {
         return null;

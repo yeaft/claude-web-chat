@@ -125,6 +125,33 @@ describe('SkillManager discovery', () => {
     expect(manager.getRelevantPromptContent('escaped-dir')).not.toContain('EXTERNAL_SKILL_SENTINEL');
   });
 
+  it('does not follow a project Skill link to another directory inside the workspace', () => {
+    const workspace = tempRoot();
+    const projectSkills = join(workspace, '.yeaft', 'skills');
+    const internalTarget = join(workspace, 'shared-skill-content');
+    write(internalTarget, 'SKILL.md', skill('escaped-internal', 'INTERNAL_LINK_SENTINEL'));
+    write(workspace, '.yeaft/skills/local/SKILL.md', skill('local'));
+
+    try {
+      symlinkSync(internalTarget, join(projectSkills, 'linked-internal-skill'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (['EPERM', 'EACCES', 'ENOSYS'].includes(error?.code)) return;
+      throw error;
+    }
+
+    const manager = new SkillManager(projectSkills, {
+      tierByDir: { [projectSkills]: 'project' },
+      secureWorkspaceByDir: {
+        [projectSkills]: { workspaceRoot: workspace, relativeRoot: '.yeaft/skills' },
+      },
+    });
+
+    expect(manager.load()).toMatchObject({ loaded: 1, errors: [] });
+    expect(manager.list().map(item => item.name)).toEqual(['local']);
+    expect(manager.get('escaped-internal')).toBeNull();
+    expect(manager.getRelevantPromptContent('escaped-internal')).not.toContain('INTERNAL_LINK_SENTINEL');
+  });
+
   it('does not follow a linked SKILL.md file in a secure workspace', () => {
     const workspace = tempRoot();
     const projectSkills = join(workspace, '.yeaft', 'skills');
