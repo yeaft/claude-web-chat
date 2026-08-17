@@ -1252,7 +1252,7 @@ let _vpUnsubscribe = null;
  * first access. Group-A and group-B are isolated; the durable transcript is
  * never replaced by the cache trim.
  *
- * @typedef {Array<{role:'user'|'assistant'|'tool', content:string|Array, toolCalls?:Array, toolCallId?:string, isError?:boolean}>} GroupHistory
+ * @typedef {Array<{role:'user'|'assistant'|'tool', content:string|Array, toolCalls?:Array, thinkingBlocks?:Array, toolCallId?:string, isError?:boolean}>} GroupHistory
  */
 
 /**
@@ -1365,6 +1365,24 @@ function projectPersistedToHistoryEntry(m, { includeReflections = false } = {}) 
       input: tc.input,
     }));
   }
+  // Anthropic thinking blocks carry provider-signed replay state. The durable
+  // parser already validates them; preserve the complete payload + signature
+  // in the runtime history owner so a restart does not create a tool arc with
+  // its required thinking prefix missing. `filterSnapshotForVp` strips these
+  // blocks from other VPs before any provider request.
+  if (Array.isArray(m.thinkingBlocks) && m.thinkingBlocks.length > 0) {
+    const thinkingBlocks = m.thinkingBlocks
+      .filter(tb => tb
+        && typeof tb.signature === 'string'
+        && tb.signature
+        && (tb.redacted === true
+          ? typeof tb.data === 'string'
+          : typeof tb.thinking === 'string'))
+      .map(tb => tb.redacted === true
+        ? { redacted: true, data: tb.data, signature: tb.signature }
+        : { thinking: tb.thinking, signature: tb.signature });
+    if (thinkingBlocks.length > 0) entry.thinkingBlocks = thinkingBlocks;
+  }
   if (m.isError) entry.isError = true;
   if (m.ts) entry.ts = m.ts;
   else if (m.time) entry.ts = m.time;
@@ -1372,7 +1390,7 @@ function projectPersistedToHistoryEntry(m, { includeReflections = false } = {}) 
   if (Array.isArray(m.attachments) && m.attachments.length > 0) entry.attachments = m.attachments;
   if (m.quote && typeof m.quote === 'object') entry.quote = m.quote;
   if (Array.isArray(m.todos)) entry.todos = m.todos;
-  if ((entry.role === 'user' || entry.role === 'assistant') && !entry.content && !entry.attachments && !entry.images && !entry.toolCalls && !entry.todos && !entry.askUserResults) return null;
+  if ((entry.role === 'user' || entry.role === 'assistant') && !entry.content && !entry.attachments && !entry.images && !entry.toolCalls && !entry.thinkingBlocks && !entry.todos && !entry.askUserResults) return null;
   return entry;
 }
 

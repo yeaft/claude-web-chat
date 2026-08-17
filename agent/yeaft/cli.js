@@ -388,6 +388,9 @@ async function runREPL(config, args) {
     content: m.content,
     ...(m.toolCallId && { toolCallId: m.toolCallId }),
     ...(m.toolCalls && { toolCalls: m.toolCalls }),
+    ...(Array.isArray(m.thinkingBlocks) && m.thinkingBlocks.length > 0
+      ? { thinkingBlocks: m.thinkingBlocks.map(block => ({ ...block })) }
+      : {}),
   }));
 
   const hotCount = conversationStore.countHot();
@@ -905,6 +908,9 @@ async function runStreamJson(config, args) {
     content: message.content,
     ...(message.toolCallId && { toolCallId: message.toolCallId }),
     ...(message.toolCalls && { toolCalls: message.toolCalls }),
+    ...(Array.isArray(message.thinkingBlocks) && message.thinkingBlocks.length > 0
+      ? { thinkingBlocks: message.thinkingBlocks.map(block => ({ ...block })) }
+      : {}),
   }));
 
   // An ad-hoc stream-json conversation has exactly one Engine and no VP roster.
@@ -1257,6 +1263,9 @@ async function runOnce(config, args) {
       content: m.content,
       ...(m.toolCallId && { toolCallId: m.toolCallId }),
       ...(m.toolCalls && { toolCalls: m.toolCalls }),
+      ...(Array.isArray(m.thinkingBlocks) && m.thinkingBlocks.length > 0
+        ? { thinkingBlocks: m.thinkingBlocks.map(block => ({ ...block })) }
+        : {}),
     }));
 
     let terminalEngineError = null;
