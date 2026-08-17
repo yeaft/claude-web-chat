@@ -2898,6 +2898,13 @@ describe('message flow regressions', () => {
     await Vue.nextTick();
     expect(pluginCenter.vm.configReady).toBe(true);
     expect(pluginCenter.vm.selection).toEqual({ tools: ['FileRead'] });
+    Object.assign(pluginCenter.vm.skillForm, {
+      name: 'allow-all-skill', description: 'Created while Skills inherit allow-all', content: 'Keep inherited policy.',
+    });
+    await pluginCenter.vm.createSkill();
+    expect(pluginCenter.vm.selection).toEqual({ tools: ['FileRead'] });
+    expect(pluginCenter.vm.selection).not.toHaveProperty('skills');
+
     pluginCenter.vm.toggle('skills', { name: 'skill-a', label: 'skill-a' }, false);
     expect(pluginCenter.vm.selection).toEqual({
       tools: ['FileRead'],
@@ -2916,13 +2923,13 @@ describe('message flow regressions', () => {
     expect(pluginStore.mutateManagedSkill).toHaveBeenCalledWith(expect.objectContaining({
       action: 'create', scope: 'user', sessionId: '',
     }), 'agent-a');
-    expect(pluginCenter.vm.selection.skills).not.toContain('created-skill');
+    expect(pluginCenter.vm.selection.skills).toEqual(['skill-b', 'created-skill']);
     await pluginCenter.vm.save();
     expect(pluginStore.savePluginConfig).toHaveBeenCalledWith({
       tools: ['FileRead'],
-      skills: ['skill-b'],
+      skills: ['skill-b', 'created-skill'],
     }, 'agent-a');
-    expect(pluginCenter.vm.enabledCount).toBe(2);
+    expect(pluginCenter.vm.enabledCount).toBe(3);
     expect(pluginCenter.vm.isDirty).toBe(false);
     expect(pluginCenter.find('.plugin-center-save').attributes('disabled')).toBeDefined();
 

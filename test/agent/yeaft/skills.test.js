@@ -97,6 +97,88 @@ describe('SkillManager discovery', () => {
     expect(manager.list().map(item => item.name)).toEqual(['brainstorming']);
   });
 
+  it('does not follow linked project Skill directories in a secure workspace', () => {
+    const workspace = tempRoot();
+    const projectSkills = join(workspace, '.yeaft', 'skills');
+    const external = tempRoot();
+    write(external, 'SKILL.md', skill('escaped-dir', 'EXTERNAL_SKILL_SENTINEL'));
+    write(workspace, '.yeaft/skills/local/SKILL.md', skill('local'));
+
+    try {
+      symlinkSync(external, join(projectSkills, 'linked-directory-skill'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      // Windows can deny junction/symlink creation under restricted policies.
+      if (['EPERM', 'EACCES', 'ENOSYS'].includes(error?.code)) return;
+      throw error;
+    }
+
+    const manager = new SkillManager(projectSkills, {
+      tierByDir: { [projectSkills]: 'project' },
+      secureWorkspaceByDir: {
+        [projectSkills]: { workspaceRoot: workspace, relativeRoot: '.yeaft/skills' },
+      },
+    });
+
+    expect(manager.load()).toMatchObject({ loaded: 1, errors: [] });
+    expect(manager.list().map(item => item.name)).toEqual(['local']);
+    expect(manager.get('escaped-dir')).toBeNull();
+    expect(manager.getRelevantPromptContent('escaped-dir')).not.toContain('EXTERNAL_SKILL_SENTINEL');
+  });
+
+  it('does not follow a linked SKILL.md file in a secure workspace', () => {
+    const workspace = tempRoot();
+    const projectSkills = join(workspace, '.yeaft', 'skills');
+    const external = join(tempRoot(), 'external-skill.md');
+    writeFileSync(external, skill('escaped-file', 'EXTERNAL_FILE_SENTINEL'));
+    mkdirSync(join(projectSkills, 'ordinary-skill'), { recursive: true });
+
+    try {
+      symlinkSync(external, join(projectSkills, 'ordinary-skill', 'SKILL.md'), 'file');
+    } catch (error) {
+      if (['EPERM', 'EACCES', 'ENOSYS'].includes(error?.code)) return;
+      throw error;
+    }
+
+    const manager = new SkillManager(projectSkills, {
+      tierByDir: { [projectSkills]: 'project' },
+      secureWorkspaceByDir: {
+        [projectSkills]: { workspaceRoot: workspace, relativeRoot: '.yeaft/skills' },
+      },
+    });
+
+    expect(manager.load()).toMatchObject({ loaded: 0, errors: [] });
+    expect(manager.get('escaped-file')).toBeNull();
+    expect(manager.getRelevantPromptContent('escaped-file')).not.toContain('EXTERNAL_FILE_SENTINEL');
+  });
+
+  it('does not read linked Skill references in a secure workspace', () => {
+    const workspace = tempRoot();
+    const projectSkills = join(workspace, '.yeaft', 'skills');
+    const external = join(tempRoot(), 'external-reference.md');
+    write(workspace, '.yeaft/skills/local/SKILL.md', skill('local'));
+    writeFileSync(external, 'EXTERNAL_REFERENCE_SENTINEL', 'utf8');
+    mkdirSync(join(projectSkills, 'local', 'references'), { recursive: true });
+
+    try {
+      symlinkSync(external, join(projectSkills, 'local', 'references', 'escape.md'), 'file');
+    } catch (error) {
+      if (['EPERM', 'EACCES', 'ENOSYS'].includes(error?.code)) return;
+      throw error;
+    }
+
+    const manager = new SkillManager(projectSkills, {
+      tierByDir: { [projectSkills]: 'project' },
+      secureWorkspaceByDir: {
+        [projectSkills]: { workspaceRoot: workspace, relativeRoot: '.yeaft/skills' },
+      },
+    });
+
+    manager.load();
+    expect(manager.view('local')).toMatchObject({ references: [] });
+    expect(manager.view('local', 'references/escape.md').linkedContent)
+      .toBe('Error reading file: secure workspace read failed');
+  });
+
   it('loads identical valid skills from layered roots without duplicate parse errors', () => {
     const bundled = tempRoot();
     const user = tempRoot();

@@ -516,8 +516,80 @@ function discoverSkills(rootDir, subPath = '', opts = {}) {
   return { skills, errors };
 }
 
+function secureWorkspacePath(workspaceRoot, relativePath, type) {
+  const lexicalRoot = resolve(workspaceRoot);
+  const lexicalTarget = resolve(lexicalRoot, relativePath);
+  if (!pathIsInside(lexicalTarget, lexicalRoot) || lexicalTarget === lexicalRoot) return null;
+
+  let canonicalRoot;
+  let current = lexicalRoot;
+  try {
+    const rootStat = lstatSync(current);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return null;
+    canonicalRoot = realpathSync(current);
+    for (const component of relativePath.split(/[\\/]+/)) {
+      if (!component || component === '.' || component === '..') return null;
+      current = join(current, component);
+      const stat = lstatSync(current);
+      if (stat.isSymbolicLink() || !pathIsInside(realpathSync(current), canonicalRoot)) return null;
+      if (current !== lexicalTarget && !stat.isDirectory()) return null;
+      if (current === lexicalTarget && ((type === 'directory' && !stat.isDirectory()) || (type === 'file' && !stat.isFile()))) {
+        return null;
+      }
+    }
+    return current;
+  } catch {
+    return null;
+  }
+}
+
+function listSecureWorkspaceDirectory(workspaceRoot, relativePath) {
+  const dir = secureWorkspacePath(workspaceRoot, relativePath, 'directory');
+  if (!dir) return null;
+  try {
+    return readdirSync(dir, { withFileTypes: true }).map(entry => ({
+      name: entry.name,
+      isFile: entry.isFile(),
+      isDirectory: entry.isDirectory(),
+      isSymbolicLink: entry.isSymbolicLink() || entry.isBlockDevice() || entry.isCharacterDevice()
+        || entry.isFIFO() || entry.isSocket(),
+    }));
+  } catch {
+    return null;
+  }
+}
+
+function readSecureWorkspaceFile(workspaceRoot, relativePath) {
+  const file = secureWorkspacePath(workspaceRoot, relativePath, 'file');
+  if (!file) return null;
+  try {
+    if (lstatSync(file).size > MAX_PROJECT_SKILL_BYTES) {
+      return { truncated: true, buffer: Buffer.alloc(0) };
+    }
+    const buffer = readFileSync(file);
+    if (secureWorkspacePath(workspaceRoot, relativePath, 'file') !== file) return null;
+    return buffer.length > MAX_PROJECT_SKILL_BYTES
+      ? { truncated: true, buffer: Buffer.alloc(0) }
+      : { truncated: false, buffer };
+  } catch {
+    return null;
+  }
+}
+
+function listSecureWorkspaceEntries(workspaceRoot, relativePath) {
+  const entries = listWorkspaceDirectory(workspaceRoot, relativePath);
+  if (entries || process.platform === 'linux') return entries;
+  return listSecureWorkspaceDirectory(workspaceRoot, relativePath);
+}
+
+function readSecureWorkspaceSkillFile(workspaceRoot, relativePath) {
+  const read = readWorkspaceFile(workspaceRoot, relativePath, { maxBytes: MAX_PROJECT_SKILL_BYTES });
+  if (read || process.platform === 'linux') return read;
+  return readSecureWorkspaceFile(workspaceRoot, relativePath);
+}
+
 function listWorkspaceSkillFiles(workspaceRoot, relativeDir) {
-  return (listWorkspaceDirectory(workspaceRoot, relativeDir) || [])
+  return (listSecureWorkspaceEntries(workspaceRoot, relativeDir) || [])
     .filter(entry => entry.isFile && !entry.isSymbolicLink)
     .map(entry => entry.name);
 }
@@ -526,21 +598,16 @@ function discoverWorkspaceSkills(workspaceRoot, skillsRelativeRoot, subPath = ''
   const skills = [];
   const errors = [];
   const relativeDir = subPath ? join(skillsRelativeRoot, subPath) : skillsRelativeRoot;
-  const entries = listWorkspaceDirectory(workspaceRoot, relativeDir);
-  // The descriptor-based workspace reader is Linux-only. Project Skills still
-  // need to load on Windows/macOS; the root was already selected from a local
-  // Session workDir, so use the same lexical scanner there.
-  if (!entries && process.platform !== 'linux') {
-    return discoverSkills(resolve(workspaceRoot, relativeDir));
-  }
+  const entries = listSecureWorkspaceEntries(workspaceRoot, relativeDir);
   if (!entries) return { skills, errors };
+  const readFile = relativePath => readSecureWorkspaceSkillFile(workspaceRoot, relativePath);
 
   for (const entry of entries) {
     if (entry.isSymbolicLink) continue;
     const relPath = subPath ? join(subPath, entry.name) : entry.name;
     const workspacePath = join(skillsRelativeRoot, relPath);
     if (entry.isFile && entry.name.endsWith('.md') && entry.name !== 'SKILL.md') {
-      const read = readWorkspaceFile(workspaceRoot, workspacePath, { maxBytes: MAX_PROJECT_SKILL_BYTES });
+      const read = readFile(workspacePath);
       if (!read || read.truncated) continue;
       const skill = parseSkill(read.buffer.toString('utf8'), entry.name);
       if (!skill?.name) {
@@ -559,13 +626,13 @@ function discoverWorkspaceSkills(workspaceRoot, skillsRelativeRoot, subPath = ''
     }
     if (!entry.isDirectory) continue;
 
-    const childEntries = listWorkspaceDirectory(workspaceRoot, workspacePath);
+    const childEntries = listSecureWorkspaceEntries(workspaceRoot, workspacePath);
     if (!childEntries) continue;
     const skillFile = childEntries.find(child => child.name === 'SKILL.md');
     if (skillFile) {
       if (!skillFile.isFile || skillFile.isSymbolicLink) continue;
       const skillRelativePath = join(workspacePath, 'SKILL.md');
-      const read = readWorkspaceFile(workspaceRoot, skillRelativePath, { maxBytes: MAX_PROJECT_SKILL_BYTES });
+      const read = readFile(skillRelativePath);
       if (!read || read.truncated) continue;
       const skill = parseSkill(read.buffer.toString('utf8'), entry.name);
       if (!skill?.name) {
@@ -921,7 +988,7 @@ export class SkillManager {
           result.linkedContent = 'Error: path traversal not allowed';
         } else {
           const relativePath = join(skill._secureRelativePath, filePath);
-          const read = readWorkspaceFile(skill._secureWorkspaceRoot, relativePath, { maxBytes: MAX_PROJECT_SKILL_BYTES });
+          const read = readSecureWorkspaceSkillFile(skill._secureWorkspaceRoot, relativePath);
           result.linkedContent = !read
             ? 'Error reading file: secure workspace read failed'
             : (read.truncated ? 'Error reading file: linked file exceeds size limit' : read.buffer.toString('utf8'));

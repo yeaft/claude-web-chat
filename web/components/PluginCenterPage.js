@@ -350,6 +350,15 @@ export default {
           this.skillMutationError = result.error;
           return;
         }
+        const createdName = typeof result?.result?.name === 'string'
+          ? result.result.name.trim()
+          : '';
+        if (createdName && Array.isArray(this.selection?.skills)) {
+          this.selection = {
+            ...this.selection,
+            skills: [...new Set([...this.selection.skills, createdName])],
+          };
+        }
         this.resetSkillForm();
         this.showSkillForm = false;
         await this.refreshCatalogForSkillScope();

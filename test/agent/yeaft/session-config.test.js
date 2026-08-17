@@ -28,7 +28,7 @@ import {
   boundDreamPrompt,
   batchSourcesForApply,
 } from '../../../agent/yeaft/dream/segment.js';
-import { buildPluginCatalog } from '../../../agent/yeaft/plugins.js';
+import { buildPluginCatalog, createPluginSkillManager } from '../../../agent/yeaft/plugins.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
 import { MCPManager } from '../../../agent/yeaft/mcp.js';
 import { __testGetOrCreateVpEngine, __testHooks, __testLoadPluginCatalogMcpConfig, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, handleYeaftLoadHistoryOutline, handleYeaftManagedSkill, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftUpdateSessionConfig, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
@@ -975,6 +975,30 @@ describe('Yeaft session-scoped model config', () => {
       });
       expect(readFileSync(configPath, 'utf8')).toBe(invalidSchema);
     }
+  });
+
+  it('exposes a newly saved Skill through an explicit Skill allowlist', () => {
+    const baseSkillManager = {
+      has: name => ['skill-b', 'created-skill'].includes(name),
+      list: () => [
+        { name: 'skill-b', description: 'Existing explicit Skill' },
+        { name: 'created-skill', description: 'Newly created Skill' },
+      ],
+      get: name => ({ name }),
+      resolve: name => ({ name }),
+      view: name => ({ name }),
+      findRelevant: () => [
+        { name: 'skill-b', description: 'Existing explicit Skill' },
+        { name: 'created-skill', description: 'Newly created Skill' },
+      ],
+      getPromptContent: name => `prompt:${name}`,
+    };
+
+    const plugins = { skills: ['skill-b', 'created-skill'] };
+    const filtered = createPluginSkillManager(baseSkillManager, plugins);
+
+    expect(filtered.list().map(skill => skill.name)).toEqual(['skill-b', 'created-skill']);
+    expect(filtered.getPromptContent('created-skill')).toBe('prompt:created-skill');
   });
 
   it('rejects unrelated config writes over invalid Plugin policies', () => {
