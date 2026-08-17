@@ -1246,6 +1246,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         await sendToWebClient(client, { type: 'btw_error', conversationId: btwConvId, error: 'Permission denied' });
         return;
       }
+      trackUserTurn(client.userId, Buffer.byteLength(JSON.stringify(msg)));
       await forwardToAgent(client.currentAgent, {
         type: 'btw_question',
         conversationId: btwConvId,

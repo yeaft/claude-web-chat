@@ -1,8 +1,18 @@
 import { WebSocket } from 'ws';
-import { userStatsDb } from '../database.js';
+import { userDb, userStatsDb } from '../database.js';
 import { agents, webClients, userStatsDeltas } from '../context.js';
 
 const toNumber = (value) => Number(value) || 0;
+
+function onlineUserIds() {
+  const ids = new Set();
+  for (const [, client] of webClients) {
+    if (client.authenticated && client.userId && client.ws?.readyState === WebSocket.OPEN) {
+      ids.add(client.userId);
+    }
+  }
+  return ids;
+}
 
 function emptyAgentMetrics() {
   return {
@@ -73,7 +83,9 @@ function mergePendingUserStats(stats) {
     }
     row.message_count = toNumber(row.message_count) + toNumber(delta.messages);
     row.session_count = toNumber(row.session_count) + toNumber(delta.sessions);
-    row.request_count = toNumber(row.request_count) + toNumber(delta.requests);
+    // request_count is a legacy field and may contain old control-frame
+    // traffic. The current dashboard request metric is the user-turn count.
+    row.request_count = toNumber(row.message_count);
     row.bytes_sent = toNumber(row.bytes_sent) + toNumber(delta.bytesSent);
     row.bytes_received = toNumber(row.bytes_received) + toNumber(delta.bytesReceived);
   }
@@ -94,12 +106,7 @@ export function registerAdminRoutes(app, { requireAuth, requireAdmin }) {
   app.get('/api/admin/dashboard', requireAuth, requireAdmin, (req, res) => {
     try {
       const totals = userStatsDb.getDashboardTotals();
-      const onlineUsers = new Set();
-      for (const [, client] of webClients) {
-        if (client.authenticated && client.userId) {
-          onlineUsers.add(client.userId);
-        }
-      }
+      const onlineUsers = onlineUserIds();
       let onlineAgents = 0;
       for (const [, agent] of agents) {
         if (agent.ws.readyState === WebSocket.OPEN) onlineAgents++;
@@ -130,15 +137,43 @@ export function registerAdminRoutes(app, { requireAuth, requireAdmin }) {
     try {
       const period = req.query.period || 'all';
       const validPeriods = ['today', 'week', 'month', 'all'];
+      const activeUserIds = onlineUserIds();
       const stats = mergePendingUserStats(userStatsDb.getByPeriod(validPeriods.includes(period) ? period : 'all'));
+      const statsByUserId = new Map(stats.map(row => [row.user_id, row]));
+      // Include users with no usage rows yet so the Active filter reflects all
+      // currently connected users, not only users who have sent a prompt.
+      for (const user of userDb.getAll()) {
+        if (!statsByUserId.has(user.id)) {
+          stats.push({
+            user_id: user.id,
+            username: user.username,
+            display_name: user.display_name,
+            role: user.role,
+            message_count: 0,
+            session_count: 0,
+            request_count: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            total_tokens: 0,
+            last_login_at: user.last_login_at,
+            updated_at: user.created_at,
+          });
+        }
+      }
       res.json(stats.map(s => ({
         userId: s.user_id,
         username: s.username,
         displayName: s.display_name,
         role: s.role,
         messageCount: s.message_count,
-        sessionCount: s.session_count,
-        requestCount: s.request_count,
+        // request_count predates the user-turn boundary and includes old
+        // control/echo traffic. Use the canonical user-turn count for the UI.
+        requestCount: toNumber(s.message_count),
+        active: activeUserIds.has(s.user_id),
         bytesSent: s.bytes_sent,
         bytesReceived: s.bytes_received,
         inputTokens: s.input_tokens,
@@ -170,6 +205,7 @@ export function registerAdminRoutes(app, { requireAuth, requireAdmin }) {
         ownerUsername: agent.ownerUsername || null,
         capabilities: agent.capabilities || [],
         conversationCount: agent.conversations?.size || 0,
+        lastSeenAt: agent.lastSeenAt || null,
         metrics: safeAgentMetrics(agent.metrics || {}),
         metricsUpdatedAt: agent.metricsUpdatedAt || null
       }));

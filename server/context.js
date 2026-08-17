@@ -122,14 +122,6 @@ export function clearYeaftDebugRequestsForClient(clientId) {
 // only; heartbeat/control frames are deliberately excluded.
 export const userStatsDeltas = new Map();
 
-const HEARTBEAT_MESSAGE_TYPES = new Set([
-  'ping',
-  'pong',
-  'ping_session',
-  'pong_session',
-  'client_hello'
-]);
-
 const OUTBOUND_MESSAGE_TRAFFIC_TYPES = new Set([
   'claude_output',
   'yeaft_output',
@@ -158,22 +150,8 @@ function getOrCreateDelta(userId) {
   return delta;
 }
 
-export function isHeartbeatMessageType(type) {
-  return HEARTBEAT_MESSAGE_TYPES.has(type);
-}
-
 export function isOutboundMessageTraffic(type) {
   return OUTBOUND_MESSAGE_TRAFFIC_TYPES.has(type);
-}
-
-/**
- * Record a non-heartbeat WS request received from a user. This is kept for
- * operator diagnostics; dashboard traffic comes from user-turn/message bytes.
- */
-export function trackRequest(userId, bytesReceived, messageType = '') {
-  if (!userId || isHeartbeatMessageType(messageType)) return;
-  const delta = getOrCreateDelta(userId);
-  delta.requests++;
 }
 
 /**
@@ -198,7 +176,10 @@ export function trackBytesSent(userId, bytesSent, messageType = '') {
 export function trackUserTurn(userId, bytesReceived = 0) {
   if (!userId) return;
   const delta = getOrCreateDelta(userId);
+  // Both counters are recorded at the validated user-turn boundary. The old
+  // WS ingress counter saw history/control frames and is intentionally gone.
   delta.messages++;
+  delta.requests++;
   delta.bytesReceived += Math.max(0, Number(bytesReceived) || 0);
 }
 

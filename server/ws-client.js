@@ -5,7 +5,7 @@ import { generateSkipAuthSession } from './auth.js';
 import { authenticateRequest } from './auth/request-auth.js';
 import { encodeKey } from './encryption.js';
 import { userDb } from './database.js';
-import { agents, clearYeaftDebugRequestsForClient, webClients, isHeartbeatMessageType, trackRequest } from './context.js';
+import { agents, clearYeaftDebugRequestsForClient, webClients } from './context.js';
 import {
   applyClientHello,
   BROWSER_RUNTIME_PROTOCOL,
@@ -136,12 +136,6 @@ export function handleWebConnection(ws, url, req = {}) {
     const client = webClients.get(clientId);
     const msg = await parseMessage(data, client?.sessionKey);
     if (!msg) return;
-    // Stats tracking: exclude heartbeat/control frames. User-turn bytes are
-    // accounted at the send handlers, not here, so pings and dashboard polling
-    // don't inflate traffic.
-    if (!isHeartbeatMessageType(msg.type)) {
-      trackRequest(client?.userId, data.length || 0, msg.type);
-    }
     if (msg.perfTraceId) {
       recordPerfTraceEvent({
         traceId: msg.perfTraceId,
