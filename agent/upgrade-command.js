@@ -5,6 +5,25 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 export const DEFAULT_UPGRADE_REGISTRY = 'https://pkg.yeaft.com/';
 export const SAFE_REMOTE_UPGRADE_CAPABILITY = 'remote_upgrade_safe';
+export const CONTAINER_AGENT_CAPABILITY = 'container_agent';
+export const CONTAINER_IMAGE_UPGRADE_REASON = 'container_image_upgrade_required';
+
+export function isContainerAgentRuntime(env = process.env) {
+  return String(env?.YEAFT_AGENT_RUNTIME || '').trim() === CONTAINER_AGENT_CAPABILITY;
+}
+
+export function getAgentUpgradeCapability(env = process.env) {
+  return isContainerAgentRuntime(env) ? CONTAINER_AGENT_CAPABILITY : SAFE_REMOTE_UPGRADE_CAPABILITY;
+}
+
+export function buildContainerImageUpgradeMessage(version = null) {
+  const subject = version ? `Container Agent v${version}` : 'This Container Agent';
+  return `${subject} is managed as a Docker image and cannot upgrade itself with npm. ` +
+    'On the Docker Host, run "docker pull <configured-agent-image>", then recreate the same container ' +
+    'through the existing Server/Sandbox lifecycle or the original "yeaft-agent container install" command. ' +
+    'Keep the existing /home/yeaft/.yeaft and /workspace persistent volumes and reuse the original host-side ' +
+    '0600 agent-secret file; do not remove those volumes during recreation.';
+}
 
 const WINDOWS_UPGRADE_LOCK_NAME = 'active.lock';
 

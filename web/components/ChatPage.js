@@ -1140,7 +1140,11 @@ export default {
             version: version || '',
           }));
         } else {
-          if (reason === 'manual_upgrade_required') {
+          if (reason === 'container_image_upgrade_required') {
+            alertDialog(this.$t('chat.agent.containerImageUpgradeRequired', {
+              version: version || '?',
+            }));
+          } else if (reason === 'manual_upgrade_required') {
             alertDialog(this.$t('chat.agent.manualUpgradeRequired', {
               version: version || '?',
             }));

@@ -1,15 +1,21 @@
 import { describe, it, expect, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { MockWebSocket, WS_CLOSED, WS_OPEN } from '../helpers/mockWs.js';
 import {
+  CONTAINER_AGENT_CAPABILITY,
+  CONTAINER_IMAGE_UPGRADE_REASON,
   DEFAULT_UPGRADE_REGISTRY,
+  buildContainerImageUpgradeMessage,
   buildUpgradeInstallArgs,
   buildUpgradeMetadataArgs,
   buildUpgradeMetadataUrl,
+  getAgentUpgradeCapability,
+  isContainerAgentRuntime,
   resolveWindowsNpmCliPath,
   resolveWindowsPm2CliPath,
 } from '../../agent/upgrade-command.js';
@@ -46,6 +52,7 @@ import {
 import { shouldLoadLegacyLocalConfig as shouldLoadLegacyLocalConfigFromService } from '../../agent/service.js';
 import { handleLocalCommand } from '../../agent/cli.js';
 import { applyRegisteredTransport } from '../../agent/connection/message-router.js';
+import { buildUnixUpgradeScript, handleUpgradeAgent } from '../../agent/connection/upgrade.js';
 import { generateSessionKey, isEncrypted } from '../../agent/encryption.js';
 
 /**
@@ -81,6 +88,45 @@ async function sendToServerUnderTest(ctxLike, msg) {
 }
 
 describe('agent ctx defaults and upgrade contract', () => {
+  it('rejects container upgrades before any npm metadata lookup', async () => {
+    const previousWebSocket = globalThis.WebSocket;
+    const original = {
+      ws: ctx.ws,
+      sessionKey: ctx.sessionKey,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      agentCapabilities: ctx.agentCapabilities,
+      agentVersion: ctx.agentVersion,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueBytes: ctx.outboundSendQueueBytes,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+    };
+    try {
+      globalThis.WebSocket = { OPEN: WS_OPEN };
+      const ws = new MockWebSocket(WS_OPEN);
+      Object.assign(ctx, {
+        ws,
+        sessionKey: null,
+        serverEncryptionRequired: false,
+        agentCapabilities: [CONTAINER_AGENT_CAPABILITY],
+        agentVersion: '1.0.415',
+        outboundSendQueue: [],
+        outboundSendQueueBytes: 0,
+        outboundSendQueueActive: false,
+      });
+      await handleUpgradeAgent();
+      expect(ws.getSentMessages()).toEqual([{
+        type: 'upgrade_agent_ack',
+        success: false,
+        reason: CONTAINER_IMAGE_UPGRADE_REASON,
+        version: '1.0.415',
+        error: buildContainerImageUpgradeMessage('1.0.415'),
+      }]);
+    } finally {
+      globalThis.WebSocket = previousWebSocket;
+      Object.assign(ctx, original);
+    }
+  });
+
   it('defaults identity and encryption safely and pins every upgrade fetch to the Yeaft registry', async () => {
     expect(getDefaultAgentName('Dev Box/东')).toBe('Dev-Box--');
     expect(getDefaultAgentName('')).toBe('default');
@@ -318,6 +364,69 @@ describe('agent ctx defaults and upgrade contract', () => {
       'https://pkg.yeaft.com/%40yeaft%2Fwebchat-agent/latest',
     );
 
+  });
+
+  it('uses the container marker instead of advertising remote package replacement', () => {
+    expect(isContainerAgentRuntime({ YEAFT_AGENT_RUNTIME: 'container_agent' })).toBe(true);
+    expect(getAgentUpgradeCapability({ YEAFT_AGENT_RUNTIME: 'container_agent' })).toBe(CONTAINER_AGENT_CAPABILITY);
+    expect(getAgentUpgradeCapability({ YEAFT_AGENT_RUNTIME: '' })).toBe('remote_upgrade_safe');
+    const source = readFileSync(resolve(process.cwd(), 'agent/index.js'), 'utf8');
+    expect(source).toContain('getAgentUpgradeCapability()');
+    expect(source).not.toContain("capabilities.push(SAFE_REMOTE_UPGRADE_CAPABILITY)");
+
+    const cliSource = readFileSync(resolve(process.cwd(), 'agent/cli.js'), 'utf8');
+    const upgradeSource = cliSource.slice(cliSource.indexOf('async function upgrade('));
+    expect(upgradeSource.indexOf('if (isContainerAgentRuntime())')).toBeGreaterThanOrEqual(0);
+    expect(upgradeSource.indexOf('if (isContainerAgentRuntime())'))
+      .toBeLessThan(upgradeSource.indexOf('const latest = execSync(buildUpgradeVersionCommand'));
+    expect(upgradeSource).toContain('process.exitCode = 1;');
+
+    let output = '';
+    try {
+      execFileSync(process.execPath, [resolve(process.cwd(), 'agent/cli.js'), 'upgrade'], {
+        cwd: process.cwd(),
+        env: { ...process.env, YEAFT_AGENT_RUNTIME: CONTAINER_AGENT_CAPABILITY },
+        encoding: 'utf8',
+        stdio: 'pipe',
+      });
+    } catch (error) {
+      output = `${error.stdout || ''}${error.stderr || ''}`;
+      expect(error.status).toBe(1);
+    }
+    expect(output).toContain(CONTAINER_IMAGE_UPGRADE_REASON);
+    expect(output).not.toContain('npm view');
+  });
+
+  it('keeps the ordinary Linux systemd upgrade script on the npm install path', () => {
+    const previousHome = process.env.HOME;
+    const home = mkdtempSync(join(tmpdir(), 'yeaft-systemd-upgrade-home-'));
+    const configDir = mkdtempSync(join(tmpdir(), 'yeaft-systemd-upgrade-config-'));
+    mkdirSync(join(home, '.config', 'systemd', 'user'), { recursive: true });
+    writeFileSync(join(home, '.config', 'systemd', 'user', 'yeaft-agent.service'), '[Unit]\\n');
+    process.env.HOME = home;
+    try {
+      const script = buildUnixUpgradeScript({
+        pkgName: '@yeaft/webchat-agent',
+        targetVersion: '1.0.416',
+        installDir: '/opt/yeaft',
+        isGlobalInstall: true,
+        pid: 1234,
+        configDir,
+        npmPath: '/usr/bin/npm',
+        safePath: '/usr/bin:/bin',
+        instanceId: 'default',
+        isDarwin: false,
+      });
+      expect(script).toContain('systemctl --user stop "yeaft-agent"');
+      expect(script).toContain('systemctl --user start "yeaft-agent"');
+      expect(script).toContain('"$NPM" install -g "$PKG"');
+      expect(script).not.toContain('container_image_upgrade_required');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      rmSync(home, { recursive: true, force: true });
+      rmSync(configDir, { recursive: true, force: true });
+    }
   });
 
   it('keeps local instance data roots stable across foreground and systemd mode', async () => {

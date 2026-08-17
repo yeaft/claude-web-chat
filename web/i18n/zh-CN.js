@@ -127,6 +127,7 @@ export default {
   'chat.agent.alreadyLatest': 'Agent 已是最新版本 (v{version})，无需升级。',
   'chat.agent.nodeIncompatible': 'Agent 升级中止：目标版本 v{version} 需要 Node {required}，但当前机器运行的是 Node {current}。请先升级 Node.js 再重试。',
   'chat.agent.manualUpgradeRequired': 'Agent v{version} 没有声明安全远程升级能力；旧客户端又未上报足够的平台信息，Server 无法排除 Windows 包目录锁定故障。为避免重复执行已知会失败的升级，本次操作已被阻止。请先停止该机器上所选的 Agent/服务：若由 PM2 或其他服务管理器运行，请在那里停止这个精确实例；若在前台终端运行，请终止该进程。确认该进程已经退出后，再执行 "npm install -g @yeaft/webchat-agent@latest --registry=https://pkg.yeaft.com/"；最后使用原配置启动同一 Agent 实例。完成这次引导后，后续可继续在浏览器中升级。',
+  'chat.agent.containerImageUpgradeRequired': '容器 Agent v{version} 由 Docker 镜像管理，不能在容器内使用 npm 自升级。请在 Docker Host 上执行 "docker pull <configured-agent-image>"，然后通过现有 Server/Sandbox 生命周期或原来的 "yeaft-agent container install" 命令重建同一个容器。保留现有的 /home/yeaft/.yeaft 和 /workspace 持久卷，并复用 Host 端原有的 0600 agent-secret 文件；不要在重建时删除这些卷。',
   'chat.agent.online': '{count} 个 Agent 在线',
   'chat.agent.selectFirst': '请先选择一个 Agent',
   'chat.agent.yeaft': 'Yeaft 对话',

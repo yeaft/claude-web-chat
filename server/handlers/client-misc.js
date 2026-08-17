@@ -13,6 +13,8 @@ import {
 // may receive remote upgrade commands. Version thresholds are insufficient:
 // builds without this capability may still inherit the installed package cwd.
 export const SAFE_REMOTE_UPGRADE_CAPABILITY = 'remote_upgrade_safe';
+export const CONTAINER_AGENT_CAPABILITY = 'container_agent';
+export const CONTAINER_IMAGE_UPGRADE_REASON = 'container_image_upgrade_required';
 export { YEAFT_PLUGINS_CAPABILITY, YEAFT_PLUGINS_UNSUPPORTED_ERROR };
 
 async function rejectUnsupportedYeaftPlugins(client, msg, agentId) {
@@ -59,6 +61,19 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       if (!upgradeAgentId) break;
       if (!await checkAgentAccess(upgradeAgentId)) break;
       const upgradeAgent = agents.get(upgradeAgentId);
+      if (Array.isArray(upgradeAgent?.capabilities)
+          && upgradeAgent.capabilities.includes(CONTAINER_AGENT_CAPABILITY)) {
+        await sendToWebClient(client, {
+          type: 'upgrade_agent_ack',
+          agentId: upgradeAgentId,
+          success: false,
+          reason: CONTAINER_IMAGE_UPGRADE_REASON,
+          version: upgradeAgent?.version || null,
+          requiredCapability: CONTAINER_AGENT_CAPABILITY,
+          error: 'Container Agent is managed as a Docker image. Pull the configured image and recreate the same container through the Server/Sandbox lifecycle while keeping its persistent volumes and host-side agent-secret file.',
+        });
+        break;
+      }
       if (requiresManualUpgradeBridge(upgradeAgent?.capabilities, upgradeAgent?.platform)) {
         await sendToWebClient(client, {
           type: 'upgrade_agent_ack',

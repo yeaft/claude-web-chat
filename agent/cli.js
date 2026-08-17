@@ -38,9 +38,12 @@ import {
   warnDeprecatedInstanceArg,
 } from './service/config.js';
 import {
+  buildContainerImageUpgradeMessage,
   buildUpgradeInstallCommand,
   buildUpgradeMetadataUrl,
   buildUpgradeVersionCommand,
+  CONTAINER_IMAGE_UPGRADE_REASON,
+  isContainerAgentRuntime,
   createWindowsUpgradeRun,
   launchWindowsUpgradeScript,
   prepareWindowsUpgradeRunner,
@@ -545,6 +548,7 @@ function parseAndStart(args) {
 }
 
 async function checkForUpdates() {
+  if (isContainerAgentRuntime()) return;
   try {
     const res = await fetch(buildUpgradeMetadataUrl(pkg.name));
     if (!res.ok) return;
@@ -562,6 +566,11 @@ async function checkForUpdates() {
 async function upgrade(args = []) {
   warnDeprecatedInstanceArg(args);
   const instanceId = resolveServiceInstanceId(args, process.env, { management: true });
+  if (isContainerAgentRuntime()) {
+    console.error(`${CONTAINER_IMAGE_UPGRADE_REASON}: ${buildContainerImageUpgradeMessage(pkg.version)}`);
+    process.exitCode = 1;
+    return;
+  }
   console.log(`Current version: ${pkg.version}`);
   console.log('Checking for updates...');
 

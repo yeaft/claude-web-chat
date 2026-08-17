@@ -122,6 +122,7 @@ export function buildCreateArgs({
     '--mount', `type=bind,src=${resolve(secretFile)},dst=/run/yeaft-host-secret,readonly`,
     '--env', `SERVER_URL=${serverUrl}`,
     '--env', `AGENT_NAME=${agentName}`,
+    '--env', 'YEAFT_AGENT_RUNTIME=container_agent',
     '--env', 'AGENT_SECRET_FILE=/run/yeaft-host-secret',
     '--env', 'YEAFT_DIR=/home/yeaft/.yeaft',
     '--env', 'WORK_DIR=/workspace',

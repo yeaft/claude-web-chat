@@ -1,7 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildCreateArgs,
@@ -32,6 +33,17 @@ function spawnResult({ code = 0, stdout = '', stderr = '' } = {}) {
 }
 
 describe('container Agent manager', () => {
+  it('builds the container marker into the Docker environment without exposing the secret', () => {
+    const args = buildCreateArgs({
+      name: 'remote-worker',
+      serverUrl: 'wss://example.test',
+      secretFile: '/tmp/agent-secret',
+      image: 'example/agent:1',
+    });
+    expect(args).toContain('YEAFT_AGENT_RUNTIME=container_agent');
+    expect(args).not.toContain('remote_upgrade_safe');
+  });
+
   it('builds a fixed Docker Agent container without putting the secret in argv or Env', () => {
     const args = buildCreateArgs({
       name: 'remote-worker',
@@ -45,6 +57,16 @@ describe('container Agent manager', () => {
     expect(args.join(' ')).not.toContain('top-secret');
     expect(args).toContain('example/agent:1');
     expect(containerNameForAgent('remote-worker')).toBe('yeaft-agent-remote-worker');
+  });
+
+  it('keeps the build-time npm cache temporary and runtime-owned by UID 10001', () => {
+    const dockerfile = readFileSync(resolve(process.cwd(), 'agent/Dockerfile'), 'utf8');
+    const entrypoint = readFileSync(resolve(process.cwd(), 'agent/container-entrypoint.sh'), 'utf8');
+    expect(dockerfile).toContain('npm_config_cache=/tmp/yeaft-npm-cache npm ci --workspace=agent --omit=dev');
+    expect(dockerfile).toContain('rm -rf /tmp/yeaft-npm-cache');
+    expect(dockerfile).toContain('install -d -m 0700 -o yeaft -g yeaft /home/yeaft/.npm');
+    expect(dockerfile).toContain('YEAFT_AGENT_RUNTIME=container_agent');
+    expect(entrypoint).toContain('--reuid=10001 --regid=10001 --init-groups');
   });
 
   it('writes a private secret file for the read-only container bind', async () => {
