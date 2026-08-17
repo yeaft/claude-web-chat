@@ -1,5 +1,5 @@
 import { CONFIG } from '../config.js';
-import { sessionDb, userStatsDb } from '../database.js';
+import { agentInventoryDb, sessionDb, userStatsDb } from '../database.js';
 import { agents, webClients } from '../context.js';
 import { sendToWebClient, broadcastAgentList } from '../ws-utils.js';
 import {
@@ -82,6 +82,11 @@ export async function handleAgentSync(agentId, agent, msg) {
         : null;
       if (!capabilities || capabilities.length === 0) break;
       agent.capabilities = capabilities;
+      try {
+        agentInventoryDb.upsert({ ...agent, id: agentId });
+      } catch (error) {
+        console.error(`[AgentInventory] Failed to persist capabilities for ${agentId}:`, error.message);
+      }
       // Transport encryption negotiation is connection-scoped and immutable.
       // A runtime capability refresh must never flip framing mid-connection.
       await broadcastAgentList();
@@ -91,6 +96,12 @@ export async function handleAgentSync(agentId, agent, msg) {
     case 'agent_metrics': {
       agent.metrics = normalizeAgentMetrics(msg.metrics || {});
       agent.metricsUpdatedAt = Date.now();
+      try {
+        const persisted = agentInventoryDb.updateMetrics(agentId, agent.metrics, agent.metricsUpdatedAt);
+        if (persisted === false) agentInventoryDb.upsert({ ...agent, id: agentId });
+      } catch (error) {
+        console.error(`[AgentInventory] Failed to persist metrics for ${agentId}:`, error.message);
+      }
       if (agent.ownerId && agent.metrics.metricEpoch) {
         try {
           userStatsDb.recordAgentTokenSnapshot(

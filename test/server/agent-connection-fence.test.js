@@ -4,6 +4,8 @@ import { MockWebSocket, WS_CLOSED, WS_OPEN } from '../helpers/mockWs.js';
 const broadcastAgentList = vi.fn(async () => {});
 const clearAgentDirCache = vi.fn();
 const getOrCreateUser = vi.fn(() => ({ id: 'local-user-id', username: 'dev-user' }));
+const upsertAgentInventory = vi.fn();
+const touchAgentInventory = vi.fn(() => true);
 
 vi.mock('../../server/config.js', () => ({
   CONFIG: {
@@ -40,6 +42,7 @@ vi.mock('../../server/handlers/agent-sync.js', () => ({
 }));
 vi.mock('../../server/perf-trace.js', () => ({ recordPerfTraceEvent: vi.fn() }));
 vi.mock('../../server/database.js', () => ({
+  agentInventoryDb: { upsert: upsertAgentInventory, touch: touchAgentInventory },
   userDb: { getOrCreate: getOrCreateUser, isActive: vi.fn(() => true) }
 }));
 
@@ -89,6 +92,9 @@ beforeEach(() => {
     username: 'owner',
   });
   getOrCreateUser.mockClear();
+  upsertAgentInventory.mockClear();
+  touchAgentInventory.mockClear();
+  touchAgentInventory.mockReturnValue(true);
   delete process.env.YEAFT_LOCAL_RUN;
 });
 
@@ -156,6 +162,34 @@ describe('Agent connection replacement fence', () => {
       ownerId: null,
       ownerUsername: null,
     });
+  });
+
+  it('persists durable identity and last-seen state without making inventory authoritative for liveness', async () => {
+    const socket = new MockWebSocket(WS_OPEN);
+    handleAgentConnection(socket, agentUrl('inventory-agent'));
+    authenticate(socket, { version: '1.0.446', capabilities: ['plaintext-ok', 'browser_runtime'] });
+    await settleMessages();
+
+    expect(upsertAgentInventory).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'inventory-agent',
+      name: 'Agent',
+      instanceId: 'inventory-agent',
+      version: '1.0.446',
+      capabilities: ['plaintext-ok', 'browser_runtime'],
+      lastSeenAt: expect.any(Number),
+      lastConnectedAt: expect.any(Number),
+    }));
+
+    upsertAgentInventory.mockClear();
+    socket.simulatePong();
+    expect(touchAgentInventory).toHaveBeenCalledWith('inventory-agent', expect.any(Number));
+
+    socket.close(1000, 'test disconnect');
+    expect(agents.has('inventory-agent')).toBe(false);
+    expect(upsertAgentInventory).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'inventory-agent',
+      lastSeenAt: expect.any(Number),
+    }));
   });
 
   it('does not let an old close delete or rebroadcast over the replacement record', async () => {

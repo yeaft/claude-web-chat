@@ -1,43 +1,5 @@
 /* ============ Dashboard Tab ============ */
 
-.db-stats-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 24px;
-}
-
-.db-stat-card {
-  flex: 1 1 120px;
-  min-width: 0;
-  padding: 16px;
-  background: var(--bg-sidebar);
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-}
-
-[data-theme="dark"] .db-stat-card {
-  background: var(--bg-user-msg);
-}
-
-.db-stat-value {
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--text-primary);
-  font-variant-numeric: tabular-nums;
-  line-height: 1.2;
-}
-
-.db-stat-value.is-active {
-  color: var(--success);
-}
-
-.db-stat-label {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-top: 4px;
-}
-
 /* Section container */
 .db-section {
   margin-bottom: 24px;
@@ -45,6 +7,112 @@
   background: var(--bg-sidebar);
   border: 1px solid var(--border-color);
   border-radius: 10px;
+}
+
+.db-general-section {
+  overflow: hidden;
+}
+
+.db-general-row {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 16px;
+  overflow-x: auto;
+  padding: 2px 0;
+}
+
+.db-general-item {
+  flex: 1 0 112px;
+  min-width: 112px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.db-general-label {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+}
+
+.db-general-item strong {
+  color: var(--text-primary);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.db-general-item strong.is-active {
+  color: var(--success);
+}
+
+.db-detail-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.db-detail-tab {
+  padding: 8px 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.db-detail-tab:hover {
+  color: var(--text-primary);
+}
+
+.db-detail-tab.is-active {
+  border-bottom-color: var(--accent);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.db-filter-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.db-filter-group,
+.db-filter-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.db-filter-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.db-filter-value,
+.db-filter-select select {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.db-user-active-label {
+  margin-left: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 400;
 }
 
 [data-theme="dark"] .db-section {
@@ -279,53 +347,52 @@
 
 /* ============ Mobile responsive ============ */
 @media (max-width: 640px) {
-  .db-stats-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-  }
-
-  .db-stat-card {
-    padding: 12px;
-  }
-
-  .db-stat-value {
-    font-size: 20px;
-  }
-
   .db-section {
     padding: 12px;
+  }
+
+  .db-general-row {
+    gap: 14px;
+  }
+
+  .db-general-item {
+    flex: 0 0 140px;
+  }
+
+  .db-filter-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .db-filter-group {
+    flex-wrap: wrap;
+  }
+
+  .db-detail-tab {
+    flex: 1;
   }
 
   .db-table-wrap { display: none; }
   .db-card-list { display: flex; flex-direction: column; gap: 0; }
 
   .db-user-card,
-  .db-agent-card,
-  .db-online-card {
+  .db-agent-card {
     padding: 12px;
     border-bottom: 1px solid var(--border-color);
   }
 
   .db-user-card:last-child,
-  .db-agent-card:last-child,
-  .db-online-card:last-child {
+  .db-agent-card:last-child {
     border-bottom: none;
   }
 
   .db-user-card-name,
-  .db-agent-card-name,
-  .db-online-card-name {
+  .db-agent-card-name {
     font-size: 13px;
     font-weight: 600;
     color: var(--text-primary);
     margin-bottom: 4px;
-  }
-
-  .db-online-card-name {
-    display: flex;
-    align-items: center;
-    gap: 8px;
   }
 
   .db-user-card-stats,
