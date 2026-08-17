@@ -43,9 +43,9 @@ import { markConversationDirty } from './history-index-state.js';
  * message boundary, which is pair-safe by construction.
  *
  * 20 turns is the bootstrap window the user signed off on (2026-05-01).
- * The session-level compactor in `history-compact.js` is the authoritative
- * size limiter once the engine is running; this is just the cold-start
- * replay window after a fresh boot or reconnect.
+ * It is the cold-start replay window after a fresh boot or reconnect. Runtime
+ * provider requests apply a separate deterministic history-window transform;
+ * no LLM summary is required for recovery.
  *
  * Configurable via `~/.yeaft/config.json` → `yeaft.recentTurnsLimit`.
  * Session boot calls `setDefaultRecentTurnsLimit()` once with the
@@ -212,25 +212,23 @@ export function __resetTruncationWarned() {
 
 /**
  * Warn (once per session per process) when the cold-start replay window
- * truncated history AND no compact summary exists to cover the dropped
- * turns. The user is then losing context with no UX signal otherwise.
+ * truncates history. The persisted transcript remains available through
+ * pagination/search; this warning only describes the model bootstrap window.
  *
  * @param {string} sessionId
  * @param {string} storeDir
  * @param {number} recentTurnsLimit — configured recent-turn window
- * @param {boolean} hasCompactSummary
  */
-function maybeWarnHistoryTruncated(sessionId, storeDir, recentTurnsLimit, hasCompactSummary) {
+function maybeWarnHistoryTruncated(sessionId, storeDir, recentTurnsLimit) {
   if (!sessionId || !storeDir) return;
-  if (hasCompactSummary) return;
   const key = `${storeDir}::${sessionId}`;
   if (_truncationWarned.has(key)) return;
   _truncationWarned.add(key);
   // eslint-disable-next-line no-console
   console.warn(
-    `[Yeaft] history for session ${sessionId} truncated to ${recentTurnsLimit} recent turns (recentTurnsLimit=${DEFAULT_RECENT_TURNS}); ` +
-    `no compact summary exists, so older context is dropped. ` +
-    `Raise yeaft.recentTurnsLimit in ~/.yeaft/config.json if this is a problem.`
+    `[Yeaft] history for session ${sessionId} bootstrapped with ${recentTurnsLimit} recent turns ` +
+    `(recentTurnsLimit=${DEFAULT_RECENT_TURNS}); older transcript remains available through history pagination/search. ` +
+    `Raise yeaft.recentTurnsLimit in ~/.yeaft/config.json to send more recent context after boot.`
   );
 }
 
@@ -1116,12 +1114,10 @@ class SegmentStore {
  *   chat/            — one-to-one chat mode history
  *     index.json
  *     segments/
- *     compact.md
  *     blobs/
  *   sessions/<sessionId>/conversation/
  *     index.json
  *     segments/
- *     compact/
  *     blobs/
  *
  * Legacy compatibility: ~/.yeaft/conversation is read as an old mixed store,
@@ -1139,9 +1135,6 @@ export class ConversationStore {
   #msgDir;      // default hot messages dir: ~/.yeaft/chat/messages
   #coldDir;     // default cold messages dir: ~/.yeaft/chat/cold
   #indexPath;   // ~/.yeaft/chat/index.md
-  #compactPath; // ~/.yeaft/chat/compact.md
-  #legacyCompactPath;
-  #legacyCompactScopedDir;
   #chatMsgDir;
   #chatColdDir;
   #legacyMsgDir;
@@ -1163,18 +1156,12 @@ export class ConversationStore {
     this.#msgDir = join(this.#chatDir, 'messages');
     this.#coldDir = join(this.#chatDir, 'cold');
     this.#indexPath = join(this.#chatDir, 'index.md');
-    this.#compactPath = join(this.#chatDir, 'compact.md');
-    this.#legacyCompactPath = join(this.#legacyConvDir, 'compact.md');
 
     this.#chatMsgDir = this.#msgDir;
     this.#chatColdDir = this.#coldDir;
     this.#legacyMsgDir = join(this.#legacyConvDir, 'messages');
     this.#legacyColdDir = join(this.#legacyConvDir, 'cold');
 
-    // Per-(sessionId, vpId) compact summary files live under that session's
-    // conversation directory. The legacy ~/.yeaft/conversation/compact directory
-    // is read for compatibility.
-    this.#legacyCompactScopedDir = join(this.#legacyConvDir, 'compact');
     this.#nextSeq = null;
     this.#nextSeqByThread = new Map();
 
@@ -1390,50 +1377,8 @@ export class ConversationStore {
   }
 
   /**
-   * Rewrite the compact summary in place.
-   *
-   * Compact's semantics are "the running summary of everything older than
-   * the hot window". Each compact pass already received the previous
-   * summary text as input and produced a *new* cumulative summary — so
-   * we overwrite, we never append. Appending was the original behaviour
-   * (kept around as a diary), but the engine reads the whole file back
-   * into `<conversation_summary>` on every turn, so appending grows the
-   * per-turn prompt without bound until it defeats compaction itself.
-   *
-   * @param {string} summary — the new, complete summary to persist
-   */
-  replaceCompactSummary(summary) {
-    if (typeof summary !== 'string' || !summary) return;
-    try {
-      writeFileSync(this.#compactPath, summary, { encoding: 'utf8', mode: 0o644 });
-    } catch (err) {
-      if (isPermissionError(err)) {
-        if (!_permissionWarned) {
-          console.warn(`[Yeaft] Cannot write compact summary: ${err.code}`);
-          _permissionWarned = true;
-        }
-      } else {
-        throw err;
-      }
-    }
-  }
-
-  /**
-   * Read the compact summary.
-   *
-   * @returns {string}
-   */
-  readCompactSummary() {
-    if (existsSync(this.#compactPath)) return readFileSync(this.#compactPath, 'utf8');
-    if (existsSync(this.#legacyCompactPath)) return readFileSync(this.#legacyCompactPath, 'utf8');
-    return '';
-  }
-
-  /**
-   * Sanitize one id (sessionId or vpId) into a safe filename component.
+   * Sanitize one id into a safe directory component.
    * Anything outside `[A-Za-z0-9._-]` collapses to `_`; max 120 chars.
-   * For directory path components, use `#safeDirComponent` instead; this
-   * helper intentionally preserves historical compact-summary filenames.
    *
    * @param {string} s
    * @returns {string}
@@ -1445,101 +1390,6 @@ export class ConversationStore {
   #safeDirComponent(s) {
     const safe = this.#safeIdComponent(s).replace(/^\.+$/, '_');
     return safe || '_';
-  }
-
-  /**
-   * Sanitize a (sessionId, vpId) pair into a safe filename. We accept
-   * arbitrary user strings here (sessionIds and vpIds are user-set), so
-   * the result is purely a basename — never parsed back.
-   *
-   * @param {string} sessionId
-   * @param {string} vpId
-   * @returns {string|null} — full path, or null if either id missing
-   */
-  #scopedCompactPath(sessionId, vpId) {
-    if (!sessionId || !vpId) return null;
-    const compactDir = join(this.#sessionConversationDir(sessionId, { create: true }), 'compact');
-    return join(compactDir, `${this.#safeIdComponent(vpId)}.md`);
-  }
-
-  #legacyScopedCompactPath(sessionId, vpId) {
-    if (!sessionId || !vpId) return null;
-    return join(this.#legacyCompactScopedDir, `${this.#safeIdComponent(sessionId)}__${this.#safeIdComponent(vpId)}.md`);
-  }
-
-  /**
-   * Read a per-(sessionId, vpId) compact summary. Returns '' if no summary
-   * has been written yet. Falls back to nothing — callers that need the
-   * legacy global file should call `readCompactSummary()` explicitly.
-   *
-   * The (group, vp) scoping was introduced after we noticed the legacy
-   * single-file `compact.md` was shared across every group AND every VP
-   * in a session — so each new compact would clobber/append on top of
-   * unrelated content and every VP read the same merged blob. See
-   * `engine.#runOrchestratorCompact`.
-   *
-   * @param {string} sessionId
-   * @param {string} vpId
-   * @returns {string}
-   */
-  readCompactSummaryFor(sessionId, vpId) {
-    const path = this.#scopedCompactPath(sessionId, vpId);
-    const legacyPath = this.#legacyScopedCompactPath(sessionId, vpId);
-    for (const candidate of [path, legacyPath]) {
-      if (!candidate || !existsSync(candidate)) continue;
-      try { return readFileSync(candidate, 'utf8'); }
-      catch { return ''; }
-    }
-    return '';
-  }
-
-  /**
-   * Rewrite a per-(sessionId, vpId) compact summary in place. See
-   * `replaceCompactSummary` for the rationale — same reason, scoped file.
-   *
-   * @param {string} sessionId
-   * @param {string} vpId
-   * @param {string} summary
-   */
-  replaceCompactSummaryFor(sessionId, vpId, summary) {
-    if (typeof summary !== 'string' || !summary) return;
-    const path = this.#scopedCompactPath(sessionId, vpId);
-    if (!path) return;
-    try {
-      writeFileSync(path, summary, { encoding: 'utf8', mode: 0o644 });
-    } catch (err) {
-      if (isPermissionError(err)) {
-        if (!_permissionWarned) {
-          console.warn(`[Yeaft] Cannot write scoped compact summary: ${err.code}`);
-          _permissionWarned = true;
-        }
-      } else {
-        throw err;
-      }
-    }
-  }
-
-  /**
-   * Check whether ANY per-(session, vp) compact summary exists for `sessionId`.
-   * Used by the history-replay path to decide whether to flag
-   * `hasCompactSummary` for the UI without committing to one VP's view.
-   *
-   * @param {string} sessionId
-   * @returns {boolean}
-   */
-  hasAnyCompactSummaryForSession(sessionId) {
-    if (!sessionId) return false;
-    const compactDir = join(this.#sessionConversationDir(sessionId), 'compact');
-    for (const dir of [compactDir, this.#legacyCompactScopedDir]) {
-      if (!existsSync(dir)) continue;
-      try {
-        for (const f of readdirSync(dir)) {
-          if (dir === compactDir && f.endsWith('.md')) return true;
-          if (dir === this.#legacyCompactScopedDir && f.startsWith(`${this.#safeIdComponent(sessionId)}__`) && f.endsWith('.md')) return true;
-        }
-      } catch { /* best-effort */ }
-    }
-    return false;
   }
 
   /**
@@ -1581,7 +1431,7 @@ export class ConversationStore {
   }
 
   /**
-   * Clear all messages (hot + cold + compact).
+   * Clear all persisted transcript messages (hot + cold).
    */
   clear() {
     for (const dir of [this.#chatMsgDir, this.#chatColdDir, ...this.#sessionMessageDirs('messages'), ...this.#sessionMessageDirs('cold')]) {
@@ -1599,16 +1449,6 @@ export class ConversationStore {
     }
     for (const dir of [this.#chatDir, ...this.#sessionConversationDirs({ primaryOnly: true })]) {
       this.#segmentStoreForConversationDir(dir).clear();
-    }
-    // Reset compact files in the new chat/session stores. Legacy
-    // ~/.yeaft/conversation is intentionally left untouched.
-    for (const path of [this.#compactPath]) {
-      if (!existsSync(path)) continue;
-      try {
-        writeFileSync(path, '', { encoding: 'utf8', mode: 0o644 });
-      } catch (err) {
-        if (!isPermissionError(err)) throw err;
-      }
     }
     this.#nextSeq = 1;
     this.updateIndex({ totalMessages: 0, lastMessageId: null });
@@ -1709,8 +1549,7 @@ export class ConversationStore {
       includeReflections,
     });
     if (truncated) {
-      const hasCompact = this.hasAnyCompactSummaryForSession(sessionId);
-      maybeWarnHistoryTruncated(sessionId, this.#dir, turnsLimit, hasCompact);
+      maybeWarnHistoryTruncated(sessionId, this.#dir, turnsLimit);
     }
     return pairSanitize(messages);
   }
@@ -1726,12 +1565,11 @@ export class ConversationStore {
   }
 
   /**
-   * VP-scoped view of group history, used by per-VP post-turn compact.
+   * VP-scoped view of Session history, used to build a pair-safe provider
+   * snapshot for one VP. It operates on what the VP can actually see, not
+   * the union of every VP's tool calls/results.
    *
-   * Compact must operate on what the VP actually *saw* in its context,
-   * not the union of every VP's tool calls/results — otherwise compact
-   * tries to summarize tool transcripts that were never in this VP's
-   * prompt window. The rule we settled on (with the user, 2026-06-01):
+   * The rule we settled on (with the user, 2026-06-01):
    *
    *   - User rows (no speakerVpId): KEEP — every VP sees the prompt.
    *   - This VP's own assistant rows + their paired tool rows: KEEP.
@@ -1741,8 +1579,8 @@ export class ConversationStore {
    *   - OTHER VPs' tool result rows (role:'tool'): DROP — they pair with
    *     stripped tool_use ids and would orphan on replay.
    *   - Hidden conversation rows (`_reflection`, `internal`, `systemOnly`,
-   *     `systemOnlyMessage`, compact summaries, and legacy internal-control
-   *     content signatures): DROP — they are engine-private and never enter
+   *     `systemOnlyMessage`, and legacy internal-control content signatures):
+   *     DROP — they are engine-private and never enter
    *     visible history or another VP's context.
    *
    * The output is pair-safe by construction for THIS VP's tool arcs and
@@ -1774,7 +1612,7 @@ export class ConversationStore {
         } else {
           // Other VP's assistant text only — drop their toolCalls so the
           // following role:'tool' rows (which we also drop) don't leave
-          // orphan tool_use ids in the compact input.
+          // orphan tool_use ids in the provider input.
           const copy = { ...m };
           delete copy.toolCalls;
           delete copy.thinkingBlocks;
@@ -1790,10 +1628,8 @@ export class ConversationStore {
         continue;
       }
     }
-    // Note: we don't run `sliceLastNTurns` here. The caller
-    // (#runOrchestratorCompact) decides what's "cooling" via
-    // `partitionMessages`, and we don't want to pre-truncate before that
-    // budget calc sees the full picture.
+    // Do not truncate here. The provider-request history window owns
+    // deterministic budget trimming after this VP-scoped view is built.
     return pairSanitize(out);
   }
 
@@ -2696,36 +2532,6 @@ export class ConversationStore {
       .filter(dir => existsSync(dir));
   }
 
-  /** Per-chat scoped compact summary path. */
-  #scopedChatCompactPath(chatId, vpId) {
-    if (!chatId || !vpId) return null;
-    const dir = join(this.#chatConversationDir(chatId, { create: true }), 'compact');
-    return join(dir, `${this.#safeIdComponent(vpId)}.md`);
-  }
-
-  /** Read per-(chatId, vpId) compact summary. */
-  readCompactSummaryForChat(chatId, vpId) {
-    const p = this.#scopedChatCompactPath(chatId, vpId);
-    if (!p || !existsSync(p)) return '';
-    try { return readFileSync(p, 'utf8'); } catch { return ''; }
-  }
-
-  /** Rewrite per-(chatId, vpId) compact summary. */
-  replaceCompactSummaryForChat(chatId, vpId, summary) {
-    if (typeof summary !== 'string' || !summary) return;
-    const p = this.#scopedChatCompactPath(chatId, vpId);
-    if (!p) return;
-    try { writeFileSync(p, summary, { encoding: 'utf8', mode: 0o644 }); }
-    catch (err) {
-      if (isPermissionError(err)) {
-        if (!_permissionWarned) {
-          console.warn(`[Yeaft] Cannot write scoped chat compact summary: ${err.code}`);
-          _permissionWarned = true;
-        }
-      } else throw err;
-    }
-  }
-
   /** Recent messages for a chat — chat mode mirror of loadRecentBySession. */
   loadRecentByChat(chatId, turnsLimit = DEFAULT_RECENT_TURNS) {
     if (!chatId) return [];
@@ -2773,7 +2579,7 @@ export class ConversationStore {
   }
 
   #ensureConversationDirs(dir) {
-    for (const d of [dir, join(dir, 'blobs'), join(dir, SEGMENT_DIR), join(dir, 'messages'), join(dir, 'cold'), join(dir, 'compact')]) {
+    for (const d of [dir, join(dir, 'blobs'), join(dir, SEGMENT_DIR), join(dir, 'messages'), join(dir, 'cold')]) {
       if (!existsSync(d)) mkdirSync(d, { recursive: true, mode: 0o755 });
     }
   }

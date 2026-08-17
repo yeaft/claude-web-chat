@@ -69,7 +69,7 @@ model 项可以是裸字符串（`"gpt-5"`），也可以是对象：
 | --- | --- | --- | --- | --- |
 | `maxConcurrentThreads` | `number` | `6` | `1–50` | ThreadEngineRegistry 并发上限；含常驻的 `main` thread |
 | `autoArchiveIdleDays` | `number` | `30` | `1–3650` | thread 自动归档的空闲天数 |
-| `recentTurnsLimit` | `number` | `20` | `1–500` | 无 compact summary 时的冷启回放窗口 |
+| `recentTurnsLimit` | `number` | `20` | `1–500` | 启动/重连后的冷启回放窗口；更早 transcript 仍可通过历史分页/搜索获取 |
 | `multiVp.enabled` | `boolean` | `false` | — | 为兼容保留的 legacy feature flag；当前 Session UI 不把它作为 mode gate |
 | `dream.*` | object | 见 [dream/limits.js](https://github.com/yeaft/yeaft-web-code-agent/blob/main/agent/yeaft/dream/limits.js) | — | 任何 `DEFAULT_LIMITS` 里的 UPPER_CASE 常量都可覆盖 |
 

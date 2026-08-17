@@ -16,7 +16,7 @@
 │  STATIC  — identity, mode instructions, tool guidance          │
 │           (loaded once from templates/, constant per language) │
 ├────────────────────────────────────────────────────────────────┤
-│  DYNAMIC — tool name list, skill content, compact summary      │
+│  DYNAMIC — tool name list, skill content                       │
 │           (changes per session, rebuilt each turn)             │
 ├────────────────────────────────────────────────────────────────┤
 │  CONTEXT — memory injection (index + recalled entries)         │
@@ -44,8 +44,7 @@ bound without a PM-approved spec change is a bug.
 | 4b | Tool guidance | `templates/tool-guidance.md` | ~750 | 1000 | **~745** | When/why to use tools; not per-tool reference. |
 | 5 | Skills | `skillContent` (from SkillManager) | ≤1000 | 1500 | variable | Empty when no skills loaded; grows with installed skills. |
 | 6 | Memory injection | `memoryInjection` (from `memory/preflow.js` FTS recall + AMS layers) | ~1500 | 2000 | variable | Memory Index + user preferences + optional project header. |
-| 7 | Compact summary | `compactSummary` (consolidator output) | ≤800 | 1500 | variable | Present only after consolidation fires. |
-| — | Joining `\n\n` whitespace | — | <50 | 100 | ~20 | Seven `\n\n` separators. |
+| — | Joining `\n\n` whitespace | — | <50 | 100 | ~20 | Separators between system-prompt sections. |
 
 **† Current ("as-of 2026-04-19"):** measured by `wc -c` on each template
 divided by 4 (char→token heuristic). Actual counts via `scripts/dump-prompt.js`
@@ -57,9 +56,9 @@ will differ slightly per tokenizer.
 |----------|--------|---------|---------|-------|-----------|
 | **Minimum** (cold session, no skills, no memory, no compact) | 985 + 790 + 745 = **2,520** | 310 | 0 | **~2,830** | 35% used |
 | **Typical** (full skills ~500, memory ~1,200, no compact) | 2,520 | 310 + 500 = 810 | 1,200 | **~4,530** | 57% used |
-| **Loaded** (full skills, full memory, post-consolidation summary) | 2,520 | 810 | 1,200 + 800 = 2,000 | **~5,330** | 67% used |
+| **Loaded** (full skills, full memory) | 2,520 | 810 | 1,200 | **~4,530** | 57% used |
 | **Dream mode** (dream instead of unified; no skills, no tools, small memory) | 985 + 925 = 1,910 | 0 | 500 | **~2,410** | 30% used |
-| **Ceiling hit** (all sections at hard ceiling) | 1,500 + 1,200 + 1,000 = 3,700 | 600 + — | 2,000 + 1,500 = 3,500 | **~7,800** | 98% used — alarm |
+| **Ceiling hit** (all active sections at hard ceiling) | 1,500 + 1,200 + 1,000 = 3,700 | 600 + — | 2,000 | **~6,300** | 79% used |
 
 We are well inside budget at "Typical". The 8k cap is there to prevent
 silent drift when memory or skills grow over time.
@@ -73,7 +72,7 @@ silent drift when memory or skills grow over time.
 | Tool catalog grows (dev adds 20 more tools) | 4a | Names-only listing caps growth at ~8 tokens/tool; at 100 tools we still fit. No mitigation needed until >150. |
 | Per-tool inline docs creep in | 4b | **Red line**: `tool-guidance.md` must stay behavioural, NOT per-tool reference. Per-tool docs belong to the tool's `description` field, which the LLM reads via `tools` array, not the system prompt. |
 | Memory injection explodes on large projects | 6 | `memory/preflow.js` caps recall hits + AMS layers (Resident/Recent/OnDemand) are token-budgeted. Cap stays ≤ 2k. |
-| Compact summary never truncates | 7 | Consolidator must clip to ≤ 1.5k. If `compactSummary` regularly > 2k, that's a bug in `memory/consolidate.js`. |
+| Runtime history grows | provider message window | `history-window.js` deterministically caps recent turns, tool noise, and tool-result bodies without changing the persisted transcript. |
 | Skill pack install blows up | 5 | SkillManager must cap total skill content ≤ 1.5k. Long skills go to `~/.yeaft/skills/` and are read on demand via `Skill` tool, not injected. |
 
 ---

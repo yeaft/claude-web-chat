@@ -534,7 +534,7 @@ export class AnthropicAdapter extends LLMAdapter {
    * Non-streaming call for side queries.
    *
    * task-327c: accepts `effort` for internal scenario-tagged calls
-   * (consolidate/dream/recall/light). Guards mirror stream() — unsupported
+   * (dream/recall/light). Guards mirror stream() — unsupported
    * models silently drop the param. max_tokens auto-widens to budget+1024
    * when needed.
    */

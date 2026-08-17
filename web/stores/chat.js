@@ -5239,7 +5239,6 @@ export const useChatStore = defineStore('chat', {
         }
 
         case 'recall':
-        case 'consolidate':
         case 'fallback':
         case 'thinking_delta':
           // Future: display these in UI

@@ -421,7 +421,6 @@ export function createStreamProjector({
       case 'llm_retry':
       case 'memory_used':
       case 'recall':
-      case 'consolidate':
       case 'reflection':
       case 'tool_result_update':
       case 'user_append':

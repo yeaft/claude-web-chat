@@ -75,11 +75,11 @@ That's enough — the engine will run.
 | --- | --- | :---: | --- | --- |
 | `providers` | `Provider[]` | ✓ | — | LLM provider list |
 | `primaryModel` | `string` | ✓ | — | Primary model, format `<provider>/<model-id>` |
-| `fastModel` | `string` | — | `primaryModel` | Lightweight model for internal tasks such as compact, recall, and classification; Dream uses the Session's primary model |
+| `fastModel` | `string` | — | `primaryModel` | Lightweight model for internal tasks such as recall and classification; Dream uses the Session's primary model |
 | `language` | `'en' \| 'zh'` | — | `'en'` | System prompt language |
 | `debug` | `boolean` | — | `false` | Log raw LLM request/response to console |
-| `maxContextTokens` | `number` | — | `200000` | Max tokens per turn into LLM (over → compact) |
-| `messageTokenBudget` | `number` | — | `32768` | Per-message render cap (compact target) |
+| `maxContextTokens` | `number` | — | `200000` | Provider context-window reference used for request guards |
+| `messageTokenBudget` | `number` | — | `32768` | Deterministic provider-request history-window budget; does not modify transcript |
 
 ## Provider Object
 

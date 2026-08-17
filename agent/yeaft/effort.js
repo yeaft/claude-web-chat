@@ -38,7 +38,6 @@ export const LONG_LOOP_TURN_THRESHOLD = 8;
  * Tiers (6 scenarios per architect spec):
  *   chat          → max    (default interactive pair-programming turn —
  *                            quality over latency; per user 2026-05-22)
- *   consolidate   → max    (memory compaction — quality matters, runs once)
  *   dream         → max    (memory maintenance — same rationale)
  *   sub_agent     → max    (coordinator spawns + merges)
  *   long_loop     → max    (auto-bumped when toolLoopTurns >= threshold)
@@ -49,7 +48,6 @@ export const LONG_LOOP_TURN_THRESHOLD = 8;
  */
 export const SCENARIO_EFFORT = Object.freeze({
   chat: 'max',
-  consolidate: 'max',
   dream: 'max',
   sub_agent: 'max',
   long_loop: 'max',

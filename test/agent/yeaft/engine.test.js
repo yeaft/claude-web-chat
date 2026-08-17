@@ -2052,12 +2052,10 @@ describe('Engine', () => {
       const engine = new Engine({
         adapter: mockAdapter,
         trace,
-        config: { model: 'old-primary', fastModelId: 'old-fast', maxOutputTokens: 1024 },
+        config: { model: 'old-primary', maxOutputTokens: 1024 },
       });
 
-      engine.refreshConfig({ model: 'new-primary', fastModelId: 'new-fast', maxOutputTokens: 2048 });
-
-      expect(engine.fastConfig).toMatchObject({ model: 'new-fast', maxOutputTokens: 2048 });
+      engine.refreshConfig({ model: 'new-primary', maxOutputTokens: 2048 });
 
       const adapter = new MockAdapter();
       adapter.pushResponse([
@@ -6282,6 +6280,39 @@ describe('Engine', () => {
       const turnEnds = events.filter(e => e.type === 'turn_end');
       expect(turnEnds).toHaveLength(1);
       expect(turnEnds[0].stopReason).toBe('error');
+    });
+
+    it('surfaces context overflow without a summary call or retry loop', async () => {
+      const { LLMContextError } = await import('../../../agent/yeaft/llm/adapter.js');
+      let streamCalls = 0;
+      let summaryCalls = 0;
+      const adapter = {
+        async *stream() {
+          streamCalls += 1;
+          throw new LLMContextError('context window exceeded');
+        },
+        async call() {
+          summaryCalls += 1;
+          throw new Error('summary call must not happen');
+        },
+      };
+      const engine = new Engine({
+        adapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        conversationStore: {
+          append() { return null; },
+        },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'hello' })) events.push(event);
+
+      expect(streamCalls).toBe(1);
+      expect(summaryCalls).toBe(0);
+      expect(events.some(event => event.type === 'consolidate')).toBe(false);
+      expect(events.filter(event => event.type === 'error')).toHaveLength(1);
+      expect(events.filter(event => event.type === 'turn_end' && event.terminal)).toHaveLength(1);
     });
 
     it('marks rate-limit and server errors retryable without retries', async () => {

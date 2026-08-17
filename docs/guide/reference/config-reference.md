@@ -14,13 +14,13 @@ This chapter is the **field-by-field** reference for an Agent instance's Yeaft `
 | --- | --- | --- | --- |
 | `providers` | `Provider[]` | — (required) | LLM provider list |
 | `primaryModel` | `string` | — (required) | Primary model `<provider>/<model-id>` |
-| `fastModel` | `string` | `primaryModel` | Lightweight model for internal tasks such as compact, recall, and classification; Dream uses the Session's primary model |
+| `fastModel` | `string` | `primaryModel` | Lightweight model for internal tasks such as recall and classification; Dream uses the Session's primary model |
 | `fallbackModel` | `string` | `null` | Model used when the primary fails with a retryable error |
 | `language` | `'en' \| 'zh'` | `'en'` | System prompt language |
 | `debug` | `boolean` | `false` | Verbose-log raw LLM req/resp + engine events to stdout |
-| `maxContextTokens` | `number` | model registry → `200000` | Max tokens injected per turn; engine compacts above this |
+| `maxContextTokens` | `number` | model registry → `200000` | Provider context-window reference used for request guards |
 | `maxOutputTokens` | `number` | model registry → `16384` | Per-call output token cap |
-| `messageTokenBudget` | `number` | `32768` | Per-message render cap used during compact |
+| `messageTokenBudget` | `number` | `32768` | Deterministic provider-request history-window budget; does not modify transcript |
 | `maxContinueTurns` | `number` | `3` | Auto-continue turns after `max_tokens` stop |
 | `projectDocMaxBytes` | `number` | `32768` | CLAUDE.md / AGENTS.md injection cap (0 = disabled) |
 | `yeaft` | `YeaftSection` | see below | Engine runtime caps and feature flags |
@@ -69,7 +69,7 @@ Anything else on a model entry is silently ignored. UI affordances like display 
 | --- | --- | --- | --- | --- |
 | `maxConcurrentThreads` | `number` | `6` | `1–50` | Concurrent ThreadEngineRegistry cap; includes the always-on `main` thread |
 | `autoArchiveIdleDays` | `number` | `30` | `1–3650` | Idle days before a thread is auto-archived |
-| `recentTurnsLimit` | `number` | `20` | `1–500` | Cold-start replay window when no compact summary exists |
+| `recentTurnsLimit` | `number` | `20` | `1–500` | Cold-start replay window after boot/reconnect; older transcript remains available through history pagination/search |
 | `multiVp.enabled` | `boolean` | `false` | — | Legacy feature flag retained for compatibility; the current Session UI does not use it as a mode gate |
 | `dream.*` | object | see [dream/limits.js](https://github.com/yeaft/yeaft-web-code-agent/blob/main/agent/yeaft/dream/limits.js) | — | Overrides any UPPER_CASE constant in `DEFAULT_LIMITS` |
 

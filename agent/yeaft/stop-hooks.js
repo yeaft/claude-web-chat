@@ -4,9 +4,8 @@
  * Runs after each query loop completes:
  *   1. Persist messages to conversation/messages/
  *
- * Consolidation (compact orchestrator) is driven by the engine itself
- * via `#maybeConsolidate`; the legacy LLM-driven `consolidate()` plus
- * entries-store extraction was retired in the H2-AMS rip.
+ * Conversation persistence is handled incrementally by the engine. There is
+ * no post-turn LLM conversation-summary maintenance step.
  *
  * Dream V2 owns all background memory maintenance (scope summaries +
  * memory writes via dream/session-wiring.js → createV2DreamScheduler).
@@ -195,9 +194,9 @@ export async function runStopHooks(context) {
     }
   }
 
-  // 2. Consolidation is owned by the engine (#maybeConsolidate → compact
-  //    orchestrator). Dream V2 owns background scope-memory maintenance
-  //    via the session dream scheduler (createV2DreamScheduler).
+  // 2. Dream V2 owns background scope-memory maintenance via the session
+  //    dream scheduler (createV2DreamScheduler). Transcript persistence above
+  //    is the only end-of-turn storage work here.
 
   return result;
 }

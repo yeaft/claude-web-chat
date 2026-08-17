@@ -65,9 +65,7 @@ import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, Sessio
 import { updateSessionConfig } from './sessions/session-crud.js';
 import { createCoordinator } from './sessions/coordinator.js';
 import { seedDefaultSession } from './sessions/seed-default.js';
-import {
-  trimSnapshotForBudget,
-} from './history-compact.js';
+import { trimSnapshotForBudget } from './history-window.js';
 import { persistYeaftAttachments, attachmentsForPersistence, persistedAttachmentPreviewPayload } from './attachments.js';
 import { normalizeSessionMessageQuote, sessionMessageQuotePrompt } from './session-message-quote.js';
 import { ConversationStore, parseSeqFromId, projectVisibleSessionMessages } from './conversation/persist.js';
@@ -1264,7 +1262,7 @@ let _vpUnsubscribe = null;
  * @property {GroupHistory} history — per-group conversation tape
  * @property {boolean} historyHydrated — true once history has been loaded
  *   from disk (or explicitly assigned). The flag is required because an
- *   empty array is legitimate post-consolidate / post-clear state and
+ *   empty array is legitimate post-clear state and
  *   MUST NOT trigger a re-hydrate. Without the flag, a partial entry
  *   would short-circuit `getOrCreateSessionHistory` on truthy `[]` and skip
  *   the disk load.
@@ -1648,9 +1646,8 @@ function hydrateGroupHistory(sessionId) {
  * opened the group can still read history).
  *
  * Returns the SAME array reference across calls within the same
- * lifecycle, so consumers can mutate-in-place. Reassigned only by
- * compact (race guard checks reference equality), `consolidate`
- * events, and session reset.
+ * lifecycle, so consumers can mutate-in-place. Reassigned by session
+ * hydration/reset paths when the canonical array must be replaced.
  *
  * @param {string} sessionId
  * @returns {GroupHistory}
@@ -1659,7 +1656,7 @@ function getOrCreateSessionHistory(sessionId) {
   if (!sessionId) return [];
   let entry = sessionContexts.get(sessionId);
   // Use `historyHydrated` rather than truthiness on `history` itself —
-  // an empty array (post-consolidate, post-clear, or a partial entry
+  // an empty array (post-clear or a partial entry
   // seeded by an early `getOrCreateSessionContext` call before data was
   // loaded) is legitimate state that does NOT mean "needs hydration"...
   // unless we never loaded from disk in the first place. The flag
@@ -1675,13 +1672,13 @@ function getOrCreateSessionHistory(sessionId) {
 }
 
 /**
- * Reassign a group's history reference. Used by compact + consolidate +
- * clear paths that need to swap the array (not just mutate it). Returns
+ * Reassign a group's history reference. Used by session reset and clear
+ * paths that need to swap the array (not just mutate it). Returns
  * the new reference. Idempotent if the entry doesn't exist (creates one).
  *
  * Sets `historyHydrated = true` because an explicit assignment is itself
- * a hydration — even setting `[]` after `consolidate` means "this is the
- * canonical state right now, don't re-load from disk".
+ * a hydration — even setting `[]` after clear means "this is the canonical
+ * state right now, don't re-load from disk".
  *
  * @param {string} sessionId
  * @param {GroupHistory} next
@@ -1876,10 +1873,8 @@ function getOrCreateVpEngine(sessionId, vpId, threadId = 'main') {
     // are silently dropped.
     toolStats: session.toolStats || null,
     taskManager: session.taskManager || null,
-    // Per-VP fan-out: bind the engine to its (sessionId, vpId) so post-turn
-    // compact reads/writes a scoped summary instead of the legacy global
-    // compact.md (which every VP would otherwise share, producing
-    // identical, ever-growing summaries across groups).
+    // Per-VP fan-out: bind the engine to its (sessionId, vpId) for scoped
+    // history, memory, and tool ownership.
     sessionId,
     vpId,
   });
@@ -2428,12 +2423,6 @@ export async function __testResetVpState() {
   }
   yeaftConversationId = null;
   lastYeaftSlashCommandSnapshot = null;
-  // Per-group compact in-flight + pending state lives on the session's
-  // Compactor. Clear it so a follow-on test doesn't see ghost in-flight
-  // promises from a prior run.
-  if (session?.compactor && typeof session.compactor.__testReset === 'function') {
-    session.compactor.__testReset();
-  }
 }
 
 
@@ -3920,28 +3909,6 @@ export function installYeaftRuntimeBridge(s) {
     }
   };
 
-  // Wire the post-compact WS sink. Compactor is constructed in
-  // session.js with a no-op sink; bridge owns `sendSessionEvent` /
-  // `yeaftConversationId`, so the sink is wired here once a session is
-  // present. Per-group `yeaft_history_compacted` events fire after a
-  // successful summarize+swap.
-  if (s.compactor && typeof s.compactor.setOnCompacted === 'function') {
-    s.compactor.setOnCompacted((sessionId, result) => {
-      try {
-        sendSessionEvent({
-          type: 'yeaft_history_compacted',
-          reason: result?.reason ?? null,
-          beforeTurns: result?.beforeTurns,
-          afterTurns: result?.afterTurns,
-          beforeTokens: result?.beforeTokens,
-          afterTokens: result?.afterTokens,
-          archivedCount: result?.archivedCount,
-          ts: Date.now(),
-        }, { sessionId });
-      } catch { /* WS pipeline failure must not crash compact */ }
-    });
-  }
-
   ctx.yeaftRuntimeSettings = {
     // No multi-thread settings to surface anymore. Stub for back-compat
     // with message-router's update_yeaft_settings branch — assignments are
@@ -4365,17 +4332,6 @@ function handleEngineEvent(event, hctx) {
       }, envelope);
       break;
 
-    case 'consolidate':
-      // Engine compressed the context — clear THIS group's accumulated
-      // history. Other groups' histories stay intact.
-      if (hctx.sessionId) setGroupHistory(hctx.sessionId, []);
-      sendSessionEvent({
-        type: 'consolidate',
-        archivedCount: event.archivedCount,
-        extractedCount: event.extractedCount,
-      }, envelope);
-      break;
-
     case 'fallback':
       sendSessionEvent({
         type: 'fallback',
@@ -4703,20 +4659,6 @@ async function runYeaftSessionSend(msg) {
     },
   });
 
-  // Entry gate: if a compact is in flight from the previous turn IN
-  // THIS GROUP, wait for it to finish before reading the group's
-  // history. Compact runs at turn END (post-fanout) so it does not
-  // block the user's current message latency, but a fast double-send
-  // from the user must not race with the swap. Other groups' compacts
-  // never block this gate. Compactor is created in session.js — until
-  // a session has loaded (or in test paths that never call
-  // `ensureSessionLoaded`) it may be unavailable; skip gracefully.
-  if (session?.compactor) {
-    const compactWaitStart = perfNowMs();
-    await session.compactor.awaitInFlight(sessionId);
-    traceDuration('session_send.await_compactor', compactWaitStart);
-  }
-
   // yeaftDir is a hard prerequisite for both session boot and group seeding;
   // validate BEFORE booting so a misconfigured agent doesn't leave a zombie
   // session lying around.
@@ -4970,34 +4912,6 @@ async function runYeaftSessionSend(msg) {
     ok: true,
   });
 
-  // Post-turn compaction. Fire-and-forget — does NOT block the response
-  // path. The Compactor's own precheck (`shouldCompactHistory`) decides
-  // whether to engage the LLM, using the trigger ratio wired in
-  // `session.js` (default 70% of model context, knob:
-  // `config.compactTriggerRatio`). The single-flight + anti-starvation
-  // logic inside Compactor handles concurrent turns; the entry-gate
-  // `awaitInFlight` at the top of `handleYeaftSessionSend` (~:2291)
-  // ensures a follow-up turn never reads a half-mutated history.
-  //
-  // Why a per-call historyHandle: Compactor must NEVER close over a
-  // frozen snapshot — the array reference can be swapped by
-  // `consolidate`, session reset, or `route_forward` bursts. The handle
-  // re-resolves on each `get` via the same sessionId-keyed helpers used
-  // everywhere else in the bridge.
-  //
-  // Naming asymmetry note: `getOrCreateSessionHistory` and
-  // `setGroupHistory` are intentionally NOT renamed to match. Both are
-  // session-keyed today (the `set` helper's name is a historical alias
-  // from the pre-VP-thread era), but per CLAUDE.md's "不要为了改名而批量
-  // 重命名" guardrail we leave the wire-compat names alone and rely on
-  // co-location to make the symmetry obvious. The source-pinning test
-  // `web-bridge-post-turn-compact-wiring.test.js` matches both names.
-  if (session?.compactor && sessionId) {
-    session.compactor.scheduleAfterTurn(sessionId, {
-      get: () => getOrCreateSessionHistory(sessionId),
-      set: (next) => setGroupHistory(sessionId, next),
-    });
-  }
 }
 
 /**
@@ -5625,10 +5539,9 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         markEngineTerminal,
         markTurnEnd,
       };
-      // Always trim the snapshot before passing to engine.query. This is
-      // the second-line defense (history-compact only fires above 30K
-      // tokens — small chats with many turns still bloat the messages
-      // array). See `trimSnapshotForBudget` doc-block for policy.
+      // Always trim the snapshot before passing to engine.query. This is a
+      // deterministic provider-request window; it never calls an LLM or
+      // changes the persisted transcript. See `trimSnapshotForBudget`.
       const trimStart = perfNowMs();
       const trimmedMessages = trimSnapshotForBudget(baseSnapshot, {
         messageTokenBudget: session?.config?.messageTokenBudget,
@@ -6134,14 +6047,6 @@ function persistInboundMessageOnceByMsgId({ msgId, text, sessionId, threadId = '
  * starts with no stale msg-ids.
  */
 const _persistedUserMsgIds = new Set();
-
-// Per-group post-turn compaction lives on `session.compactor`
-// (`agent/yeaft/compact/compactor.js`), constructed in `session.js`.
-// Bridge passes a per-call `historyHandle = { get, set }` and wires the
-// `yeaft_history_compacted` WS sink via `compactor.setOnCompacted` from
-// `installYeaftRuntimeBridge`. The bridge keeps history ownership; the
-// Compactor owns single-flight, anti-starvation, race-guard, and the
-// LLM summarize call.
 
 /**
  * Abort every in-flight VP turn and clear all queued envelopes across
@@ -7102,10 +7007,6 @@ export async function handleYeaftLoadHistory(msg) {
       ? loadVisibleGroupHistoryPage(session.conversationStore, sessionId, limit)
       : { messages: limit > 0 ? pickRecent(session.conversationStore, limit) : [], oldestSeq: null, hasMore: false };
     traceDuration('history.store_load_recent', loadStart, { detail: { rawCount: visiblePage.messages?.length || 0, limit } });
-    // Legacy compact.md is a non-group fallback only. For group replay, reading
-    // it makes every group show "has compact" once any legacy/non-scoped compact
-    // exists, even when this group has no scoped summary.
-    const compactSummary = sessionId ? '' : session.conversationStore.readCompactSummary();
     const replayEntries = sessionId
       ? visiblePage.messages
       : visiblePage.messages
@@ -7152,20 +7053,10 @@ export async function handleYeaftLoadHistory(msg) {
       oldestSeq = visiblePage.oldestSeq;
     }
 
-    // hasCompactSummary used to read a single session-global file, so it was
-    // always true once ANY group/VP in the session had compacted. For group
-    // replay, only scoped per-(group, vp) summaries count; legacy compact.md is
-    // reserved for non-group / pre-scoped 1:1 callers.
-    let hasCompactSummaryFlag = !!compactSummary;
-    if (sessionId && typeof session.conversationStore.hasAnyCompactSummaryForSession === 'function') {
-      hasCompactSummaryFlag = session.conversationStore.hasAnyCompactSummaryForSession(sessionId);
-    }
-
     sendSessionEvent({
       type: 'history_loaded',
       mode: 'recent',
       count: replayEntries.length,
-      hasCompactSummary: hasCompactSummaryFlag,
       sessionId,
       requestId,
       hasMore,

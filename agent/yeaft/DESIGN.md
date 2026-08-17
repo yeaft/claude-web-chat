@@ -241,8 +241,7 @@ buildWorkerPrompt({
   task,                // optional — current in-progress task
   preselect,           // { memoryPaths, taskIds } from this VP's router plan
   forwardQuery,        // { userOriginal, rewritten, intent }
-  recentTurns,         // last N full turns
-  compactSummary,      // present iff older turns were archived
+  recentTurns,         // last N full turns; provider window is deterministic
   inboundEnvelope,     // optional inter-VP route envelope
   turnFlags,           // {language, mode, harnessProfile}
 })

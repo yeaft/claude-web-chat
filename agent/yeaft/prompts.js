@@ -16,10 +16,9 @@
  *   ④ Active Scope  — structured per-turn scope summary
  *                     (session / vp / members / envelope IDs)
  *
- * The compact summary, user_profile, and core_memory blocks that used to
- * live inside the system prompt are GONE. Compact summary is now part of
- * the messages timeline; user_profile + core_memory have been folded into
- * AMS Resident.
+ * Long-term semantic context comes only from the AMS Memory outlet. The
+ * conversation transcript stays in the messages timeline and is bounded by
+ * deterministic per-request history-window trimming.
  */
 
 import { readFileSync, existsSync } from 'fs';

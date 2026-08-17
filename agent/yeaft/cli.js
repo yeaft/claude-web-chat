@@ -17,7 +17,7 @@
  *   /history             — Show conversation history
  *   /history [n]         — Show last N messages from conversation
  *   /search <keyword>    — Search conversation history
- *   /compact             — Trigger manual consolidation
+ *   /compact             — Retired for native Yeaft; inspect history or Memory instead
  *   /tools               — List registered tools
  *   /skills              — List loaded skills
  *   Conversation persistence across REPL sessions
@@ -380,8 +380,9 @@ async function runREPL(config, args) {
 
   // Load persisted conversation as initial messages. `loadRecent` is now
   // turn-based (one user round-trip = one turn; multi-VP fan-out collapses
-  // into one turn). 20 turns is the bootstrap window — the engine-level
-  // compactor in `history-compact.js` is the authoritative size limiter.
+  // into one turn). 20 turns is the bootstrap window. Provider requests
+  // apply deterministic history-window trimming; persisted history stays
+  // authoritative and no LLM conversation summary is generated.
   let conversationMessages = conversationStore.loadRecent().map(m => ({
     role: m.role,
     content: m.content,
@@ -445,7 +446,7 @@ async function runREPL(config, args) {
           console.log('  /trace <stats|recent>    — Query debug trace');
           console.log('  /history [n]             — Show last N messages');
           console.log('  /search <keyword>        — Search conversation history');
-          console.log('  /compact                 — Trigger consolidation');
+          console.log('  /compact                 — Retired; native Yeaft keeps transcript + Memory');
           console.log('  /context                 — Show context info');
           console.log('  /dry-run                 — Toggle dry-run mode');
           console.log('  /stats                   — Show session stats');
@@ -516,7 +517,7 @@ async function runREPL(config, args) {
         }
 
         case 'compact': {
-          console.log('The /compact REPL command is retired. Compaction is driven automatically by the engine when the hot-window budget is exceeded.');
+          console.log('The /compact REPL command is retired. Native Yeaft keeps the transcript authoritative and uses Memory plus a deterministic provider history window.');
           break;
         }
 
@@ -754,13 +755,6 @@ async function runREPL(config, args) {
           case 'recall':
             if (session.config.debug) {
               process.stderr.write(`[recall] ${event.entryCount} entries${event.cached ? ' (cached)' : ''}\n`);
-            }
-            break;
-          case 'consolidate':
-            if (session.config.debug) {
-              process.stderr.write(`[consolidate] archived=${event.archivedCount}, extracted=${event.extractedCount}\n`);
-            } else {
-              process.stderr.write(`[compact] Memory consolidated\n`);
             }
             break;
           case 'fallback':
@@ -1290,11 +1284,6 @@ async function runOnce(config, args) {
         case 'recall':
           if (args.verbose || args.debug) {
             process.stderr.write(`[recall] ${event.entryCount} entries${event.cached ? ' (cached)' : ''}\n`);
-          }
-          break;
-        case 'consolidate':
-          if (args.verbose || args.debug) {
-            process.stderr.write(`[consolidate] archived=${event.archivedCount}, extracted=${event.extractedCount}\n`);
           }
           break;
         case 'fallback':

@@ -75,11 +75,11 @@
 | --- | --- | :---: | --- | --- |
 | `providers` | `Provider[]` | ✓ | — | LLM provider 列表 |
 | `primaryModel` | `string` | ✓ | — | 主 model，格式 `<provider>/<model-id>` |
-| `fastModel` | `string` | — | `primaryModel` | 用于 compact、召回和分类等内部任务的轻量 model；Dream 使用 Session 的 primary model |
+| `fastModel` | `string` | — | `primaryModel` | 用于 recall、分类等内部任务的轻量 model；Dream 使用 Session 的 primary model |
 | `language` | `'en' \| 'zh'` | — | `'en'` | System prompt 语言 |
 | `debug` | `boolean` | — | `false` | 把每次 LLM raw request/response 打到 console |
-| `maxContextTokens` | `number` | — | `200000` | 单 turn 注入 LLM 的最大 token（超出会触发 compact） |
-| `messageTokenBudget` | `number` | — | `32768` | 单条 message 渲染上限（compact 时的目标） |
+| `maxContextTokens` | `number` | — | `200000` | Provider context window 的请求保护参考值 |
+| `messageTokenBudget` | `number` | — | `32768` | Provider 请求前 deterministic history window 的预算；不修改 transcript |
 
 ## Provider 对象
 

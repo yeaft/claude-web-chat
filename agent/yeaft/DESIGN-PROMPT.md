@@ -35,16 +35,14 @@
 └─────────────────────────────────────────────────────────┘
 
 messages: [
-  { role:'user',     content:'<conversation_summary>...</>' }   ← compact = 老对话压缩
-  { role:'assistant',content:'OK' }
-  ...近 N 轮 hot history（近期对话原文）...
+  ...确定性 history window（近期对话原文）...
   { role:'user',     content:'<本轮提问>' }
 ]
 ```
 
 **System prompt** 装"我是谁 / 规则 / 我知道什么 / 我现在在哪"。
 **Messages** 装"我们说过什么"。
-两条独立的预算线。
+历史窗口只影响当前 provider request，不生成或持久化 LLM 摘要。
 
 ---
 
@@ -173,12 +171,8 @@ envelope: <inbound routing info>   ← 谁 @ 我了 / 上一跳是谁
 
 ```
 messages: [
-  // 可选：compact summary（老对话被压缩后的产物）
-  { role:'user',      content: '<conversation_summary>\n...\n</conversation_summary>' },
-  { role:'assistant', content: 'Acknowledged.' },
-
-  // hot history：近 N 轮的 user/assistant/tool messages
-  ...hotHistory,
+  // provider request window：确定性裁剪后的近期 user/assistant/tool messages
+  ...recentHistoryWindow,
 
   // 本轮新提问
   { role:'user', content: '<本轮提问>' },
@@ -187,30 +181,24 @@ messages: [
 
 ### 4.2 预算
 
-独立的 `messageTokenBudget`（默认 8K，可调到 25K 左右）。
+`messageTokenBudget` 只控制 provider 请求前的临时 history window。`history-window.js` 按 turn/token 边界裁剪旧消息和工具噪音，不调用 LLM、不写盘、不修改 transcript。
 
-由 `consolidate.partitionMessages` 决定 hot/cold 分界，cold 部分被 `#runOrchestratorCompact` 压成 compact summary。
+完整历史仍由 ConversationStore 持久化；更早内容通过历史分页/搜索获取，长期事实由 Memory/Dream 管理。
 
-### 4.3 Compact Summary 在哪
+### 4.3 旧 Conversation Summary
 
-**当前（错的）**：拼在 system prompt 第 7 节
-**目标（对的）**：作为 messages 数组开头的一对 `{user, assistant}` 注入
-
-理由：
-- 它是**老对话压缩后的产物**，性质上属于对话时间线
-- 放 system 会让 prompt cache 在 compact 更新时失效（因为 system 整体变了），放 messages 头则只让前缀的几条消息变，cache 命中率更高
-- 概念干净：system 装"我"，messages 装"我们说过什么"
+已退役。`compact.md`、`conversation/compact/*.md` 和 `<conversation_summary>` 不再由 Yeaft 读取、写入或注入。旧文件可留待后续非 LLM 清理，但不能进入 prompt。
 
 ---
 
-## 5. Post-Turn 处理（四条独立轨）
+## 5. Post-Turn 处理（当前轨道）
 
-每轮 `end_turn` 之后，按以下次序检查/触发：
+每轮 `end_turn` 之后只做消息 durability、trace/task 状态和 Dream/Memory 的后台维护。没有 post-turn LLM conversation-summary 调用，也没有 context-error 隐藏摘要调用。
 
 | 轨 | 名称 | 输入 | 输出 | 频率 |
 |---|---|---|---|---|
-| **T1** | Compact | hot messages 超 `messageTokenBudget × threshold` | 一段压缩文字写到 conversationStore（`compact.md`），下轮注入 messages 头 | 触发式 |
-| **T2** | AMS Adjust | 本轮 LLM 决策"哪些 segment 该 pin/evict" | 改 AMS OnDemand 成员 + 持久化 `adjustRanThisSession` | 每会话每 group 至多 1 次 |
+| **T1** | Transcript durability | 当前 turn 的 message 边界 | ConversationStore JSONL transcript | 每轮 |
+| **T2** | AMS Adjust | 本轮 LLM 决策"哪些 segment 该 pin/evict" | 改 AMS OnDemand 成员 + 持久化 `adjustRanThisSession` | 每会话每 Session 至多 1 次 |
 | **T3** | Dream（异步） | 本轮 user/assistant 文本 | 写新 segments 到 `<scope>/segments/`、roll-up `summary.md` | 后台 |
 | **T4** | Scope Tagging | 本轮内容是否归属某 feature / 该新建 feature | 标记本轮所属 featureId；必要时新建 feature | **暂未实现** |
 
@@ -238,7 +226,7 @@ messages: [
 |---|---|---|---|
 | 1 | `engine.js:953-957` | `recallResult.formatted` 直接拼进 `memoryInjection` | 删除——FTS 结果只通过 AMS OnDemand 出口 |
 | 2 | `prompts.js:733-734` `buildWorkerPrompt` | 调 `renderLayerASummaries(summaries)` 第二次渲染 summary.md | 从 Worker prompt 中删除调用；函数本身保留供 Router 使用（Router 不跑 AMS——见 §3 ③ Router 例外） |
-| 3 | `prompts.js:362-365` | `compactSummary` 拼在 system prompt | 移到 messages 数组头部 |
+| 3 | Engine history assembly | 已删除磁盘级 LLM conversation summary | 使用确定性的 provider history window |
 | 4 | `prompts.js:371-377` | `renderUserProfile / renderCoreMemory` 各自独立块 | 函数与其依赖的 lang headers 一并删除；UserProfile/CoreMemory 数据源在前序提交中已废弃，统一通过 `summary.md` 流入 Layer-A（见 §3 ③ 历史脚注） |
 | 5 | `memory/budget.js` | budget = `min(50K, ctx × 0.10)` | 改为 `min(100K, ctx × 0.20)` |
 
@@ -248,7 +236,7 @@ messages: [
 |---|---|---|---|
 | **P1** | budget = `min(100K, ctx × 0.20)` | 低（纯参数） | budget 提升，AMS 容量翻倍 |
 | **P2** | 删除三处重复渲染（违反 #1, #2, #4），统一走 AMS | 低 | ~35K |
-| **P3** | compactSummary 从 system 迁到 messages 头 | 中（影响 prompt cache 行为） | ~5K + cache 改善 |
+| **P3** | 删除磁盘级 LLM conversation summary，改为 deterministic history window | 低 | 删除摘要调用、磁盘写入和 prompt 注入 |
 | **P4** | 把散落的 feature/vp/group/envelope 字段整理成统一的 Active Scope 块 | 中（命名 + 字段收紧） | 概念清晰，少量节省 |
 | **P5** | T4 Scope Tagging 占位（接口/字段，不实现逻辑） | 低 | 0（仅留口子） |
 
@@ -274,7 +262,7 @@ messages: [
 | ③ Memory（AMS 单出口，hard budget = 40K） | ≤ 40K |
 | ④ Active Scope | ~3K |
 | **system 小计** | **≤ 71K** |
-| messages（hot history + 可选 compact，受 messageTokenBudget 控） | ~25K |
+| messages（deterministic history window，受 messageTokenBudget 控） | ~25K |
 | **总输入** | **≤ 96K** |
 
 实际预期会更低（很少所有上限同时打满）。
@@ -294,8 +282,8 @@ messages: [
 | **Memory** | system prompt ③ 大类，AMS 出口 | ❌ "上下文"、"context"、"working memory" |
 | **AMS** | Active Memory Set，三层缓存（Resident/Recent/OnDemand） | ❌ "memory cache"、"recall layer" |
 | **Active Scope** | system prompt ④ 大类，结构化作用域信息 | ❌ "context block"、"working context"、"task ctx" |
-| **Messages** | 对话时间线，发给 LLM 的 messages 数组 | ❌ "history" 单独使用（要说 "hot messages" / "compact summary"） |
-| **Compact Summary** | 老对话被压缩后的文字，注入 messages 头 | ❌ "summary"（太泛）、"history summary" |
+| **Messages** | 对话时间线，发给 LLM 的 messages 数组 | ❌ 把 provider history window 当成持久化摘要；只说 transcript / history window |
+| **History window** | 当前 provider request 的确定性 transcript 副本裁剪 | ❌ 持久化 LLM summary、history summary |
 | **Layer-A Summaries** | user/group/vp 三个 scope 的 `summary.md` 文本 | 仅在描述数据来源时使用；prompt 渲染时它们走 AMS Resident |
 | **Feature** | 一个 scope 类型 (`feature/<id>`)；同时也是 Active Scope 的一个字段 | ❌ "task"（task 是另一回事） |
 
@@ -309,4 +297,5 @@ messages: [
 - `agent/yeaft/groups/pre-flow.js` — Memory pre-flow 包装
 - `agent/yeaft/prompts.js` — System prompt 装配
 - `agent/yeaft/engine.js` — query loop（pre-flow → 装配 → adapter.stream → post-turn）
-- `agent/yeaft/conversation/persist.js` — Messages + compact 持久化
+- `agent/yeaft/conversation/persist.js` — Messages transcript 持久化
+- `agent/yeaft/history-window.js` — provider request 的 deterministic history window

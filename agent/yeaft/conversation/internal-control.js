@@ -18,6 +18,8 @@ export function isInternalControlContent(content) {
 export function isHiddenConversationRow(row) {
   if (!row) return true;
   if (row._reflection || row.internal || row.systemOnly || row.systemOnlyMessage) return true;
+  // Legacy compact-control rows remain hidden when reading old stores. The
+  // current runtime never creates or injects them.
   if (row.kind === 'compact_summary' || row._compactSummary) return true;
   return isInternalControlContent(row.content);
 }

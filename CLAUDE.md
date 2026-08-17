@@ -70,7 +70,7 @@ docs/               VitePress 用户文档
 ### 主要入口
 
 - `agent/yeaft/session.js`：`loadSession()`，组装 config、LLM router、tools、memory、Dream、task manager、VP loader、skills 和 MCP。
-- `agent/yeaft/engine.js`：单个 VP / Action 的 query lifecycle；负责 provider stream、tool loop、retry、compact、folding、持久化和 terminal event。
+- `agent/yeaft/engine.js`：单个 VP / Action 的 query lifecycle；负责 provider stream、tool loop、retry、deterministic history window、folding、持久化和 terminal event。
 - `agent/yeaft/web-bridge.js`：Web Session 运行时；把 Web 请求接到 coordinator / VP Engine，并把 engine events 投影为 `yeaft_output`。
 - `agent/yeaft/cli.js`、`cli-session-runner.js`、`stdio-protocol.js`：本地 `yeaft` CLI；非交互自动化使用严格 JSONL `stream-json`，stdout 不能混入普通日志。
 - `agent/yeaft/sessions/`：Session CRUD、manifest、roster、coordinator、pre-flow、Project doc 和 per-session config。
@@ -83,7 +83,7 @@ docs/               VitePress 用户文档
 
 1. Query 前组合 VP soul、project instruction、`CLAUDE.md` / `AGENTS.md`、runtime platform、memory recall、skills、pending async notification 和历史上下文。
 2. Adapter stream 产出 text / thinking / tool calls / usage；普通工具结果回到同一 query loop，长工具弧经过 folding / reflection。
-3. Provider 重试只在安全边界发生。已经出现部分输出的失败要按 continuation 语义续写，不能向用户重放可见文本；context overflow 先 compact，可恢复错误耗尽后才使用 fallback model。
+3. Provider 重试只在安全边界发生。已经出现部分输出的失败要按 continuation 语义续写，不能向用户重放可见文本；context overflow 在 deterministic history window 之后仍无法容纳时直接终止，不调用隐藏摘要 LLM。
 4. Provider silence watchdog 只覆盖 provider 阶段；工具、AskUser 和异步任务有各自 timeout / ownership，不能把总耗时误当 provider 卡死。
 5. `Engine.query()` 是 terminal boundary。正常结束、abort、handoff 和不可恢复异常最终都必须产生 `turn_end { terminal: true }`；内部 loop 的 `turn_end` 不能被 UI 当作 VP 结束。
 6. Raw tool output / provider trace 可写持久化诊断；进入模型上下文和 UI 的只是有预算、可折叠、可投影的副本。不要把 UI 截断等同于磁盘只保存截断内容。
@@ -153,13 +153,13 @@ Yeaft 原生模型配置位于当前 Agent instance 的 `<yeaftDir>/config.json`
 - Skills 有 bundled、user 和 project tiers；项目层会读取兼容目录（`.claude/skills`、`.agents/skills`）及 Yeaft 原生 `.yeaft/skills`，以 `skills.js` 的真实 precedence 为准。
 - MCP 合并 global / external user / project 配置。不要把 Session 数据放进 project MCP/skills 目录。
 
-### Memory、Dream 与 compact
+### Memory、Dream 与 history window
 
 Memory 的 source of truth 是每个 scope 的 `memory.md` + `summary.md`；SQLite FTS 只是可重建索引。协作 Session 的当前写入使用 `user`、`sessions/<sessionId>`、`sessions/<sessionId>/user`、`sessions/<sessionId>/vp/<vpId>` 和 Dream 生成的 `sessions/<sessionId>/topic/...`。实现仍支持 1:1 Yeaft / CLI chat 的 `chat/<chatId>` 与 `chat/<chatId>/vp/<vpId>` 写入和召回，它们不是 legacy scope。单数 `session/...`、`group/...` 及顶层 `feature/...` 才属于旧数据读取 / 迁移兼容，不得作为新功能的 scope 设计。
 
 - `memory/preflow.js` 从允许的 scopes 做 FTS recall；`ams.js` / `ams-registry.js` 管理当前 Session 的 Active Memory Set。
 - Dream 在 `agent/yeaft/dream/` 中异步把对话 diff 合并到 scope，原子更新 `memory.md` / `summary.md`，再同步 FTS。旧 `group/...` scopes 仍可被 migration / reader 看见，不能无迁移直接删除。
-- Compact 在 `agent/yeaft/compact/` 与 `history-compact.js` 中压缩模型历史；它解决 context window，不等于长期语义记忆。
+- Provider history window 在 `agent/yeaft/history-window.js` 中做确定性、非 LLM 的临时裁剪；它不改写 transcript，也不等于长期语义 Memory。磁盘级 LLM conversation summary 已退役。
 - VP、Session、Project sibling、WorkItem context 的读取边界不同。新增 recall / history search 必须显式带 owner / Session / Project 范围，不能做跨 Agent 或全局 transcript 扫描。
 
 ### 工具、后台任务与子 Agent

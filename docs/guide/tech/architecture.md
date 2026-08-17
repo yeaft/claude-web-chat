@@ -95,13 +95,13 @@ Work Center is Agent-level. A source Session is an origin/link, not its storage 
 For each VP turn the engine:
 
 1. resolves Session, VP, Project, project-doc, memory, and pending sub-agent context;
-2. builds a prompt and compacted history within token budgets;
+2. builds a prompt and a deterministic, non-persistent history window within token budgets;
 3. streams from the selected Anthropic Messages or OpenAI Responses adapter;
 4. executes allowed tools and folds long tool arcs;
 5. persists raw events, messages, usage, and traces;
-6. adjusts H2-AMS, triggers Dream/compact when required, and reports stop/result events.
+6. adjusts H2-AMS, triggers Dream when required, and reports stop/result events.
 
-Context errors can force compact/retry; configured fallback models handle eligible provider failures. Background jobs and child agents use persistent Session-scoped task records.
+Context errors are surfaced after deterministic history-window shaping; configured fallback models handle eligible provider failures. Background jobs and child agents use persistent Session-scoped task records.
 
 ## Main source layout
 

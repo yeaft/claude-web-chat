@@ -3,13 +3,13 @@
  *
  * The engine is the core orchestrator:
  *   1. Before first turn: recall memories → inject into system prompt
- *   2. Build messages array (with compact summary if available)
+ *   2. Build messages array from persisted history and the current prompt
  *   3. Call adapter.stream()
  *   4. Collect text + tool_calls from stream events
  *   5. If tool_calls → execute tools → append results → goto 3
- *   6. Persist each completed message at its durability boundary; end_turn runs maintenance
+ *   6. Persist each completed message at its durability boundary
  *   7. If max_tokens → auto-continue (up to maxContinueTurns)
- *   8. On LLMContextError → force compact → retry
+ *   8. On LLMContextError → fail the turn; no summary or hidden maintenance call
  *   9. On retryable error with fallbackModel → switch model → retry
  *
  * Pattern derived from Claude Code's query loop (src/query.ts).
@@ -22,7 +22,7 @@ import { promises as fsp } from 'fs';
 import { join, resolve as resolvePath } from 'path';
 import { buildSystemPrompt, buildWorkerPrompt } from './prompts.js';
 import { getRuntimePlatformInfo } from './runtime-platform.js';
-import { LLMContextError, LLMAbortError, LLMAuthError, LLMPolicyError, LLMRateLimitError, LLMServerError, LLMStreamIdleTimeoutError } from './llm/adapter.js';
+import { LLMAbortError, LLMAuthError, LLMPolicyError, LLMRateLimitError, LLMServerError, LLMStreamIdleTimeoutError } from './llm/adapter.js';
 import { runMemoryPreflow, buildRelevantScopes, memoryScopeLabel } from './sessions/pre-flow.js';
 import {
   readProjectDoc,
@@ -32,11 +32,8 @@ import {
   projectDocWriteScopesNeedingReload,
   DEFAULT_PROJECT_DOC_MAX_BYTES,
 } from './sessions/project-doc.js';
-import { partitionMessages } from './compact/partition.js';
-import { runCompact as runCompactOrchestrator } from './compact/orchestrator.js';
-import { evaluateCompactTriggers } from './compact/triggers.js';
-import { archiveTurn } from './archive/turn-archive.js';
 import { archiveToolResults } from './archive/tool-results.js';
+import { trimSnapshotForBudget } from './history-window.js';
 import { isVpForeign, readContent as readScopeContent } from './memory/store.js';
 import { ActiveMemorySet } from './memory/ams.js';
 import { cleanMemoryPromptText } from './memory/prompt-cleanup.js';
@@ -48,7 +45,6 @@ const MAIN_THREAD_ID = 'main';
 import { pickEffort, parseEffortPrefix } from './effort.js';
 import { DEFAULT_CONTEXT_WINDOW, normalizeEffort, resolveContextWindow, resolveModel } from './models.js';
 import { lookupModelLimitSync } from './llm/models-dev.js';
-import { countTurns } from './turn-utils.js';
 import { attachRouterPlan, extractPriorPlan, stripMetaForWire } from './router/continuity.js';
 import { resolveThinking } from './router/thinking.js';
 import { approxTokens, computeBudget } from './memory/budget.js';
@@ -81,7 +77,7 @@ import {
  * conversations (user report: Yeaft loop errored at the cap). The engine
  * now runs until the LLM itself returns stopReason='end_turn' or a
  * non-retryable error surfaces. Real runaway loops are still bounded by:
- *   • provider rate limits / context window (LLMContextError → compact)
+ *   • provider rate limits / context window (LLMContextError is surfaced)
  *   • user-initiated abort (AbortController / cancel)
  *   • MAX_CONTINUE_TURNS for the max_tokens auto-continue path
  */
@@ -95,9 +91,6 @@ const MAX_CONTINUE_TURNS = 3;
  * both read-only and concurrency-safe execution enter this lane.
  */
 const MAX_CONCURRENT_READ_ONLY_TOOLS = 4;
-
-/** Bound the best-effort post-turn AMS LLM call independently of the user turn. */
-const MAINTENANCE_CALL_TIMEOUT_MS = 30_000;
 
 /** Maximum silence while a visible turn waits for a result-producing task. */
 const DEFAULT_ASYNC_TASK_WAIT_TIMEOUT_MS = 120_000;
@@ -409,7 +402,6 @@ export function estimateMessagesTokens(system, messages) {
 }
 
 export const GROUP_CONTEXT_PRESSURE_RATIO = 0.8;
-export const GROUP_MIN_TURNS_FOR_COMPACT = 5;
 
 export function shouldAllowGroupReflection({
   system = '',
@@ -421,12 +413,10 @@ export function shouldAllowGroupReflection({
   if (!sessionId) {
     return {
       allowed: true,
-      compactAllowed: true,
       tokenEstimate: estimateMessagesTokens(system, messages),
       threshold: 0,
       contextWindow: null,
       ratio: GROUP_CONTEXT_PRESSURE_RATIO,
-      turnCount: countTurns(messages),
       usedFallbackContextWindow: false,
     };
   }
@@ -440,19 +430,14 @@ export function shouldAllowGroupReflection({
   const threshold = Math.floor(contextWindow * GROUP_CONTEXT_PRESSURE_RATIO);
   const tokenEstimate = estimateMessagesTokens(system, messages);
   const overThreshold = tokenEstimate >= threshold;
-  const turnCount = countTurns(messages);
   return {
     // Group send defaults to no reflection. Trust the model until context
     // pressure says we are near the model window.
     allowed: overThreshold,
-    // Durable compact is also protected for tiny histories: fewer than five
-    // turns do not compact unless they already exceed the same 80% threshold.
-    compactAllowed: overThreshold || turnCount >= GROUP_MIN_TURNS_FOR_COMPACT,
     tokenEstimate,
     threshold,
     contextWindow,
     ratio: GROUP_CONTEXT_PRESSURE_RATIO,
-    turnCount,
     usedFallbackContextWindow: !hasModelsDevContext && !hasConfigContext && contextWindow === DEFAULT_CONTEXT_WINDOW,
   };
 }
@@ -464,13 +449,12 @@ export function shouldAllowGroupReflection({
  * @typedef {{ type: 'turn_end', turnNumber: number, stopReason: string, terminal?: boolean }} TurnEndEvent
  * @typedef {{ type: 'tool_start', id: string, name: string, input: object }} ToolStartEvent
  * @typedef {{ type: 'tool_end', id: string, name: string, output: string, isError: boolean, skipped?: boolean }} ToolEndEvent
- * @typedef {{ type: 'consolidate', archivedCount: number, extractedCount: number }} ConsolidateEvent
  * @typedef {{ type: 'recall', entryCount: number, cached: boolean }} RecallEvent
  * @typedef {{ type: 'fallback', from: string, to: string, reason: string }} FallbackEvent
  * @typedef {{ type: 'llm_retry', attempt: number, maxRetries: number, delayMs: number, reason: 'rate_limit_retry_after'|'rate_limit_backoff'|'transient_backoff'|'stream_idle_timeout', recoveryMode: 'restart'|'continue', errorName: string, statusCode: number|null, message: string }} LlmRetryEvent
  * @typedef {{ type: 'error', error: Error, retryable: boolean, reason?: 'stream_idle_timeout', retryExhausted?: boolean, retryAttempts?: number, maxRetries?: number }} ErrorEvent
  *
- * @typedef {import('./llm/adapter.js').StreamEvent | TurnStartEvent | TurnEndEvent | ToolStartEvent | ToolEndEvent | ConsolidateEvent | RecallEvent | FallbackEvent | LlmRetryEvent | ErrorEvent} EngineEvent
+ * @typedef {import('./llm/adapter.js').StreamEvent | TurnStartEvent | TurnEndEvent | ToolStartEvent | ToolEndEvent | RecallEvent | FallbackEvent | LlmRetryEvent | ErrorEvent} EngineEvent
  */
 
 // ─── Engine ──────────────────────────────────────────────────────
@@ -691,9 +675,6 @@ export class Engine {
   /** @type {import('./stats/tool-usage.js').ToolUsageStats|null} — per-tool call/latency counters */
   #toolStats = null;
 
-  /** @type {object|null} — Config override for internal compact/recall tasks using fastModel; Dream uses the Session primary model */
-  #fastConfig;
-
   /** @type {((agentId: string, evt: object) => void) | null} */
   #subAgentEventSink = null;
 
@@ -903,11 +884,8 @@ export class Engine {
     this.#managedCliReady = managedCliReady || null;
     this.#toolStats = toolStats || null;
     // Per-VP fan-out (2026-06-01): engine instances in the group path are
-    // keyed by ${sessionId}::${vpId}::${threadId}, so binding the engine to
-    // its (sessionId, vpId) pair at construction lets post-turn compact
-    // scope its read/write to THIS VP's view of the conversation instead
-    // of clobbering a session-global compact.md. Legacy / sub-agent
-    // callers leave both null → fall back to the global file.
+    // keyed by ${sessionId}::${vpId}::${threadId}, so bind the engine to its
+    // session/VP identity for history and memory ownership.
     this.#sessionId = (typeof sessionId === 'string' && sessionId) ? sessionId : null;
     this.#vpId = (typeof vpId === 'string' && vpId) ? vpId : null;
     this.#chatId = (typeof chatId === 'string' && chatId) ? chatId : null;
@@ -1001,10 +979,6 @@ export class Engine {
     this.#skillManager = this.#baseSkillManager && Array.isArray(config.plugins?.skills)
       ? createPluginSkillManager(this.#baseSkillManager, config.plugins)
       : this.#baseSkillManager;
-    const fastModelId = config.fastModelId || config.model;
-    this.#fastConfig = fastModelId !== config.model
-      ? { ...config, model: fastModelId }
-      : config;
   }
 
   /**
@@ -1585,28 +1559,6 @@ export class Engine {
     return memory;
   }
 
-  /**
-   * Read compact summary from conversation store.
-   *
-   * @returns {string}
-   */
-  #getCompactSummary() {
-    if (!this.#conversationStore) return '';
-    // Per-(group, vp) scoping: when this engine is bound to a fan-out VP,
-    // read ONLY its own summary file. Falling back to legacy compact.md here
-    // leaks another group/VP's summary into every new group turn after one
-    // post-turn compact writes the session-global file.
-    if (this.#chatId && this.#vpId
-        && typeof this.#conversationStore.readCompactSummaryForChat === 'function') {
-      return this.#conversationStore.readCompactSummaryForChat(this.#chatId, this.#vpId);
-    }
-    if (this.#sessionId && this.#vpId
-        && typeof this.#conversationStore.readCompactSummaryFor === 'function') {
-      return this.#conversationStore.readCompactSummaryFor(this.#sessionId, this.#vpId);
-    }
-    return this.#conversationStore.readCompactSummary();
-  }
-
   #canPersistConversation() {
     return Boolean(this.#conversationStore) && !this.#config._readOnly;
   }
@@ -1683,214 +1635,6 @@ export class Engine {
     if (persistedRows.length === 0) return null;
     const record = this.#conversationRecord(reflection, context);
     return this.#conversationStore.foldMessages(persistedRows, record);
-  }
-
-  /**
-   * Check and trigger consolidation if needed.
-   * Skipped in read-only mode.
-   *
-   * @returns {Promise<{ archivedCount: number, extractedCount: number }|null>}
-   */
-  async #maybeConsolidate() {
-    if (!this.#conversationStore) return null;
-    if (this.#config._readOnly) return null;
-
-    const budget = this.#config.messageTokenBudget || 32768;
-    const compactCfg = (this.#config && this.#config.compact) || {};
-    return this.#runOrchestratorCompact(budget, compactCfg);
-  }
-
-  /**
-   * Run compact via the orchestrator (DESIGN §4.2).
-   *
-   * PR-B rip: the legacy entries-based extract hook is gone — Dream V2
-   * owns durable memory extraction now. The orchestrator runs Track 1
-   * (compaction + summary) and Track 2 (task summary refresh, when wired);
-   * Track 3 (extract) is intentionally omitted.
-   *
-   * @param {number} budget
-   * @param {object} compactCfg
-   * @returns {Promise<{archivedCount:number, extractedCount:number}|null>}
-   */
-  async #runOrchestratorCompact(budget, _compactCfg) {
-    const conversationStore = this.#conversationStore;
-    const adapter = this.#adapter;
-    const fastConfig = this.#fastConfig;
-
-    // Per-(group, vp) scoping: when this engine is bound to a fan-out VP
-    // (the common case in group mode), load only the rows THIS VP saw in
-    // its context — user prompts + every VP's assistant text, with other
-    // VPs' tool calls/results stripped (see persist.loadSessionHistoryForVp).
-    //
-    // Legacy / sub-agent callers (no sessionId/vpId pair) keep the global
-    // loadAll() behaviour so we don't break those flows.
-    let messages;
-    const scopedChat = !!(this.#chatId && this.#vpId
-      && typeof conversationStore.loadChatHistoryForVp === 'function');
-    const scoped = !scopedChat && !!(this.#sessionId && this.#vpId
-      && typeof conversationStore.loadSessionHistoryForVp === 'function');
-    try {
-      messages = scopedChat
-        ? conversationStore.loadChatHistoryForVp(this.#chatId, this.#vpId)
-        : scoped
-          ? conversationStore.loadSessionHistoryForVp(this.#sessionId, this.#vpId)
-          : conversationStore.loadAll();
-    } catch { return null; }
-    if (!Array.isArray(messages) || messages.length === 0) return null;
-
-    const tokenCount = conversationStore.hotTokens();
-    // In the scoped path, sessionId is the engine's binding (authoritative).
-    // In the legacy path, fall back to scanning the messages (best-effort,
-    // used only for the group context-window gate).
-    const sessionId = this.#sessionId
-      || messages.find(m => m && typeof m.sessionId === 'string' && m.sessionId)?.sessionId
-      || null;
-    const groupContextGate = shouldAllowGroupReflection({
-      system: '',
-      messages,
-      model: this.#config.model,
-      config: this.#config,
-      sessionId,
-    });
-    if (sessionId && groupContextGate?.usedFallbackContextWindow) {
-      this.#trace.log?.('group_context_window_fallback', {
-        sessionId,
-        model: this.#config.model,
-        contextWindow: groupContextGate.contextWindow,
-        threshold: groupContextGate.threshold,
-      });
-    }
-    if (sessionId && !groupContextGate.compactAllowed) return null;
-
-    const trig = evaluateCompactTriggers({
-      messages,
-      tokenCount,
-      contextLimit: this.#config.maxContextTokens || 200000,
-      tokenRatio: sessionId ? GROUP_CONTEXT_PRESSURE_RATIO : undefined,
-      maxMessages: sessionId ? Number.POSITIVE_INFINITY : undefined,
-    });
-    if (!trig.trigger) return null;
-
-    // Use partitionMessages to decide what is "cooling": orchestrator's
-    // own keepHot is a count, but we want to honour the token-budget
-    // partitioning the rest of the system uses.
-    const { toArchive } = partitionMessages(messages, budget);
-    if (toArchive.length === 0) return null;
-
-    const archiveIds = [];
-
-    // Language-aware summarizer prompts. The orchestrator-track summary
-    // ends up in the system prompt as a "previous conversation summary"
-    // block, so it needs to match the user's preferred language to avoid
-    // a jarring locale flip mid-context.
-    const isZh = String(this.#config.language || '').toLowerCase().startsWith('zh');
-    const summariserSystem = isZh
-      ? '你是对话摘要器。下面包含「先前累计摘要」（可能为空）与「新待压缩对话」。请融合两者，输出一份「重写后的累计摘要」——不要分段罗列日期、不要保留 "## 2026-..." 等历史分节，直接产出一份连贯、可被下一轮直接重新注入 prompt 的摘要。保留关键决策、事实、上下文与人物意图。'
-      : 'You are a conversation summarizer. The input contains a "previous cumulative summary" (may be empty) plus a "new conversation to absorb". Merge them into ONE rewritten cumulative summary — do NOT keep dated section headers or any historical log structure. Output a single coherent summary suitable to be re-injected into the next turn\'s prompt as-is. Preserve key decisions, facts, context, and intent.';
-    const summariserPromptPrefix = isZh ? '请概括：\n\n' : 'Summarize:\n\n';
-
-    const hooks = {
-      summarise: async () => {
-        try {
-          // Read prior summary at call time, not at orchestrator setup,
-          // so the merge always sees the freshest on-disk state even if
-          // future orchestrator changes invoke summarise more than once.
-          const priorSummary = this.#getCompactSummary() || '';
-          const priorBlock = priorSummary
-            ? (isZh
-                ? `【先前累计摘要】\n${priorSummary}\n\n【新待压缩对话】\n`
-                : `[Previous cumulative summary]\n${priorSummary}\n\n[New conversation to absorb]\n`)
-            : '';
-          const maintenanceCtrl = new AbortController();
-          let timeout = null;
-          const timedOut = new Promise((_, reject) => {
-            timeout = setTimeout(() => {
-              maintenanceCtrl.abort('compact_summary_timeout');
-              reject(new LLMAbortError());
-            }, MAINTENANCE_CALL_TIMEOUT_MS);
-            if (timeout && typeof timeout.unref === 'function') timeout.unref();
-          });
-          try {
-            const request = adapter.call({
-              model: fastConfig.model,
-              system: summariserSystem,
-              messages: [{ role: 'user', content: `${summariserPromptPrefix}${priorBlock}${toArchive.map(m => `[${m.role}] ${(m.content || '').slice(0, 500)}`).join('\n\n')}` }],
-              // 10k output budget: the running summary is the engine's
-              // long-term memory of cold turns, so it deserves room to
-              // actually preserve detail. We rewrite-in-place each round,
-              // so size stays bounded by maxTokens regardless of how many
-              // compact passes have run.
-              maxTokens: 10240,
-              signal: maintenanceCtrl.signal,
-            });
-            const result = await Promise.race([request, timedOut]);
-            return (result.text || '').trim();
-          } finally {
-            if (timeout) clearTimeout(timeout);
-          }
-        } catch {
-          return '';
-        }
-      },
-      archive: async (_groupIdx, groupMsgs) => {
-        // Only collect archive ids when we'll actually use them. In the
-        // scoped (per-VP) path we never call moveToColdBatch — those
-        // rows are shared with sibling VPs in this group — so leaving
-        // the push in would be dead state a future reader has to chase.
-        if (!scoped) {
-          for (const m of groupMsgs) if (m.id) archiveIds.push(m.id);
-        }
-        const turnId = groupMsgs[0]?.id || `g_${Date.now()}`;
-        if (this.#yeaftDir) {
-          try {
-            await archiveTurn({
-              root: `${this.#yeaftDir}/memory`,
-              scopeDir: 'user',
-              turnId,
-              messages: groupMsgs,
-            });
-          } catch { /* best-effort */ }
-        }
-        return { turnId };
-      },
-    };
-
-    try {
-      const out = await runCompactOrchestrator({
-        messages, keepHot: 10, hooks,
-      });
-      // Scoped path (per-(group, vp)): do NOT moveToColdBatch — those
-      // archive ids include user rows and other VPs' assistant rows that
-      // sibling VPs in this group still need in their hot context. The
-      // per-VP summary written below is the durable win; physical
-      // cold-archival across shared rows is the dream-level orchestrator's
-      // job, not post-turn compact's.
-      if (!scoped && !scopedChat && archiveIds.length > 0) {
-        conversationStore.moveToColdBatch(archiveIds);
-      }
-      if (out.compactSummary) {
-        if (scopedChat && typeof conversationStore.replaceCompactSummaryForChat === 'function') {
-          conversationStore.replaceCompactSummaryForChat(this.#chatId, this.#vpId, out.compactSummary);
-        } else if (scoped && typeof conversationStore.replaceCompactSummaryFor === 'function') {
-          conversationStore.replaceCompactSummaryFor(this.#sessionId, this.#vpId, out.compactSummary);
-        } else {
-          conversationStore.replaceCompactSummary(out.compactSummary);
-        }
-      }
-      // Index update only makes sense for the legacy path that actually
-      // moved rows to cold. In the scoped path, nothing on disk changed.
-      if (!scoped) {
-        const lastKept = messages[messages.length - 1];
-        conversationStore.updateIndex({ lastMessageId: lastKept?.id || null });
-      }
-
-      return {
-        archivedCount: out.archivedMessages,
-        extractedCount: out.extractedCount,
-      };
-    } catch {
-      return null;
-    }
   }
 
   #formatTaskResultUpdateContent(content) {
@@ -2569,55 +2313,7 @@ export class Engine {
     });
     let systemPrompt = buildCurrentSystemPrompt();
 
-    // ─── HARD INVARIANT: Compact ≠ Dream (read DESIGN-COMPACT-VS-DREAM.md) ─
-    // Compact summary (this block) ONLY lands in the messages array head as
-    // a `<conversation_summary>` user/assistant pair. It MUST NEVER appear
-    // in the system prompt — that was the bug DESIGN-PROMPT §4.3 banned.
-    //
-    // Inversely: Dream's prompt-facing `content.md` flows exclusively through
-    // `prompts.js#buildSystemPrompt`'s Memory section via AMS Resident (see
-    // `engine.js#buildResidentEntries`). Evidence and catalog files stay out.
-    // It MUST NEVER appear in the messages array.
-    //
-    // Two write roots, two scheduler triggers, two prompt slots — never
-    // mixed. Anyone touching this section must read
-    // `agent/yeaft/DESIGN-COMPACT-VS-DREAM.md` before changing the wiring;
-    // the boundary has been violated twice in this codebase's history and
-    // each time it took an LLM cache-thrash + persona-dup follow-up PR to
-    // unwind.
-    //
-    // ─── Compact summary as messages-array head (DESIGN-PROMPT §4.3) ─
-    // The previous code placed the compact summary inside the system
-    // prompt; that broke prompt-cache hit-rate (any compact update
-    // invalidated the entire system) and conflated identity/rules with
-    // dialogue history. The compact summary is the product of compressing
-    // older turns, so it belongs at the head of the messages array.
-    //
-    // Note: this is a separate mechanism from `history-compact.js`'s
-    // `_compactSummary`-tagged user message. They never collide:
-    //   • THIS path injects a `<conversation_summary>` pair on every
-    //     query when conversationStore.readCompactSummary() returns text
-    //     (i.e. when a previous T1 run wrote one to disk). Engine reads,
-    //     does not produce.
-    //   • history-compact.js#compactHistory rewrites the in-memory
-    //     `messages` array, replacing cold messages with a single
-    //     `_compactSummary`-tagged user message. That path runs at a
-    //     different layer (web-bridge during a manual /compact) and never
-    //     touches `compactMessages` here.
-    // The two would only overlap if a tagged `_compactSummary` user
-    // message also matched the `<conversation_summary>` template — they
-    // don't, so duplication is impossible by construction.
-    const compactSummaryRaw = this.#getCompactSummary();
-    const compactSummary = typeof compactSummaryRaw === 'string'
-      ? compactSummaryRaw.trim() : '';
-    const compactMessages = compactSummary
-      ? [
-          { role: 'user', content: `<conversation_summary>\n${compactSummary}\n</conversation_summary>` },
-          { role: 'assistant', content: 'Acknowledged.' },
-        ]
-      : [];
-
-    // Build conversation: optional compact head + existing messages + new user message.
+    // Build conversation from the caller-provided history and the new user message.
     // If `promptParts` was supplied (image/file attachments), use the array form
     // so the adapter sees image content blocks alongside the text. Otherwise the
     // legacy string form keeps prompt-cache behavior identical.
@@ -2653,8 +2349,10 @@ export class Engine {
         : prompt;
     }
     const conversationMessages = [
-      ...compactMessages,
-      ...messages,
+      ...trimSnapshotForBudget(messages, {
+        messageTokenBudget: this.#config.messageTokenBudget,
+        language: this.#config.language,
+      }),
       { role: 'user', content: finalUserContent },
     ];
 
@@ -2805,8 +2503,8 @@ export class Engine {
     // on any successful stream() iteration, and also on a fallback-model
     // switch (the new model gets a fresh budget). Reaching maxRetries
     // gives up: we either fall back to a backup model or surface the
-    // error to the user. LLMContextError has its own compact-retry path
-    // and does NOT count against this budget.
+    // error to the user. Context errors are surfaced immediately and do
+    // not count against this budget.
     let retryPolicy = resolveRetryPolicy(this.#config);
     let consecutiveRetryableErrors = 0;
     let consecutiveForbiddenErrors = 0;
@@ -2842,8 +2540,7 @@ export class Engine {
       retryPolicy = resolveRetryPolicy(requestConfig);
 
       // task-324: no hard MAX_TURNS cap. Loop terminates on end_turn,
-      // non-retryable error, LLMContextError (after compact retry), or
-      // caller abort. Keeping this comment so the removal is traceable.
+      // non-retryable error, LLMContextError, or caller abort.
 
       // task-325a: check for user abort at the top of every turn so a
       // signal that fires between turns (e.g. during tool execution in
@@ -3065,9 +2762,17 @@ export class Engine {
         // message_trace can fetch it on demand. The stub keeps the
         // OpenAI/Anthropic toolCallId pairing intact.
         const pendingContinuationForRequest = retryLifecycle.pendingContinuation;
+        // Bound only this provider copy. The durable transcript and the live
+        // query tape remain complete; no summary is generated and no history
+        // rows are rewritten. This also protects later tool-loop requests,
+        // not just the initial snapshot assembled by the bridge.
+        const requestHistory = trimSnapshotForBudget(conversationMessages, {
+          messageTokenBudget: requestConfig.messageTokenBudget,
+          language: requestConfig.language,
+        });
         let wireMessages = stripMetaForWire(pendingContinuationForRequest
-          ? [...conversationMessages, pendingContinuationForRequest]
-          : [...conversationMessages]);
+          ? [...requestHistory, pendingContinuationForRequest]
+          : requestHistory);
 
         if (scenario !== 'work-item' && this.#yeaftDir && (this.#config?.archive?.toolResults !== false)) {
           try {
@@ -3078,15 +2783,10 @@ export class Engine {
               turnAgeMin: this.#config?.archive?.turnAgeMin,
               lengthMin: this.#config?.archive?.lengthMin,
             });
+            // Keep the live query tape and persisted transcript raw. The
+            // archive result is a provider-only copy; a later request may
+            // repeat this best-effort archive lookup without losing history.
             wireMessages = swept.nextMessages;
-            // Mutate the in-memory conversation array so subsequent turns
-            // see the stub too — without this, the next turn re-archives
-            // the same body.
-            if (swept.archivedCount > 0) {
-              for (let i = 0; i < conversationMessages.length; i += 1) {
-                conversationMessages[i] = wireMessages[i];
-              }
-            }
           } catch { /* best-effort */ }
         }
 
@@ -3121,9 +2821,6 @@ export class Engine {
               });
               wireMessages = sweep.nextMessages;
               if (sweep.archivedCount > 0) {
-                for (let i = 0; i < conversationMessages.length; i += 1) {
-                  conversationMessages[i] = wireMessages[i];
-                }
                 this.#trace.log?.('preflight_sweep', {
                   archivedCount: sweep.archivedCount,
                   archivedBytes: sweep.archivedBytes,
@@ -3443,16 +3140,6 @@ export class Engine {
           yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
           yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId, terminal: true };
           break;
-        }
-
-        if (err instanceof LLMContextError && this.#conversationStore) {
-          const retryConsolidated = await this.#maybeConsolidate();
-          if (retryConsolidated && retryConsolidated.archivedCount > 0) {
-            endAttemptTrace('context_overflow_retry');
-            yield { type: 'consolidate', archivedCount: retryConsolidated.archivedCount, extractedCount: retryConsolidated.extractedCount };
-            yield { type: 'turn_end', turnNumber, stopReason: 'context_overflow_retry', threadId };
-            continue;
-          }
         }
 
         traceRequest('llm.request_error', {
@@ -4042,12 +3729,7 @@ export class Engine {
         yield { type: 'turn_end', turnNumber, stopReason, threadId, terminal: true };
 
         // Message durability is handled incrementally before this terminal
-        // branch. End-of-turn owns maintenance only; re-appending the whole
-        // turn here would duplicate rows and reintroduce the crash window.
-        const consolidated = await this.#maybeConsolidate();
-        if (consolidated && consolidated.archivedCount > 0) {
-          yield { type: 'consolidate', archivedCount: consolidated.archivedCount, extractedCount: consolidated.extractedCount };
-        }
+        // branch. There is no hidden end-of-turn LLM maintenance step.
 
         // PR-L: T2 end-of-turn (asynchronous) reflection. Fires when the
         // total tool count for this query() exceeds TURN_SUMMARY_THRESHOLD
@@ -5437,33 +5119,6 @@ export class Engine {
   /** @returns {string|null} */
   get yeaftDir() { return this.#yeaftDir; }
 
-  /** @returns {object} — Config with fastModel as model (for compact and other non-Dream internal tasks) */
-  get fastConfig() { return this.#fastConfig; }
-
-  /**
-   * Run a one-shot fast-model call to produce a compact summary.
-   * Used by the web bridge's in-memory history compactor
-   * (`agent/yeaft/history-compact.js`) — kept on the engine so callers
-   * don't reach into the private adapter field.
-   *
-   * @param {{system: string, prompt: string, maxTokens?: number}} args
-   * @returns {Promise<string>} — summary text (trimmed); '' on failure
-   */
-  async summarizeForCompact({ system, prompt, maxTokens = 1024 } = {}) {
-    if (!system || !prompt) return '';
-    try {
-      const out = await this.#adapter.call({
-        model: this.#fastConfig.model,
-        system,
-        messages: [{ role: 'user', content: prompt }],
-        maxTokens,
-      });
-      return (out?.text || '').trim();
-    } catch (err) {
-      console.warn('[Engine] summarizeForCompact failed:', err?.message || err);
-      return '';
-    }
-  }
 }
 
 function selectExactSessionScope(selected, sessionId) {
