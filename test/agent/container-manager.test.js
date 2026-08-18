@@ -59,13 +59,19 @@ describe('container Agent manager', () => {
     expect(containerNameForAgent('remote-worker')).toBe('yeaft-agent-remote-worker');
   });
 
-  it('keeps the build-time npm cache temporary and runtime-owned by UID 10001', () => {
+  it('keeps the npm cache temporary, runtime-owned by UID 10001, and provisions finance query dependencies', () => {
     const dockerfile = readFileSync(resolve(process.cwd(), 'agent/Dockerfile'), 'utf8');
     const entrypoint = readFileSync(resolve(process.cwd(), 'agent/container-entrypoint.sh'), 'utf8');
     expect(dockerfile).toContain('npm_config_cache=/tmp/yeaft-npm-cache npm ci --workspace=agent --omit=dev');
     expect(dockerfile).toContain('rm -rf /tmp/yeaft-npm-cache');
     expect(dockerfile).toContain('install -d -m 0700 -o yeaft -g yeaft /home/yeaft/.npm');
     expect(dockerfile).toContain('YEAFT_AGENT_RUNTIME=container_agent');
+    expect(dockerfile).toContain('ca-certificates curl git openssh-client python3 python3-venv tini wget');
+    expect(dockerfile).toContain('python3 python3-venv');
+    expect(dockerfile).toContain('VIRTUAL_ENV=/opt/yeaft-python');
+    expect(dockerfile).toContain('PATH=/opt/yeaft-python/bin:$PATH');
+    expect(dockerfile).toContain('"akshare==1.18.91"');
+    expect(dockerfile).toContain('"$VIRTUAL_ENV/bin/python" -c "import akshare; assert akshare.__version__ == \'1.18.91\'; assert all(hasattr(akshare, name) for name in (\'stock_info_global_em\', \'futures_display_main_sina\', \'futures_zh_spot\'))"');
     expect(entrypoint).toContain('--reuid=10001 --regid=10001 --init-groups');
   });
 

@@ -5,10 +5,15 @@ ENV NODE_ENV=production \
     HOME=/home/yeaft \
     YEAFT_DIR=/home/yeaft/.yeaft \
     WORK_DIR=/workspace \
-    YEAFT_AGENT_RUNTIME=container_agent
+    YEAFT_AGENT_RUNTIME=container_agent \
+    VIRTUAL_ENV=/opt/yeaft-python \
+    PATH=/opt/yeaft-python/bin:$PATH
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates git openssh-client tini \
+  && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client python3 python3-venv tini wget \
+  && python3 -m venv "$VIRTUAL_ENV" \
+  && "$VIRTUAL_ENV/bin/pip" install --no-cache-dir "akshare==1.18.91" \
+  && "$VIRTUAL_ENV/bin/python" -c "import akshare; assert akshare.__version__ == '1.18.91'; assert all(hasattr(akshare, name) for name in ('stock_info_global_em', 'futures_display_main_sina', 'futures_zh_spot'))" \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --create-home --uid 10001 --shell /usr/sbin/nologin yeaft \
   && mkdir -p /app /workspace /home/yeaft/.yeaft \

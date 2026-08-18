@@ -83,6 +83,22 @@ yeaft-agent container install \
 
 Server 管理的 sandbox 容器同样支持：设置 `SANDBOX_CGROUP_PARENT=yeaft.slice` 后，Server 创建的所有用户容器都挂入共享 slice。应先在 Docker Host 上用 CLI 输出的绝对 Node/CLI 命令初始化 slice；Server 创建第一个容器前也会再次检查并尝试初始化（需要 Server 服务账号具备宿主 `/sys/fs/cgroup` 写权限，即通常以 root/systemd 服务运行）。初始化失败时创建请求返回 `SANDBOX_CGROUP_SLICE_UNAVAILABLE`，不会静默创建不受保护的容器。
 
+## Python 与 AkShare
+
+Docker 化 Agent 镜像预装 Python 3.11 虚拟环境和 `akshare==1.18.91`。虚拟环境位于 `/opt/yeaft-python`，其 `bin` 已置于 `PATH` 前面，因此现有 `Bash` 工具可直接使用 `python` 或 `python3`，无需新增 Server API、MCP 或单独的工具注册。
+
+```bash
+python3 - <<'PY'
+import akshare as ak
+
+print(ak.__version__)
+print(ak.stock_info_global_em().head())       # 全球财经快讯
+print(ak.futures_display_main_sina().head())  # 新浪主力连续合约品种
+PY
+```
+
+镜像构建时会验证上述财经快讯接口以及 `futures_zh_spot` 的合约实时行情接口存在。AkShare 在查询时访问第三方公开数据源；Sandbox Host 必须允许相应的公网出站连接。镜像不包含市场数据供应商凭证，也不承诺实时性、可用性或数据准确性；调用方必须自行处理上游限流、临时不可用和数据口径差异。
+
 ## 发布与版本
 
 Dev tag 发布 `ghcr.io/yeaft/yeaft-web-code-agent-agent:dev`。生产 release 同时发布版本 tag 与 `latest`。Docker build 的 `BUILD_VERSION` 会写入容器内 `agent/package.json`，因此以下命令应返回构建版本：
