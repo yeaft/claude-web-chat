@@ -2096,15 +2096,25 @@ async function routeEnvelopeToVpThread(sessionId, vpId, envelope) {
   } else if (runningThreads.length === 0) {
     thread = getOrCreateVpThread({ sessionId, vpId, title: fallbackTitle(text) });
   } else {
-    const decision = await threadClassifier({
-      adapter: session?.adapter,
-      model: session?.config?.fastModel || session?.config?.model,
-      vp: readVpForClassifier(vpId),
-      runningThreads: runningThreads.map(threadSnapshotForClassifier),
-      newQuery: text,
-    });
-    const targetIsRunning = runningThreads.some((t) => t.threadId === decision.targetThreadId);
-    if (decision.decision === 'related' && decision.targetThreadId && targetIsRunning) {
+    let decision = null;
+    try {
+      decision = await threadClassifier({
+        adapter: session?.adapter,
+        model: session?.config?.fastModel || session?.config?.model,
+        vp: readVpForClassifier(vpId),
+        runningThreads: runningThreads.map(threadSnapshotForClassifier),
+        newQuery: text,
+      });
+    } catch (err) {
+      // Classification is an optimisation, not a delivery boundary. The user
+      // message is already durable at this point; dropping the rejected route
+      // promise would leave it visible in history without ever starting a turn.
+      console.warn('[Yeaft] VP thread classification failed; starting a new thread:', err?.message || err);
+    }
+    const targetIsRunning = decision
+      ? runningThreads.some((t) => t.threadId === decision.targetThreadId)
+      : false;
+    if (decision?.decision === 'related' && decision.targetThreadId && targetIsRunning) {
       thread = getOrCreateVpThread({
         sessionId,
         vpId,
@@ -2116,7 +2126,7 @@ async function routeEnvelopeToVpThread(sessionId, vpId, envelope) {
       thread = getOrCreateVpThread({
         sessionId,
         vpId,
-        title: decision.title || fallbackTitle(text),
+        title: decision?.title || fallbackTitle(text),
       });
     }
   }
