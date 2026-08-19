@@ -276,6 +276,54 @@ describe('route_forward thread ownership', () => {
     });
   });
 
+  it('starts a new turn when thread classification fails', async () => {
+    const sessionId = 'session-classifier-failure';
+    const vpId = 'vp-linus';
+    const persisted = [];
+    __testSetSession({
+      config: { _readOnly: true },
+      conversationStore: {
+        append(record) {
+          persisted.push(record);
+          return record;
+        },
+        loadRecentBySession: () => [],
+      },
+      toolRegistry: new ToolRegistry(),
+      trace: new NullTrace(),
+      adapter: {
+        async *stream() { yield { type: 'stop', stopReason: 'end_turn' }; },
+        async call() { return { text: '', usage: {} }; },
+      },
+    });
+    __testSeedVpThread({ sessionId, vpId, threadId: 'thr-running', status: 'typing' });
+    __testSetThreadClassifier(async () => {
+      throw new Error('classifier provider unavailable');
+    });
+
+    __testEnqueueForVp(sessionId, vpId, {
+      sessionId,
+      trigger: 'fallback',
+      msg: {
+        id: 'msg-classifier-failure',
+        from: 'user',
+        role: 'user',
+        text: 'do not drop this request',
+        meta: {},
+      },
+    });
+    await __testWaitForRoutePromises('msg-classifier-failure');
+
+    const threads = __testGetVpThreads(sessionId, vpId);
+    expect(threads).toHaveLength(2);
+    expect(threads.find(thread => thread.threadId === 'thr-running')?.pendingQueries).toHaveLength(0);
+    expect(persisted).toContainEqual(expect.objectContaining({
+      role: 'user',
+      sessionId,
+      content: 'do not drop this request',
+    }));
+  });
+
   it('falls back to a normal queued turn when a stale thread has no running engine', async () => {
     const sessionId = 'session-stale-thread';
     const vpId = 'vp-linus';
