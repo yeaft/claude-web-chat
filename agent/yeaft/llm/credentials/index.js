@@ -34,10 +34,12 @@ export function getCredentialProvider(name) {
       async getApiKey() {
         const r = await githubCopilot.getApiToken();
         if (!r || !r.token) {
-          throw new Error(
-            'github-copilot credential provider could not resolve a token. ' +
-            'Try: set COPILOT_GITHUB_TOKEN/GH_TOKEN/GITHUB_TOKEN env var, ' +
-            'or run `gh auth login`, or sign in via the device flow.'
+          throw new githubCopilot.CopilotCredentialError(
+            'No GitHub Copilot credential is configured. ' +
+            'Set COPILOT_GITHUB_TOKEN/GH_TOKEN/GITHUB_TOKEN, run `gh auth login`, ' +
+            'or sign in via the device flow.',
+            null,
+            'credential_missing',
           );
         }
         return r.token;
@@ -50,6 +52,7 @@ export function getCredentialProvider(name) {
             'GitHub Copilot credential refresh found no usable credential',
             null,
             'credential_unavailable',
+            { retryable: true },
           );
         }
         return r.token;

@@ -3149,14 +3149,16 @@ export class Engine {
             model: currentModel,
             errorName: err?.name || null,
             statusCode: err?.statusCode ?? null,
-            retryable: err instanceof LLMRateLimitError || err instanceof LLMServerError,
+            retryable: err instanceof LLMRateLimitError
+              || err instanceof LLMServerError
+              || err?.retryable === true,
             reasonCode: err?.reasonCode || null,
             message: String(err?.message || '').slice(0, 200),
           },
         });
 
         const earlyIsRateLimit = err instanceof LLMRateLimitError;
-        const earlyIsTransient = err instanceof LLMServerError;
+        const earlyIsTransient = err instanceof LLMServerError || err?.retryable === true;
         const earlyIsContentPolicy = err instanceof LLMPolicyError;
         // A completed tool_call has already crossed the streaming boundary to
         // the caller. Replaying that request would publish a duplicate call and
@@ -3361,7 +3363,9 @@ export class Engine {
         };
 
 
-        const isRetryableError = err instanceof LLMRateLimitError || err instanceof LLMServerError;
+        const isRetryableError = err instanceof LLMRateLimitError
+          || err instanceof LLMServerError
+          || err?.retryable === true;
         const errorEvent = {
           type: 'error',
           error: err,

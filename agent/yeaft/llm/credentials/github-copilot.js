@@ -61,11 +61,12 @@ const DEFAULT_DEVICE_TIMEOUT_SECONDS = 300;
 
 /** Safe credential exchange failure. Provider response bodies are never attached. */
 export class CopilotCredentialError extends Error {
-  constructor(message, statusCode = null, reasonCode = 'credential_exchange_failed') {
+  constructor(message, statusCode = null, reasonCode = 'credential_exchange_failed', details = {}) {
     super(message);
     this.name = 'CopilotCredentialError';
     this.statusCode = Number.isFinite(statusCode) ? statusCode : null;
     this.reasonCode = reasonCode;
+    this.retryable = details.retryable === true;
   }
 }
 
@@ -82,12 +83,18 @@ const _jwtCache = new Map();
 // instead of N when several requests race during a cold start or a refresh.
 const _exchangeInFlight = new Map();
 
+// Concurrent VP/sub-agent turns share one `gh auth token` lookup. Without
+// this fence a fan-out can start many gh processes at once; some then time
+// out and used to be misreported as "not logged in".
+const _ghTokenInFlight = new Map();
+
 /**
  * Reset all in-process state. Tests only.
  */
 export function _resetCacheForTests() {
   _jwtCache.clear();
   _exchangeInFlight.clear();
+  _ghTokenInFlight.clear();
 }
 
 /** Drop exchanged API tokens after the provider rejects one with HTTP 401. */
@@ -175,7 +182,21 @@ export async function writePersistedToken({ token, source }) {
  * @param {string} [opts.hostname] — pass --hostname to gh
  * @returns {Promise<string | null>}
  */
-export async function tryGhCliToken({ hostname } = {}) {
+export async function tryGhCliToken({ hostname, execFileFn = execFileAsync } = {}) {
+  const lookupKey = hostname || 'github.com';
+  const inFlight = _ghTokenInFlight.get(lookupKey);
+  if (inFlight) return inFlight;
+
+  const lookup = runGhCliToken({ hostname, execFileFn });
+  _ghTokenInFlight.set(lookupKey, lookup);
+  try {
+    return await lookup;
+  } finally {
+    _ghTokenInFlight.delete(lookupKey);
+  }
+}
+
+async function runGhCliToken({ hostname, execFileFn }) {
   const args = ['auth', 'token'];
   if (hostname) args.push('--hostname', hostname);
 
@@ -187,20 +208,47 @@ export async function tryGhCliToken({ hostname } = {}) {
   // installs. If the user's `gh` isn't on PATH the env vars or device flow
   // are the fallback.
   try {
-    const { stdout } = await execFileAsync('gh', args, {
+    const { stdout } = await execFileFn('gh', args, {
       timeout: 5000,
       env,
       windowsHide: true,
     });
     const trimmed = (stdout || '').trim();
-    if (!trimmed) return null;
+    if (!trimmed) {
+      throw new CopilotCredentialError(
+        'GitHub CLI credential lookup returned no token; retry the request',
+        null,
+        'credential_source_unavailable',
+        { retryable: true },
+      );
+    }
     // Guard against gh printing a help banner / error text when not logged
     // in. We only trust output that matches the GitHub token shape.
-    if (!GH_TOKEN_SHAPE.test(trimmed)) return null;
+    if (!GH_TOKEN_SHAPE.test(trimmed)) {
+      throw new CopilotCredentialError(
+        'GitHub CLI credential lookup returned an invalid response; retry the request',
+        null,
+        'credential_source_unavailable',
+        { retryable: true },
+      );
+    }
     return trimmed;
-  } catch {
-    return null;
+  } catch (err) {
+    if (err instanceof CopilotCredentialError) throw err;
+    if (isMissingGhCredential(err)) return null;
+    throw new CopilotCredentialError(
+      'GitHub CLI credential lookup is temporarily unavailable; retry the request',
+      null,
+      'credential_source_unavailable',
+      { retryable: true },
+    );
   }
+}
+
+function isMissingGhCredential(err) {
+  if (err?.code === 'ENOENT') return true;
+  const text = `${err?.message || ''}\n${err?.stderr || ''}`;
+  return /not logged (?:in|into)|no accounts?|authentication (?:required|failed)|bad credentials|invalid (?:token|credentials?)|run:\s*gh auth login/i.test(text);
 }
 
 /**
@@ -288,6 +336,8 @@ export async function exchangeToken(rawToken, { fetchFn = fetch } = {}) {
       throw new CopilotCredentialError(
         `Copilot token exchange failed with HTTP ${res.status}`,
         res.status,
+        'credential_exchange_failed',
+        { retryable: res.status >= 500 || res.status === 429 },
       );
     }
     const data = await res.json();
@@ -297,6 +347,7 @@ export async function exchangeToken(rawToken, { fetchFn = fetch } = {}) {
         'Copilot token exchange returned no API token',
         res.status,
         'credential_exchange_invalid_response',
+        { retryable: true },
       );
     }
 
