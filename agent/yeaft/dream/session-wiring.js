@@ -44,6 +44,7 @@ import { runDream } from './runner.js';
 import { createDreamScheduler } from './schedule.js';
 import { parseMessage, parseSeqFromId } from '../conversation/persist.js';
 import { loadSessionConfig, resolveSessionConfig } from '../sessions/session-config.js';
+import { parseModelRef, resolveMaxOutputTokens, resolveModel } from '../models.js';
 import { listSessions as listSessionMetas } from '../sessions/session-store.js';
 import { readSessionState } from './state.js';
 import { boundDreamPrompt } from './segment.js';
@@ -380,12 +381,16 @@ function makeLlm(session) {
     const dreamLimits = loadLimitsFromConfig(effectiveConfig);
     const boundedPrompt = boundDreamPrompt(prompt, dreamLimits.MAX_DREAM_PROMPT_CHARS);
 
+    const { modelId } = parseModelRef(model);
+    const modelMaxOutput = resolveMaxOutputTokens(modelId, effectiveConfig);
+    const maxTokens = Math.min(modelMaxOutput, dreamLimits.MAX_DREAM_OUTPUT_TOKENS);
     const r = await adapter.call({
       model,
       system: effectiveSystem,
       messages: [{ role: 'user', content: boundedPrompt }],
-      maxTokens: 2048,
-      modelEffort: effectiveConfig?.modelEffort || undefined,
+      maxTokens,
+      effort: effectiveConfig?.modelEffort || undefined,
+      effortSource: effectiveConfig?.modelEffort ? 'user' : undefined,
     });
 
     // Emit complete loop event (request + response) to the debug panel.
@@ -417,13 +422,20 @@ function makeLlm(session) {
       usage,
       latencyMs,
       ttfbMs: null,
-      stopReason: 'end_turn',
+      stopReason: r?.stopReason || 'end_turn',
       rawRequest: null,
       rawResponse: null,
     });
     persistDreamTrace(session, 'dream_loop', loopEvent);
     if (typeof session._dreamProgressSink === 'function') {
       session._dreamProgressSink(loopEvent);
+    }
+
+    if (r?.stopReason === 'max_tokens') {
+      const err = new Error(`Dream ${pass} response exceeded the ${maxTokens}-token output limit`);
+      err.code = 'DREAM_OUTPUT_TRUNCATED';
+      err.rawSnippet = typeof r.text === 'string' ? r.text.slice(-1000) : '';
+      throw err;
     }
 
     return (r && r.text) ? r.text : '';
@@ -433,10 +445,34 @@ function makeLlm(session) {
 
 function resolveDreamSessionConfig(session, sessionId) {
   const base = session?.config || {};
-  if (!sessionId || !session?.yeaftDir) return { ...base };
-  const sessionConfig = loadSessionConfig(session.yeaftDir, sessionId);
-  if (!sessionConfig || Object.keys(sessionConfig).length === 0) return { ...base };
-  return resolveSessionConfig(base, sessionConfig);
+  const sessionConfig = sessionId && session?.yeaftDir
+    ? loadSessionConfig(session.yeaftDir, sessionId)
+    : null;
+  const effective = sessionConfig && Object.keys(sessionConfig).length > 0
+    ? resolveSessionConfig(base, sessionConfig)
+    : { ...base };
+  const model = effective.primaryModel || effective.model;
+  if (!model) return effective;
+
+  const { providerName, modelId } = parseModelRef(model);
+  const catalogEntry = Array.isArray(effective.availableModels)
+    ? effective.availableModels.find(entry => entry?.ref === model
+      || (entry?.id === modelId && (!providerName || entry?.provider === providerName)))
+    : null;
+  const registryInfo = resolveModel(modelId);
+  const modelInfo = {
+    ...(registryInfo || {}),
+    ...(catalogEntry || {}),
+  };
+
+  // The live Session object belongs to the Session that triggered Dream. A
+  // target Session may select another model, so its cached modelInfo and token
+  // limits are not valid here. Rebuild modelInfo from the target catalog entry
+  // and let the resolver use the bare model id for registry/models.dev lookup.
+  return {
+    ...effective,
+    modelInfo: Object.keys(modelInfo).length > 0 ? modelInfo : null,
+  };
 }
 
 

@@ -668,7 +668,7 @@ export class AdapterRouter extends LLMAdapter {
    * Make a single model call — routes to the correct provider adapter.
    *
    * @param {import('./adapter.js').CallParams} params
-   * @returns {Promise<{ text: string, usage: { inputTokens: number, outputTokens: number } }>}
+   * @returns {Promise<{ text: string, stopReason?: 'end_turn'|'tool_use'|'max_tokens', usage: { inputTokens: number, outputTokens: number } }>}
    */
   async call(params) {
     const dispatchSnapshot = this.#captureDispatchSnapshot();

@@ -8,11 +8,13 @@
  *
  *        ~/.yeaft/memory/sessions/<id>/.dream-state
  *
- *      A 3-line text file:
+ *      A small line-oriented text file:
  *
  *        lastDreamMessageId: m-1024
  *        lastDreamAt: 2026-04-28T03:07:00Z
  *        messageCount: 491
+ *        failureCount: 0
+ *        lastFailureAt:
  *
  *      Fields are independent of each other; missing fields default to
  *      empty / null / 0. The file is rewritten atomically every dream.
@@ -60,11 +62,17 @@ const DREAM_BLOCK_CLOSE = '<!-- /dream-state -->';
  *
  * @param {string} root — memory root, e.g. ~/.yeaft/memory
  * @param {string} sessionId
- * @returns {Promise<{ lastDreamMessageId: string|null, lastDreamAt: string|null, messageCount: number }>}
+ * @returns {Promise<{ lastDreamMessageId: string|null, lastDreamAt: string|null, messageCount: number, failureCount: number, lastFailureAt: string|null }>}
  */
 export async function readSessionState(root, sessionId) {
   const abs = join(root, 'sessions', sessionId, STATE_FILE);
-  const empty = { lastDreamMessageId: null, lastDreamAt: null, messageCount: 0 };
+  const empty = {
+    lastDreamMessageId: null,
+    lastDreamAt: null,
+    messageCount: 0,
+    failureCount: 0,
+    lastFailureAt: null,
+  };
   let raw;
   try { raw = await fsp.readFile(abs, 'utf8'); }
   catch (err) {
@@ -80,16 +88,20 @@ export async function readSessionState(root, sessionId) {
  *
  * @param {string} root
  * @param {string} sessionId
- * @param {{ lastDreamMessageId?: string|null, lastDreamAt?: string|null, messageCount?: number }} state
+ * @param {{ lastDreamMessageId?: string|null, lastDreamAt?: string|null, messageCount?: number, failureCount?: number, lastFailureAt?: string|null }} state
  */
 export async function writeSessionState(root, sessionId, state) {
   const dir = join(root, 'sessions', sessionId);
   await fsp.mkdir(dir, { recursive: true });
   const abs = join(dir, STATE_FILE);
+  const current = existsSync(abs) ? await readSessionState(root, sessionId) : {};
+  const merged = { ...current, ...state };
   const body =
-    `lastDreamMessageId: ${state.lastDreamMessageId == null ? '' : state.lastDreamMessageId}\n` +
-    `lastDreamAt: ${state.lastDreamAt == null ? '' : state.lastDreamAt}\n` +
-    `messageCount: ${Number.isFinite(state.messageCount) ? state.messageCount : 0}\n`;
+    `lastDreamMessageId: ${merged.lastDreamMessageId == null ? '' : merged.lastDreamMessageId}\n` +
+    `lastDreamAt: ${merged.lastDreamAt == null ? '' : merged.lastDreamAt}\n` +
+    `messageCount: ${Number.isFinite(merged.messageCount) ? merged.messageCount : 0}\n` +
+    `failureCount: ${Number.isFinite(merged.failureCount) ? Math.max(0, Math.floor(merged.failureCount)) : 0}\n` +
+    `lastFailureAt: ${merged.lastFailureAt == null ? '' : merged.lastFailureAt}\n`;
   await atomicWrite(abs, body);
 }
 
@@ -99,7 +111,13 @@ export async function writeSessionState(root, sessionId, state) {
  * @param {string} raw
  */
 function parseSessionState(raw) {
-  const out = { lastDreamMessageId: null, lastDreamAt: null, messageCount: 0 };
+  const out = {
+    lastDreamMessageId: null,
+    lastDreamAt: null,
+    messageCount: 0,
+    failureCount: 0,
+    lastFailureAt: null,
+  };
   const lines = String(raw || '').split(/\r?\n/);
   for (const ln of lines) {
     const m = /^(\w[\w-]*)\s*:\s*(.*)$/.exec(ln);
@@ -111,7 +129,10 @@ function parseSessionState(raw) {
     else if (k === 'messageCount') {
       const n = Number(v);
       out.messageCount = Number.isFinite(n) ? n : 0;
-    }
+    } else if (k === 'failureCount') {
+      const n = Number(v);
+      out.failureCount = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+    } else if (k === 'lastFailureAt') out.lastFailureAt = v || null;
   }
   return out;
 }

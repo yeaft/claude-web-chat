@@ -651,7 +651,7 @@ export class LLMAdapter {
    * Make a single model call without tools (for side queries like summarization).
    *
    * @param {{ model: string, system: string, messages: UnifiedMessage[], maxTokens?: number, signal?: AbortSignal }} params
-   * @returns {Promise<{ text: string, usage: { inputTokens: number, outputTokens: number } }>}
+   * @returns {Promise<{ text: string, stopReason?: 'end_turn'|'tool_use'|'max_tokens', usage: { inputTokens: number, outputTokens: number } }>}
    */
   async call(params) { // eslint-disable-line no-unused-vars
     throw new Error('call() must be implemented by subclass');

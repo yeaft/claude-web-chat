@@ -20,6 +20,11 @@ export const MAX_SINGLE_MESSAGE_CHARS = 8000;
 export const MAX_DREAM_PROMPT_CHARS = 96000;
 export const MAX_DIFF_TOKENS_PER_TRIAGE = 60000;
 export const MAX_APPLY_TOKENS = 80000;
+// Dream writes compact canonical memory, not long-form user output. Keep the
+// response large enough for structured updates while bounding runaway cost.
+export const MAX_DREAM_OUTPUT_TOKENS = 8192;
+export const DREAM_FAILURE_BACKOFF_HOURS = 2;
+export const DREAM_FAILURE_BACKOFF_MAX_HOURS = 24;
 export const DREAM_BACKUP_KEEP = 7;
 
 // task-710: nudge dream off the 1h timer when a group has accumulated
@@ -35,6 +40,9 @@ export const DEFAULT_LIMITS = Object.freeze({
   MAX_DREAM_PROMPT_CHARS,
   MAX_DIFF_TOKENS_PER_TRIAGE,
   MAX_APPLY_TOKENS,
+  MAX_DREAM_OUTPUT_TOKENS,
+  DREAM_FAILURE_BACKOFF_HOURS,
+  DREAM_FAILURE_BACKOFF_MAX_HOURS,
   DREAM_BACKUP_KEEP,
   DREAM_NUDGE_AFTER_MESSAGES,
 });
