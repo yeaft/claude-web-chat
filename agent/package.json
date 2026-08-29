@@ -5,10 +5,10 @@
   "main": "index.js",
   "type": "module",
   "bin": {
-    "yeaft-agent": "./cli.js",
-    "yeaft-agent-container": "./container-cli.js",
-    "yeaft": "./yeaft/cli.js",
-    "yeaft-stats": "./bin/yeaft-stats.js"
+    "yeaft-agent": "cli.js",
+    "yeaft-agent-container": "container-cli.js",
+    "yeaft": "yeaft/cli.js",
+    "yeaft-stats": "bin/yeaft-stats.js"
   },
   "scripts": {
     "start": "node index.js",
