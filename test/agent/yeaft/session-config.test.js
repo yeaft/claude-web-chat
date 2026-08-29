@@ -578,6 +578,50 @@ describe('Yeaft session-scoped model config', () => {
     expect(calls[0].messages[0].content.endsWith('TAIL')).toBe(true);
   });
 
+  it('uses the target Session model output cap instead of the caller Session capability', async () => {
+    const root = makeDir();
+    mkdirSync(join(root, 'sessions', 'target-session'), { recursive: true });
+    writeFileSync(join(root, 'sessions', 'target-session', 'config.json'), JSON.stringify({
+      model: 'target-provider/target-model',
+    }));
+    const adapter = { call: vi.fn(async () => ({
+      text: JSON.stringify({ user_profile_signals: false, topics: [] }),
+      usage: {},
+    })) };
+    const session = {
+      yeaftDir: root,
+      adapter,
+      config: {
+        dir: root,
+        model: 'caller-model',
+        primaryModel: 'caller-provider/caller-model',
+        modelInfo: { maxOutput: 64_000 },
+        maxOutputTokens: 64_000,
+        providers: [
+          { name: 'caller-provider', models: ['caller-model'] },
+          { name: 'target-provider', models: [{ id: 'target-model', maxOutput: 4096 }] },
+        ],
+        availableModels: [
+          { id: 'caller-model', ref: 'caller-provider/caller-model', provider: 'caller-provider', maxOutput: 64_000 },
+          { id: 'target-model', ref: 'target-provider/target-model', provider: 'target-provider', maxOutput: 4096 },
+        ],
+      },
+    };
+    const opts = (await import('../../../agent/yeaft/dream/session-wiring.js')).buildRunDreamOpts(session);
+
+    await opts.llm({
+      pass: 'triage-pass1',
+      prompt: 'target Session memory',
+      system: 'system',
+      sessionId: 'target-session',
+    });
+
+    expect(adapter.call).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'target-provider/target-model',
+      maxTokens: 4096,
+    }));
+  });
+
   it('surfaces truncated Dream output instead of parsing partial JSON', async () => {
     const root = makeDir();
     const adapter = { call: vi.fn(async () => ({
