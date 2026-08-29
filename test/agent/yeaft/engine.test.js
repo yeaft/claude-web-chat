@@ -31,7 +31,7 @@ import { consolidateSessionTopics } from '../../../agent/yeaft/dream/topic-conso
 import { resolveTopicRedirect } from '../../../agent/yeaft/memory/topic-redirect.js';
 import { runDream } from '../../../agent/yeaft/dream/runner.js';
 import { classifySoft } from '../../../agent/yeaft/dream/triage.js';
-import { readSessionState, writeSessionState } from '../../../agent/yeaft/dream/state.js';
+import { readDreamError, readSessionState, writeSessionState } from '../../../agent/yeaft/dream/state.js';
 import { extractAndWriteMemorySegments } from '../../../agent/yeaft/dream/segment-extract.js';
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
 import { defineTool } from '../../../agent/yeaft/tools/types.js';
@@ -1773,6 +1773,125 @@ describe('Engine memory prompt hygiene', () => {
         messageCount: 0,
         failureCount: 1,
         lastFailureAt: '2026-08-07T09:45:00.000Z',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      name: 'truncated output',
+      fail: ({ pass }) => {
+        if (pass === 'extract-segments') {
+          const err = new Error('Dream extract-segments response exceeded the 8192-token output limit');
+          err.code = 'DREAM_OUTPUT_TRUNCATED';
+          throw err;
+        }
+        return null;
+      },
+      expectedError: 'exceeded the 8192-token output limit',
+    },
+    {
+      name: 'malformed output after retry',
+      fail: ({ pass }) => (pass === 'extract-segments' || pass === 'extract-segments-retry' ? '{not-json' : null),
+      expectedError: 'malformed JSON',
+    },
+  ])('keeps a Session cursor when segment extraction returns $name after successful Apply', async ({ fail, expectedError }) => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-extraction-failure-'));
+    const sessionId = 'extraction-failure-session';
+    const now = '2026-08-07T09:50:00.000Z';
+    try {
+      const report = await runDream({
+        root,
+        manual: true,
+        scopeFilter: [`sessions/${sessionId}`],
+        llm: async (request) => {
+          if (request.pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (request.pass === 'update') return JSON.stringify({ content_md: 'applied content', summary_md: 'applied summary' });
+          const failed = fail(request);
+          if (failed !== null) return failed;
+          return JSON.stringify({ groups: [] });
+        },
+        listSessions: async () => [sessionId],
+        countMessages: async () => 20,
+        loadSessionDiff: async () => [{ id: 'm1', role: 'user', body: 'Keep failed extraction retryable.' }],
+        loadOverlapPreamble: async () => [],
+        listTopicSummaries: async () => [],
+        nowIso: () => now,
+      });
+
+      expect(report.targets).toEqual(expect.arrayContaining([
+        expect.objectContaining({ target: `sessions/${sessionId}`, status: 'done' }),
+      ]));
+      expect(report.memorySegments).toEqual([
+        expect.objectContaining({
+          sessionId,
+          status: 'error',
+          attemptedScopes: 3,
+          successfulScopes: 0,
+          errors: expect.arrayContaining([
+            expect.objectContaining({ error: expect.stringContaining(expectedError) }),
+          ]),
+          error: expect.stringContaining(expectedError),
+        }),
+      ]);
+      expect(await readSessionState(root, sessionId)).toEqual({
+        lastDreamMessageId: null,
+        lastDreamAt: null,
+        messageCount: 0,
+        failureCount: 1,
+        lastFailureAt: now,
+      });
+      expect(await readDreamError(root, `sessions/${sessionId}`)).toMatchObject({
+        phase: 'extract-segments',
+        message: expect.stringContaining(expectedError),
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports partial extraction and retains the cursor when only one scope fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-partial-extraction-'));
+    const sessionId = 'partial-extraction-session';
+    let extractionCalls = 0;
+    try {
+      const report = await runDream({
+        root,
+        manual: true,
+        scopeFilter: [`sessions/${sessionId}`],
+        llm: async ({ pass }) => {
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (pass === 'update') return JSON.stringify({ content_md: 'applied content', summary_md: 'applied summary' });
+          if (pass === 'extract-segments') {
+            extractionCalls += 1;
+            if (extractionCalls === 2) throw new Error('synthetic one-scope extraction failure');
+            return '[]';
+          }
+          return JSON.stringify({ groups: [] });
+        },
+        listSessions: async () => [sessionId],
+        countMessages: async () => 1,
+        loadSessionDiff: async () => [{ id: 'm1', role: 'user', body: 'Preserve partial extraction diagnostics.' }],
+        loadOverlapPreamble: async () => [],
+        listTopicSummaries: async () => [],
+        nowIso: () => '2026-08-07T09:55:00.000Z',
+      });
+
+      expect(report.memorySegments).toEqual([
+        expect.objectContaining({
+          sessionId,
+          status: 'partial',
+          attemptedScopes: 3,
+          successfulScopes: 2,
+          errors: [expect.objectContaining({ error: 'synthetic one-scope extraction failure' })],
+        }),
+      ]);
+      expect(await readSessionState(root, sessionId)).toMatchObject({
+        lastDreamMessageId: null,
+        messageCount: 0,
+        failureCount: 1,
       });
     } finally {
       rmSync(root, { recursive: true, force: true });

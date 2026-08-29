@@ -50,13 +50,16 @@ export async function extractAndWriteMemorySegments(opts) {
   if (typeof opts.llm !== 'function') throw new Error('extractAndWriteMemorySegments: llm required');
 
   const messages = normalizeMessages(opts.messages || []);
-  if (messages.length === 0) return { scopes: 0, segments: 0, errors: [] };
+  if (messages.length === 0) {
+    return { scopes: 0, segments: 0, attemptedScopes: 0, successfulScopes: 0, errors: [] };
+  }
   const allowedSourceIds = new Set(messages.map(message => message.id));
 
   const targetScopes = normalizeTargetScopes(opts.sessionId, opts.targets || []);
   const now = opts.nowIso ? opts.nowIso() : new Date().toISOString();
   let segmentCount = 0;
   let scopeCount = 0;
+  let successfulScopes = 0;
   const errors = [];
 
   for (const scope of targetScopes) {
@@ -72,6 +75,7 @@ export async function extractAndWriteMemorySegments(opts) {
         allowedSourceIds,
         maxPromptChars: opts.limits?.MAX_DREAM_PROMPT_CHARS,
       });
+      successfulScopes += 1;
     } catch (err) {
       errors.push({ scope, error: err.message, rawSnippet: err.rawSnippet || '' });
     }
@@ -92,7 +96,13 @@ export async function extractAndWriteMemorySegments(opts) {
     scopeCount += 1;
   }
 
-  return { scopes: scopeCount, segments: segmentCount, errors };
+  return {
+    scopes: scopeCount,
+    segments: segmentCount,
+    attemptedScopes: targetScopes.length,
+    successfulScopes,
+    errors,
+  };
 }
 
 async function extractScopeSegments({ scope, sessionId, messages, llm, language, now, allowedSourceIds, maxPromptChars }) {

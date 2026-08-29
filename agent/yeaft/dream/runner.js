@@ -318,9 +318,21 @@ export async function runDream(opts) {
         nowIso: opts.nowIso || (() => nowIso),
         segmentIndex: opts.segmentIndex || null,
       });
-      await clearDreamError(opts.root, `sessions/${triage.sessionId}`);
-      segmentReports.push({ sessionId: triage.sessionId, status: 'done', ...r });
-      onProgress({ phase: 'extract-segments', sessionId: triage.sessionId, status: 'done', ...r });
+      if (r.errors.length > 0) {
+        const status = r.successfulScopes > 0 ? 'partial' : 'error';
+        const error = summarizeExtractionErrors(r.errors);
+        segmentReports.push({ sessionId: triage.sessionId, status, ...r, error });
+        onProgress({ phase: 'extract-segments', sessionId: triage.sessionId, status, ...r, error });
+        await writeDreamError(opts.root, `sessions/${triage.sessionId}`, {
+          phase: 'extract-segments',
+          message: error,
+          rawSnippet: r.errors.find(item => item.rawSnippet)?.rawSnippet,
+        });
+      } else {
+        await clearDreamError(opts.root, `sessions/${triage.sessionId}`);
+        segmentReports.push({ sessionId: triage.sessionId, status: 'done', ...r });
+        onProgress({ phase: 'extract-segments', sessionId: triage.sessionId, status: 'done', ...r });
+      }
     } catch (err) {
       segmentReports.push({ sessionId: triage.sessionId, status: 'error', error: err.message });
       onProgress({ phase: 'extract-segments', sessionId: triage.sessionId, status: 'error', error: err.message });
@@ -363,18 +375,21 @@ export async function runDream(opts) {
     }
   }
 
-  // 7. bookkeep — advance a Session cursor only after every Apply target
-  // selected for that Session in this run completed successfully. Apply keeps
-  // all batch output in memory until the target's final canonical write, so a
-  // failed target has no durable progress that can safely move the cursor.
-  // Keeping the cursor on any target error lets the next run retry the failed
-  // target together with the same source diff.
+  // 7. bookkeep — advance a Session cursor only after every Apply target and
+  // its provenance extraction completed successfully. Apply keeps all batch
+  // output in memory until the target's final canonical write, while extraction
+  // reports per-scope failures after any successful writes. Either failure must
+  // retain the source diff so the next run can retry it rather than permanently
+  // losing canonical content or evidence.
   const targetStatus = new Map(targetsReport.map(report => [report.target, report.status]));
+  const extractionStatus = new Map(segmentReports.map(report => [report.sessionId, report.status]));
   for (const pg of processedSessions) {
     const sessionTargets = targetsToApply
       .filter(target => target.sources.some(source => source.sessionId === pg.sessionId))
       .map(target => target.target);
-    if (sessionTargets.length === 0 || !sessionTargets.every(target => targetStatus.get(target) === 'done')) {
+    const applySucceeded = sessionTargets.length > 0
+      && sessionTargets.every(target => targetStatus.get(target) === 'done');
+    if (!applySucceeded || extractionStatus.get(pg.sessionId) !== 'done') {
       await recordDreamFailure(opts.root, pg.sessionId, pg.state, nowIso);
       continue;
     }
@@ -415,6 +430,14 @@ export async function runDream(opts) {
 }
 
 // ─── helpers ──────────────────────────────────────────────────
+
+function summarizeExtractionErrors(errors) {
+  const details = errors
+    .slice(0, 3)
+    .map(item => `${item.scope}: ${String(item.error || 'unknown error').slice(0, 300)}`)
+    .join('; ');
+  return `Dream segment extraction failed for ${errors.length} scope(s): ${details}`;
+}
 
 function dreamRetryAt(state, limits) {
   const failureCount = Math.max(0, Number(state?.failureCount) || 0);
