@@ -572,9 +572,40 @@ describe('Yeaft session-scoped model config', () => {
     });
     expect(result).toContain('user_profile_signals');
     expect(calls[0].model).toBe(model);
+    expect(calls[0].maxTokens).toBe(8192);
     expect(calls[0].messages[0].content.length).toBe(96_000);
     expect(calls[0].messages[0].content.startsWith('HEAD')).toBe(true);
     expect(calls[0].messages[0].content.endsWith('TAIL')).toBe(true);
+  });
+
+  it('surfaces truncated Dream output instead of parsing partial JSON', async () => {
+    const root = makeDir();
+    const adapter = { call: vi.fn(async () => ({
+      text: '{"content_md":"partial',
+      stopReason: 'max_tokens',
+      usage: { inputTokens: 10, outputTokens: 8192 },
+    })) };
+    const session = {
+      yeaftDir: root,
+      adapter,
+      config: {
+        dir: root,
+        model: 'session-model',
+        primaryModel: 'session-provider/session-model',
+        language: 'en',
+      },
+    };
+    const opts = (await import('../../../agent/yeaft/dream/session-wiring.js')).buildRunDreamOpts(session);
+
+    await expect(opts.llm({
+      pass: 'update',
+      prompt: 'update canonical memory',
+      system: 'system',
+      sessionId: 's1',
+    })).rejects.toMatchObject({
+      code: 'DREAM_OUTPUT_TRUNCATED',
+      message: 'Dream update response exceeded the 8192-token output limit',
+    });
   });
 
   it('creates an empty-roster Session from the active Agent instance VP library', () => {

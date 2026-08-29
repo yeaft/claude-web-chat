@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -1625,6 +1625,8 @@ describe('Engine memory prompt hygiene', () => {
         lastDreamMessageId: 'm1',
         lastDreamAt: '2026-08-07T08:00:00.000Z',
         messageCount: 1,
+        failureCount: 0,
+        lastFailureAt: null,
       });
       expect(existsSync(join(root, 'sessions', sessionId, '.dream-last-error.json'))).toBe(false);
 
@@ -1716,6 +1718,8 @@ describe('Engine memory prompt hygiene', () => {
         lastDreamMessageId: null,
         lastDreamAt: null,
         messageCount: 0,
+        failureCount: 1,
+        lastFailureAt: '2026-08-07T09:30:00.000Z',
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -1767,6 +1771,81 @@ describe('Engine memory prompt hygiene', () => {
         lastDreamMessageId: null,
         lastDreamAt: null,
         messageCount: 0,
+        failureCount: 1,
+        lastFailureAt: '2026-08-07T09:45:00.000Z',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('backs off automatic retries after a failed Apply without blocking manual retry', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-failure-backoff-'));
+    const sessionId = 'failure-backoff-session';
+    const messages = Array.from({ length: 20 }, (_, index) => ({
+      id: `m${index + 1}`,
+      role: 'user',
+      body: `retryable message ${index + 1}`,
+    }));
+    try {
+      const common = {
+        root,
+        scopeFilter: ['user'],
+        listSessions: async () => [sessionId],
+        countMessages: async () => messages.length,
+        loadSessionDiff: async () => messages,
+        loadOverlapPreamble: async () => [],
+        listTopicSummaries: async () => [],
+      };
+      const first = await runDream({
+        ...common,
+        manual: false,
+        llm: async ({ pass }) => {
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          throw new Error('synthetic Apply failure');
+        },
+        nowIso: () => '2026-08-07T10:00:00.000Z',
+      });
+      expect(first.targets).toEqual([
+        expect.objectContaining({ target: 'user', status: 'error' }),
+      ]);
+
+      const loadSessionDiff = vi.fn(async () => messages);
+      const automatic = await runDream({
+        ...common,
+        manual: false,
+        llm: async () => { throw new Error('backoff must prevent LLM work'); },
+        loadSessionDiff,
+        nowIso: () => '2026-08-07T11:00:00.000Z',
+      });
+      expect(loadSessionDiff).not.toHaveBeenCalled();
+      expect(automatic.sessions).toEqual([
+        expect.objectContaining({
+          sessionId,
+          status: 'skipped',
+          reason: 'failure-backoff',
+          retryAt: '2026-08-07T12:00:00.000Z',
+        }),
+      ]);
+
+      const manual = await runDream({
+        ...common,
+        manual: true,
+        llm: async ({ pass }) => {
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (pass === 'extract-segments') return '[]';
+          if (pass === 'topic-consolidation') return JSON.stringify({ groups: [] });
+          return JSON.stringify({ content_md: 'recovered', summary_md: 'recovered' });
+        },
+        nowIso: () => '2026-08-07T11:00:00.000Z',
+      });
+      expect(manual.targets).toEqual([
+        expect.objectContaining({ target: 'user', status: 'done' }),
+      ]);
+      expect(await readSessionState(root, sessionId)).toMatchObject({
+        lastDreamMessageId: 'm20',
+        failureCount: 0,
+        lastFailureAt: null,
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -1803,6 +1882,8 @@ describe('Engine memory prompt hygiene', () => {
         lastDreamMessageId: 'm1',
         lastDreamAt: '2026-08-07T10:00:00.000Z',
         messageCount: 1,
+        failureCount: 0,
+        lastFailureAt: null,
       });
     } finally {
       rmSync(root, { recursive: true, force: true });

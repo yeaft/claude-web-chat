@@ -150,6 +150,17 @@ export async function runDream(opts) {
       sessionsReport.push({ sessionId, new: newCount, status: 'skipped', reason: 'below-threshold' });
       continue;
     }
+    const retryAt = dreamRetryAt(state, limits);
+    if (!opts.manual && retryAt && Date.parse(nowIso) < retryAt) {
+      sessionsReport.push({
+        sessionId,
+        new: newCount,
+        status: 'skipped',
+        reason: 'failure-backoff',
+        retryAt: new Date(retryAt).toISOString(),
+      });
+      continue;
+    }
 
     onProgress({ phase: 'load-diff', sessionId });
     const diffCursor = state.lastDreamMessageId;
@@ -182,6 +193,8 @@ export async function runDream(opts) {
           lastDreamMessageId: tailId,
           lastDreamAt: nowIso,
           messageCount: beforeCount,
+          failureCount: 0,
+          lastFailureAt: null,
         });
       }
       sessionsReport.push({ sessionId, new: newCount, status: 'skipped', reason: 'no-durable-new-messages' });
@@ -221,6 +234,7 @@ export async function runDream(opts) {
         stack: err.stack,
         rawSnippet: err.rawSnippet,
       });
+      await recordDreamFailure(opts.root, sessionId, state, nowIso);
       continue;
     }
 
@@ -232,7 +246,7 @@ export async function runDream(opts) {
     });
 
     const tailId = lastMessageId(diffNew);
-    processedSessions.push({ sessionId, tailId, beforeCount, newCount, segments: segments.length, actions: actions.length });
+    processedSessions.push({ sessionId, tailId, beforeCount, newCount, state, segments: segments.length, actions: actions.length });
     sessionsReport.push({ sessionId, new: newCount, segments: segments.length, actions: actions.length, status: 'triaged' });
   }
 
@@ -361,6 +375,7 @@ export async function runDream(opts) {
       .filter(target => target.sources.some(source => source.sessionId === pg.sessionId))
       .map(target => target.target);
     if (sessionTargets.length === 0 || !sessionTargets.every(target => targetStatus.get(target) === 'done')) {
+      await recordDreamFailure(opts.root, pg.sessionId, pg.state, nowIso);
       continue;
     }
     if (pg.tailId) {
@@ -368,6 +383,8 @@ export async function runDream(opts) {
         lastDreamMessageId: pg.tailId,
         lastDreamAt: nowIso,
         messageCount: pg.beforeCount,
+        failureCount: 0,
+        lastFailureAt: null,
       });
     }
   }
@@ -398,6 +415,27 @@ export async function runDream(opts) {
 }
 
 // ─── helpers ──────────────────────────────────────────────────
+
+function dreamRetryAt(state, limits) {
+  const failureCount = Math.max(0, Number(state?.failureCount) || 0);
+  const failedAt = Date.parse(state?.lastFailureAt || '');
+  if (failureCount === 0 || !Number.isFinite(failedAt)) return null;
+  const hours = Math.min(
+    limits.DREAM_FAILURE_BACKOFF_MAX_HOURS,
+    limits.DREAM_FAILURE_BACKOFF_HOURS * (2 ** Math.max(0, failureCount - 1)),
+  );
+  return failedAt + hours * 60 * 60 * 1000;
+}
+
+async function recordDreamFailure(root, sessionId, state, nowIso) {
+  await writeSessionState(root, sessionId, {
+    lastDreamMessageId: state?.lastDreamMessageId || null,
+    lastDreamAt: state?.lastDreamAt || null,
+    messageCount: Number(state?.messageCount) || 0,
+    failureCount: Math.max(0, Number(state?.failureCount) || 0) + 1,
+    lastFailureAt: nowIso,
+  });
+}
 
 function lastMessageId(messages) {
   if (!Array.isArray(messages) || messages.length === 0) return null;

@@ -38,6 +38,15 @@ async function consume(generator) {
   for await (const _ of generator) { /* drain */ }
 }
 
+function jsonResponse(body) {
+  return {
+    ok: true,
+    status: 200,
+    headers: new Headers({ 'content-type': 'application/json' }),
+    json: async () => body,
+  };
+}
+
 function idleStreamResponse() {
   return {
     ok: true,
@@ -196,6 +205,17 @@ describe('AnthropicAdapter error classification', () => {
     global.fetch = originalFetch;
   });
 
+  it('returns the non-streaming stop reason', async () => {
+    global.fetch = async () => jsonResponse({
+      content: [{ type: 'text', text: 'partial' }],
+      stop_reason: 'max_tokens',
+      usage: { input_tokens: 12, output_tokens: 34 },
+    });
+    const adapter = new AnthropicAdapter({ baseUrl: 'https://x', apiKey: 'k' });
+    const result = await adapter.call({ model: 'claude-3-5-sonnet', system: '', messages: [{ role: 'user', content: 'hi' }] });
+    expect(result).toMatchObject({ text: 'partial', stopReason: 'max_tokens' });
+  });
+
   it('throws LLMRateLimitError with parsed Retry-After on 429', async () => {
     global.fetch = async () => errorResponse({
       status: 429,
@@ -305,6 +325,18 @@ describe('AnthropicAdapter error classification', () => {
 describe('OpenAIResponsesAdapter error classification', () => {
   afterEach(() => {
     global.fetch = originalFetch;
+  });
+
+  it('returns the non-streaming stop reason', async () => {
+    global.fetch = async () => jsonResponse({
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' },
+      output_text: 'partial',
+      usage: { input_tokens: 12, output_tokens: 34 },
+    });
+    const adapter = new OpenAIResponsesAdapter({ baseUrl: 'https://x', apiKey: 'k' });
+    const result = await adapter.call({ model: 'gpt-5', system: '', messages: [{ role: 'user', content: 'hi' }] });
+    expect(result).toMatchObject({ text: 'partial', stopReason: 'max_tokens' });
   });
 
   it('throws LLMRateLimitError with parsed Retry-After on 429', async () => {

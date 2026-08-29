@@ -581,6 +581,7 @@ export class AnthropicAdapter extends LLMAdapter {
 
     return {
       text,
+      stopReason: this.#mapStopReason(result.stop_reason),
       usage: {
         inputTokens: result.usage?.input_tokens || 0,
         outputTokens: result.usage?.output_tokens || 0,

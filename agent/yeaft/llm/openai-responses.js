@@ -594,6 +594,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
     const usage = result.usage || {};
     return {
       text,
+      stopReason: this.#mapStopReason(result, false),
       usage: {
         inputTokens: usage.input_tokens || 0,
         outputTokens: usage.output_tokens || 0,
