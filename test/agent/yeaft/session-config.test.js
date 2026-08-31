@@ -551,7 +551,7 @@ describe('Yeaft session-scoped model config', () => {
     const calls = [];
     const adapter = { call: vi.fn(async params => {
       calls.push(params);
-      return { text: JSON.stringify({ user_profile_signals: false, topics: [] }), usage: {} };
+      return { text: JSON.stringify({ user_profile_signals: false, topics: [], trivial_only: false }), usage: {} };
     }) };
     const session = {
       yeaftDir: root,
@@ -585,7 +585,7 @@ describe('Yeaft session-scoped model config', () => {
       model: 'target-provider/target-model',
     }));
     const adapter = { call: vi.fn(async () => ({
-      text: JSON.stringify({ user_profile_signals: false, topics: [] }),
+      text: JSON.stringify({ user_profile_signals: false, topics: [], trivial_only: false }),
       usage: {},
     })) };
     const session = {

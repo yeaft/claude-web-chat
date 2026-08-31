@@ -1580,7 +1580,7 @@ describe('Engine memory prompt hygiene', () => {
       sessionId,
       messages,
       topicSummaries: [],
-      llm: async () => JSON.stringify({ user_profile_signals: false, topics: [] }),
+      llm: async () => JSON.stringify({ user_profile_signals: false, topics: [], trivial_only: false }),
     });
     expect(withoutProfile).toEqual([
       { kind: 'update', scope: `sessions/${sessionId}` },
@@ -1590,7 +1590,7 @@ describe('Engine memory prompt hygiene', () => {
       sessionId,
       messages: [{ id: 'm2', role: 'user', body: 'I prefer concise review summaries.' }],
       topicSummaries: [],
-      llm: async () => JSON.stringify({ user_profile_signals: true, topics: [] }),
+      llm: async () => JSON.stringify({ user_profile_signals: true, topics: [], trivial_only: false }),
     });
     expect(withProfile).toEqual([
       { kind: 'update', scope: `sessions/${sessionId}` },
@@ -1645,7 +1645,7 @@ describe('Engine memory prompt hygiene', () => {
         root,
         manual: true,
         llm: async ({ pass }) => {
-          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [] });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [], trivial_only: false });
           if (pass === 'extract-segments') return '[]';
           if (pass === 'topic-consolidation') return JSON.stringify({ groups: [] });
           return JSON.stringify({ content_md: 'concise review preference', summary_md: 'review preference' });
@@ -1675,6 +1675,128 @@ describe('Engine memory prompt hygiene', () => {
     }
   });
 
+  it.each([
+    {
+      name: 'a malformed Pass-1 topic entry',
+      failurePass: 'triage-pass1',
+      invalid: JSON.stringify({ user_profile_signals: false, topics: [{}], trivial_only: false }),
+      expectedError: 'triage: Pass-1 returned malformed JSON',
+    },
+    {
+      name: 'malformed Pass-2 JSON',
+      failurePass: 'triage-pass2',
+      invalid: '{ invalid pass 2 ' + 'x'.repeat(1200),
+      expectedError: 'triage: Pass-2 returned malformed JSON',
+    },
+    {
+      name: 'an invalid Pass-2 decision',
+      failurePass: 'triage-pass2',
+      invalid: JSON.stringify({ decision: 'maybe', path: 'triage-contract' }),
+      expectedError: 'triage: Pass-2 returned malformed JSON',
+    },
+    {
+      name: 'an invalid Pass-2 path',
+      failurePass: 'triage-pass2',
+      invalid: JSON.stringify({ decision: 'new', path: 'triage/contract/too-deep' }),
+      expectedError: 'triage: Pass-2 returned malformed JSON',
+    },
+  ])('keeps topic evidence retryable after $name and applies it on a valid retry', async ({ failurePass, invalid, expectedError }) => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-malformed-topic-triage-'));
+    const sessionId = 'malformed-topic';
+    const topicScope = `sessions/${sessionId}/topic/triage-contract`;
+    const message = { id: 'm1', role: 'user', body: 'Dream triage contract failures must retain topic evidence.' };
+    const failedAt = '2026-08-07T07:50:00.000Z';
+    const extractedScopes = [];
+    try {
+      const failed = await runDream({
+        root,
+        manual: true,
+        llm: async ({ pass }) => {
+          if (pass === 'triage-pass1') {
+            if (failurePass === pass) return invalid;
+            return JSON.stringify({
+              user_profile_signals: false,
+              topics: ['Dream triage contract'],
+              trivial_only: false,
+            });
+          }
+          if (pass === 'triage-pass2' && failurePass === pass) return invalid;
+          throw new Error(`Unexpected Dream pass after malformed triage: ${pass}`);
+        },
+        listSessions: async () => [sessionId],
+        countMessages: async () => 1,
+        loadSessionDiff: async () => [message],
+        loadOverlapPreamble: async () => [],
+        listTopicSummaries: async () => [],
+        nowIso: () => failedAt,
+      });
+
+      expect(failed.sessions).toEqual([
+        expect.objectContaining({ sessionId, status: 'error', error: expectedError }),
+      ]);
+      expect(failed.targets).toEqual([]);
+      expect(await readSessionState(root, sessionId)).toEqual({
+        lastDreamMessageId: null,
+        lastDreamAt: null,
+        messageCount: 0,
+        failureCount: 1,
+        lastFailureAt: failedAt,
+      });
+      const journal = await readDreamError(root, `sessions/${sessionId}`);
+      expect(journal).toMatchObject({
+        phase: 'triage',
+        message: expectedError,
+      });
+      expect(journal.rawSnippet).toBe(invalid.slice(0, 1000));
+      expect(journal.rawSnippet.length).toBeLessThanOrEqual(1000);
+
+      const retried = await runDream({
+        root,
+        manual: true,
+        llm: async ({ pass, prompt }) => {
+          if (pass === 'triage-pass1') {
+            return JSON.stringify({
+              user_profile_signals: false,
+              topics: ['Dream triage contract'],
+              trivial_only: false,
+            });
+          }
+          if (pass === 'triage-pass2') return JSON.stringify({ decision: 'new', path: 'triage-contract' });
+          if (pass === 'extract-segments') {
+            extractedScopes.push(/Target scope: ([^\n]+)/.exec(prompt)?.[1]);
+            return '[]';
+          }
+          if (pass === 'topic-consolidation') return JSON.stringify({ groups: [] });
+          return JSON.stringify({ content_md: 'strict triage contract', summary_md: 'triage contract' });
+        },
+        listSessions: async () => [sessionId],
+        countMessages: async () => 1,
+        loadSessionDiff: async (_id, cursor) => cursor ? [] : [message],
+        loadOverlapPreamble: async () => [],
+        listTopicSummaries: async () => [],
+        nowIso: () => '2026-08-07T07:55:00.000Z',
+      });
+
+      expect(retried.targets).toEqual(expect.arrayContaining([
+        expect.objectContaining({ target: `sessions/${sessionId}`, status: 'done' }),
+        expect.objectContaining({ target: topicScope, kind: 'create', status: 'done' }),
+      ]));
+      expect(extractedScopes).toEqual([
+        `sessions/${sessionId}`,
+        topicScope,
+      ]);
+      expect(await readSessionState(root, sessionId)).toMatchObject({
+        lastDreamMessageId: 'm1',
+        messageCount: 1,
+        failureCount: 0,
+        lastFailureAt: null,
+      });
+      expect(await readDreamError(root, `sessions/${sessionId}`)).toBe(null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('resolves Dream soft-triage topic redirects without losing the memory root', async () => {
     const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-triage-redirect-'));
     const redirectDir = join(root, 'sessions', 's1', 'topic', 'old-topic');
@@ -1687,7 +1809,7 @@ describe('Engine memory prompt hygiene', () => {
         messages: [{ id: 'm1', role: 'user', body: 'Keep the canonical topic current.' }],
         topicSummaries: [{ path: 'old-topic', summary: 'Historical alias.' }],
         llm: async ({ pass }) => pass === 'triage-pass1'
-          ? JSON.stringify({ user_profile_signals: false, topics: ['Canonical topic update'] })
+          ? JSON.stringify({ user_profile_signals: false, topics: ['Canonical topic update'], trivial_only: false })
           : JSON.stringify({ decision: 'match', path: 'old-topic' }),
       });
 
@@ -1710,7 +1832,7 @@ describe('Engine memory prompt hygiene', () => {
         manual: true,
         llm: async ({ pass, prompt }) => {
           if (pass === 'triage-pass1') {
-            return JSON.stringify({ user_profile_signals: false, topics: ['Dream topic routing'] });
+            return JSON.stringify({ user_profile_signals: false, topics: ['Dream topic routing'], trivial_only: false });
           }
           if (pass === 'triage-pass2') return JSON.stringify({ decision: 'new', path: 'dream-routing' });
           if (pass === 'extract-segments') {
@@ -1779,7 +1901,7 @@ describe('Engine memory prompt hygiene', () => {
         manual: true,
         llm: async ({ pass, prompt }) => {
           calls.push({ pass, prompt });
-          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [], trivial_only: false });
           if (pass === 'update') return JSON.stringify({ content_md: 'updated', summary_md: 'summary' });
           if (pass === 'extract-segments') return '[]';
           return JSON.stringify({ groups: [] });
@@ -1811,7 +1933,7 @@ describe('Engine memory prompt hygiene', () => {
         manual: true,
         scopeFilter: ['user', `sessions/${sessionId}`],
         llm: async ({ pass, prompt }) => {
-          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [] });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [], trivial_only: false });
           if (pass === 'update') {
             if (prompt.includes('Scope: user')) throw new Error('synthetic user target failure');
             return JSON.stringify({ content_md: 'session content', summary_md: 'session summary' });
@@ -1863,7 +1985,7 @@ describe('Engine memory prompt hygiene', () => {
           MAX_DREAM_PROMPT_CHARS: 32_000,
         },
         llm: async ({ pass }) => {
-          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [] });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [], trivial_only: false });
           if (pass === 'update') {
             updateCalls += 1;
             if (updateCalls === 2) throw new Error('synthetic middle batch failure');
@@ -1924,7 +2046,7 @@ describe('Engine memory prompt hygiene', () => {
         manual: true,
         scopeFilter: [`sessions/${sessionId}`],
         llm: async (request) => {
-          if (request.pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (request.pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [], trivial_only: false });
           if (request.pass === 'update') return JSON.stringify({ content_md: 'applied content', summary_md: 'applied summary' });
           const failed = fail(request);
           if (failed !== null) return failed;
@@ -1979,7 +2101,7 @@ describe('Engine memory prompt hygiene', () => {
         manual: true,
         scopeFilter: ['*'],
         llm: async ({ pass }) => {
-          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [] });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [], trivial_only: false });
           if (pass === 'update') return JSON.stringify({ content_md: 'applied content', summary_md: 'applied summary' });
           if (pass === 'extract-segments') {
             extractionCalls += 1;
@@ -2037,7 +2159,7 @@ describe('Engine memory prompt hygiene', () => {
         ...common,
         manual: false,
         llm: async ({ pass }) => {
-          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [] });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [], trivial_only: false });
           throw new Error('synthetic Apply failure');
         },
         nowIso: () => '2026-08-07T10:00:00.000Z',
@@ -2068,7 +2190,7 @@ describe('Engine memory prompt hygiene', () => {
         ...common,
         manual: true,
         llm: async ({ pass }) => {
-          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [] });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [], trivial_only: false });
           if (pass === 'extract-segments') return '[]';
           if (pass === 'topic-consolidation') return JSON.stringify({ groups: [] });
           return JSON.stringify({ content_md: 'recovered', summary_md: 'recovered' });
@@ -2097,7 +2219,7 @@ describe('Engine memory prompt hygiene', () => {
         manual: true,
         scopeFilter: ['user', `sessions/${sessionId}`],
         llm: async ({ pass }) => {
-          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [] });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [], trivial_only: false });
           if (pass === 'update') return JSON.stringify({ content_md: 'all targets content', summary_md: 'all targets summary' });
           if (pass === 'extract-segments') return '[]';
           return JSON.stringify({ groups: [] });
@@ -2145,7 +2267,7 @@ describe('Engine memory prompt hygiene', () => {
         limits: { MAX_DIFF_TOKENS_PER_TRIAGE: 12_000, MAX_APPLY_TOKENS: 12_000 },
         llm: async ({ pass, prompt }) => {
           calls.push({ pass, prompt });
-          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [], trivial_only: false });
           if (pass === 'extract-segments') return '[]';
           return JSON.stringify({ content_md: 'compressed durable memory', summary_md: 'compressed summary' });
         },

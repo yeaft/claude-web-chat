@@ -162,29 +162,21 @@ export async function classifySoft({ root, sessionId, messages, topicSummaries, 
   const pass1Prompt = buildPass1Prompt({ sessionId, messages, topicSummaries, language, maxPromptChars });
   const pass1Raw = await llm({ pass: 'triage-pass1', prompt: pass1Prompt, system: triageSystem(language) });
   const pass1 = parseJsonSafe(pass1Raw);
-  if (!pass1
-    || typeof pass1 !== 'object'
-    || Array.isArray(pass1)
-    || typeof pass1.user_profile_signals !== 'boolean'
-    || !Array.isArray(pass1.topics)) {
-    const err = new Error('triage: Pass-1 returned malformed JSON');
-    err.rawSnippet = rawResponseSnippet(pass1Raw);
-    throw err;
+  if (!isValidPass1(pass1)) {
+    throw triageContractError('Pass-1', pass1Raw);
   }
   const out = [];
 
   // User-profile scopes are expensive shared-memory rewrites, not structural
   // Session scopes. Route to them only when Pass-1 finds a durable signal.
-  if (pass1 && pass1.user_profile_signals === true) {
+  if (pass1.user_profile_signals) {
     out.push({ kind: 'update', scope: 'user' });
     if (sessionId && sessionId !== '_no-session') {
       out.push({ kind: 'update', scope: `sessions/${sessionId}/user` });
     }
   }
 
-  const topicDescriptions = (pass1 && Array.isArray(pass1.topics)) ? pass1.topics : [];
-  for (const description of topicDescriptions) {
-    if (typeof description !== 'string' || !description.trim()) continue;
+  for (const description of pass1.topics) {
     const pass2Prompt = buildPass2Prompt({
       description: description.trim(),
       existingTopics: topicSummaries || [],
@@ -193,20 +185,18 @@ export async function classifySoft({ root, sessionId, messages, topicSummaries, 
     });
     const pass2Raw = await llm({ pass: 'triage-pass2', prompt: pass2Prompt, system: triageSystem(language) });
     const pass2 = parseJsonSafe(pass2Raw);
-    if (!pass2 || !pass2.decision) continue;
+    if (!isValidPass2(pass2, { sessionId, topicSummaries })) {
+      throw triageContractError('Pass-2', pass2Raw);
+    }
     if (pass2.decision === 'none') continue;
-    const path = String(pass2.path || '').trim();
-    if (!path) continue;
-    const segs = path.split('/').filter(Boolean);
-    if (!sessionId || sessionId === '_no-session') continue;
-    if (!isValidTopic({ kind: 'session-topic', sessionId, path: segs })) continue;
+    const path = pass2.path;
     const redirected = root
-      ? resolveTopicRedirect(root, sessionId, segs.join('/'))
-      : segs.join('/');
+      ? resolveTopicRedirect(root, sessionId, path)
+      : path;
     const scope = `sessions/${sessionId}/topic/${redirected}`;
     if (pass2.decision === 'match') {
       out.push({ kind: 'update', scope });
-    } else if (pass2.decision === 'new') {
+    } else {
       out.push({ kind: 'create', scope });
     }
   }
@@ -280,6 +270,52 @@ function dedupeActions(list) {
 
 function oneLine(s) {
   return String(s || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasExactKeys(value, expected) {
+  const keys = Object.keys(value).sort();
+  return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
+}
+
+function isValidPass1(value) {
+  if (!isPlainObject(value)
+    || !hasExactKeys(value, ['topics', 'trivial_only', 'user_profile_signals'])
+    || typeof value.user_profile_signals !== 'boolean'
+    || typeof value.trivial_only !== 'boolean'
+    || !Array.isArray(value.topics)
+    || !value.topics.every(topic => typeof topic === 'string' && topic.trim().length > 0)) {
+    return false;
+  }
+  return !value.trivial_only || (!value.user_profile_signals && value.topics.length === 0);
+}
+
+function isValidPass2(value, { sessionId, topicSummaries }) {
+  if (!isPlainObject(value) || !['match', 'new', 'none'].includes(value.decision)) return false;
+  if (value.decision === 'none') {
+    return hasExactKeys(value, ['decision']);
+  }
+  if (!hasExactKeys(value, ['decision', 'path'])
+    || !sessionId
+    || sessionId === '_no-session'
+    || typeof value.path !== 'string'
+    || value.path !== value.path.trim()) {
+    return false;
+  }
+  const path = value.path;
+  const segments = path.split('/');
+  if (!isValidTopic({ kind: 'session-topic', sessionId, path: segments })) return false;
+  const pathExists = (topicSummaries || []).some(topic => topic?.path === path);
+  return value.decision === 'match' ? pathExists : !pathExists;
+}
+
+function triageContractError(pass, raw) {
+  const err = new Error(`triage: ${pass} returned malformed JSON`);
+  err.rawSnippet = rawResponseSnippet(raw);
+  return err;
 }
 
 function rawResponseSnippet(raw) {
