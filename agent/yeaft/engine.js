@@ -2404,6 +2404,9 @@ export class Engine {
     // A new user turn may legitimately re-check the same state; an inner-loop
     // third attempt with unchanged arguments is almost always model churn.
     const queryDuplicateCounts = new Map();
+    // Count only successful executions. Tool errors remain retryable, and tools
+    // explicitly marked `allow` (polling/time-varying state) bypass the guard.
+    const queryDuplicateSuppressions = new Map();
     let duplicateReminderAwaitingResponse = false;
     const queryNumber = (this.#__queryCounter = (this.#__queryCounter || 0) + 1);
 
@@ -3699,6 +3702,7 @@ export class Engine {
       let abortedDuringTools = false;
       /** @type {string[]} */
       const pendingDupReminders = [];
+      let terminateAfterDuplicateBatch = false;
 
       for (const tc of toolCalls) {
         // task-325a: honour abort between tools. We don't cancel a tool
@@ -3712,17 +3716,24 @@ export class Engine {
 
         const toolStartTime = Date.now();
 
-        // Suppress the third and later exact request inside this query. The
-        // assistant tool-call still receives a normal tool result so provider
-        // pairing remains valid, but the underlying tool is not run again.
-        // Counts reset for a new user query because re-checking state in a
-        // later turn is legitimate; this guard targets inner-loop churn.
         const dupHash = argsHashOf(tc.input);
         const duplicateKey = `${tc.name}:${dupHash}`;
-        const duplicateCount = (queryDuplicateCounts.get(duplicateKey) || 0) + 1;
-        queryDuplicateCounts.set(duplicateKey, duplicateCount);
-        const duplicateCallSuppressed = duplicateCount >= DUP_TOOL_THRESHOLD;
-        if (duplicateCount === DUP_TOOL_THRESHOLD) {
+        const toolDef = this.#toolRegistry
+          ? this.#toolRegistry.get(tc.name)
+          : this.#tools.get(tc.name);
+        const requestedDuplicateCallPolicy = typeof toolDef?.duplicateCallPolicy === 'function'
+          ? toolDef.duplicateCallPolicy(tc.input)
+          : 'warn';
+        const duplicateCallPolicy = ['allow', 'warn', 'suppress'].includes(requestedDuplicateCallPolicy)
+          ? requestedDuplicateCallPolicy
+          : 'warn';
+        const successfulDuplicateCount = queryDuplicateCounts.get(duplicateKey) || 0;
+        const duplicateCallSuppressed = duplicateCallPolicy === 'suppress'
+          && successfulDuplicateCount >= DUP_TOOL_THRESHOLD - 1;
+        let suppressionCount = queryDuplicateSuppressions.get(duplicateKey) || 0;
+        if (duplicateCallSuppressed) {
+          suppressionCount += 1;
+          queryDuplicateSuppressions.set(duplicateKey, suppressionCount);
           const dupInfo = this.#execLog.dupInfo({
             toolName: tc.name,
             argsHash: dupHash,
@@ -3731,11 +3742,14 @@ export class Engine {
           });
           pendingDupReminders.push(buildDuplicateReminder({
             toolName: tc.name,
-            count: duplicateCount,
+            count: successfulDuplicateCount + suppressionCount,
             lastResultBrief: dupInfo.lastResultBrief,
           }));
+          // Synthetic results must not keep an otherwise unbounded engine loop
+          // alive forever. Give the model two corrective opportunities, then
+          // terminate this user turn with a diagnostic on the third suppression.
+          if (suppressionCount >= DUP_TOOL_THRESHOLD) terminateAfterDuplicateBatch = true;
         }
-
         let output;
         let displayImages = [];
         let isError = false;
@@ -3753,7 +3767,7 @@ export class Engine {
           : this.#tools.has(tc.name);
 
         if (duplicateCallSuppressed) {
-          output = `Skipped duplicate call: ${tc.name} has already run twice with the same arguments in this turn. Reuse the previous result or choose a different action.`;
+          output = `Suppressed duplicate call: ${tc.name} returned a stable result twice with these arguments in this turn. Reuse the previous result or choose a different action.`;
           yield { type: 'tool_start', id: tc.id, name: tc.name, input: tc.input, threadId: this.currentThreadId };
           yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: false, suppressed: true, threadId: this.currentThreadId };
         } else if (!hasTool) {
@@ -3824,6 +3838,23 @@ export class Engine {
 
         currentToolCallForAsyncTask = null;
 
+        if (!duplicateCallSuppressed && !isError && duplicateCallPolicy !== 'allow') {
+          const nextDuplicateCount = successfulDuplicateCount + 1;
+          queryDuplicateCounts.set(duplicateKey, nextDuplicateCount);
+          if (duplicateCallPolicy === 'warn' && nextDuplicateCount === DUP_TOOL_THRESHOLD) {
+            const dupInfo = this.#execLog.dupInfo({
+              toolName: tc.name,
+              argsHash: dupHash,
+              currentTurn: queryNumber,
+              lookbackTurns: 0,
+            });
+            pendingDupReminders.push(buildDuplicateReminder({
+              toolName: tc.name,
+              count: nextDuplicateCount,
+              lastResultBrief: dupInfo.lastResultBrief,
+            }));
+          }
+        }
         const toolDurationMs = Date.now() - toolStartTime;
 
         // feat-6af5f9f1 PR B: emit a structured `tool_exec` event for the
@@ -3838,6 +3869,7 @@ export class Engine {
           name: tc.name,
           durationMs: toolDurationMs,
           isError,
+          suppressed: duplicateCallSuppressed,
           toolOutput: output,
           ...(displayImages.length > 0 ? { displayImageCount: displayImages.length } : {}),
         };
@@ -3845,7 +3877,7 @@ export class Engine {
         // 2026-05-13: feed the per-tool counters. Stays best-effort — a
         // stats sink that throws shouldn't crash the engine. `record`
         // already swallows internal write errors.
-        if (this.#toolStats && typeof this.#toolStats.record === 'function') {
+        if (!duplicateCallSuppressed && this.#toolStats && typeof this.#toolStats.record === 'function') {
           try {
             this.#toolStats.record({
               name: tc.name,
@@ -3864,6 +3896,7 @@ export class Engine {
           toolOutput: output,
           durationMs: toolDurationMs,
           isError,
+          suppressed: duplicateCallSuppressed,
         });
 
         // Append only the bounded copy to the model message history. Raw
@@ -3899,14 +3932,16 @@ export class Engine {
         // user-conversation turn), not the inner loop's turnNumber.
         // Aligns exec-log layout with dup detection lookback and the
         // T2 fallback-stub readTurn() call below.
-        this.#execLog.append(queryNumber, buildExecLogEntry({
-          loopIdx: queryToolCount,
-          toolName: tc.name,
-          args: tc.input,
-          output,
-          isError,
-        }));
-        queryToolCount += 1;
+        if (!duplicateCallSuppressed) {
+          this.#execLog.append(queryNumber, buildExecLogEntry({
+            loopIdx: queryToolCount,
+            toolName: tc.name,
+            args: tc.input,
+            output,
+            isError,
+          }));
+          queryToolCount += 1;
+        }
         if (fatalToolError) throw fatalToolError;
       }
 
@@ -3918,7 +3953,22 @@ export class Engine {
         conversationMessages.push({ role: 'user', content: reminder });
       }
       if (pendingDupReminders.length > 0) duplicateReminderAwaitingResponse = true;
-
+      if (terminateAfterDuplicateBatch) {
+        yield {
+          type: 'error',
+          error: 'Terminated repeated duplicate tool calls after bounded suppression attempts.',
+          code: 'duplicate_tool_loop',
+          retryable: false,
+        };
+        yield {
+          type: 'turn_end',
+          turnNumber,
+          stopReason: 'duplicate_tool_loop',
+          threadId,
+          terminal: true,
+        };
+        break;
+      }
       // task-707: tool-callable end-turn signal. If a tool in this batch
       // called toolCtx.requestEndTurn(reason), break out of the outer
       // while-loop now — DON'T call adapter.stream() again. The

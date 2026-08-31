@@ -64,6 +64,10 @@
  * @property {(input?: object) => boolean} [isConcurrencySafe] — can run in parallel?
  * @property {(input?: object) => boolean} [isReadOnly] — read-only operation?
  * @property {(input?: object) => boolean} [isDestructive] — destructive operation?
+ * @property {(input?: object) => 'allow' | 'warn' | 'suppress'} [duplicateCallPolicy]
+ *   — repeated exact-call policy for one query. Use `allow` for polling/time-varying
+ *   tools and `suppress` only when the result is stable for the whole query.
+ *   Errors are never counted as successful duplicates.
  * @property {'json-error-envelope' | null} [errorOutput] — explicit returned-output error contract; null means only thrown errors fail
  * @property {'external' | 'run'} [sideEffectScope] — whether mutations escape the current Run collector
  */
@@ -79,6 +83,7 @@
  *   isConcurrencySafe?: (input?: object) => boolean,
  *   isReadOnly?: (input?: object) => boolean,
  *   isDestructive?: (input?: object) => boolean,
+ *   duplicateCallPolicy?: (input?: object) => 'allow' | 'warn' | 'suppress',
  *   errorOutput?: 'json-error-envelope' | null,
  *   sideEffectScope?: 'external' | 'run',
  *   timeoutMs?: number,
@@ -94,6 +99,7 @@ export function defineTool({
   isConcurrencySafe = () => false,
   isReadOnly = () => false,
   isDestructive = () => false,
+  duplicateCallPolicy = () => 'warn',
   errorOutput = 'json-error-envelope',
   sideEffectScope = 'external',
   timeoutMs,
@@ -109,6 +115,7 @@ export function defineTool({
     isConcurrencySafe,
     isReadOnly,
     isDestructive,
+    duplicateCallPolicy,
     errorOutput,
     sideEffectScope,
   };

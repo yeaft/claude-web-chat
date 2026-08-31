@@ -23,6 +23,7 @@ export default defineTool({
   },
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
+  duplicateCallPolicy: () => 'allow',
   async execute(input = {}, ctx = {}) {
     if (!ctx.taskManager) return JSON.stringify({ error: 'task manager unavailable' });
     const taskId = input.taskId;
