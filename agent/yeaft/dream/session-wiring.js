@@ -740,12 +740,16 @@ export function createV2DreamScheduler(session) {
  * Pure side-effect, fire-and-forget. Failure logs at debug only — never
  * blocks session load.
  *
- * @param {{ yeaftDir: string, memoryIndex: import('../memory/index-db.js').SegmentIndex|null, dreamScheduler: { triggerDreamForScopes: (s:string[]) => Promise<any> }, config?: { debug?: boolean } }} args
+ * @param {{ yeaftDir: string, memoryIndex: import('../memory/index-db.js').SegmentIndex|null, dreamScheduler: { triggerDreamForScopes: (s:string[]) => Promise<any> }, config?: { debug?: boolean, dream?: { enabled?: boolean } } }} args
  * @returns {Promise<{ triggered: string[] }>}
  */
 export async function bootInitEmptyGroups(args) {
   const out = { triggered: [] };
   if (!args || !args.memoryIndex || !args.dreamScheduler) return out;
+  // This is automatic boot catch-up, not an explicit user trigger. The
+  // scheduler's scoped trigger intentionally remains manual-capable while
+  // disabled, so enforce the Agent toggle at this automatic entry point.
+  if (args.config?.dream?.enabled === false) return out;
   const sessionsRoot = join(args.yeaftDir, 'sessions');
   let ids;
   try { ids = listSessionMetas(sessionsRoot).map(g => g.id); }
