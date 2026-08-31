@@ -2400,10 +2400,15 @@ describe('message flow regressions', () => {
     }, 'agent-a');
     expect(chatPage.vm.unifiedSessionCreateProject).toBeNull();
     let upgradeAckDetail = null;
+    const upgradeRequestId = 'upgrade-regression';
+    parentStore.agentOperations = {
+      'agent-a': { upgrade: { pending: true, requestId: upgradeRequestId } },
+    };
     window.addEventListener('agent-upgrade-ack', event => { upgradeAckDetail = event.detail; }, { once: true });
     handleMessage(parentStore, {
       type: 'upgrade_agent_ack',
       agentId: 'agent-a',
+      requestId: upgradeRequestId,
       success: false,
       reason: 'manual_upgrade_required',
       version: '1.0.369',

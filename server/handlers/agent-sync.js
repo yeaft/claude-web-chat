@@ -1,6 +1,10 @@
 import { CONFIG } from '../config.js';
 import { agentInventoryDb, sessionDb, userStatsDb } from '../database.js';
-import { agents, webClients } from '../context.js';
+import {
+  agents,
+  consumeAgentSettingsRequest,
+  webClients,
+} from '../context.js';
 import { sendToWebClient, broadcastAgentList } from '../ws-utils.js';
 import {
   handleProxyResponse, handleProxyResponseChunk, handleProxyResponseEnd,
@@ -11,6 +15,18 @@ const numberMetric = (value) => {
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 ? n : 0;
 };
+
+async function sendAgentSettingsReply(agentId, agent, operation, msg, payload) {
+  const pending = consumeAgentSettingsRequest({ agentId, operation, requestId: msg.requestId });
+  if (!pending) return false;
+  if (!msg.requestId) payload.requestId = pending.requestId;
+  const client = webClients.get(pending.clientId);
+  if (!client?.authenticated || (!CONFIG.skipAuth
+    && !((agent.ownerId && client.userId === agent.ownerId)
+      || (!agent.ownerId && client.role === 'admin')))) return false;
+  await sendToWebClient(client, payload);
+  return true;
+}
 
 function normalizeAgentMetrics(metrics = {}) {
   const chatTurns = numberMetric(metrics.chatTurns);
@@ -80,16 +96,14 @@ export async function handleAgentSync(agentId, agent, msg) {
         agent.dreamEnabled = msg.enabled !== false;
         await broadcastAgentList();
       }
-      for (const [, client] of webClients) {
-        if (!client.authenticated) continue;
-        if (!CONFIG.skipAuth && agent.ownerId !== client.userId && !(!agent.ownerId && client.role === 'admin')) continue;
-        await sendToWebClient(client, {
-          type: 'dream_enabled_changed',
-          agentId,
-          enabled: msg.error ? agent.dreamEnabled !== false : msg.enabled !== false,
-          ...(msg.error ? { error: msg.error } : {}),
-        });
-      }
+      const payload = {
+        type: 'dream_enabled_changed',
+        agentId,
+        requestId: msg.requestId,
+        enabled: msg.error ? agent.dreamEnabled !== false : msg.enabled !== false,
+        ...(msg.error ? { error: msg.error } : {}),
+      };
+      await sendAgentSettingsReply(agentId, agent, 'dream', msg, payload);
       break;
     }
 
@@ -202,27 +216,14 @@ export async function handleAgentSync(agentId, agent, msg) {
     }
 
     case 'restart_agent_ack': {
-      // 只通知该 Agent 的 owner
-      for (const [, client] of webClients) {
-        if (client.authenticated && (CONFIG.skipAuth ||
-          (agent.ownerId && client.userId === agent.ownerId) ||
-          (!agent.ownerId && client.role === 'admin')
-        )) {
-          await sendToWebClient(client, { type: 'restart_agent_ack', agentId });
-        }
-      }
+      const payload = { type: 'restart_agent_ack', agentId, requestId: msg.requestId };
+      await sendAgentSettingsReply(agentId, agent, 'restart', msg, payload);
       break;
     }
 
     case 'upgrade_agent_ack': {
-      for (const [, client] of webClients) {
-        if (client.authenticated && (CONFIG.skipAuth ||
-          (agent.ownerId && client.userId === agent.ownerId) ||
-          (!agent.ownerId && client.role === 'admin')
-        )) {
-          await sendToWebClient(client, { type: 'upgrade_agent_ack', agentId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version, reason: msg.reason, currentNode: msg.currentNode, requiredNode: msg.requiredNode, requiredCapability: msg.requiredCapability });
-        }
-      }
+      const payload = { type: 'upgrade_agent_ack', agentId, requestId: msg.requestId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version, reason: msg.reason, currentNode: msg.currentNode, requiredNode: msg.requiredNode, requiredCapability: msg.requiredCapability };
+      await sendAgentSettingsReply(agentId, agent, 'upgrade', msg, payload);
       break;
     }
 
@@ -408,14 +409,14 @@ export async function handleAgentSync(agentId, agent, msg) {
     // trace payloads stay on the Agent.
     case 'telemetry_settings':
     case 'telemetry_settings_updated': {
-      for (const [, client] of webClients) {
-        if (client.authenticated && (CONFIG.skipAuth ||
-          (agent.ownerId && client.userId === agent.ownerId) ||
-          (!agent.ownerId && client.role === 'admin')
-        )) {
-          await sendToWebClient(client, { ...msg, agentId });
-        }
-      }
+      const operation = msg.type === 'yeaft_plugins_updated'
+        ? 'plugins:update'
+        : msg.type === 'yeaft_plugins'
+          ? 'plugins:load'
+          : msg.type === 'telemetry_settings_updated'
+            ? 'telemetry:update'
+            : 'telemetry:load';
+      await sendAgentSettingsReply(agentId, agent, operation, msg, { ...msg, agentId });
       break;
     }
 

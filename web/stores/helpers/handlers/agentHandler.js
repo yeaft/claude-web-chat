@@ -87,6 +87,28 @@ export function handleAgentList(store, msg) {
     && previousAgents.some(a => a && a.id === previousCurrentAgentId && a.online));
   store.agents = msg.agents;
   store._hasHandledAgentList = true;
+  for (const [agentId, operations] of Object.entries(store.agentOperations || {})) {
+    const current = msg.agents.find(agent => agent.id === agentId);
+    for (const operation of ['restart', 'upgrade']) {
+      const state = operations?.[operation];
+      if (!state?.pending || !state.acknowledged) continue;
+      if (!current?.online) {
+        if (!state.sawOffline) {
+          store.agentOperations = {
+            ...store.agentOperations,
+            [agentId]: {
+              ...(store.agentOperations[agentId] || {}),
+              [operation]: { ...state, sawOffline: true },
+            },
+          };
+        }
+        continue;
+      }
+      const versionChanged = operation === 'upgrade' && state.oldVersion && current.version !== state.oldVersion;
+      if (!state.sawOffline && !versionChanged) continue;
+      store.finishAgentOperation?.(agentId, operation);
+    }
+  }
 
   // Agent-restart detection. When the agent PROCESS restarts (deploy/update
   // or crash), the web↔server websocket never drops, so the onclose-based

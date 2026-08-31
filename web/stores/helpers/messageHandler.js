@@ -980,20 +980,39 @@ export function handleMessage(store, msg) {
       break;
 
     case 'dream_enabled_changed': {
+      const previous = store.agentDreamState?.[msg.agentId] || {};
+      const matches = !!msg.requestId && previous.requestId === msg.requestId;
+      if (!previous.pending || !matches) break;
+      clearTimeout(previous.timer);
+      const authoritative = typeof msg.enabled === 'boolean' ? msg.enabled : previous.authoritative !== false;
       const agent = Array.isArray(store.agents) ? store.agents.find(item => item.id === msg.agentId) : null;
-      if (agent && !msg.error) agent.dreamEnabled = msg.enabled !== false;
+      if (agent) agent.dreamEnabled = authoritative;
+      store.agentDreamState = { ...store.agentDreamState, [msg.agentId]: { ...previous, pending: false, timer: null, authoritative, error: msg.error || null } };
       break;
     }
 
-    case 'restart_agent_ack':
-      console.log(`[Agent] Restart acknowledged by agent: ${msg.agentId}`);
-      window.dispatchEvent(new CustomEvent('agent-restart-ack', { detail: { agentId: msg.agentId } }));
+    case 'restart_agent_ack': {
+      const current = store.agentOperations?.[msg.agentId]?.restart;
+      const matches = !!msg.requestId && current?.requestId === msg.requestId;
+      if (!current?.pending || !matches) break;
+      if (current.pending) {
+        store.agentOperations = { ...store.agentOperations, [msg.agentId]: { ...(store.agentOperations[msg.agentId] || {}), restart: { ...current, acknowledged: true } } };
+      }
+      window.dispatchEvent(new CustomEvent('agent-restart-ack', { detail: { agentId: msg.agentId, requestId: msg.requestId } }));
       break;
+    }
 
-    case 'upgrade_agent_ack':
-      console.log(`[Agent] Upgrade ${msg.success ? 'succeeded' : 'failed'} for agent: ${msg.agentId}`, msg.error || '');
-      window.dispatchEvent(new CustomEvent('agent-upgrade-ack', { detail: { agentId: msg.agentId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version, reason: msg.reason, currentNode: msg.currentNode, requiredNode: msg.requiredNode, requiredCapability: msg.requiredCapability } }));
+    case 'upgrade_agent_ack': {
+      const current = store.agentOperations?.[msg.agentId]?.upgrade;
+      const matches = !!msg.requestId && current?.requestId === msg.requestId;
+      if (!current?.pending || !matches) break;
+      if (current.pending) {
+        if (!msg.success || msg.alreadyLatest) store.finishAgentOperation?.(msg.agentId, 'upgrade', msg.error || null);
+        else store.agentOperations = { ...store.agentOperations, [msg.agentId]: { ...(store.agentOperations[msg.agentId] || {}), upgrade: { ...current, acknowledged: true } } };
+      }
+      window.dispatchEvent(new CustomEvent('agent-upgrade-ack', { detail: { agentId: msg.agentId, requestId: msg.requestId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version, reason: msg.reason, currentNode: msg.currentNode, requiredNode: msg.requiredNode, requiredCapability: msg.requiredCapability } }));
       break;
+    }
 
     // Browser Runtime setup/lifecycle/signaling belongs to the dedicated browser store.
     case 'browser_runtime_status_result':
@@ -1210,13 +1229,21 @@ export function handleMessage(store, msg) {
         loaded: true,
         at: Date.now(),
       };
-      store.telemetrySettings = record;
-      const pending = store._telemetryPending;
-      const key = msg.type === 'telemetry_settings' ? 'load' : 'update';
-      if (pending && pending[key]) {
-        pending[key](record);
-        delete pending[key];
+      const expectedOperation = msg.type === 'telemetry_settings_updated' ? 'update' : 'load';
+      // A response without request identity has no provenance. It may be a late
+      // legacy response for any earlier browser request, so it cannot settle one.
+      const match = msg.requestId
+        ? { requestId: msg.requestId, pending: store._telemetryPending?.[msg.requestId] }
+        : null;
+      const pending = match?.pending;
+      if (!pending || pending.agentId !== msg.agentId || pending.operation !== expectedOperation) break;
+      clearTimeout(pending.timer);
+      delete store._telemetryPending[match.requestId];
+      if (store.telemetryRequestByAgent?.[pending.agentId] === match.requestId) {
+        store.telemetrySettingsByAgent = { ...store.telemetrySettingsByAgent, [pending.agentId]: record };
+        if (store.currentAgent === pending.agentId) store.telemetrySettings = record;
       }
+      pending.resolve(record);
       break;
     }
 

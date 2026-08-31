@@ -5,7 +5,12 @@ import { generateSkipAuthSession } from './auth.js';
 import { authenticateRequest } from './auth/request-auth.js';
 import { encodeKey } from './encryption.js';
 import { userDb } from './database.js';
-import { agents, clearYeaftDebugRequestsForClient, webClients } from './context.js';
+import {
+  agents,
+  clearAgentSettingsRequestsForClient,
+  clearYeaftDebugRequestsForClient,
+  webClients,
+} from './context.js';
 import {
   applyClientHello,
   BROWSER_RUNTIME_PROTOCOL,
@@ -178,6 +183,7 @@ export function handleWebConnection(ws, url, req = {}) {
       }
     }
     clearWorkCenterRequestsForClient(client);
+    clearAgentSettingsRequestsForClient(clientId);
     clearYeaftDebugRequestsForClient(clientId);
     const browserPeers = clearBrowserRuntimeForClient(client);
     for (const peer of browserPeers) {

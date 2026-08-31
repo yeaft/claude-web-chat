@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { CONFIG } from '../../server/config.js';
-import { agents, pendingAgentConnections } from '../../server/context.js';
+import {
+  agents,
+  clearAgentSettingsRequestsForClient,
+  consumeAgentSettingsRequest,
+  pendingAgentConnections,
+  pendingAgentSettingsRequests,
+  registerAgentSettingsRequest,
+  webClients,
+} from '../../server/context.js';
 import { sessionDb, yeaftProjectDb, yeaftSessionDb, sessionUiMetadataDb } from '../../server/database.js';
 import {
   buildHiddenSessionCatalog,
@@ -10,6 +18,7 @@ import {
   verifyConversationOwnership,
 } from '../../server/ws-utils.js';
 import { handleAgentOutput } from '../../server/handlers/agent-output.js';
+import { handleAgentSync } from '../../server/handlers/agent-sync.js';
 import { handleAgentConversation } from '../../server/handlers/agent-conversation.js';
 import { handleClientConversation } from '../../server/handlers/client-conversation.js';
 import {
@@ -26,11 +35,21 @@ import {
   YEAFT_MANAGED_SKILLS_CAPABILITY,
   YEAFT_MANAGED_SKILLS_UNSUPPORTED_ERROR,
 } from '../../server/yeaft-managed-skill-capability.js';
-import { handleAgentConnection } from '../../server/ws-agent.js';
+import { handleAgentConnection, isNewerAgentVersion } from '../../server/ws-agent.js';
 import { MockWebSocket, WS_OPEN } from '../helpers/mockWs.js';
 
 describe('resolveAgentAccessError', () => {
   const originalSkipAuth = CONFIG.skipAuth;
+
+  it('only treats a valid newer semver push hint as an available upgrade', () => {
+    expect(isNewerAgentVersion('1.10.0', '1.9.9')).toBe(true);
+    expect(isNewerAgentVersion('v2.0.0', '1.99.99')).toBe(true);
+    expect(isNewerAgentVersion('1.0.0', '1.0.0')).toBe(false);
+    expect(isNewerAgentVersion('1.0.0', '1.1.0')).toBe(false);
+    expect(isNewerAgentVersion('1.0.0-beta.2', '1.0.0-beta.1')).toBe(true);
+    expect(isNewerAgentVersion('1.0.0-beta.1', '1.0.0')).toBe(false);
+    expect(isNewerAgentVersion('latest', '1.0.0')).toBe(false);
+  });
 
   afterEach(() => {
     CONFIG.skipAuth = originalSkipAuth;
@@ -42,6 +61,340 @@ describe('resolveAgentAccessError', () => {
     }
     agents.clear();
     pendingAgentConnections.clear();
+    pendingAgentSettingsRequests.clear();
+    webClients.clear();
+  });
+
+  it('preserves telemetry correlation and replies only to the originating browser', async () => {
+    CONFIG.skipAuth = true;
+    const forwarded = [];
+    const originMessages = [];
+    const siblingMessages = [];
+    const agent = {
+      id: 'agent-telemetry', name: 'Telemetry', ownerId: 'user-1',
+      ws: { readyState: WS_OPEN, send: payload => forwarded.push(JSON.parse(payload)) },
+    };
+    agents.set(agent.id, agent);
+    const origin = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => originMessages.push(JSON.parse(payload)) } };
+    const sibling = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => siblingMessages.push(JSON.parse(payload)) } };
+    webClients.set('browser-origin', origin);
+    webClients.set('browser-sibling', sibling);
+
+    await handleClientMisc('browser-origin', origin, {
+      type: 'get_telemetry_settings', agentId: agent.id, requestId: 'telemetry-1',
+    }, async () => true);
+    expect(forwarded).toEqual([{ type: 'get_telemetry_settings', requestId: 'telemetry-1', clientId: 'browser-origin' }]);
+
+    await handleAgentSync(agent.id, agent, {
+      type: 'telemetry_settings', requestId: 'telemetry-1', clientId: 'browser-origin', enabled: true,
+    });
+    expect(originMessages).toEqual([{ type: 'telemetry_settings', requestId: 'telemetry-1', clientId: 'browser-origin', enabled: true, agentId: agent.id }]);
+    expect(siblingMessages).toEqual([]);
+  });
+
+  it('correlates a sole legacy Agent reply without requestId and rejects ambiguous dispatch', async () => {
+    CONFIG.skipAuth = true;
+    const forwarded = [];
+    const firstMessages = [];
+    const secondMessages = [];
+    const agent = {
+      id: 'agent-legacy', name: 'Legacy', ownerId: 'user-1', capabilities: [],
+      ws: { readyState: WS_OPEN, send: payload => forwarded.push(JSON.parse(payload)) },
+    };
+    agents.set(agent.id, agent);
+    const first = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => firstMessages.push(JSON.parse(payload)) } };
+    const second = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => secondMessages.push(JSON.parse(payload)) } };
+    webClients.set('browser-first', first);
+    webClients.set('browser-second', second);
+
+    await handleClientMisc('browser-first', first, {
+      type: 'get_telemetry_settings', agentId: agent.id, requestId: 'legacy-first',
+    }, async () => true);
+    await handleClientMisc('browser-second', second, {
+      type: 'get_telemetry_settings', agentId: agent.id, requestId: 'legacy-second',
+    }, async () => true);
+    expect(forwarded).toHaveLength(1);
+    expect(secondMessages).toEqual([expect.objectContaining({
+      type: 'telemetry_settings', requestId: 'legacy-second', error: expect.stringMatching(/rejected/i),
+    })]);
+
+    await handleAgentSync(agent.id, agent, { type: 'telemetry_settings', enabled: true });
+    expect(firstMessages).toEqual([{
+      type: 'telemetry_settings', enabled: true, agentId: agent.id, requestId: 'legacy-first',
+    }]);
+  });
+
+  it('drops identity-less telemetry replies instead of guessing browser ownership', async () => {
+    CONFIG.skipAuth = true;
+    const firstMessages = [];
+    const secondMessages = [];
+    const agent = { id: 'agent-legacy', name: 'Legacy', ownerId: 'user-1' };
+    webClients.set('browser-first', {
+      authenticated: true, userId: 'user-1', role: 'user',
+      ws: { readyState: WS_OPEN, send: payload => firstMessages.push(JSON.parse(payload)) },
+    });
+    webClients.set('browser-second', {
+      authenticated: true, userId: 'user-1', role: 'user',
+      ws: { readyState: WS_OPEN, send: payload => secondMessages.push(JSON.parse(payload)) },
+    });
+
+    await handleAgentSync(agent.id, agent, {
+      type: 'telemetry_settings_updated', enabled: false,
+    });
+
+    expect(firstMessages).toEqual([]);
+    expect(secondMessages).toEqual([]);
+  });
+
+  it('keeps interleaved registrations atomic and operation-scoped', () => {
+    webClients.set('browser-a', { authenticated: true });
+    webClients.set('browser-b', { authenticated: true });
+    expect(registerAgentSettingsRequest({
+      agentId: 'agent-a', operation: 'telemetry:load', requestId: 'request-a', clientId: 'browser-a',
+    })).toBe(true);
+    expect(registerAgentSettingsRequest({
+      agentId: 'agent-a', operation: 'telemetry:update', requestId: 'request-b', clientId: 'browser-b',
+    })).toBe(true);
+    expect(pendingAgentSettingsRequests.size).toBe(2);
+
+    expect(consumeAgentSettingsRequest({
+      agentId: 'agent-a', operation: 'telemetry:load', requestId: 'request-b',
+    })).toBeNull();
+    expect(consumeAgentSettingsRequest({
+      agentId: 'agent-a', operation: 'telemetry:update', requestId: 'request-b',
+    })).toMatchObject({ clientId: 'browser-b' });
+    clearAgentSettingsRequestsForClient('browser-a');
+    expect(pendingAgentSettingsRequests.size).toBe(0);
+  });
+
+  it('keeps the global registry intact when one browser exhausts its own quota', () => {
+    webClients.set('browser-abusive', { authenticated: true });
+    webClients.set('browser-healthy', { authenticated: true });
+    for (let i = 0; i < 256; i++) {
+      expect(registerAgentSettingsRequest({
+        agentId: 'agent-a', operation: 'telemetry:load', requestId: `abusive-${i}`, clientId: 'browser-abusive',
+      })).toBe(true);
+    }
+    expect(registerAgentSettingsRequest({
+      agentId: 'agent-a', operation: 'telemetry:load', requestId: 'abusive-overflow', clientId: 'browser-abusive',
+    })).toBe(false);
+    expect(registerAgentSettingsRequest({
+      agentId: 'agent-a', operation: 'telemetry:load', requestId: 'healthy', clientId: 'browser-healthy',
+    })).toBe(true);
+    expect(consumeAgentSettingsRequest({ agentId: 'agent-a', operation: 'telemetry:load', requestId: 'healthy' }))
+      .toMatchObject({ clientId: 'browser-healthy' });
+  });
+
+  it('removes a registered request when dispatch cannot reach the Agent', async () => {
+    CONFIG.skipAuth = true;
+    const replies = [];
+    const client = {
+      authenticated: true, userId: 'user-1', role: 'user',
+      ws: { readyState: WS_OPEN, send: payload => replies.push(JSON.parse(payload)) },
+    };
+    webClients.set('browser-origin', client);
+    agents.set('agent-closed', {
+      ownerId: 'user-1', capabilities: [YEAFT_PLUGINS_CAPABILITY],
+      ws: { readyState: 3, send() { throw new Error('must not send'); } },
+    });
+
+    await handleClientMisc('browser-origin', client, {
+      type: 'get_yeaft_plugins', agentId: 'agent-closed', requestId: 'plugins-closed',
+    }, async () => true);
+
+    expect(pendingAgentSettingsRequests.size).toBe(0);
+    expect(replies).toEqual([expect.objectContaining({
+      type: 'yeaft_plugins', requestId: 'plugins-closed', error: 'Agent is unavailable.',
+    })]);
+  });
+
+  it('removes a registered request when Agent dispatch throws', async () => {
+    CONFIG.skipAuth = true;
+    const replies = [];
+    const client = {
+      authenticated: true, userId: 'user-1', role: 'user',
+      ws: { readyState: WS_OPEN, send: payload => replies.push(JSON.parse(payload)) },
+    };
+    webClients.set('browser-origin', client);
+    agents.set('agent-throwing', {
+      ownerId: 'user-1', capabilities: [YEAFT_PLUGINS_CAPABILITY],
+      ws: { readyState: WS_OPEN, send() { throw new Error('socket write failed'); } },
+    });
+
+    await handleClientMisc('browser-origin', client, {
+      type: 'get_yeaft_plugins', agentId: 'agent-throwing', requestId: 'plugins-throwing',
+    }, async () => true);
+
+    expect(pendingAgentSettingsRequests.size).toBe(0);
+    expect(replies).toEqual([expect.objectContaining({
+      type: 'yeaft_plugins', requestId: 'plugins-throwing',
+      error: 'Failed to send request to Agent: socket write failed',
+    })]);
+  });
+
+  it('fails and clears pending requests when the Agent disconnects', async () => {
+    CONFIG.skipAuth = true;
+    const replies = [];
+    const client = {
+      authenticated: true, userId: 'user-1', role: 'user',
+      ws: { readyState: WS_OPEN, send: payload => replies.push(JSON.parse(payload)) },
+    };
+    webClients.set('browser-origin', client);
+    const socket = new MockWebSocket(WS_OPEN);
+    const agentId = 'agent-disconnecting';
+    const url = new URL(`ws://localhost/?type=agent&id=${agentId}&name=${agentId}&instanceId=${agentId}&capabilities=plaintext-ok`);
+    handleAgentConnection(socket, url);
+    const challenge = socket.getLastMessage();
+    socket.simulateMessage({
+      type: 'auth', tempId: challenge.tempId, secret: '', capabilities: ['plaintext-ok'], version: '1.0.0',
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(registerAgentSettingsRequest({
+      agentId, operation: 'telemetry:load', requestId: 'disconnect-pending', clientId: 'browser-origin',
+    })).toBe(true);
+    socket.close(1000, 'test disconnect');
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(pendingAgentSettingsRequests.size).toBe(0);
+    expect(replies).toContainEqual(expect.objectContaining({
+      type: 'telemetry_settings', agentId, requestId: 'disconnect-pending',
+      error: 'Agent disconnected before completing the request.',
+    }));
+  });
+
+  it('routes Plugin replies only to the originating browser', async () => {
+    CONFIG.skipAuth = true;
+    const forwarded = [];
+    const firstMessages = [];
+    const secondMessages = [];
+    const agent = {
+      id: 'agent-plugins', ownerId: 'user-1', capabilities: [YEAFT_PLUGINS_CAPABILITY],
+      ws: { readyState: WS_OPEN, send: payload => forwarded.push(JSON.parse(payload)) },
+    };
+    agents.set(agent.id, agent);
+    const first = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => firstMessages.push(JSON.parse(payload)) } };
+    const second = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => secondMessages.push(JSON.parse(payload)) } };
+    webClients.set('browser-first', first);
+    webClients.set('browser-second', second);
+
+    await handleClientMisc('browser-first', first, {
+      type: 'get_yeaft_plugins', agentId: agent.id, requestId: 'plugins-first',
+    }, async () => true);
+    expect(forwarded).toEqual([{ type: 'get_yeaft_plugins', requestId: 'plugins-first' }]);
+    await handleAgentSync(agent.id, agent, {
+      type: 'yeaft_plugins', requestId: 'plugins-first', plugins: { tools: ['FileRead'] }, clientId: 'browser-second',
+    });
+
+    expect(firstMessages).toEqual([expect.objectContaining({ type: 'yeaft_plugins', requestId: 'plugins-first' })]);
+    expect(secondMessages).toEqual([]);
+  });
+
+  it('routes concurrent replies by Server-owned request provenance', async () => {
+    CONFIG.skipAuth = true;
+    const forwarded = [];
+    const firstMessages = [];
+    const secondMessages = [];
+    const agent = {
+      id: 'agent-concurrent', name: 'Concurrent', ownerId: 'user-1', capabilities: ['settings_request_correlation'],
+      ws: { readyState: WS_OPEN, send: payload => forwarded.push(JSON.parse(payload)) },
+    };
+    agents.set(agent.id, agent);
+    const first = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => firstMessages.push(JSON.parse(payload)) } };
+    const second = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => secondMessages.push(JSON.parse(payload)) } };
+    webClients.set('browser-first', first);
+    webClients.set('browser-second', second);
+
+    await handleClientMisc('browser-first', first, {
+      type: 'get_telemetry_settings', agentId: agent.id, requestId: 'load-first',
+    }, async () => true);
+    await handleClientMisc('browser-second', second, {
+      type: 'get_telemetry_settings', agentId: agent.id, requestId: 'load-second',
+    }, async () => true);
+
+    // Deliberately reverse response order and forge clientId. The Server registry,
+    // not Agent-controlled clientId or arrival order, decides the recipient.
+    await handleAgentSync(agent.id, agent, {
+      type: 'telemetry_settings', requestId: 'load-second', clientId: 'browser-first', enabled: false,
+    });
+    await handleAgentSync(agent.id, agent, {
+      type: 'telemetry_settings', requestId: 'load-first', clientId: 'browser-second', enabled: true,
+    });
+
+    expect(forwarded.map(message => message.requestId)).toEqual(['load-first', 'load-second']);
+    expect(firstMessages).toEqual([expect.objectContaining({ requestId: 'load-first', enabled: true })]);
+    expect(secondMessages).toEqual([expect.objectContaining({ requestId: 'load-second', enabled: false })]);
+  });
+
+  it('does not let a delayed identity-less response settle a later request', async () => {
+    CONFIG.skipAuth = true;
+    const firstMessages = [];
+    const secondMessages = [];
+    const agent = { id: 'agent-delayed', name: 'Delayed', ownerId: 'user-1', capabilities: ['settings_request_correlation'], ws: { readyState: WS_OPEN, send() {} } };
+    agents.set(agent.id, agent);
+    const first = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => firstMessages.push(JSON.parse(payload)) } };
+    const second = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => secondMessages.push(JSON.parse(payload)) } };
+    webClients.set('browser-first', first);
+    webClients.set('browser-second', second);
+
+    await handleClientMisc('browser-first', first, {
+      type: 'update_telemetry_settings', agentId: agent.id, requestId: 'update-old', settings: { enabled: false },
+    }, async () => true);
+    await handleAgentSync(agent.id, agent, {
+      type: 'telemetry_settings_updated', requestId: 'update-old', enabled: false,
+    });
+    await handleClientMisc('browser-second', second, {
+      type: 'update_telemetry_settings', agentId: agent.id, requestId: 'update-new', settings: { enabled: true },
+    }, async () => true);
+
+    await handleAgentSync(agent.id, agent, {
+      type: 'telemetry_settings_updated', enabled: false,
+    });
+    expect(secondMessages).toEqual([]);
+
+    await handleAgentSync(agent.id, agent, {
+      type: 'telemetry_settings_updated', requestId: 'update-new', enabled: true,
+    });
+    expect(firstMessages).toEqual([expect.objectContaining({ requestId: 'update-old', enabled: false })]);
+    expect(secondMessages).toEqual([expect.objectContaining({ requestId: 'update-new', enabled: true })]);
+  });
+
+  it('routes correlated Agent maintenance and Dream replies only to the originating browser', async () => {
+    CONFIG.skipAuth = true;
+    const forwarded = [];
+    const originMessages = [];
+    const siblingMessages = [];
+    const agent = {
+      id: 'agent-lifecycle', name: 'Lifecycle', ownerId: 'user-1', dreamEnabled: true,
+      conversations: new Map(),
+      ws: { readyState: WS_OPEN, send: payload => forwarded.push(JSON.parse(payload)) },
+    };
+    agents.set(agent.id, agent);
+    const origin = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => originMessages.push(JSON.parse(payload)) } };
+    const sibling = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => siblingMessages.push(JSON.parse(payload)) } };
+    webClients.set('browser-origin', origin);
+    webClients.set('browser-sibling', sibling);
+
+    await handleClientMisc('browser-origin', origin, {
+      type: 'set_dream_enabled', agentId: agent.id, requestId: 'dream-1', enabled: false,
+    }, async () => true);
+    await handleAgentSync(agent.id, agent, {
+      type: 'dream_enabled_changed', requestId: 'dream-1', clientId: 'browser-origin', enabled: false,
+    });
+    await handleClientMisc('browser-origin', origin, {
+      type: 'restart_agent', agentId: agent.id, requestId: 'restart-1',
+    }, async () => true);
+    await handleAgentSync(agent.id, agent, {
+      type: 'restart_agent_ack', requestId: 'restart-1', clientId: 'browser-origin',
+    });
+
+    expect(forwarded).toEqual([
+      { type: 'set_dream_enabled', enabled: false, requestId: 'dream-1', clientId: 'browser-origin' },
+      { type: 'restart_agent', requestId: 'restart-1', clientId: 'browser-origin' },
+    ]);
+    expect(originMessages).toContainEqual({ type: 'dream_enabled_changed', agentId: agent.id, requestId: 'dream-1', enabled: false });
+    expect(originMessages).toContainEqual({ type: 'restart_agent_ack', agentId: agent.id, requestId: 'restart-1' });
+    expect(siblingMessages.some(message => message.type === 'dream_enabled_changed' || message.type === 'restart_agent_ack')).toBe(false);
   });
 
   it('classifies Agent access states and rejects foreign Project mutations', async () => {

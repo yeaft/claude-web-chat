@@ -4,7 +4,7 @@ import { projectSessionCatalog, yeaftCatalogKey } from '../../server/session-cat
 const sendToWebClient = vi.fn(async (client, msg) => {
   client.sent.push(msg);
 });
-const forwardToAgent = vi.fn(async () => {});
+const forwardToAgent = vi.fn(async () => true);
 const broadcastAgentList = vi.fn(async () => {});
 const broadcastSessionCatalog = vi.fn(async () => {});
 const buildSessionCatalog = vi.fn(() => []);
@@ -748,7 +748,7 @@ describe('Yeaft Session online Agent filtering', () => {
 
     CONFIG.skipAuth = false;
     agents.set('agent-a', {
-      ws: { readyState: 1 },
+      ws: { readyState: 1, send() {} },
       ownerId: 'user-1',
       conversations: new Map([['chat-1', { id: 'chat-1', title: 'Old' }]]),
     });
@@ -1003,7 +1003,7 @@ describe('Yeaft Session online Agent filtering', () => {
 
     const ownerClient = { authenticated: true, userId: 'user-1', sent: [], ws: { readyState: 1 } };
     webClients.set('owner-client', ownerClient);
-    const agent = { ownerId: 'user-1', conversations: new Map(), ws: { readyState: 1 } };
+    const agent = { ownerId: 'user-1', conversations: new Map(), ws: { readyState: 1, send() {} } };
     broadcastSessionCatalog.mockClear();
     await handleAgentOutput('agent-a', agent, {
       type: 'session_crud_result', op: 'rename', ok: true, sessionId: 'same-id', requestId: 'rename-1',

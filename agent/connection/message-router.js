@@ -350,7 +350,7 @@ export async function handleMessage(msg) {
       break;
 
     case 'restart_agent':
-      await handleRestartAgent();
+      await handleRestartAgent({ requestId: msg.requestId, clientId: msg.clientId });
       break;
 
     case 'set_dream_enabled': {
@@ -363,15 +363,15 @@ export async function handleMessage(msg) {
         const runtime = await ensureSessionLoaded();
         runtime.config.dream = { ...(runtime.config.dream || {}), enabled };
         runtime.dreamScheduler?.setEnabled?.(enabled);
-        sendToServer({ type: 'dream_enabled_changed', enabled });
+        sendToServer({ type: 'dream_enabled_changed', enabled, requestId: msg.requestId, clientId: msg.clientId });
       } catch (error) {
-        sendToServer({ type: 'dream_enabled_changed', enabled: !enabled, error: error?.message || String(error) });
+        sendToServer({ type: 'dream_enabled_changed', enabled: !enabled, error: error?.message || String(error), requestId: msg.requestId, clientId: msg.clientId });
       }
       break;
     }
 
     case 'upgrade_agent':
-      await handleUpgradeAgent();
+      await handleUpgradeAgent({ requestId: msg.requestId, clientId: msg.clientId });
       break;
 
     // MCP configuration
@@ -495,7 +495,7 @@ export async function handleMessage(msg) {
     // section of config.json. This does not expose trace payloads.
     case 'get_telemetry_settings': {
       const settings = getTelemetrySettings(ctx.CONFIG?.yeaftDir);
-      sendToServer({ type: 'telemetry_settings', ...settings });
+      sendToServer({ type: 'telemetry_settings', requestId: msg.requestId, clientId: msg.clientId, ...settings });
       break;
     }
 
@@ -515,7 +515,7 @@ export async function handleMessage(msg) {
           result.runtimeRefreshError = error?.message || String(error);
         }
       }
-      sendToServer({ type: 'telemetry_settings_updated', ...result });
+      sendToServer({ type: 'telemetry_settings_updated', requestId: msg.requestId, clientId: msg.clientId, ...result });
       break;
     }
 

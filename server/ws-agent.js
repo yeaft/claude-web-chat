@@ -4,10 +4,10 @@ import { CONFIG } from './config.js';
 import { verifyAgent } from './auth.js';
 
 import { encodeKey } from './encryption.js';
-import { agents, pendingAgentConnections } from './context.js';
+import { agents, pendingAgentConnections, takeAgentSettingsRequestsForAgent, webClients } from './context.js';
 import { agentInventoryDb, userDb } from './database.js';
 import {
-  parseMessage, broadcastAgentList, clearAgentDirCache
+  parseMessage, broadcastAgentList, clearAgentDirCache, sendToWebClient
 } from './ws-utils.js';
 import { handleAgentConversation } from './handlers/agent-conversation.js';
 import { handleAgentOutput } from './handlers/agent-output.js';
@@ -28,6 +28,40 @@ import { markAgentHeartbeatSeen } from './heartbeat-policy.js';
 function buildAgentMapKey(ownerId, agentName) {
   const prefix = ownerId || 'global';
   return `${prefix}:${agentName}`;
+}
+
+function parseSemver(version) {
+  const match = String(version || '').trim().match(/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
+  if (!match) return null;
+  return {
+    core: match.slice(1, 4).map(Number),
+    prerelease: match[4] ? match[4].split('.') : [],
+  };
+}
+
+export function isNewerAgentVersion(candidate, current) {
+  const next = parseSemver(candidate);
+  const installed = parseSemver(current);
+  if (!next || !installed) return false;
+  for (let index = 0; index < 3; index += 1) {
+    if (next.core[index] !== installed.core[index]) return next.core[index] > installed.core[index];
+  }
+  if (next.prerelease.length === 0 || installed.prerelease.length === 0) {
+    return next.prerelease.length === 0 && installed.prerelease.length > 0;
+  }
+  const length = Math.max(next.prerelease.length, installed.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const left = next.prerelease[index];
+    const right = installed.prerelease[index];
+    if (left === right) continue;
+    if (left === undefined || right === undefined) return right === undefined;
+    const leftNumeric = /^\d+$/.test(left);
+    const rightNumeric = /^\d+$/.test(right);
+    if (leftNumeric && rightNumeric) return Number(left) > Number(right);
+    if (leftNumeric !== rightNumeric) return !leftNumeric;
+    return left > right;
+  }
+  return false;
 }
 
 let nextAgentConnectionGeneration = 0;
@@ -273,6 +307,21 @@ function handleAgentDisconnect(agentId, agentName, ws) {
   clearAgentDirCache(agentId);
   clearWorkbenchCorrelationsForAgent(agentId);
   clearBrowserRuntimeForAgent(agentId);
+  for (const pending of takeAgentSettingsRequestsForAgent(agentId)) {
+    const client = webClients.get(pending.clientId);
+    if (!client?.authenticated) continue;
+    const responseTypes = {
+      restart: 'restart_agent_ack', dream: 'dream_enabled_changed', upgrade: 'upgrade_agent_ack',
+      'plugins:load': 'yeaft_plugins', 'plugins:update': 'yeaft_plugins_updated',
+      'telemetry:load': 'telemetry_settings', 'telemetry:update': 'telemetry_settings_updated',
+    };
+    void sendToWebClient(client, {
+      type: responseTypes[pending.operation] || 'agent_request_error',
+      agentId,
+      requestId: pending.requestId,
+      error: 'Agent disconnected before completing the request.',
+    });
+  }
   // Phase 1: 清理同步超时
   if (agent._syncTimeout) {
     clearTimeout(agent._syncTimeout);
@@ -305,6 +354,13 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
   // agent and keep encrypting outbound (back-compat).
   const encryptOutbound = !effectiveCapabilities.includes('plaintext-ok');
 
+  const latestAgentVersion = process.env.AGENT_LATEST_VERSION || null;
+  // This environment value is only an optional push hint. It is not a registry
+  // query and must never claim an equal, older, or malformed version is newer.
+  const upgradeAvailable = isNewerAgentVersion(latestAgentVersion, agentVersion)
+    ? latestAgentVersion
+    : null;
+
   agents.set(agentId, {
     ws,
     name: agentName,
@@ -327,6 +383,7 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
     ownerId,
     ownerUsername,
     version: agentVersion,
+    upgradeAvailable,
     platform: agentPlatform,
     encryptOutbound
   });
@@ -362,9 +419,6 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
   });
 
   // Send registration (with session key only in production mode)
-  const latestAgentVersion = process.env.AGENT_LATEST_VERSION || null;
-  const upgradeAvailable = (latestAgentVersion && agentVersion && latestAgentVersion !== agentVersion) ? latestAgentVersion : null;
-
   ws.send(JSON.stringify({
     type: 'registered',
     agentId,

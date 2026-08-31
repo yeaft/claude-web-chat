@@ -43,7 +43,103 @@ export const previewFiles = new Map();
 // original Agent/Session ownership check happened, and consume it exactly once.
 const YEAFT_DEBUG_REQUEST_TTL_MS = 30_000;
 const YEAFT_DEBUG_REQUEST_MAX_PENDING = 2048;
+const YEAFT_DEBUG_REQUEST_MAX_PENDING_PER_CLIENT = 256;
 export const pendingYeaftDebugRequests = new Map();
+
+// Agent settings replies share one Agent connection across browser clients.
+// Correlation-capable Agents require exact requestId matching. Legacy Agents are
+// allowed one in-flight request per Agent/operation so an identity-less reply has
+// exactly one possible owner.
+const AGENT_SETTINGS_REQUEST_TTL_MS = 120_000;
+const AGENT_SETTINGS_REQUEST_MAX_PENDING = 2048;
+const AGENT_SETTINGS_REQUEST_MAX_PENDING_PER_CLIENT = 256;
+export const pendingAgentSettingsRequests = new Map();
+
+function agentSettingsRequestKey(agentId, requestId) {
+  return `${String(agentId || '')}\u0000${String(requestId || '')}`;
+}
+
+function pruneAgentSettingsRequests(now = Date.now()) {
+  for (const [key, pending] of pendingAgentSettingsRequests) {
+    if (!pending || pending.expiresAt <= now || !webClients.has(pending.clientId)) {
+      pendingAgentSettingsRequests.delete(key);
+    }
+  }
+}
+
+/** Register an owner-checked settings request before it is sent to the Agent. */
+export function registerAgentSettingsRequest({ agentId, operation, requestId, clientId, allowLegacyReply = false }) {
+  if (!agentId || !operation || !requestId || !clientId) return false;
+  const now = Date.now();
+  pruneAgentSettingsRequests(now);
+  const key = agentSettingsRequestKey(agentId, requestId);
+  if (pendingAgentSettingsRequests.has(key)) return false;
+  let clientPending = 0;
+  for (const pending of pendingAgentSettingsRequests.values()) {
+    if (pending?.clientId === clientId) clientPending++;
+    if (allowLegacyReply && pending?.agentId === agentId && pending?.operation === operation) return false;
+  }
+  if (clientPending >= AGENT_SETTINGS_REQUEST_MAX_PENDING_PER_CLIENT
+      || pendingAgentSettingsRequests.size >= AGENT_SETTINGS_REQUEST_MAX_PENDING) return false;
+  pendingAgentSettingsRequests.set(key, {
+    agentId,
+    operation,
+    requestId,
+    clientId,
+    allowLegacyReply,
+    expiresAt: now + AGENT_SETTINGS_REQUEST_TTL_MS,
+  });
+  return true;
+}
+
+/** Consume an exact response, or the sole explicitly legacy-compatible request. */
+export function consumeAgentSettingsRequest({ agentId, operation, requestId }) {
+  if (!agentId || !operation) return null;
+  pruneAgentSettingsRequests();
+  if (requestId) {
+    const key = agentSettingsRequestKey(agentId, requestId);
+    const pending = pendingAgentSettingsRequests.get(key);
+    if (!pending || pending.operation !== operation) return null;
+    pendingAgentSettingsRequests.delete(key);
+    return pending;
+  }
+  let matchKey = null;
+  let match = null;
+  for (const [key, pending] of pendingAgentSettingsRequests) {
+    if (pending?.agentId !== agentId || pending?.operation !== operation || !pending.allowLegacyReply) continue;
+    if (match) return null;
+    matchKey = key;
+    match = pending;
+  }
+  if (!match) return null;
+  pendingAgentSettingsRequests.delete(matchKey);
+  return match;
+}
+
+export function deleteAgentSettingsRequest({ agentId, requestId, clientId = null }) {
+  const key = agentSettingsRequestKey(agentId, requestId);
+  const pending = pendingAgentSettingsRequests.get(key);
+  if (!pending || (clientId && pending.clientId !== clientId)) return false;
+  return pendingAgentSettingsRequests.delete(key);
+}
+
+export function clearAgentSettingsRequestsForClient(clientId) {
+  if (!clientId) return;
+  for (const [key, pending] of pendingAgentSettingsRequests) {
+    if (pending?.clientId === clientId) pendingAgentSettingsRequests.delete(key);
+  }
+}
+
+export function takeAgentSettingsRequestsForAgent(agentId) {
+  const removed = [];
+  if (!agentId) return removed;
+  for (const [key, pending] of pendingAgentSettingsRequests) {
+    if (pending?.agentId !== agentId) continue;
+    pendingAgentSettingsRequests.delete(key);
+    removed.push(pending);
+  }
+  return removed;
+}
 
 function yeaftDebugRequestKey(agentId, requestId) {
   return `${String(agentId || '')}\u0000${String(requestId || '')}`;
@@ -68,10 +164,12 @@ export function registerYeaftDebugRequest({ agentId, requestId, sessionId, clien
   pruneYeaftDebugRequests(now);
   const key = yeaftDebugRequestKey(agentId, requestId);
   if (pendingYeaftDebugRequests.has(key)) return false;
-  if (pendingYeaftDebugRequests.size >= YEAFT_DEBUG_REQUEST_MAX_PENDING) {
-    const oldestKey = pendingYeaftDebugRequests.keys().next().value;
-    if (oldestKey != null) pendingYeaftDebugRequests.delete(oldestKey);
+  let clientPending = 0;
+  for (const pending of pendingYeaftDebugRequests.values()) {
+    if (pending?.clientId === clientId) clientPending++;
   }
+  if (clientPending >= YEAFT_DEBUG_REQUEST_MAX_PENDING_PER_CLIENT
+      || pendingYeaftDebugRequests.size >= YEAFT_DEBUG_REQUEST_MAX_PENDING) return false;
   pendingYeaftDebugRequests.set(key, {
     agentId,
     requestId,
