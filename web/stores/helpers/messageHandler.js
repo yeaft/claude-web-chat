@@ -984,9 +984,10 @@ export function handleMessage(store, msg) {
       const matches = !!msg.requestId && previous.requestId === msg.requestId;
       if (!previous.pending || !matches) break;
       clearTimeout(previous.timer);
+      const authoritative = typeof msg.enabled === 'boolean' ? msg.enabled : previous.authoritative !== false;
       const agent = Array.isArray(store.agents) ? store.agents.find(item => item.id === msg.agentId) : null;
-      if (agent) agent.dreamEnabled = msg.enabled !== false;
-      store.agentDreamState = { ...store.agentDreamState, [msg.agentId]: { ...previous, pending: false, timer: null, authoritative: msg.enabled !== false, error: msg.error || null } };
+      if (agent) agent.dreamEnabled = authoritative;
+      store.agentDreamState = { ...store.agentDreamState, [msg.agentId]: { ...previous, pending: false, timer: null, authoritative, error: msg.error || null } };
       break;
     }
 

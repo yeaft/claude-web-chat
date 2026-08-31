@@ -311,7 +311,7 @@ function handleAgentDisconnect(agentId, agentName, ws) {
     const client = webClients.get(pending.clientId);
     if (!client?.authenticated) continue;
     const responseTypes = {
-      restart: 'restart_agent_ack', dream: 'dream_enabled_updated', upgrade: 'upgrade_agent_ack',
+      restart: 'restart_agent_ack', dream: 'dream_enabled_changed', upgrade: 'upgrade_agent_ack',
       'plugins:load': 'yeaft_plugins', 'plugins:update': 'yeaft_plugins_updated',
       'telemetry:load': 'telemetry_settings', 'telemetry:update': 'telemetry_settings_updated',
     };

@@ -1,6 +1,18 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Vue from 'vue';
+
+import { CONFIG } from '../../server/config.js';
+import {
+  agents,
+  pendingAgentConnections,
+  pendingAgentSettingsRequests,
+  registerAgentSettingsRequest,
+  webClients,
+} from '../../server/context.js';
+import { handleClientMisc } from '../../server/handlers/client-misc.js';
+import { handleAgentConnection } from '../../server/ws-agent.js';
+import { MockWebSocket, WS_OPEN } from '../helpers/mockWs.js';
 
 const stores = new Map();
 function defineStore(id, options) {
@@ -30,9 +42,25 @@ function freshStore() {
 }
 
 describe('Agent-scoped settings lifecycle', () => {
+  const originalSkipAuth = CONFIG.skipAuth;
+
   beforeEach(() => {
     vi.useFakeTimers();
     localStorage.clear();
+  });
+
+  afterEach(() => {
+    CONFIG.skipAuth = originalSkipAuth;
+    for (const agent of agents.values()) {
+      if (agent._syncTimeout) clearTimeout(agent._syncTimeout);
+    }
+    for (const pending of pendingAgentConnections.values()) {
+      if (pending.timeout) clearTimeout(pending.timeout);
+    }
+    agents.clear();
+    pendingAgentConnections.clear();
+    pendingAgentSettingsRequests.clear();
+    webClients.clear();
   });
 
   it('correlates telemetry calls, times them out, and ignores stale replies', async () => {
@@ -131,6 +159,74 @@ describe('Agent-scoped settings lifecycle', () => {
     expect(store.agentOperations['agent-a'].upgrade).toMatchObject({ pending: true, error: null });
     handleMessage(store, { type: 'upgrade_agent_ack', agentId: 'agent-a', requestId: upgradeRequestId, success: false, error: 'nope' });
     expect(store.agentOperations['agent-a'].upgrade).toMatchObject({ pending: false, error: 'nope' });
+  });
+
+  it('settles a synthesized Dream rejection through the web handler', async () => {
+    CONFIG.skipAuth = true;
+    const store = freshStore();
+    expect(store.setDreamEnabled('agent-a', false)).toBe(true);
+    const requestId = store.agentDreamState['agent-a'].requestId;
+    const client = {
+      authenticated: true,
+      userId: 'user-1',
+      role: 'user',
+      ws: { readyState: WS_OPEN, send: payload => handleMessage(store, JSON.parse(payload)) },
+    };
+    webClients.set('browser-origin', client);
+    agents.set('agent-a', {
+      id: 'agent-a', ownerId: 'user-1',
+      ws: { readyState: WS_OPEN, send() { throw new Error('must not dispatch duplicate'); } },
+    });
+    expect(registerAgentSettingsRequest({
+      agentId: 'agent-a', operation: 'dream', requestId, clientId: 'browser-origin',
+    })).toBe(true);
+
+    await handleClientMisc('browser-origin', client, {
+      type: 'set_dream_enabled', agentId: 'agent-a', enabled: false, requestId,
+    }, async () => true);
+
+    expect(store.agentDreamState['agent-a']).toMatchObject({
+      pending: false,
+      authoritative: true,
+      error: 'Request rejected: too many pending requests or duplicate requestId.',
+    });
+    expect(store.agents[0].dreamEnabled).toBe(true);
+  });
+
+  it('settles a synthesized Dream disconnect reply through the web handler', async () => {
+    vi.useRealTimers();
+    CONFIG.skipAuth = true;
+    const store = freshStore();
+    store.agents[0].dreamEnabled = false;
+    expect(store.setDreamEnabled('agent-a', true)).toBe(true);
+    const requestId = store.agentDreamState['agent-a'].requestId;
+    const client = {
+      authenticated: true,
+      userId: 'user-1',
+      role: 'user',
+      ws: { readyState: WS_OPEN, send: payload => handleMessage(store, JSON.parse(payload)) },
+    };
+    webClients.set('browser-origin', client);
+    const socket = new MockWebSocket(WS_OPEN);
+    const url = new URL('ws://localhost/?type=agent&id=agent-a&name=agent-a&instanceId=agent-a&capabilities=plaintext-ok');
+    handleAgentConnection(socket, url);
+    const challenge = socket.getLastMessage();
+    socket.simulateMessage({
+      type: 'auth', tempId: challenge.tempId, secret: '', capabilities: ['plaintext-ok'], version: '1.0.0',
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(registerAgentSettingsRequest({
+      agentId: 'agent-a', operation: 'dream', requestId, clientId: 'browser-origin',
+    })).toBe(true);
+
+    socket.close(1000, 'test disconnect');
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(store.agentDreamState['agent-a']).toMatchObject({
+      pending: false,
+      authoritative: false,
+      error: 'Agent disconnected before completing the request.',
+    });
   });
 
   it('uses authoritative Dream state on failure and rejects rapid toggles', async () => {

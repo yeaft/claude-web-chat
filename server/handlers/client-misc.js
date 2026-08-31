@@ -33,7 +33,10 @@ async function rejectUnsupportedYeaftPlugins(client, msg, agentId) {
 }
 
 async function forwardRegisteredAgentRequest({ client, clientId, agentId, operation, requestId, message, responseType }) {
-  if (!registerAgentSettingsRequest({ agentId, operation, requestId, clientId })) {
+  const agent = agents.get(agentId);
+  const allowLegacyReply = !Array.isArray(agent?.capabilities)
+    || !agent.capabilities.includes('settings_request_correlation');
+  if (!registerAgentSettingsRequest({ agentId, operation, requestId, clientId, allowLegacyReply })) {
     await sendToWebClient(client, { type: responseType, agentId, requestId, error: 'Request rejected: too many pending requests or duplicate requestId.' });
     return false;
   }
@@ -89,7 +92,7 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       if (!await checkAgentAccess(agentId)) break;
       if (msg.requestId) {
         await forwardRegisteredAgentRequest({ client, clientId, agentId, operation: 'dream', requestId: msg.requestId,
-          message: { type: 'set_dream_enabled', enabled: msg.enabled !== false, requestId: msg.requestId, clientId }, responseType: 'dream_enabled_updated' });
+          message: { type: 'set_dream_enabled', enabled: msg.enabled !== false, requestId: msg.requestId, clientId }, responseType: 'dream_enabled_changed' });
       } else {
         await forwardToAgent(agentId, { type: 'set_dream_enabled', enabled: msg.enabled !== false });
       }

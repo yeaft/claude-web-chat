@@ -92,6 +92,38 @@ describe('resolveAgentAccessError', () => {
     expect(siblingMessages).toEqual([]);
   });
 
+  it('correlates a sole legacy Agent reply without requestId and rejects ambiguous dispatch', async () => {
+    CONFIG.skipAuth = true;
+    const forwarded = [];
+    const firstMessages = [];
+    const secondMessages = [];
+    const agent = {
+      id: 'agent-legacy', name: 'Legacy', ownerId: 'user-1', capabilities: [],
+      ws: { readyState: WS_OPEN, send: payload => forwarded.push(JSON.parse(payload)) },
+    };
+    agents.set(agent.id, agent);
+    const first = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => firstMessages.push(JSON.parse(payload)) } };
+    const second = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => secondMessages.push(JSON.parse(payload)) } };
+    webClients.set('browser-first', first);
+    webClients.set('browser-second', second);
+
+    await handleClientMisc('browser-first', first, {
+      type: 'get_telemetry_settings', agentId: agent.id, requestId: 'legacy-first',
+    }, async () => true);
+    await handleClientMisc('browser-second', second, {
+      type: 'get_telemetry_settings', agentId: agent.id, requestId: 'legacy-second',
+    }, async () => true);
+    expect(forwarded).toHaveLength(1);
+    expect(secondMessages).toEqual([expect.objectContaining({
+      type: 'telemetry_settings', requestId: 'legacy-second', error: expect.stringMatching(/rejected/i),
+    })]);
+
+    await handleAgentSync(agent.id, agent, { type: 'telemetry_settings', enabled: true });
+    expect(firstMessages).toEqual([{
+      type: 'telemetry_settings', enabled: true, agentId: agent.id, requestId: 'legacy-first',
+    }]);
+  });
+
   it('drops identity-less telemetry replies instead of guessing browser ownership', async () => {
     CONFIG.skipAuth = true;
     const firstMessages = [];
@@ -264,7 +296,7 @@ describe('resolveAgentAccessError', () => {
     const firstMessages = [];
     const secondMessages = [];
     const agent = {
-      id: 'agent-concurrent', name: 'Concurrent', ownerId: 'user-1',
+      id: 'agent-concurrent', name: 'Concurrent', ownerId: 'user-1', capabilities: ['settings_request_correlation'],
       ws: { readyState: WS_OPEN, send: payload => forwarded.push(JSON.parse(payload)) },
     };
     agents.set(agent.id, agent);
@@ -298,7 +330,7 @@ describe('resolveAgentAccessError', () => {
     CONFIG.skipAuth = true;
     const firstMessages = [];
     const secondMessages = [];
-    const agent = { id: 'agent-delayed', name: 'Delayed', ownerId: 'user-1', ws: { readyState: WS_OPEN, send() {} } };
+    const agent = { id: 'agent-delayed', name: 'Delayed', ownerId: 'user-1', capabilities: ['settings_request_correlation'], ws: { readyState: WS_OPEN, send() {} } };
     agents.set(agent.id, agent);
     const first = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => firstMessages.push(JSON.parse(payload)) } };
     const second = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => secondMessages.push(JSON.parse(payload)) } };

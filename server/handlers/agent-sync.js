@@ -19,6 +19,7 @@ const numberMetric = (value) => {
 async function sendAgentSettingsReply(agentId, agent, operation, msg, payload) {
   const pending = consumeAgentSettingsRequest({ agentId, operation, requestId: msg.requestId });
   if (!pending) return false;
+  if (!msg.requestId) payload.requestId = pending.requestId;
   const client = webClients.get(pending.clientId);
   if (!client?.authenticated || (!CONFIG.skipAuth
     && !((agent.ownerId && client.userId === agent.ownerId)
