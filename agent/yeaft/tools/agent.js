@@ -240,7 +240,8 @@ Async orchestration:
   3. ListAgents  — non-blocking status check when you need progress/liveness.
   4. PromptAgent — optional follow-up if the sub-agent is idle and needs guidance.
      After queueing it, call WaitAgent in the same parent turn and collect the
-     reply before ending, unless background execution was explicitly requested.
+     reply before ending. If a bounded wait times out, wait again with a larger
+     bound unless the agent is stale/stalled.
   5. CloseAgent  — stop or finalize a sub-agent when it is no longer needed.
 
 Completion/failure is delivered through sub-agent notifications on later parent
@@ -267,7 +268,8 @@ workflow; use bounded WaitAgent calls and inspect liveness instead of blind loop
   2. Continue    — 父 VP 继续工作；不要仅仅为了轮询而阻塞。
   3. ListAgents  — 需要进度信息时的非阻塞状态检查。
   4. PromptAgent — 子 Agent 空闲且需要指导时，可选发送后续提示。
-     排队后必须在同一个父级 turn 调用 WaitAgent 并拿到回复再结束，除非用户明确要求后台执行。
+     排队后必须在同一个父级 turn 调用 WaitAgent 并拿到回复再结束；有界等待超时后，除非 Agent
+     已 stale/stalled，否则使用更大的有界 timeout 再次等待。
   5. CloseAgent  — 不再需要时停止或结束子 Agent。
 
 完成或失败会通过之后父级 turn 的 notification 送达，因此不要为了轮询刚创建且仍运行的

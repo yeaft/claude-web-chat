@@ -21,9 +21,9 @@ information. The prompt is queued for the agent to process on its next turn.
 
 IMPORTANT — PromptAgent only QUEUES the message; it does NOT block. A follow-up
 is unfinished until you collect the reply. After PromptAgent returns, call
-WaitAgent in the same parent turn. If WaitAgent reports running/timedOut, wait
-again unless the user asked for background execution or you have other useful
-parent work to do. When the reply arrives, relay the result to the user or
+WaitAgent in the same parent turn. If WaitAgent reports running/timedOut, call
+WaitAgent again with a larger bounded timeout unless the agent is stale/stalled.
+When the reply arrives, relay the result to the user or
 continue the work that depends on it. Do not end the parent turn immediately
 after PromptAgent.
 
@@ -34,8 +34,8 @@ PromptAgent is rejected if the sub-agent is in a terminal state
 用于给子 Agent 更多工作、额外指令或传递信息。提示会排队等待子 Agent 在其下一个 turn 处理。
 
 重要——PromptAgent 仅将消息排队，不阻塞。后续任务只有拿到回复才算完成。PromptAgent 返回后，
-父级必须在同一个 turn 调用 WaitAgent。如果 WaitAgent 返回 running/timedOut，除非用户明确要求
-后台执行，或者父级还有其他有用工作，否则继续等待。回复到达后，必须向用户转述结果或继续执行
+父级必须在同一个 turn 调用 WaitAgent。如果 WaitAgent 返回 running/timedOut，除非 Agent 已经
+stale/stalled，否则必须使用更大的有界 timeout 再次调用 WaitAgent。回复到达后，必须向用户转述结果或继续执行
 依赖该结果的工作。禁止在 PromptAgent 后立刻结束父级 turn。
 
 如果子 Agent 处于终止状态（completed/failed/closed/abandoned），PromptAgent 会被拒绝。
@@ -126,6 +126,11 @@ PromptAgent is rejected if the sub-agent is in a terminal state
       content: message,
       timestamp: Date.now(),
     });
+    // WaitAgent uses this marker to distinguish an explicitly queued follow-up
+    // from an ordinary asynchronous SpawnAgent run. A bounded timeout must not
+    // silently downgrade the same-parent-turn collection contract.
+    agent.promptReplyPending = true;
+    agent.promptReplyPendingAt = Date.now();
     if (agent.status === STATUS.IDLE || agent.status === STATUS.CREATED) {
       agent.status = STATUS.RUNNING;
     }
@@ -133,15 +138,15 @@ PromptAgent is rejected if the sub-agent is in a terminal state
     return JSON.stringify({
       next_steps:
         'Message is queued — the sub-agent has NOT replied yet. Call WaitAgent ' +
-        'in this parent turn and collect the reply. If it is still running, wait ' +
-        'again unless background execution was requested or useful parent work ' +
-        'remains. Relay the reply or continue the dependent work; do NOT end now.',
+        'in this parent turn and collect the reply. If it is still running, call ' +
+        'WaitAgent again with a larger bounded timeout unless it is stale/stalled. ' +
+        'Relay the reply or continue the dependent work; do NOT end now.',
       success: true,
       agentId: agent_id,
       name: agent.name,
       messageCount: agent.messages.length,
       pending: agent.pendingPrompts.length,
-      message: `Message sent to agent "${agent.name}". Continue useful work; use ListAgents or notifications for progress.`,
+      message: `Message sent to agent "${agent.name}". Call WaitAgent now; the reply is still pending.`,
     });
   },
 });
