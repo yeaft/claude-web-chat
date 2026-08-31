@@ -3336,6 +3336,71 @@ describe('Engine', () => {
       }
     });
 
+    it('suppresses a third exact tool call and continues after an empty reminder response', async () => {
+      const adapter = new MockAdapter();
+      adapter.pushResponse([
+        { type: 'tool_call', id: 'call_dup_1', name: 'repeat_tool', input: { value: 7 } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      adapter.pushResponse([
+        { type: 'tool_call', id: 'call_dup_2', name: 'repeat_tool', input: { value: 7 } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      adapter.pushResponse([
+        { type: 'tool_call', id: 'call_dup_3', name: 'repeat_tool', input: { value: 7 } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      adapter.pushResponse([{ type: 'stop', stopReason: 'end_turn' }]);
+      adapter.pushResponse([
+        { type: 'text_delta', text: 'Finished without repeating the tool.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+      let executions = 0;
+      const engine = new Engine({
+        adapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+      engine.registerTool({
+        name: 'repeat_tool',
+        description: 'counts executions',
+        parameters: { type: 'object', properties: { value: { type: 'number' } } },
+        execute: async () => {
+          executions += 1;
+          return `execution ${executions}`;
+        },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'finish the task' })) events.push(event);
+
+      expect(executions).toBe(2);
+      expect(adapter.callLog).toHaveLength(5);
+      expect(events).toContainEqual(expect.objectContaining({
+        type: 'tool_end',
+        id: 'call_dup_3',
+        suppressed: true,
+        isError: false,
+      }));
+      expect(events).toContainEqual(expect.objectContaining({
+        type: 'turn_end',
+        stopReason: 'duplicate_tool_continue',
+      }));
+      expect(adapter.callLog[3].messages.at(-1)).toMatchObject({
+        role: 'user',
+        content: expect.stringContaining('same arguments 3 times'),
+      });
+      expect(adapter.callLog[4].messages.at(-1)).toMatchObject({
+        role: 'user',
+        content: expect.stringContaining('current user task is still active'),
+      });
+      expect(events).toContainEqual(expect.objectContaining({
+        type: 'turn_end',
+        stopReason: 'end_turn',
+        terminal: true,
+      }));
+    });
+
     it('persists a T1 folding reflection and hides the original tool arc after restart', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-t1-fold-persist-'));
       try {
