@@ -4616,6 +4616,18 @@ export class Engine {
       // Loop back to call adapter again with tool results
     }
 
+    // Store the final provider-call count on the response row itself. Debug
+    // events are transient; the response card must retain the count after a
+    // reload without inventing a second counter.
+    const llmCountMessage = lastPersistedAssistantTextMessage || lastPersistedAssistantMessage;
+    if (llmCountMessage && typeof this.#conversationStore?.update === 'function') {
+      const updated = this.#conversationStore.update(llmCountMessage, {
+        llmCallCount: turnNumber,
+      });
+      if (updated?.id === lastPersistedAssistantTextMessage?.id) lastPersistedAssistantTextMessage = updated;
+      if (updated?.id === lastPersistedAssistantMessage?.id) lastPersistedAssistantMessage = updated;
+    }
+
     // feat-6af5f9f1 PR B: turn closed. Emits final totals so the debug
     // panel can show "Turn done · 4 loops · 12.4s · 5.0k tok" without
     // having to reduce the loops itself. Always fires (every break path

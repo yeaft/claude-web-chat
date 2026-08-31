@@ -1456,6 +1456,8 @@ export default {
 
   // ============ Yeaft per-message hover timestamp (task-334-ui-c / prev-2 backlog) ============
   'yeaft.message.timeAria': 'Sent at {time}',
+  'yeaft.message.llmCall': '{count} LLM call',
+  'yeaft.message.llmCalls': '{count} LLM calls',
 
   // ============ Yeaft IM-style human row (Issue C, 2026-05-12) ============
   // Aria label / tooltip for the right-side user avatar in Yeaft group view.

@@ -206,6 +206,7 @@ export default {
           :title="turnTimeFull"
           :aria-label="$t('yeaft.message.timeAria', { time: turnTimeFull })"
         >{{ turnTime }}</span>
+        <span v-if="turn.llmCallCount > 0" class="turn-time">{{ $t(turn.llmCallCount === 1 ? 'yeaft.message.llmCall' : 'yeaft.message.llmCalls', { count: turn.llmCallCount }) }}</span>
         <button
           v-if="showDebugAction"
           type="button"
