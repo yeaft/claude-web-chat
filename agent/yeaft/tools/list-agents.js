@@ -58,6 +58,7 @@ stale/stalled 诊断、result 尾部和消息数量。将此作为异步子 Agen
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
   cacheWithinQuery: false,
+  duplicateCallPolicy: () => 'allow',
   async execute(input, ctx) {
     const includeTerminal = Boolean(input?.include_closed || input?.include_terminal);
     const agents = getAgentRegistry();

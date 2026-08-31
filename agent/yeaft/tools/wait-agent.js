@@ -247,6 +247,7 @@ notification 获取完成事件。`
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
   cacheWithinQuery: false,
+  duplicateCallPolicy: () => 'allow',
   async execute(input, ctx) {
     const { agent_id, timeout_ms = 5000 } = input;
     if (!agent_id) {

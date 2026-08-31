@@ -2420,6 +2420,11 @@ export class Engine {
     let lastT1AtToolCount = 0;
     let arcStartIdx = turnStartIdx + 1;
     let t1CollapsesDone = 0;
+    // Duplicate policy is scoped to one user query. Only successful, real
+    // executions increment these counters; errors and cache reuse do not.
+    const queryDuplicateCounts = new Map();
+    const queryDuplicateSuppressions = new Map();
+    let duplicateReminderAwaitingResponse = false;
     const queryNumber = (this.#__queryCounter = (this.#__queryCounter || 0) + 1);
 
     // feat-6af5f9f1 PR B: a Turn = one user prompt + all AI responses.
@@ -3546,6 +3551,23 @@ export class Engine {
       fullResponseText += responseText;
 
       // ─── Handle max_tokens → auto-continue ────────────
+      // A suppressed call leaves a synthetic reminder as the latest user
+      // message. Some models answer it with an empty end_turn. Continue exactly
+      // once so suppression cannot silently abandon the user's task.
+      if (duplicateReminderAwaitingResponse) {
+        if (responseText.trim() || toolCalls.length > 0) {
+          duplicateReminderAwaitingResponse = false;
+        } else {
+          duplicateReminderAwaitingResponse = false;
+          conversationMessages.push({
+            role: 'user',
+            content: '[system note] The duplicate tool call was suppressed, but the current user task is still active. Continue toward the requested outcome using the prior result or a different action; do not end the turn solely because the duplicate was blocked.',
+          });
+          yield { type: 'turn_end', turnNumber, stopReason: 'duplicate_tool_continue', threadId };
+          continue;
+        }
+      }
+
       if (stopReason === 'max_tokens' && continueTurns < MAX_CONTINUE_TURNS) {
         continueTurns++;
         // This synthetic continuation is part of the model-visible protocol.
@@ -3922,6 +3944,16 @@ export class Engine {
       let abortedDuringTools = false;
       /** @type {string[]} */
       const pendingDupReminders = [];
+      let terminateAfterDuplicateBatch = false;
+      const duplicatePolicyForCall = (toolCall) => {
+        const toolDef = this.#toolRegistry
+          ? this.#toolRegistry.get(toolCall.name)
+          : this.#tools.get(toolCall.name);
+        const requested = typeof toolDef?.duplicateCallPolicy === 'function'
+          ? toolDef.duplicateCallPolicy(toolCall.input)
+          : 'warn';
+        return ['allow', 'warn', 'suppress'].includes(requested) ? requested : 'warn';
+      };
       /**
        * Completed executions waiting for their original-order commit. Starting
        * a bounded read-only segment together removes wall-clock latency without
@@ -3977,6 +4009,7 @@ export class Engine {
 
         if (!preparedParallelExecution && !toolBatchBarrier && !signal?.aborted
             && toolAllowedForRequest(tc) && isConcurrencySafeTool(this, tc.name, tc.input)
+            && duplicatePolicyForCall(tc) !== 'suppress'
             && !mayMutateWorkspaceAfterReturn(this, tc.name, tc.input)) {
           const parallelCalls = [];
           const segmentCacheKeys = new Set();
@@ -3986,6 +4019,7 @@ export class Engine {
             const candidate = toolCalls[candidateIndex];
             if (!toolAllowedForRequest(candidate)
                 || !isConcurrencySafeTool(this, candidate.name, candidate.input)
+                || duplicatePolicyForCall(candidate) === 'suppress'
                 || mayMutateWorkspaceAfterReturn(this, candidate.name, candidate.input)) break;
             const candidateKey = `${candidate.name}\u001f${argsHashOf(candidate.input)}`;
             const candidateCacheable = isCacheableTool(this, candidate.name, candidate.input);
@@ -4048,36 +4082,14 @@ export class Engine {
           || (activeToolBatchBarrier != null && !readyParallelExecution);
         const toolStartTime = readyParallelExecution?.startedAt || Date.now();
 
-        // PR-L: duplicate-call detection. If this exact (toolName,
-        // argsHash) pair has already been executed DUP_TOOL_THRESHOLD
-        // (3) times within the current turn + last 2 turns, queue a
-        // system reminder. We push the reminder AFTER the tool batch
-        // completes (not now) so the
-        // assistant(tool_use) → user(tool_result, …) pairing demanded
-        // by the Anthropic / OpenAI Responses APIs stays intact. We
-        // don't block the call — the LLM still decides.
-        if (!skipped) {
-          const dupHash = argsHashOf(tc.input);
-          // PR-L follow-up: lookback is by user-conversation turn
-          // (`queryNumber`), NOT by inner adapter loop iteration. Each call
-          // to query() bumps queryNumber once, so "last 2 turns" means the
-          // current user turn + the previous two user turns — the natural
-          // semantic for "the model is stuck in a loop across the
-          // conversation."
-          const dupInfo = this.#execLog.dupInfo({
-            toolName: tc.name,
-            argsHash: dupHash,
-            currentTurn: queryNumber,
-            lookbackTurns: 2,
-          });
-          if (dupInfo.count + 1 >= DUP_TOOL_THRESHOLD) {
-            pendingDupReminders.push(buildDuplicateReminder({
-              toolName: tc.name,
-              count: dupInfo.count + 1,
-              lastResultBrief: dupInfo.lastResultBrief,
-            }));
-          }
-        }
+        const dupHash = argsHashOf(tc.input);
+        const duplicateCallKey = `${tc.name}:${dupHash}`;
+        const duplicateCallPolicy = duplicatePolicyForCall(tc);
+        const successfulDuplicateCount = queryDuplicateCounts.get(duplicateCallKey) || 0;
+        const duplicateCallSuppressed = !skipped
+          && duplicateCallPolicy === 'suppress'
+          && successfulDuplicateCount >= DUP_TOOL_THRESHOLD - 1;
+        let suppressionCount = queryDuplicateSuppressions.get(duplicateCallKey) || 0;
 
         let output;
         let displayImages = [];
@@ -4179,6 +4191,24 @@ export class Engine {
             sourceToolName: tc.name,
           };
           yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: true, skipped: true, threadId: this.currentThreadId };
+        } else if (duplicateCallSuppressed) {
+          suppressionCount += 1;
+          queryDuplicateSuppressions.set(duplicateCallKey, suppressionCount);
+          const dupInfo = this.#execLog.dupInfo({
+            toolName: tc.name,
+            argsHash: dupHash,
+            currentTurn: queryNumber,
+            lookbackTurns: 0,
+          });
+          pendingDupReminders.push(buildDuplicateReminder({
+            toolName: tc.name,
+            count: successfulDuplicateCount + suppressionCount,
+            lastResultBrief: dupInfo.lastResultBrief,
+          }));
+          if (suppressionCount >= DUP_TOOL_THRESHOLD) terminateAfterDuplicateBatch = true;
+          output = `Suppressed duplicate call: ${tc.name} returned a stable result twice with these arguments in this turn. Reuse the previous result or choose a different action.`;
+          yield { type: 'tool_start', id: tc.id, name: tc.name, input: tc.input, threadId: this.currentThreadId };
+          yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: false, suppressed: true, threadId: this.currentThreadId };
         } else {
           duplicateKey = `${tc.name}\u001f${argsHashOf(tc.input)}`;
           cacheableTool = isCacheableTool(this, tc.name, tc.input);
@@ -4280,6 +4310,24 @@ export class Engine {
 
         currentToolCallForAsyncTask = null;
 
+        if (!skipped && !duplicateCallSuppressed && !isError && !reusedReadOnlyResult
+            && duplicateCallPolicy !== 'allow') {
+          const nextDuplicateCount = successfulDuplicateCount + 1;
+          queryDuplicateCounts.set(duplicateCallKey, nextDuplicateCount);
+          if (duplicateCallPolicy === 'warn' && nextDuplicateCount === DUP_TOOL_THRESHOLD) {
+            const dupInfo = this.#execLog.dupInfo({
+              toolName: tc.name,
+              argsHash: dupHash,
+              currentTurn: queryNumber,
+              lookbackTurns: 0,
+            });
+            pendingDupReminders.push(buildDuplicateReminder({
+              toolName: tc.name,
+              count: nextDuplicateCount,
+              lastResultBrief: dupInfo.lastResultBrief,
+            }));
+          }
+        }
         const toolDurationMs = readyParallelExecution?.durationMs ?? (Date.now() - toolStartTime);
 
         // feat-6af5f9f1 PR B: emit a structured `tool_exec` event for the
@@ -4294,6 +4342,7 @@ export class Engine {
           name: tc.name,
           durationMs: toolDurationMs,
           isError,
+          suppressed: duplicateCallSuppressed,
           toolOutput: output,
           ...(reusedReadOnlyResult ? { reused: true, reusedCallId: reusedReadOnlyCallId } : {}),
           ...(skipped ? { skipped: true } : {}),
@@ -4303,7 +4352,8 @@ export class Engine {
         // 2026-05-13: feed the per-tool counters. Stays best-effort — a
         // stats sink that throws shouldn't crash the engine. `record`
         // already swallows internal write errors.
-        if (!skipped && this.#toolStats && typeof this.#toolStats.record === 'function') {
+        if (!skipped && !duplicateCallSuppressed
+            && this.#toolStats && typeof this.#toolStats.record === 'function') {
           try {
             this.#toolStats.record({
               name: tc.name,
@@ -4322,15 +4372,17 @@ export class Engine {
           toolOutput: output,
           durationMs: toolDurationMs,
           isError,
+          suppressed: duplicateCallSuppressed,
           skipped,
           reused: reusedReadOnlyResult,
           reusedCallId: reusedReadOnlyCallId,
         });
 
-        if (!skipped && !reusedReadOnlyResult && tc.name === 'StartPlan') {
+        if (!skipped && !duplicateCallSuppressed && !reusedReadOnlyResult && tc.name === 'StartPlan') {
           planBootstrapPending = true;
         }
-        if (!skipped && !reusedReadOnlyResult && !readOnlyToolReuseDisabled && cacheableTool) {
+        if (!skipped && !duplicateCallSuppressed && !reusedReadOnlyResult
+            && !readOnlyToolReuseDisabled && cacheableTool) {
           readOnlyToolResults.set(duplicateKey, {
             output,
             isError,
@@ -4372,7 +4424,7 @@ export class Engine {
         // user-conversation turn), not the inner loop's turnNumber.
         // Aligns exec-log layout with dup detection lookback and the
         // T2 fallback-stub readTurn() call below.
-        if (!skipped) {
+        if (!skipped && !duplicateCallSuppressed) {
           this.#execLog.append(queryNumber, buildExecLogEntry({
             loopIdx: queryToolCount,
             toolName: tc.name,
@@ -4391,6 +4443,23 @@ export class Engine {
       // user message immediately after the last tool result.
       for (const reminder of pendingDupReminders) {
         conversationMessages.push({ role: 'user', content: reminder });
+      }
+      if (pendingDupReminders.length > 0) duplicateReminderAwaitingResponse = true;
+      if (terminateAfterDuplicateBatch) {
+        yield {
+          type: 'error',
+          error: 'Terminated repeated duplicate tool calls after bounded suppression attempts.',
+          code: 'duplicate_tool_loop',
+          retryable: false,
+        };
+        yield {
+          type: 'turn_end',
+          turnNumber,
+          stopReason: 'duplicate_tool_loop',
+          threadId,
+          terminal: true,
+        };
+        break;
       }
 
       // A plan bootstrap that produced only a TodoWrite has no executable work
