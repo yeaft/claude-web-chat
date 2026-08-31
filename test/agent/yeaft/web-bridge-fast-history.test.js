@@ -281,6 +281,7 @@ describe('Yeaft load-history first paint', () => {
       content: 'Progress',
       sessionId: 'session-fast',
       responseKind: 'progress',
+      llmCallCount: 3,
       toolCalls: [
         { id: 'todo-old', name: 'TodoWrite', input: { todos: [{ content: 'Old', status: 'pending' }] } },
         { id: 'bash', name: 'Bash', input: { command: 'true' } },
@@ -292,6 +293,7 @@ describe('Yeaft load-history first paint', () => {
       todos: [{ content: 'New', status: 'completed' }],
       toolCalls: [{ id: 'bash', name: 'Bash', input: { command: 'true' } }],
       responseKind: 'progress',
+      llmCallCount: 3,
     });
 
     expect(__testHooks.projectVisibleHistoryChunkMessages([{

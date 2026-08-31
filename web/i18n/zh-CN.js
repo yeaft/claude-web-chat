@@ -1454,6 +1454,8 @@ export default {
 
   // ============ Yeaft 每条消息 hover 时间戳 (task-334-ui-c / prev-2 backlog) ============
   'yeaft.message.timeAria': '发送于 {time}',
+  'yeaft.message.llmCall': '{count} 次 LLM 调用',
+  'yeaft.message.llmCalls': '{count} 次 LLM 调用',
 
   // ============ Yeaft IM 风格用户行 (Issue C, 2026-05-12) ============
   // Yeaft 群聊视图右侧人类头像的 aria 标签 / tooltip。

@@ -994,6 +994,15 @@ export default {
             && (!store.currentAgent || !row?.agentId || row.agentId === store.currentAgent)
           )));
           finalizeTurnResponseSegments(currentTurn);
+          const persistedLlmCallCount = currentTurn.messages.reduce((count, message) => (
+            Number.isInteger(message?.llmCallCount) && message.llmCallCount > count
+              ? message.llmCallCount
+              : count
+          ), 0);
+          const liveLlmCallCount = currentTurn.turnId
+            ? store.yeaftDebugTurnsById?.[currentTurn.turnId]?.loopCount
+            : 0;
+          currentTurn.llmCallCount = Math.max(persistedLlmCallCount, liveLlmCallCount || 0);
           // Has the VP produced anything the user/group can see?
           // Tools are NOT user-visible content — they're internal
           // activity. A route_forward call shows up as a tool chip

@@ -3283,6 +3283,7 @@ describe('Engine', () => {
           toolCalls: [expect.objectContaining({ id: 'call_incremental', name: 'durable_tool' })],
           turnId: 'vp-turn-tool',
           responseKind: 'progress',
+          llmCallCount: 2,
         });
         expect(persisted[2]).toMatchObject({
           toolCallId: 'call_incremental',
@@ -3328,6 +3329,7 @@ describe('Engine', () => {
           responseKind: 'result',
           stopReason: 'end_turn',
           turnId: 'vp-turn-empty-final',
+          llmCallCount: 2,
         });
       } finally {
         rmSync(yeaftDir, { recursive: true, force: true });

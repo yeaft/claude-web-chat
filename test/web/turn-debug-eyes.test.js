@@ -86,6 +86,18 @@ describe('VpTurnBlock debug action', () => {
     expect(wrapper.find('.vp-turn-block-actions').exists()).toBe(false);
   });
 
+  it('shows the provider-call count on a finished response', () => {
+    const wrapper = mount(VpTurnBlock, {
+      props: { turn: makeTurn({ llmCallCount: 3 }) },
+      global: {
+        mocks: { $t: (key, vars) => key === 'yeaft.message.llmCalls' ? `${vars.count} LLM calls` : key },
+        provide: { t: key => key },
+      },
+    });
+
+    expect(wrapper.find('.turn-footer').text()).toContain('3 LLM calls');
+  });
+
   it('does not render the debug action while the turn is streaming', () => {
     const wrapper = mount(VpTurnBlock, {
       props: { turn: makeTurn({ isStreaming: true }) },

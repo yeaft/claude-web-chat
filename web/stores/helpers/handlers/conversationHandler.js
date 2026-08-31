@@ -900,6 +900,7 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           ...executionOriginMeta,
           ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
           ...(m.responseKind === 'progress' || m.responseKind === 'result' ? { responseKind: m.responseKind } : {}),
+          ...(Number.isInteger(m.llmCallCount) && m.llmCallCount > 0 ? { llmCallCount: m.llmCallCount } : {}),
           ...(m.incomplete === true ? { incomplete: true } : {}),
           ...(typeof m.stopReason === 'string' && m.stopReason ? { stopReason: m.stopReason } : {}),
           isStreaming: false,

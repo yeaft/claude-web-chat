@@ -1349,6 +1349,7 @@ function projectPersistedToHistoryEntry(m, { includeReflections = false } = {}) 
   if (m.turnId) entry.turnId = m.turnId;
   if (m.imageAssetAnchor) entry.imageAssetAnchor = true;
   if (m.responseKind === 'progress' || m.responseKind === 'result') entry.responseKind = m.responseKind;
+  if (Number.isInteger(m.llmCallCount) && m.llmCallCount > 0) entry.llmCallCount = m.llmCallCount;
   if (m.incomplete === true) entry.incomplete = true;
   if (typeof m.stopReason === 'string' && m.stopReason) entry.stopReason = m.stopReason;
   if (m.sessionId) entry.sessionId = m.sessionId;
@@ -1489,6 +1490,7 @@ function projectVisibleHistoryChunkMessages(messages = []) {
       ...(Array.isArray(m.images) && m.images.length > 0 ? { images: m.images } : {}),
       ...(m.speakerVpId ? { speakerVpId: m.speakerVpId } : {}),
       ...(m.responseKind === 'progress' || m.responseKind === 'result' ? { responseKind: m.responseKind } : {}),
+      ...(Number.isInteger(m.llmCallCount) && m.llmCallCount > 0 ? { llmCallCount: m.llmCallCount } : {}),
       ...(m.incomplete === true ? { incomplete: true } : {}),
       ...(typeof m.stopReason === 'string' && m.stopReason ? { stopReason: m.stopReason } : {}),
       ...(Array.isArray(m.todos) ? { todos: m.todos } : {}),
