@@ -4302,9 +4302,14 @@ describe('Engine', () => {
         events.push(event);
       }
 
-      // Check we got 2 turns
+      // Check we got 2 loops under one stable parent-turn identity.
       const turnStarts = events.filter(e => e.type === 'turn_start');
       expect(turnStarts).toHaveLength(2);
+      expect(turnStarts.map(event => event.turnNumber)).toEqual([1, 2]);
+      expect(turnStarts[0].turnId).toEqual(expect.any(String));
+      expect(turnStarts[0].turnId).not.toBe('');
+      expect(turnStarts[1].turnId).toBe(turnStarts[0].turnId);
+      expect(events.find(event => event.type === 'turn_close')?.turnId).toBe(turnStarts[0].turnId);
 
       // Check tool execution events
       const toolStarts = events.filter(e => e.type === 'tool_start');
@@ -8707,7 +8712,7 @@ describe('Engine', () => {
 
       const enSystem = buildSystemPrompt({
         language: 'en',
-        toolNames: ['TodoWrite'],
+        toolNames: ['TodoWrite', 'PromptAgent'],
         projectLabel: 'Yeaft (project-123)',
         projectInstruction: 'Run the shared Project verification before release.',
       });
@@ -8715,7 +8720,7 @@ describe('Engine', () => {
         language: 'zh',
         projectLabel: 'Yeaft（project-123）',
         projectInstruction: '发布前执行统一验证。',
-        toolNames: ['TodoWrite'],
+        toolNames: ['TodoWrite', 'PromptAgent'],
       });
 
       expect(enSystem).toContain('[Project Instruction]');
@@ -8738,6 +8743,8 @@ describe('Engine', () => {
       expect(enSystem).toContain('do not speculative-batch the investigation');
       expect(enSystem).toContain('write a brief visible plan');
       expect(enSystem).toContain('or stop after planning unless user input genuinely blocks the first step');
+      expect(enSystem).toContain('After PromptAgent queues follow-up work, call WaitAgent in the same parent turn');
+      expect(enSystem).toContain('Relay the reply or continue the dependent work');
       expect(zhSystem).toContain('当前 Session 隶属于 Project Yeaft（project-123）。当前 Project 的统一 instruction 是：');
       expect(zhSystem).toContain('发布前执行统一验证。');
       expect(zhSystem).toContain('准确性优先：先用能解决当前未知的最小定向调用');
@@ -8745,6 +8752,8 @@ describe('Engine', () => {
       expect(zhSystem).toContain('不要推测性批量展开调查');
       expect(zhSystem).toContain('先写简短可见计划');
       expect(zhSystem).toContain('只有用户信息确实阻塞第一步时才在规划后停下');
+      expect(zhSystem).toContain('PromptAgent 排队后续工作后，必须在同一个父级 turn 调用 WaitAgent');
+      expect(zhSystem).toContain('随后转述结果或继续依赖该结果的工作');
 
       expect(todoWriteTool.description.en).toContain('PLAN WITHOUT AN EXTRA MODEL ROUND');
       expect(todoWriteTool.description.en).toContain('do not call a separate planning-mode tool first');
@@ -8789,17 +8798,21 @@ describe('Engine', () => {
       expect(enToolDefs.Glob).toContain('narrowest pattern and smallest useful limit');
       expect(enToolDefs.WebSearch).toContain('Fetch the most authoritative relevant result first');
       expect(enToolDefs.WebFetch).toContain('Fetch one authoritative relevant page first');
-      expect(enToolDefs.SpawnAgent).toContain('WaitAgent remains available only as a short compatibility poll');
-      expect(enToolDefs.PromptAgent).toContain('Use WaitAgent only when the reply is required');
-      expect(enToolDefs.PromptAgent).not.toContain('PromptAgent ↔ WaitAgent');
+      expect(enToolDefs.SpawnAgent).toContain('do not call WaitAgent merely to poll a newly spawned running agent');
+      expect(enToolDefs.SpawnAgent).toContain('After queueing it, call WaitAgent in the same parent turn');
+      expect(enToolDefs.PromptAgent).toContain('WaitAgent in the same parent turn');
+      expect(enToolDefs.PromptAgent).toContain('relay the result to the user');
+      expect(enToolDefs.PromptAgent).toContain('Do not end the parent turn immediately');
       expect(enToolDefs.WaitAgent).toContain('Do not repeatedly re-wait for a');
       expect(enToolDefs.WaitAgent).toContain('running agent; later parent turns receive completion notifications');
       expect(zhToolDefs.FileRead).toContain('只读取能回答当前问题的最小范围');
       expect(zhToolDefs.Grep).toContain('默认结果限制 250 条');
       expect(zhToolDefs.WebSearch).toContain('优先抓取最权威、最相关的结果');
-      expect(zhToolDefs.SpawnAgent).toContain('WaitAgent 仅保留为短轮询兼容工具');
+      expect(zhToolDefs.SpawnAgent).toContain('不要为了轮询刚创建且仍运行的');
       expect(zhToolDefs.SpawnAgent).toContain('PromptAgent — 子 Agent 空闲且需要指导时');
-      expect(zhToolDefs.PromptAgent).toContain('只有当前确实需要回复时才调用 WaitAgent');
+      expect(zhToolDefs.SpawnAgent).toContain('排队后必须在同一个父级 turn 调用 WaitAgent');
+      expect(zhToolDefs.PromptAgent).toContain('父级必须在同一个 turn 调用 WaitAgent');
+      expect(zhToolDefs.PromptAgent).toContain('必须向用户转述结果');
 
       expect(getPersona('explorer').systemPrompt).toContain('Do not speculative-batch alternative searches');
       expect(getPersona('researcher').systemPrompt).toContain('do not fetch multiple sources by default');

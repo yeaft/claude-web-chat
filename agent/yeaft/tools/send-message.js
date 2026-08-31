@@ -19,11 +19,13 @@ export default defineTool({
 Use this to give the sub-agent more work, additional instructions, or relay
 information. The prompt is queued for the agent to process on its next turn.
 
-IMPORTANT — PromptAgent only QUEUES the message; it does NOT block. After it
-returns, normally continue your own work and use the next-turn notification or
-ListAgents to observe progress. Use WaitAgent only when the reply is required
-now. Do not end the turn silently: continue useful work, tell the user what you
-asked, wait deliberately, or close the agent.
+IMPORTANT — PromptAgent only QUEUES the message; it does NOT block. A follow-up
+is unfinished until you collect the reply. After PromptAgent returns, call
+WaitAgent in the same parent turn. If WaitAgent reports running/timedOut, wait
+again unless the user asked for background execution or you have other useful
+parent work to do. When the reply arrives, relay the result to the user or
+continue the work that depends on it. Do not end the parent turn immediately
+after PromptAgent.
 
 PromptAgent is rejected if the sub-agent is in a terminal state
 (completed/failed/closed/abandoned). Use SpawnAgent to start a fresh one.`,
@@ -31,9 +33,10 @@ PromptAgent is rejected if the sub-agent is in a terminal state
 
 用于给子 Agent 更多工作、额外指令或传递信息。提示会排队等待子 Agent 在其下一个 turn 处理。
 
-重要——PromptAgent 仅将消息排队，不阻塞。返回后通常应继续自己的工作，并通过下一 turn 的
-notification 或 ListAgents 查看进度；只有当前确实需要回复时才调用 WaitAgent。不要静默结束
-turn：继续有用工作、向用户说明所发指令、明确等待或关闭 Agent。
+重要——PromptAgent 仅将消息排队，不阻塞。后续任务只有拿到回复才算完成。PromptAgent 返回后，
+父级必须在同一个 turn 调用 WaitAgent。如果 WaitAgent 返回 running/timedOut，除非用户明确要求
+后台执行，或者父级还有其他有用工作，否则继续等待。回复到达后，必须向用户转述结果或继续执行
+依赖该结果的工作。禁止在 PromptAgent 后立刻结束父级 turn。
 
 如果子 Agent 处于终止状态（completed/failed/closed/abandoned），PromptAgent 会被拒绝。
 用 SpawnAgent 启动新的。`
@@ -129,10 +132,10 @@ turn：继续有用工作、向用户说明所发指令、明确等待或关闭 
 
     return JSON.stringify({
       next_steps:
-        'Message is queued — the sub-agent has NOT replied yet. Continue useful ' +
-        'work and rely on the next-turn notification, or use ListAgents when you ' +
-        'need progress. Call WaitAgent only if the reply is required now. Do NOT ' +
-        'end silently without telling the user what you asked.',
+        'Message is queued — the sub-agent has NOT replied yet. Call WaitAgent ' +
+        'in this parent turn and collect the reply. If it is still running, wait ' +
+        'again unless background execution was requested or useful parent work ' +
+        'remains. Relay the reply or continue the dependent work; do NOT end now.',
       success: true,
       agentId: agent_id,
       name: agent.name,

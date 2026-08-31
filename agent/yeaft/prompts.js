@@ -477,8 +477,8 @@ const TOOL_GUIDANCE_GROUPS = Object.freeze([
   },
   {
     tools: ['SpawnAgent', 'PromptAgent', 'WaitAgent', 'CloseAgent', 'ListAgents'],
-    en: 'Delegate only independent, bounded work. Keep ownership in the parent, avoid polling loops, and close sub-agents after collecting their result.',
-    zh: '只委派边界清晰且独立的工作。父级保留任务所有权，不要循环轮询，取得结果后关闭子 Agent。',
+    en: 'Delegate only independent, bounded work. Keep ownership in the parent. After PromptAgent queues follow-up work, call WaitAgent in the same parent turn and collect the reply before ending unless background execution was explicitly requested. Relay the reply or continue the dependent work, then close the sub-agent when it is no longer needed.',
+    zh: '只委派边界清晰且独立的工作。父级保留任务所有权。PromptAgent 排队后续工作后，必须在同一个父级 turn 调用 WaitAgent 并拿到回复再结束，除非用户明确要求后台执行；随后转述结果或继续依赖该结果的工作，不再需要时关闭子 Agent。',
   },
   {
     tools: ['ListTasks', 'ReadTaskLog', 'CancelTask'],
