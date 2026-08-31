@@ -2400,6 +2400,11 @@ export class Engine {
     let lastT1AtToolCount = 0;
     let arcStartIdx = turnStartIdx + 1;
     let t1CollapsesDone = 0;
+    // Exact duplicate calls are counted only inside the active user query.
+    // A new user turn may legitimately re-check the same state; an inner-loop
+    // third attempt with unchanged arguments is almost always model churn.
+    const queryDuplicateCounts = new Map();
+    let duplicateReminderAwaitingResponse = false;
     const queryNumber = (this.#__queryCounter = (this.#__queryCounter || 0) + 1);
 
     // feat-6af5f9f1 PR B: a Turn = one user prompt + all AI responses.
@@ -3394,6 +3399,25 @@ export class Engine {
         continue;
       }
 
+      // A duplicate reminder is corrective context, not permission to finish
+      // silently. Some models answer that synthetic user message with an empty
+      // end_turn. Give exactly one continuation in that case; substantive text
+      // or a new tool choice proves the model handled the reminder and clears
+      // the guard normally.
+      if (duplicateReminderAwaitingResponse) {
+        if (responseText.trim() || toolCalls.length > 0) {
+          duplicateReminderAwaitingResponse = false;
+        } else {
+          duplicateReminderAwaitingResponse = false;
+          conversationMessages.push({
+            role: 'user',
+            content: '[system note] The duplicate tool call was suppressed, but the current user task is still active. Continue toward the requested outcome using the prior result or a different action; do not end the turn solely because the duplicate was blocked.',
+          });
+          yield { type: 'turn_end', turnNumber, stopReason: 'duplicate_tool_continue', threadId };
+          continue;
+        }
+      }
+
       // If no tool calls, we're done — UNLESS we still own a pending
       // result-producing async task. Persistent shell tasks never register
       // here; they remain visible in TaskManager without holding this turn.
@@ -3688,31 +3712,26 @@ export class Engine {
 
         const toolStartTime = Date.now();
 
-        // PR-L: duplicate-call detection. If this exact (toolName,
-        // argsHash) pair has already been executed DUP_TOOL_THRESHOLD
-        // (3) times within the current turn + last 2 turns, queue a
-        // system reminder. We push the reminder AFTER the tool batch
-        // completes (not now) so the
-        // assistant(tool_use) → user(tool_result, …) pairing demanded
-        // by the Anthropic / OpenAI Responses APIs stays intact. We
-        // don't block the call — the LLM still decides.
+        // Suppress the third and later exact request inside this query. The
+        // assistant tool-call still receives a normal tool result so provider
+        // pairing remains valid, but the underlying tool is not run again.
+        // Counts reset for a new user query because re-checking state in a
+        // later turn is legitimate; this guard targets inner-loop churn.
         const dupHash = argsHashOf(tc.input);
-        // PR-L follow-up: lookback is by user-conversation turn
-        // (`queryNumber`), NOT by inner adapter loop iteration. Each call
-        // to query() bumps queryNumber once, so "last 2 turns" means the
-        // current user turn + the previous two user turns — the natural
-        // semantic for "the model is stuck in a loop across the
-        // conversation."
-        const dupInfo = this.#execLog.dupInfo({
-          toolName: tc.name,
-          argsHash: dupHash,
-          currentTurn: queryNumber,
-          lookbackTurns: 2,
-        });
-        if (dupInfo.count + 1 >= DUP_TOOL_THRESHOLD) {
+        const duplicateKey = `${tc.name}:${dupHash}`;
+        const duplicateCount = (queryDuplicateCounts.get(duplicateKey) || 0) + 1;
+        queryDuplicateCounts.set(duplicateKey, duplicateCount);
+        const duplicateCallSuppressed = duplicateCount >= DUP_TOOL_THRESHOLD;
+        if (duplicateCount === DUP_TOOL_THRESHOLD) {
+          const dupInfo = this.#execLog.dupInfo({
+            toolName: tc.name,
+            argsHash: dupHash,
+            currentTurn: queryNumber,
+            lookbackTurns: 0,
+          });
           pendingDupReminders.push(buildDuplicateReminder({
             toolName: tc.name,
-            count: dupInfo.count + 1,
+            count: duplicateCount,
             lastResultBrief: dupInfo.lastResultBrief,
           }));
         }
@@ -3733,7 +3752,11 @@ export class Engine {
           ? this.#toolRegistry.isAllowed(tc.name, { collabToolPolicy: effectiveCollabToolPolicy })
           : this.#tools.has(tc.name);
 
-        if (!hasTool) {
+        if (duplicateCallSuppressed) {
+          output = `Skipped duplicate call: ${tc.name} has already run twice with the same arguments in this turn. Reuse the previous result or choose a different action.`;
+          yield { type: 'tool_start', id: tc.id, name: tc.name, input: tc.input, threadId: this.currentThreadId };
+          yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: false, suppressed: true, threadId: this.currentThreadId };
+        } else if (!hasTool) {
           output = `Error: unknown tool "${tc.name}"`;
           isError = true;
           yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: true, threadId: this.currentThreadId };
@@ -3894,6 +3917,7 @@ export class Engine {
       for (const reminder of pendingDupReminders) {
         conversationMessages.push({ role: 'user', content: reminder });
       }
+      if (pendingDupReminders.length > 0) duplicateReminderAwaitingResponse = true;
 
       // task-707: tool-callable end-turn signal. If a tool in this batch
       // called toolCtx.requestEndTurn(reason), break out of the outer
