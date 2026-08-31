@@ -10,6 +10,10 @@ import { stopProcessingWatchdog, startLegacyWatchdog } from './watchdog.js';
 import { clearSessionLoading } from './session.js';
 import { applyDebugRawRequestDelta } from '../../components/yeaft-debug-helpers.js';
 import { parseYeaftSessionIdentity } from './yeaft-session-identity.js';
+import {
+  isUniqueLegacyAgentRequest,
+  unregisterLegacyAgentRequest,
+} from './legacyAgentRequest.js';
 import { handleAgentList, handleAgentSelected } from './handlers/agentHandler.js';
 import {
   handleConversationCreated,
@@ -981,8 +985,12 @@ export function handleMessage(store, msg) {
 
     case 'dream_enabled_changed': {
       const previous = store.agentDreamState?.[msg.agentId] || {};
-      if (!previous.pending || !msg.requestId || previous.requestId !== msg.requestId) break;
+      const matches = msg.requestId
+        ? previous.requestId === msg.requestId
+        : isUniqueLegacyAgentRequest(msg.agentId, 'dream:update', previous.requestId);
+      if (!previous.pending || !matches) break;
       clearTimeout(previous.timer);
+      unregisterLegacyAgentRequest(previous.requestId);
       const agent = Array.isArray(store.agents) ? store.agents.find(item => item.id === msg.agentId) : null;
       if (agent) agent.dreamEnabled = msg.enabled !== false;
       store.agentDreamState = { ...store.agentDreamState, [msg.agentId]: { ...previous, pending: false, timer: null, authoritative: msg.enabled !== false, error: msg.error || null } };
@@ -991,7 +999,11 @@ export function handleMessage(store, msg) {
 
     case 'restart_agent_ack': {
       const current = store.agentOperations?.[msg.agentId]?.restart;
-      if (!msg.requestId || !current?.pending || current.requestId !== msg.requestId) break;
+      const matches = msg.requestId
+        ? current?.requestId === msg.requestId
+        : isUniqueLegacyAgentRequest(msg.agentId, 'maintenance:restart', current?.requestId);
+      if (!current?.pending || !matches) break;
+      unregisterLegacyAgentRequest(current.requestId);
       if (current.pending) {
         store.agentOperations = { ...store.agentOperations, [msg.agentId]: { ...(store.agentOperations[msg.agentId] || {}), restart: { ...current, acknowledged: true } } };
       }
@@ -1001,7 +1013,11 @@ export function handleMessage(store, msg) {
 
     case 'upgrade_agent_ack': {
       const current = store.agentOperations?.[msg.agentId]?.upgrade;
-      if (!msg.requestId || !current?.pending || current.requestId !== msg.requestId) break;
+      const matches = msg.requestId
+        ? current?.requestId === msg.requestId
+        : isUniqueLegacyAgentRequest(msg.agentId, 'maintenance:upgrade', current?.requestId);
+      if (!current?.pending || !matches) break;
+      unregisterLegacyAgentRequest(current.requestId);
       if (current.pending) {
         if (!msg.success || msg.alreadyLatest) store.finishAgentOperation?.(msg.agentId, 'upgrade', msg.error || null);
         else store.agentOperations = { ...store.agentOperations, [msg.agentId]: { ...(store.agentOperations[msg.agentId] || {}), upgrade: { ...current, acknowledged: true } } };
@@ -1226,14 +1242,23 @@ export function handleMessage(store, msg) {
         at: Date.now(),
       };
       const expectedOperation = msg.type === 'telemetry_settings_updated' ? 'update' : 'load';
-      // Identity-less legacy replies may be broadcast to every browser owned by
-      // the same user. Never guess request ownership from this tab's local state.
-      const match = msg.requestId
+      // Legacy replies lack request identity. Accept one only when the browser-
+      // shared registry proves this is the owner's sole matching in-flight call.
+      let match = msg.requestId
         ? { requestId: msg.requestId, pending: store._telemetryPending?.[msg.requestId] }
         : null;
+      if (!match) {
+        const candidate = Object.entries(store._telemetryPending || {}).find(([, pending]) => (
+          pending?.agentId === msg.agentId
+          && pending.operation === expectedOperation
+          && isUniqueLegacyAgentRequest(msg.agentId, `telemetry:${expectedOperation}`, pending.requestId)
+        ));
+        if (candidate) match = { requestId: candidate[0], pending: candidate[1] };
+      }
       const pending = match?.pending;
       if (!pending || pending.agentId !== msg.agentId || pending.operation !== expectedOperation) break;
       clearTimeout(pending.timer);
+      unregisterLegacyAgentRequest(match.requestId);
       delete store._telemetryPending[match.requestId];
       if (store.telemetryRequestByAgent?.[pending.agentId] === match.requestId) {
         store.telemetrySettingsByAgent = { ...store.telemetrySettingsByAgent, [pending.agentId]: record };
