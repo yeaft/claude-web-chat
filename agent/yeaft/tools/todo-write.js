@@ -36,7 +36,7 @@ WHEN TO USE:
 FIRST CALL — PLAN WITHOUT AN EXTRA MODEL ROUND:
 - Write a short visible prose plan in the same assistant response: problem, approach, and risks.
 - Call TodoWrite directly; do not call a separate planning-mode tool first.
-- If the first work tools and arguments are known, emit them beside TodoWrite in that same response.
+- Emit TodoWrite beside the first work-tool call only when that call is already necessary and its arguments and safety do not depend on another result. Start with the smallest such call.
 
 HOW TO USE:
 - First call: enumerate all the todos with status "pending", set exactly one to "in_progress".
@@ -45,8 +45,8 @@ HOW TO USE:
 - \`content\` is the imperative form ("Run tests"); \`activeForm\` is the present-continuous shown during execution ("Running tests").
 
 BATCH WITH WORK:
-- Avoid an intermediate TodoWrite-only model round when the next work tool and its arguments are already known. Emit TodoWrite and those independent work tool calls in the same assistant response.
-- This is batching, not speculative progress: mark work completed only after evidence. Keep calls separate when a pending result can change the next action, its arguments, or its safety.
+- Avoid an intermediate TodoWrite-only model round only when the next work-tool call passes the necessity, argument-independence, and safety-independence test. Emit that minimal call beside TodoWrite.
+- Do not speculative-batch an investigation. Mark work completed only after evidence, and inspect a pending result before issuing any call it could change, invalidate, or make unnecessary.
 - A standalone TodoWrite remains valid when no work tool should follow, including final completion or a blocking user question.
 
 WHEN NOT TO USE:
@@ -61,7 +61,7 @@ WHEN NOT TO USE:
 首次调用——不要浪费额外模型回合进入规划模式：
 - 在同一个 assistant response 中先写简短可见计划：问题、方案和风险。
 - 直接调用 TodoWrite，不要先调用单独的规划模式工具。
-- 如果第一批工作工具及参数已经确定，把它们和 TodoWrite 在同一响应中发出。
+- 只有第一个工作工具调用已经确定有必要，且其参数和安全性都不依赖其他结果时，才把它与 TodoWrite 在同一响应中发出；先执行满足条件的最小调用。
 
 如何使用：
 - 首次调用：枚举所有 todo，状态为 "pending"，将其中恰好一个设为 "in_progress"。
@@ -70,8 +70,8 @@ WHEN NOT TO USE:
 - content 是祈使形式（如 "Run tests"）；activeForm 是执行时显示的进行时态（如 "Running tests"）。
 
 和工作工具合批：
-- 如果下一项工作所用的工具和参数已经确定，不要让中间状态的 TodoWrite 单独占一个模型回合；应在同一个 assistant response 中发出 TodoWrite 和这些彼此独立的工作工具调用。
-- 这是合批，不是提前宣告进度：只有已有证据时才能把工作标记为完成。如果待返回结果可能改变下一动作、参数或安全性，就必须分开调用。
+- 只有下一个工作工具调用通过必要性、参数独立性和安全独立性检查时，才避免让中间状态的 TodoWrite 单独占一个模型回合；把这个最小调用与 TodoWrite 一起发出。
+- 不要推测性批量展开调查。只有已有证据时才能把工作标记为完成；如果待返回结果可能改变、否定或使后续调用不再必要，应先检查该结果。
 - 没有工作工具应继续执行时（包括记录最终完成态或询问阻塞问题），TodoWrite 仍可单独调用。
 
 何时不使用：

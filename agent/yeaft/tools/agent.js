@@ -263,11 +263,11 @@ use it as the default workflow or call it repeatedly in a loop.`,
   1. SpawnAgent  — 启动子 Agent 作为后台任务并立即返回。
   2. Continue    — 父 VP 继续工作；不要仅仅为了轮询而阻塞。
   3. ListAgents  — 需要进度信息时的非阻塞状态检查。
-  4. WaitAgent   — 短轮询（<5s）或仅在真正需要结果时才明确长等待。
-  5. CloseAgent  — 完成后销毁子 Agent。
+  4. PromptAgent — 子 Agent 空闲且需要指导时，可选发送后续提示。
+  5. CloseAgent  — 不再需要时停止或结束子 Agent。
 
-不要在循环中无终止条件地调用 WaitAgent。如果短检查后子 Agent 仍在运行，继续前进，
-让 notification 在下个 turn 告知你。`
+完成或失败会通过之后父级 turn 的 notification 送达。WaitAgent 仅保留为短轮询兼容工具；
+不要把它作为默认流程，也不要在循环中反复调用。`
   },
   parameters: {
     type: 'object',

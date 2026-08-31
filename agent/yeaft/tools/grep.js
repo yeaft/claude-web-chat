@@ -808,9 +808,10 @@ Guidelines:
 - Uses the JavaScript RegExp syntax supported by the running Node.js version
 - Escape special characters such as \\. and \\{
 - Skips symlinks, binary files, invalid UTF-8, and text files larger than 16 MiB
-- Use glob or type filters to narrow the search
+- Use glob or type filters and the smallest useful head_limit to narrow the search
+- Inspect one focused search before broadening or trying alternatives; do not repeat a successful equivalent search
 - Skips common large directories such as node_modules and .git
-- Results are limited to 500 matches by default`,
+- Results are limited to 250 matches by default`,
     zh: `用正则表达式搜索文件内容。
 
 优先使用 ripgrep (rg) 快速搜索，回退到 Node.js 实现。
@@ -824,9 +825,10 @@ Guidelines:
 - 使用当前 Node.js 版本支持的 JavaScript RegExp 语法
 - 特殊字符需转义，如 \\.、\\{
 - 跳过符号链接、二进制、无效 UTF-8 和超过 16 MiB 的文本文件
-- 用 glob 或 type 过滤缩小搜索范围
+- 用 glob 或 type 过滤，并设置满足需要的最小 head_limit 来缩小搜索范围
+- 先检查一个聚焦搜索的结果，再决定是否扩大或尝试其他搜索；不要重复成功的等价搜索
 - 跳过 node_modules、.git 等常见大目录
-- 默认结果限制 500 条`
+- 默认结果限制 250 条`
   },
   parameters: {
     type: 'object',

@@ -123,6 +123,7 @@ Guidelines:
 - Use "**/" for recursive directory matching
 - Common directories (node_modules, .git, etc.) are skipped
 - Returns file paths relative to the search directory
+- Use the narrowest pattern and smallest useful limit; inspect the result before broadening or issuing alternative searches
 - Limited to 500 results by default`,
     zh: `查找匹配 glob 模式的文件。
 
@@ -132,6 +133,7 @@ Guidelines:
 - 用 "**/" 进行递归目录匹配
 - 常见目录（node_modules、.git 等）被跳过
 - 返回相对于搜索目录的文件路径
+- 使用最窄的模式和满足需要的最小 limit；先检查结果，再决定是否扩大或发出备选搜索
 - 默认限制 500 条结果`
   },
   parameters: {

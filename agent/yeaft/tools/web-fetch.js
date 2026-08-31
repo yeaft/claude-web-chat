@@ -42,7 +42,8 @@ Use this to read documentation, articles, or any web page.
 
 Guidelines:
 - Provide the full URL including protocol (https://)
-- Large pages will be truncated — use the offset parameter for pagination
+- Fetch one authoritative relevant page first; inspect it before fetching alternatives
+- Set max_length to the smallest useful content budget. Large pages are truncated; use a more targeted source rather than repeatedly fetching the same URL
 - For APIs, the raw response body is returned as-is
 - Respects the abort signal for cancellation`,
     zh: `获取并读取网页内容。
@@ -51,7 +52,8 @@ Guidelines:
 
 使用指南：
 - 提供完整 URL 含协议（https://）
-- 大页面会截断——用 offset 参数做分页
+- 先抓取一个最权威、最相关的页面；检查结果后再决定是否抓取备选页面
+- 将 max_length 设为满足需要的最小内容预算。大页面会截断；应改用更定向的来源，而不是重复抓取同一 URL
 - 对 API 请求，原始响应体原样返回
 - 尊重取消信号`
   },

@@ -192,13 +192,10 @@ Status semantics:
     another PromptAgent. Either WaitAgent again with a larger timeout,
     CloseAgent to cut it short, or tell the user it's still working.
 
-CRITICAL — after WaitAgent returns you MUST take one of these actions:
-  • status terminal: relay/retry/report.
-  • status idle:     reply to user OR PromptAgent OR CloseAgent.
-  • timedOut:        re-wait, cut short, or report progress.
-NEVER end your turn silently right after WaitAgent — the user has not seen
-the sub-agent's reply yet; only you have. The orchestration loop is
-SpawnAgent → (PromptAgent ↔ WaitAgent)+ → CloseAgent → final reply to user.
+After WaitAgent returns, act on the status: relay a terminal result, guide or close
+an idle agent, and for a timeout continue useful parent work, report progress, or
+stop the agent. Do not silently discard a result. Do not repeatedly re-wait for a
+running agent; later parent turns receive completion notifications.
 
 Compatibility tool. The default wait is a short 5000ms poll. Callers may request up to 300000ms (5 minutes), but this is no longer the primary sub-agent workflow; prefer SpawnAgent + ListAgents + completion notifications for async background work.`,
     zh: `等待子 Agent 的下一次状态变更（turn 结束、终止或等待超时）并获取状态信封。

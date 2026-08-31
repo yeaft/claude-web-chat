@@ -19,12 +19,11 @@ export default defineTool({
 Use this to give the sub-agent more work, additional instructions, or relay
 information. The prompt is queued for the agent to process on its next turn.
 
-IMPORTANT — PromptAgent only QUEUES the message; it does NOT block. After this
-returns you almost always want to call WaitAgent next to collect the reply.
-Do NOT end your turn after PromptAgent without either (a) calling WaitAgent,
-(b) explaining to the user what you just asked the sub-agent, or (c) calling
-CloseAgent. The orchestration loop is
-SpawnAgent → (PromptAgent ↔ WaitAgent)+ → CloseAgent → final reply to user.
+IMPORTANT — PromptAgent only QUEUES the message; it does NOT block. After it
+returns, normally continue your own work and use the next-turn notification or
+ListAgents to observe progress. Use WaitAgent only when the reply is required
+now. Do not end the turn silently: continue useful work, tell the user what you
+asked, wait deliberately, or close the agent.
 
 PromptAgent is rejected if the sub-agent is in a terminal state
 (completed/failed/closed/abandoned). Use SpawnAgent to start a fresh one.`,
@@ -32,10 +31,9 @@ PromptAgent is rejected if the sub-agent is in a terminal state
 
 用于给子 Agent 更多工作、额外指令或传递信息。提示会排队等待子 Agent 在其下一个 turn 处理。
 
-重要——PromptAgent 仅将消息排队，不阻塞。返回后你通常需要立即调用 WaitAgent 来收集回复。
-不要在 PromptAgent 后直接结束 turn，除非：(a) 调用 WaitAgent，(b) 向用户说明你刚让子 Agent
-做了什么，或 (c) 调用 CloseAgent。编排循环为：
-SpawnAgent -> (PromptAgent <-> WaitAgent)+ -> CloseAgent -> 最终回复给用户。
+重要——PromptAgent 仅将消息排队，不阻塞。返回后通常应继续自己的工作，并通过下一 turn 的
+notification 或 ListAgents 查看进度；只有当前确实需要回复时才调用 WaitAgent。不要静默结束
+turn：继续有用工作、向用户说明所发指令、明确等待或关闭 Agent。
 
 如果子 Agent 处于终止状态（completed/failed/closed/abandoned），PromptAgent 会被拒绝。
 用 SpawnAgent 启动新的。`
@@ -131,16 +129,16 @@ SpawnAgent -> (PromptAgent <-> WaitAgent)+ -> CloseAgent -> 最终回复给用�
 
     return JSON.stringify({
       next_steps:
-        'Message is queued — the sub-agent has NOT replied yet. Call WaitAgent ' +
-        'next to collect the reply, then relay it to the user. Do NOT end your ' +
-        'turn here without either waiting for the reply or telling the user ' +
-        'what you just asked.',
+        'Message is queued — the sub-agent has NOT replied yet. Continue useful ' +
+        'work and rely on the next-turn notification, or use ListAgents when you ' +
+        'need progress. Call WaitAgent only if the reply is required now. Do NOT ' +
+        'end silently without telling the user what you asked.',
       success: true,
       agentId: agent_id,
       name: agent.name,
       messageCount: agent.messages.length,
       pending: agent.pendingPrompts.length,
-      message: `Message sent to agent "${agent.name}". Use WaitAgent to collect its reply.`,
+      message: `Message sent to agent "${agent.name}". Continue useful work; use ListAgents or notifications for progress.`,
     });
   },
 });

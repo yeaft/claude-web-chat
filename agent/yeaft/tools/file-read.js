@@ -88,7 +88,8 @@ Supports offset and limit for reading specific portions of large files.
 
 Guidelines:
 - Use absolute paths when possible
-- A file is "large" only at >3000 lines. Read the whole file by default; only use offset/limit above that threshold or when you already know the exact line range you need.
+- Read only the smallest range that answers the current question. A whole-file read is reasonable only when the file is at most 3000 lines and its full contents are actually needed.
+- Do not repeat a successful read with the same range. Continue only when the truncation marker or inspected content shows that another range is necessary.
 - Binary files are detected by extension and rejected
 - Maximum file size: 10MB
 - Default limit: 3000 lines (matches the "large file = >3000 lines" threshold)`,
@@ -98,7 +99,8 @@ Guidelines:
 
 使用指南：
 - 尽量使用绝对路径
-- 超过 3000 行才算大文件。默认读完整文件；仅在超过此阈值或已知精确行范围时使用 offset/limit
+- 只读取能回答当前问题的最小范围。只有文件不超过 3000 行且确实需要全部内容时，才适合整文件读取
+- 不要用相同范围重复成功的读取。只有截断标记或已检查的内容表明仍需其他范围时才继续
 - 二进制文件通过扩展名识别并拒绝
 - 最大文件大小：10MB
 - 默认行数限制：3000 行`

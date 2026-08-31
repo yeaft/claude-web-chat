@@ -46,7 +46,7 @@ export default defineTool({
 This tool returns a planning instruction. Use it to land a structured plan, then keep working in the same turn. The expected flow is:
 1. Produce a short prose plan (problem, approach, risks).
 2. Call \`TodoWrite\` with the ordered steps. Mark the first concrete step "in_progress", the rest "pending".
-3. When the first-step tools and arguments are already known, emit \`TodoWrite\` and those independent tool calls in the same assistant response. Wait only when a result genuinely determines the next action.
+3. Emit \`TodoWrite\` with a first work-tool call only when that call is already necessary and its arguments and safety do not depend on another result. Start with the smallest such call; inspect its result before issuing calls it could change or make unnecessary.
 
 WHEN TO USE:
 - Multi-step implementation (3+ steps), refactor, or open-ended investigation.
@@ -65,7 +65,7 @@ The tool takes the topic plus optional guiding fields (stuckAt, userProblem, exp
 此工具返回规划指令。用它产出一份结构化计划，然后在同一个 turn 中继续工作。预期流程是：
 1. 产出简短文字计划（问题、方法、风险）。
 2. 调用 TodoWrite 写出有序步骤。将第一个具体步骤标记为 "in_progress"，其余标记为 "pending"。
-3. 如果第一步所需的工具和参数已经确定，应在同一个 assistant response 中发出 TodoWrite 和这些彼此独立的工具调用；只有某个结果确实决定下一动作时才等待。
+3. 只有第一个工作工具调用已经确定有必要，且其参数和安全性都不依赖其他结果时，才在同一个 assistant response 中把它与 TodoWrite 一起发出。先执行满足条件的最小调用；如果结果可能改变或使后续调用不再必要，应先检查结果。
 
 何时使用：
 - 多步骤实现（3+ 步）、重构或开放式调查。
@@ -173,8 +173,8 @@ The tool takes the topic plus optional guiding fields (stuckAt, userProblem, exp
     }
     lines.push('');
     const nextInstruction = String(language).toLowerCase().startsWith('zh')
-      ? '下一步：产出计划并调用 `TodoWrite`。如果第一步的工具和参数已经确定，在同一个 assistant response 中一并发出这些彼此独立的工具调用。只有第一步必须询问用户时才在计划后停下。'
-      : 'Next: produce the plan and call `TodoWrite`. If the first-step tools and arguments are already known, emit those independent tool calls in the same assistant response. Stop after the plan only when the first step must ask the user.';
+      ? '下一步：产出计划并调用 `TodoWrite`。只有第一个工作工具调用已经确定有必要，且其参数和安全性都不依赖其他结果时，才在同一个 assistant response 中发出这个最小调用；如果结果可能改变后续调用，先检查结果。只有第一步必须询问用户时才在计划后停下。'
+      : 'Next: produce the plan and call `TodoWrite`. Emit only the smallest first work-tool call whose necessity, arguments, and safety do not depend on another result; inspect its result before calls it could change. Stop after the plan only when the first step must ask the user.';
     lines.push(nextInstruction);
 
     return lines.join('\n');
