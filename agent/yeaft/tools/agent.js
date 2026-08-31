@@ -239,11 +239,15 @@ Async orchestration:
   2. Continue    — keep working in the parent VP; do not block just to poll.
   3. ListAgents  — non-blocking status check when you need progress/liveness.
   4. PromptAgent — optional follow-up if the sub-agent is idle and needs guidance.
+     After queueing it, call WaitAgent in the same parent turn and collect the
+     reply before ending. If a bounded wait times out, wait again with a larger
+     bound unless the agent is stale/stalled.
   5. CloseAgent  — stop or finalize a sub-agent when it is no longer needed.
 
 Completion/failure is delivered through sub-agent notifications on later parent
-turns. WaitAgent remains available only as a short compatibility poll; do not
-use it as the default workflow or call it repeatedly in a loop.`,
+turns, so do not call WaitAgent merely to poll a newly spawned running agent.
+After PromptAgent follow-up, however, the answer is required to complete that
+workflow; use bounded WaitAgent calls and inspect liveness instead of blind loops.`,
     zh: `创建一个子 Agent 并行处理独立任务。
 
 子 Agent 在独立上下文中运行，可给定具体 mission 和可选的 expected_output schema。
@@ -263,11 +267,14 @@ use it as the default workflow or call it repeatedly in a loop.`,
   1. SpawnAgent  — 启动子 Agent 作为后台任务并立即返回。
   2. Continue    — 父 VP 继续工作；不要仅仅为了轮询而阻塞。
   3. ListAgents  — 需要进度信息时的非阻塞状态检查。
-  4. WaitAgent   — 短轮询（<5s）或仅在真正需要结果时才明确长等待。
-  5. CloseAgent  — 完成后销毁子 Agent。
+  4. PromptAgent — 子 Agent 空闲且需要指导时，可选发送后续提示。
+     排队后必须在同一个父级 turn 调用 WaitAgent 并拿到回复再结束；有界等待超时后，除非 Agent
+     已 stale/stalled，否则使用更大的有界 timeout 再次等待。
+  5. CloseAgent  — 不再需要时停止或结束子 Agent。
 
-不要在循环中无终止条件地调用 WaitAgent。如果短检查后子 Agent 仍在运行，继续前进，
-让 notification 在下个 turn 告知你。`
+完成或失败会通过之后父级 turn 的 notification 送达，因此不要为了轮询刚创建且仍运行的
+Agent 调用 WaitAgent。但 PromptAgent 后续工作必须拿到答案才算完成；使用有界 WaitAgent 调用并检查
+liveness，不要盲目循环。`
   },
   parameters: {
     type: 'object',

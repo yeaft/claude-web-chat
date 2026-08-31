@@ -19,7 +19,7 @@
  *              processing. The envelope flags `runningInBackground:
  *              true` (the sub-agent IS continuing — it does NOT need
  *              another PromptAgent to keep going) and recommends either
- *              another WaitAgent or CloseAgent. `result` carries the
+ *              another bounded WaitAgent or CloseAgent. `result` carries the
  *              mid-stream preview (the driver keeps lastResult fresh
  *              from every text_delta).
  *
@@ -43,7 +43,7 @@ import { consumeNotificationForAgent } from '../sub-agent/notifications.js';
  * otherwise eat tail-positioned nudges when `result` is long).
  *
  * @param {string} status
- * @param {{ timedOut?: boolean, runningInBackground?: boolean, budgetExceeded?: boolean, stale?: boolean }} [opts]
+ * @param {{ timedOut?: boolean, budgetExceeded?: boolean, stale?: boolean, mustCollectReply?: boolean }} [opts]
  */
 function nextStepsFor(status, opts = {}) {
   if (opts.budgetExceeded) {
@@ -61,6 +61,15 @@ function nextStepsFor(status, opts = {}) {
       'calling WaitAgent in a loop. Use ListAgents/outputFile to inspect it, ' +
       'CloseAgent if you want to stop it, or report the stalled background ' +
       'task and start a fresh agent if needed.'
+    );
+  }
+  if (opts.timedOut && opts.mustCollectReply) {
+    return (
+      'The PromptAgent follow-up reply is still pending and must be collected ' +
+      'in this parent turn. Call WaitAgent again with a larger bounded timeout. ' +
+      'Do not end the turn or switch to ListAgents/notifications. Stop re-waiting ' +
+      'only if the agent becomes stale/stalled, the wait is cancelled, or the ' +
+      'agent returns idle/terminal.'
     );
   }
   if (opts.timedOut) {
@@ -129,6 +138,11 @@ function errorNextSteps() {
  */
 function buildEnvelope(agent, { timedOut = false } = {}) {
   const status = agent.status;
+  const mustCollectReply = agent.promptReplyPending === true;
+  if (!timedOut && (status === STATUS.IDLE || isTerminalAgentStatus(status))) {
+    agent.promptReplyPending = false;
+    agent.promptReplyPendingAt = null;
+  }
   const liveness = diagnoseAgentLiveness(agent);
   const budgetResult = agent.result && typeof agent.result === 'object'
     && agent.result.status === 'budget_exceeded'
@@ -140,7 +154,12 @@ function buildEnvelope(agent, { timedOut = false } = {}) {
         ? agent.result
         : (agent.lastResult || ''));
   const env = {
-    next_steps: nextStepsFor(status, { timedOut, budgetExceeded: !!budgetResult, stale: liveness.stale }),
+    next_steps: nextStepsFor(status, {
+      timedOut,
+      budgetExceeded: !!budgetResult,
+      stale: liveness.stale,
+      mustCollectReply: mustCollectReply && !liveness.stale,
+    }),
     agentId: agent.id,
     name: agent.name,
     status,
@@ -154,6 +173,7 @@ function buildEnvelope(agent, { timedOut = false } = {}) {
     diagnostic: liveness.diagnostic,
     messages: Array.isArray(agent.messages) ? agent.messages.length : 0,
     turns: agent.usage?.turns || 0,
+    mustCollectReply: timedOut ? mustCollectReply : false,
   };
   if (timedOut) {
     env.timedOut = true;
@@ -192,15 +212,15 @@ Status semantics:
     another PromptAgent. Either WaitAgent again with a larger timeout,
     CloseAgent to cut it short, or tell the user it's still working.
 
-CRITICAL — after WaitAgent returns you MUST take one of these actions:
-  • status terminal: relay/retry/report.
-  • status idle:     reply to user OR PromptAgent OR CloseAgent.
-  • timedOut:        re-wait, cut short, or report progress.
-NEVER end your turn silently right after WaitAgent — the user has not seen
-the sub-agent's reply yet; only you have. The orchestration loop is
-SpawnAgent → (PromptAgent ↔ WaitAgent)+ → CloseAgent → final reply to user.
+After WaitAgent returns, act on the status. A non-stale timeout after PromptAgent
+has 'mustCollectReply=true': call WaitAgent again with a larger bounded timeout in
+the same parent turn until idle/terminal. A stale/stalled agent breaks that loop:
+inspect/report/close it instead. For ordinary SpawnAgent background work, use
+ListAgents or later completion notifications instead of repeatedly re-waiting.
 
-Compatibility tool. The default wait is a short 5000ms poll. Callers may request up to 300000ms (5 minutes), but this is no longer the primary sub-agent workflow; prefer SpawnAgent + ListAgents + completion notifications for async background work.`,
+The default wait is a bounded 5000ms poll; callers may request up to 300000ms
+(5 minutes). Never use an unbounded blind loop: every wait is capped, liveness is
+checked after each timeout, and stale/stalled is the explicit stop condition.`,
     zh: `等待子 Agent 的下一次状态变更（turn 结束、终止或等待超时）并获取状态信封。
 
 返回 JSON，含明确的 status、最新的 result 文本、liveness 计数器（toolUseCount、tokenCount、
@@ -215,11 +235,13 @@ msSinceLastEvent、recentTools）、可随时 Read 的持久化 outputFile 路�
     仍在运行。不需要再 PromptAgent。要么用更大 timeout 再次 WaitAgent，要么 CloseAgent 中断，
     要么告知用户它仍在工作。
 
+PromptAgent 后若非 stale/stalled 的有界等待超时，必须在同一父级 turn 使用更大的有界 timeout
+再次调用 WaitAgent，直到 idle/terminal；不要改用 ListAgents/notification 丢下未收集的回复。
 关键——如果信封显示 stale/stalled，子 Agent 可能卡死或空转。不要反复调用 WaitAgent——向用户
 报告情况，决定是 CloseAgent（带 close_reason）还是重试。
 
-此工具保留用于向后兼容。现代异步流程请用 ListAgents 做非阻塞状态检查，依赖 turn 开始时的
-notification 获取完成事件。`
+普通 SpawnAgent 异步流程仍用 ListAgents 做非阻塞状态检查，并依赖后续 completion
+notification；不要对普通后台任务盲目循环等待。每次等待都有上限，stale/stalled 是停止条件。`
   },
   parameters: {
     type: 'object',
@@ -296,6 +318,13 @@ notification 获取完成事件。`
         return JSON.stringify({ next_steps: errorNextSteps(), error: 'Wait cancelled', agentId: agent_id });
       }
       await new Promise(r => setTimeout(r, 200));
+    }
+
+    // Re-check after the final sleep. The status may have changed just before
+    // the deadline without another loop iteration.
+    if (isTerminalAgentStatus(agent.status) || agent.status === STATUS.IDLE) {
+      consumeNotificationForAgent(agent.id);
+      return JSON.stringify(buildEnvelope(agent));
     }
 
     // Wait elapsed; the sub-agent is still running. Surface mid-stream

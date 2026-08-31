@@ -117,7 +117,14 @@ export function diagnoseAgentLiveness(agent, opts = {}) {
     : DEFAULT_STALL_THRESHOLD_MS;
   const liveness = snapshotLiveness(agent?.liveness, now);
   const fallbackAt = agent?.createdAt || agent?.usage?.startedAt || null;
-  const activityAt = liveness.lastEventAt || fallbackAt;
+  // Queueing a PromptAgent continuation starts a new collection window. Do not
+  // diagnose that fresh follow-up as stale merely because the retained child
+  // last emitted an event during an older turn.
+  const activityAt = Math.max(
+    liveness.lastEventAt || 0,
+    fallbackAt || 0,
+    agent?.promptReplyPendingAt || 0,
+  ) || null;
   const msSinceActivity = activityAt ? Math.max(0, now - activityAt) : null;
   const stale = agent?.status === 'running'
     && msSinceActivity !== null

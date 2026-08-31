@@ -462,8 +462,8 @@ const TOOL_GUIDANCE_GROUPS = Object.freeze([
   },
   {
     tools: ['FileRead', 'FileWrite', 'FileEdit', 'Glob', 'Grep', 'ListDir', 'ApplyPatch', 'NotebookEdit'],
-    en: 'Read existing files before editing. Use dedicated file/search tools instead of shell search or `sed -i`; make small, reviewable edits and batch independent reads.',
-    zh: '编辑前先读现有文件。文件搜索和修改优先使用专用工具，不用 shell 搜索或 `sed -i`；改动保持小而可审查，独立读取应并行发出。',
+    en: 'Read existing files before editing. Use dedicated file/search tools instead of shell search or `sed -i`; make small, reviewable edits. Parallelize only proven-independent reads under the accuracy-first rule above.',
+    zh: '编辑前先读现有文件。文件搜索和修改优先使用专用工具，不用 shell 搜索或 `sed -i`；改动保持小而可审查。只有明确满足上述准确性优先判据的读取才可并行。',
   },
   {
     tools: ['Bash'],
@@ -472,13 +472,13 @@ const TOOL_GUIDANCE_GROUPS = Object.freeze([
   },
   {
     tools: ['TodoWrite'],
-    en: 'For non-trivial multi-step work, write a brief visible plan and call `TodoWrite` in the same assistant response as the first independent work tools. Do not spend a separate model round entering planning mode, and do not stop after planning unless user input genuinely blocks the first step.',
-    zh: '非平凡多步骤任务先写简短可见计划，并在同一个 assistant response 中把 `TodoWrite` 与第一批独立工作工具一起发出。不要用单独的模型回合进入规划模式；只有用户信息确实阻塞第一步时才在规划后停下。',
+    en: 'For non-trivial multi-step work, write a brief visible plan and call `TodoWrite` in the same assistant response as the first necessary work-tool call only when its arguments and safety do not depend on another result. Start with the smallest such call; do not speculative-batch the investigation or stop after planning unless user input genuinely blocks the first step.',
+    zh: '非平凡多步骤任务先写简短可见计划。只有第一个工作工具调用已经确定有必要，且其参数和安全性都不依赖其他结果时，才在同一个 assistant response 中把它与 `TodoWrite` 一起发出；先执行满足条件的最小调用，不要推测性批量展开调查。只有用户信息确实阻塞第一步时才在规划后停下。',
   },
   {
     tools: ['SpawnAgent', 'PromptAgent', 'WaitAgent', 'CloseAgent', 'ListAgents'],
-    en: 'Delegate only independent, bounded work. Keep ownership in the parent, avoid polling loops, and close sub-agents after collecting their result.',
-    zh: '只委派边界清晰且独立的工作。父级保留任务所有权，不要循环轮询，取得结果后关闭子 Agent。',
+    en: 'Delegate only independent, bounded work. Keep ownership in the parent. After PromptAgent queues follow-up work, call WaitAgent in the same parent turn and collect the reply before ending. If a bounded wait times out, wait again with a larger bound unless the agent is stale/stalled. Relay the reply or continue the dependent work, then close the sub-agent when it is no longer needed.',
+    zh: '只委派边界清晰且独立的工作。父级保留任务所有权。PromptAgent 排队后续工作后，必须在同一个父级 turn 调用 WaitAgent 并拿到回复再结束；有界等待超时后，除非 Agent 已 stale/stalled，否则使用更大上限继续等待；随后转述结果或继续依赖该结果的工作，不再需要时关闭子 Agent。',
   },
   {
     tools: ['ListTasks', 'ReadTaskLog', 'CancelTask'],
@@ -500,6 +500,11 @@ const TOOL_GUIDANCE_GROUPS = Object.freeze([
 function renderActiveToolGuidance(toolNames, language) {
   const active = new Set(Array.isArray(toolNames) ? toolNames : []);
   const lines = [];
+  if (active.size > 0) {
+    lines.push(language === 'zh'
+      ? '- 准确性优先：先用能解决当前未知的最小定向调用。只有每个调用都已经确定有必要，且其参数和安全性都不依赖同批其他结果时，才在一个响应中发出多个工具调用；否则串行执行。不要推测性扇出、重复成功的读取/搜索，也不要默认抓取多个来源；先检查证据，再决定是否扩展。'
+      : '- Accuracy first: start with the smallest targeted call that can resolve the current uncertainty. Issue multiple tool calls in one response only when every call is already necessary and its arguments and safety do not depend on another call\'s result. Otherwise run them sequentially. Do not fan out speculatively, repeat a successful read/search, or fetch multiple sources by default; inspect evidence before expanding.');
+  }
   for (const group of TOOL_GUIDANCE_GROUPS) {
     if (!group.tools.some(name => active.has(name))) continue;
     lines.push(`- ${language === 'zh' ? group.zh : group.en}`);

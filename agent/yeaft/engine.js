@@ -2899,7 +2899,7 @@ export class Engine {
             commitDispatch();
           },
         });
-        yield { type: 'turn_start', turnNumber, threadId };
+        yield { type: 'turn_start', turnId: queryTurnId, turnNumber, threadId };
 
         // Provider iteration begins after the visible boundary. Native adapters
         // commit in onRequestStart immediately before fetch. A plain legacy

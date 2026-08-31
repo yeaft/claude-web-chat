@@ -32,17 +32,17 @@ Use this when you need up-to-date information that may not be in your training d
 Returns search results with titles, URLs, and snippets.
 
 Guidelines:
-- Use specific, targeted search queries
+- Use one specific, targeted query with the smallest useful result limit; inspect it before trying alternatives
 - Include the current year for time-sensitive queries
-- Combine with WebFetch to read full page content from results`,
+- Fetch the most authoritative relevant result first. Add another source only when the claim is consequential, disputed, stale, or not established by the first source`,
     zh: `搜索网页获取最新信息。
 
 当你需要训练数据中可能没有的最新信息时使用。返回搜索结果，含标题、URL 和摘要。
 
 使用指南：
-- 使用具体、有针对性的搜索关键词
+- 先执行一个具体、定向的查询，并使用满足需要的最小结果数；检查结果后再决定是否尝试其他查询
 - 时间敏感的查询要包含当前年份
-- 配合 WebFetch 读取搜索结果中的完整页面内容`
+- 优先抓取最权威、最相关的结果。只有结论影响重大、存在争议、可能过时，或首个来源不能证明时才增加来源`
   },
   parameters: {
     type: 'object',

@@ -52,7 +52,7 @@ export const CONDITIONAL_BUILTIN_TOOL_NAMES = new Set([
   'RouteForward',
   'CreateWorkItem',
   // Legacy compatibility only. New planning is a single provider response:
-  // visible prose + TodoWrite + the first independent work tools. Keeping the
+  // visible prose + TodoWrite + the first justified work-tool call. Keeping the
   // definition registered lets old direct callers resolve it without paying a
   // dedicated StartPlan -> provider -> TodoWrite round trip on every new task.
   'StartPlan',

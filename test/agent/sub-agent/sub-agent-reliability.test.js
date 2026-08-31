@@ -286,6 +286,85 @@ describe('wait-agent envelope shape', () => {
   });
 
 
+  it('keeps a PromptAgent follow-up collectable across a bounded timeout', async () => {
+    const agents = getAgentRegistry();
+    const agent = {
+      id: 'agent-follow-up', name: 'follow-up', status: STATUS.IDLE,
+      result: 'initial reply', lastResult: '', error: null, messages: [],
+      usage: { turns: 1, startedAt: Date.now() }, createdAt: Date.now(),
+      outputFile: '/tmp/follow-up.log', liveness: makeLiveness(),
+      parentSessionId: null, parentVpId: 'vp-test', pendingPrompts: [],
+    };
+    agents.set(agent.id, agent);
+
+    const prompted = JSON.parse(await sendMessage.execute({
+      agent_id: agent.id,
+      message: 'slow follow-up',
+    }, vpTestCtx));
+    expect(prompted.success).toBe(true);
+    expect(prompted.next_steps).toMatch(/Call WaitAgent/i);
+    expect(prompted.message).toMatch(/Call WaitAgent now/i);
+    expect(prompted.message).not.toMatch(/ListAgents|notifications/i);
+    expect(agent.promptReplyPending).toBe(true);
+
+    const firstWait = JSON.parse(await waitAgent.execute({
+      agent_id: agent.id,
+      timeout_ms: 10,
+    }, vpTestCtx));
+    expect(firstWait).toMatchObject({
+      status: STATUS.RUNNING,
+      timedOut: true,
+      mustCollectReply: true,
+      stale: false,
+    });
+    expect(firstWait.next_steps).toMatch(/must be collected/i);
+    expect(firstWait.next_steps).toMatch(/Call WaitAgent again/i);
+    expect(firstWait.next_steps).not.toMatch(/only call WaitAgent again if|ListAgents later/i);
+    expect(agent.promptReplyPending).toBe(true);
+
+    const finishFollowUp = setTimeout(() => {
+      agent.result = 'follow-up reply';
+      agent.status = STATUS.IDLE;
+    }, 30);
+    const secondWait = JSON.parse(await waitAgent.execute({
+      agent_id: agent.id,
+      timeout_ms: 200,
+    }, vpTestCtx));
+    clearTimeout(finishFollowUp);
+
+    expect(secondWait).toMatchObject({
+      status: STATUS.IDLE,
+      result: 'follow-up reply',
+      mustCollectReply: false,
+    });
+    expect(secondWait.next_steps).toMatch(/relay it to the user/i);
+    expect(agent.promptReplyPending).toBe(false);
+    expect(agent.promptReplyPendingAt).toBeNull();
+  });
+
+  it('keeps ordinary SpawnAgent timeouts on the asynchronous path', async () => {
+    const agent = {
+      id: 'agent-background', name: 'background', status: STATUS.RUNNING,
+      result: '', lastResult: '', error: null, messages: [],
+      usage: { turns: 0, startedAt: Date.now() }, createdAt: Date.now(),
+      outputFile: '/tmp/background.log', liveness: makeLiveness(),
+      parentSessionId: null, parentVpId: 'vp-test', pendingPrompts: [],
+    };
+    getAgentRegistry().set(agent.id, agent);
+
+    const waited = JSON.parse(await waitAgent.execute({
+      agent_id: agent.id,
+      timeout_ms: 5,
+    }, vpTestCtx));
+    expect(waited).toMatchObject({
+      status: STATUS.RUNNING,
+      timedOut: true,
+      mustCollectReply: false,
+    });
+    expect(waited.next_steps).toMatch(/ListAgents later/i);
+    expect(waited.next_steps).not.toMatch(/must be collected/i);
+  });
+
   it('scoped tools reject agents owned by another session', async () => {
     const agents = getAgentRegistry();
     agents.set('agent-owned-a', {

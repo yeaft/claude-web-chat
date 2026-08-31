@@ -37,12 +37,12 @@ let cached = null;
  * @returns {{ meta: object, body: string }}
  */
 export function parseFrontmatter(source) {
-  const match = source.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  const match = source.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!match) return { meta: {}, body: source };
 
   const [, yaml, body] = match;
   const meta = {};
-  const lines = yaml.split('\n');
+  const lines = yaml.split(/\r?\n/);
   let currentKey = null;
   let currentList = null;
 

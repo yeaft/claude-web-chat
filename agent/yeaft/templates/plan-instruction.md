@@ -17,7 +17,7 @@ You have just entered **planning mode** for the topic below. Your job is to thin
 
 1. Write a short prose plan: problem, approach, risks.
 2. Call `TodoWrite` with the ordered steps. Mark exactly one item as `in_progress`.
-3. If the first-step tools and arguments are already known, emit `TodoWrite` and those independent tool calls in the same assistant response. Otherwise wait only for a result that genuinely determines the next action.
+3. Emit `TodoWrite` with a first work-tool call in the same assistant response only when that call is already necessary and its arguments and safety do not depend on another result. Start with the smallest such call. If its result can change the next action, inspect it before issuing more calls; do not speculative-batch the investigation.
 
 If the first step is to ask the user a blocking question, ask it and stop. Otherwise keep moving.
 
@@ -40,6 +40,6 @@ If the first step is to ask the user a blocking question, ask it and stop. Other
 
 1. 写一段简短计划：问题、方案、风险。
 2. 调用 `TodoWrite` 写入有序步骤，并且只能把一个条目标记为 `in_progress`。
-3. 如果第一步所需的工具和参数已经确定，应在同一个 assistant response 中发出 `TodoWrite` 和这些彼此独立的工具调用；否则只在确实需要某个结果来决定下一动作时等待。
+3. 只有第一个工作工具调用已经确定有必要，且其参数和安全性都不依赖其他结果时，才在同一个 assistant response 中把它与 `TodoWrite` 一起发出。先执行满足条件的最小调用；如果它的结果可能改变下一动作，应先检查结果，不要推测性批量展开调查。
 
 如果第一步是向用户询问阻塞问题，那就提问并停下。否则继续推进。
