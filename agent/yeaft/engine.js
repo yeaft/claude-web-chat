@@ -2424,6 +2424,7 @@ export class Engine {
     // executions increment these counters; errors and cache reuse do not.
     const queryDuplicateCounts = new Map();
     const queryDuplicateSuppressions = new Map();
+    let duplicateReminderAwaitingResponse = false;
     const queryNumber = (this.#__queryCounter = (this.#__queryCounter || 0) + 1);
 
     // feat-6af5f9f1 PR B: a Turn = one user prompt + all AI responses.
@@ -3550,6 +3551,23 @@ export class Engine {
       fullResponseText += responseText;
 
       // ─── Handle max_tokens → auto-continue ────────────
+      // A suppressed call leaves a synthetic reminder as the latest user
+      // message. Some models answer it with an empty end_turn. Continue exactly
+      // once so suppression cannot silently abandon the user's task.
+      if (duplicateReminderAwaitingResponse) {
+        if (responseText.trim() || toolCalls.length > 0) {
+          duplicateReminderAwaitingResponse = false;
+        } else {
+          duplicateReminderAwaitingResponse = false;
+          conversationMessages.push({
+            role: 'user',
+            content: '[system note] The duplicate tool call was suppressed, but the current user task is still active. Continue toward the requested outcome using the prior result or a different action; do not end the turn solely because the duplicate was blocked.',
+          });
+          yield { type: 'turn_end', turnNumber, stopReason: 'duplicate_tool_continue', threadId };
+          continue;
+        }
+      }
+
       if (stopReason === 'max_tokens' && continueTurns < MAX_CONTINUE_TURNS) {
         continueTurns++;
         // This synthetic continuation is part of the model-visible protocol.
@@ -4426,6 +4444,7 @@ export class Engine {
       for (const reminder of pendingDupReminders) {
         conversationMessages.push({ role: 'user', content: reminder });
       }
+      if (pendingDupReminders.length > 0) duplicateReminderAwaitingResponse = true;
       if (terminateAfterDuplicateBatch) {
         yield {
           type: 'error',
