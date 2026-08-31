@@ -668,8 +668,8 @@ export function createV2DreamScheduler(session) {
     keepAlive: !!session?.config?.serverMode,
     logger: session.config?.debug ? console : undefined,
   });
-  // Auto-start the timer.
-  v2.start();
+  let enabled = session?.config?.dream?.enabled !== false;
+  if (enabled) v2.start();
 
   // task-710: wire `noteUserMessage` to a real per-session message
   // counter. When the count crosses DREAM_NUDGE_AFTER_MESSAGES (default
@@ -685,6 +685,7 @@ export function createV2DreamScheduler(session) {
   // immediately, defeating the 50-message guarantee.
   let messagesSinceLastNudgeFire = 0;
   function nudgeOnUserMessage() {
+    if (!enabled) return;
     messagesSinceLastNudgeFire += 1;
     if (messagesSinceLastNudgeFire < DREAM_NUDGE_AFTER_MESSAGES) return;
     if (v2.isRunning()) {
@@ -709,8 +710,20 @@ export function createV2DreamScheduler(session) {
      * below threshold are skipped — same shape as the interval timer
      * tick. Used by `bootCatchUpStaleDream`.
      */
-    catchUpNudge() { return v2.nudge(); },
+    catchUpNudge() {
+      return enabled ? v2.nudge() : Promise.resolve({ skipped: true, skippedReason: 'disabled', trigger: 'auto' });
+    },
+    setEnabled(nextEnabled) {
+      enabled = nextEnabled !== false;
+      if (enabled) v2.start();
+      else {
+        messagesSinceLastNudgeFire = 0;
+        v2.stop();
+      }
+      return enabled;
+    },
     shutdown() { v2.stop(); },
+    get enabled() { return enabled; },
     get isRunning() { return v2.isRunning(); },
     // Preserve direct access for tests.
     _v2: v2,
@@ -727,12 +740,16 @@ export function createV2DreamScheduler(session) {
  * Pure side-effect, fire-and-forget. Failure logs at debug only — never
  * blocks session load.
  *
- * @param {{ yeaftDir: string, memoryIndex: import('../memory/index-db.js').SegmentIndex|null, dreamScheduler: { triggerDreamForScopes: (s:string[]) => Promise<any> }, config?: { debug?: boolean } }} args
+ * @param {{ yeaftDir: string, memoryIndex: import('../memory/index-db.js').SegmentIndex|null, dreamScheduler: { triggerDreamForScopes: (s:string[]) => Promise<any> }, config?: { debug?: boolean, dream?: { enabled?: boolean } } }} args
  * @returns {Promise<{ triggered: string[] }>}
  */
 export async function bootInitEmptyGroups(args) {
   const out = { triggered: [] };
   if (!args || !args.memoryIndex || !args.dreamScheduler) return out;
+  // This is automatic boot catch-up, not an explicit user trigger. The
+  // scheduler's scoped trigger intentionally remains manual-capable while
+  // disabled, so enforce the Agent toggle at this automatic entry point.
+  if (args.config?.dream?.enabled === false) return out;
   const sessionsRoot = join(args.yeaftDir, 'sessions');
   let ids;
   try { ids = listSessionMetas(sessionsRoot).map(g => g.id); }

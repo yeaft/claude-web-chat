@@ -64,7 +64,7 @@ export default {
               :restarting-agents="restartingAgents"
               :upgrading-agents="upgradingAgents"
               :show-agent-actions="true"
-              @restart-agent="restartAgent"
+              @set-dream-enabled="setDreamEnabled"
               @upgrade-agent="upgradeAgent"
             />
             <div class="sidebar-header-actions">
@@ -934,14 +934,8 @@ export default {
     handleResize() {
       this.windowWidth = window.innerWidth;
     },
-    async restartAgent(agentId) {
-      const agent = this.store.agents.find(a => a.id === agentId);
-      const name = agent?.name || agentId;
-      if (!await confirmDialog(this.$t('chat.agent.restartConfirm', { name }))) return;
-      this.restartingAgents[agentId] = true;
-      // 2 分钟后强制清除重启状态（兜底）
-      setTimeout(() => { delete this.restartingAgents[agentId]; }, 120000);
-      this.store.restartAgent(agentId);
+    setDreamEnabled(agentId, enabled) {
+      this.store.setDreamEnabled(agentId, enabled);
     },
     async upgradeAgent(agentId) {
       const agent = this.store.agents.find(a => a.id === agentId);

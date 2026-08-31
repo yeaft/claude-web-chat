@@ -119,6 +119,8 @@ export default {
   'chat.agent.manage': '管理 Agent',
   'chat.agent.none': '暂无 Agent',
   'chat.agent.restarting': '重启中',
+  'chat.agent.dream': 'Dream',
+  'chat.agent.dreamHint': '启用自动 Dream 记忆处理',
   'chat.agent.restart': '重启',
   'chat.agent.restartConfirm': '确定要重启 Agent "{name}" 吗？\n所有活跃的会话将被中断。',
   'chat.agent.upgrade': '升级',

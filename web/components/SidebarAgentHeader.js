@@ -17,7 +17,7 @@ export default {
     // Per-agent action buttons are optional.
     showAgentActions: { type: Boolean, default: false },
   },
-  emits: ['restart-agent', 'upgrade-agent'],
+  emits: ['set-dream-enabled', 'upgrade-agent'],
   data() {
     return { open: false };
   },
@@ -71,15 +71,16 @@ export default {
               <span v-if="upgradingAgents[agent.id]" class="spinner-mini"></span>
               <svg v-else viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z"/></svg>
             </button>
-            <button
-              class="agent-dropdown-restart-btn"
-              @click.stop="$emit('restart-agent', agent.id)"
-              :disabled="!agent.online || restartingAgents[agent.id] || upgradingAgents[agent.id]"
-              :title="tr('chat.agent.restart', 'Restart')"
-            >
-              <span v-if="restartingAgents[agent.id]" class="spinner-mini"></span>
-              <svg v-else viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
-            </button>
+            <label class="agent-dropdown-dream-toggle" :title="tr('chat.agent.dreamHint', 'Enable automatic Dream memory processing')">
+              <span>{{ tr('chat.agent.dream', 'Dream') }}</span>
+              <input
+                type="checkbox"
+                :checked="agent.dreamEnabled !== false"
+                :disabled="!canUseAgentAction(agent)"
+                @change="$emit('set-dream-enabled', agent.id, $event.target.checked)"
+              />
+              <span class="agent-dream-switch" aria-hidden="true"></span>
+            </label>
           </template>
         </div>
         <div v-if="onlineAgents.length === 0" class="agent-dropdown-empty">{{ tr('chat.agent.none', 'No agents online') }}</div>

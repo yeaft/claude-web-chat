@@ -136,6 +136,7 @@ export async function loadSession(options = {}) {
     extraTools = [],
     configOverrides = {},
     serverMode = false,
+    dreamEnabled,
     managedCliReady = null,
   } = options;
 
@@ -172,6 +173,7 @@ export async function loadSession(options = {}) {
   // can decide whether to keep its interval timer alive (server) or
   // unref it (CLI / tests). Non-persisted — set per-session by caller.
   if (serverMode) config.serverMode = true;
+  if (typeof dreamEnabled === 'boolean') config.dream.enabled = dreamEnabled;
 
   // Propagate the (clamped) cold-start replay window to the conversation
   // store. The default is 20 turns; a user wanting more recall after a

@@ -119,6 +119,8 @@ export default {
   'chat.agent.manage': 'Manage Agents',
   'chat.agent.none': 'No Agents',
   'chat.agent.restarting': 'Restarting',
+  'chat.agent.dream': 'Dream',
+  'chat.agent.dreamHint': 'Enable automatic Dream memory processing',
   'chat.agent.restart': 'Restart',
   'chat.agent.restartConfirm': 'Are you sure you want to restart Agent "{name}"?\nAll active conversations will be interrupted.',
   'chat.agent.upgrade': 'Upgrade',

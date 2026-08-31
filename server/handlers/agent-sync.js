@@ -65,12 +65,31 @@ export async function handleAgentSync(agentId, agent, msg) {
     // Phase 1: Agent 同步完成
     case 'agent_sync_complete': {
       agent.status = 'ready';
+      agent.dreamEnabled = msg.dreamEnabled !== false;
       if (agent._syncTimeout) {
         clearTimeout(agent._syncTimeout);
         delete agent._syncTimeout;
       }
       console.log(`[Sync] Agent ${agent.name} sync complete, status: ready`);
       await broadcastAgentList();
+      break;
+    }
+
+    case 'dream_enabled_changed': {
+      if (!msg.error) {
+        agent.dreamEnabled = msg.enabled !== false;
+        await broadcastAgentList();
+      }
+      for (const [, client] of webClients) {
+        if (!client.authenticated) continue;
+        if (!CONFIG.skipAuth && agent.ownerId !== client.userId && !(!agent.ownerId && client.role === 'admin')) continue;
+        await sendToWebClient(client, {
+          type: 'dream_enabled_changed',
+          agentId,
+          enabled: msg.error ? agent.dreamEnabled !== false : msg.enabled !== false,
+          ...(msg.error ? { error: msg.error } : {}),
+        });
+      }
       break;
     }
 
