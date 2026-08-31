@@ -1,4 +1,8 @@
-import { agents, userFileTabs } from '../context.js';
+import {
+  agents,
+  registerAgentSettingsRequest,
+  userFileTabs,
+} from '../context.js';
 import {
   sendToWebClient, forwardToAgent, broadcastAgentList
 } from '../ws-utils.js';
@@ -52,6 +56,7 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       const restartAgentId = msg.agentId;
       if (!restartAgentId) break;
       if (!await checkAgentAccess(restartAgentId)) break;
+      if (msg.requestId && !registerAgentSettingsRequest({ agentId: restartAgentId, operation: 'restart', requestId: msg.requestId, clientId })) break;
       await forwardToAgent(restartAgentId, { type: 'restart_agent', ...(msg.requestId ? { requestId: msg.requestId, clientId } : {}) });
       break;
     }
@@ -60,6 +65,7 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       const agentId = msg.agentId;
       if (!agentId) break;
       if (!await checkAgentAccess(agentId)) break;
+      if (msg.requestId && !registerAgentSettingsRequest({ agentId, operation: 'dream', requestId: msg.requestId, clientId })) break;
       await forwardToAgent(agentId, { type: 'set_dream_enabled', enabled: msg.enabled !== false, ...(msg.requestId ? { requestId: msg.requestId, clientId } : {}) });
       break;
     }
@@ -96,6 +102,7 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
         });
         break;
       }
+      if (msg.requestId && !registerAgentSettingsRequest({ agentId: upgradeAgentId, operation: 'upgrade', requestId: msg.requestId, clientId })) break;
       await forwardToAgent(upgradeAgentId, { type: 'upgrade_agent', ...(msg.requestId ? { requestId: msg.requestId, clientId } : {}) });
       break;
     }
@@ -293,6 +300,7 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       const a = msg.agentId || client.currentAgent;
       if (!a) break;
       if (!await checkAgentAccess(a)) break;
+      if (!registerAgentSettingsRequest({ agentId: a, operation: 'telemetry:load', requestId: msg.requestId, clientId })) break;
       await forwardToAgent(a, {
         type: 'get_telemetry_settings',
         requestId: msg.requestId,
@@ -305,6 +313,7 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       const a = msg.agentId || client.currentAgent;
       if (!a) break;
       if (!await checkAgentAccess(a)) break;
+      if (!registerAgentSettingsRequest({ agentId: a, operation: 'telemetry:update', requestId: msg.requestId, clientId })) break;
       await forwardToAgent(a, {
         type: 'update_telemetry_settings',
         requestId: msg.requestId,

@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { CONFIG } from '../../server/config.js';
-import { agents, pendingAgentConnections, webClients } from '../../server/context.js';
+import {
+  agents,
+  clearAgentSettingsRequestsForClient,
+  consumeAgentSettingsRequest,
+  pendingAgentConnections,
+  pendingAgentSettingsRequests,
+  registerAgentSettingsRequest,
+  webClients,
+} from '../../server/context.js';
 import { sessionDb, yeaftProjectDb, yeaftSessionDb, sessionUiMetadataDb } from '../../server/database.js';
 import {
   buildHiddenSessionCatalog,
@@ -53,6 +61,7 @@ describe('resolveAgentAccessError', () => {
     }
     agents.clear();
     pendingAgentConnections.clear();
+    pendingAgentSettingsRequests.clear();
     webClients.clear();
   });
 
@@ -83,7 +92,7 @@ describe('resolveAgentAccessError', () => {
     expect(siblingMessages).toEqual([]);
   });
 
-  it('broadcasts legacy identity-less telemetry replies without inventing browser ownership', async () => {
+  it('drops identity-less telemetry replies instead of guessing browser ownership', async () => {
     CONFIG.skipAuth = true;
     const firstMessages = [];
     const secondMessages = [];
@@ -101,9 +110,98 @@ describe('resolveAgentAccessError', () => {
       type: 'telemetry_settings_updated', enabled: false,
     });
 
-    const expected = [{ type: 'telemetry_settings_updated', enabled: false, agentId: agent.id }];
-    expect(firstMessages).toEqual(expected);
-    expect(secondMessages).toEqual(expected);
+    expect(firstMessages).toEqual([]);
+    expect(secondMessages).toEqual([]);
+  });
+
+  it('keeps interleaved registrations atomic and operation-scoped', () => {
+    webClients.set('browser-a', { authenticated: true });
+    webClients.set('browser-b', { authenticated: true });
+    expect(registerAgentSettingsRequest({
+      agentId: 'agent-a', operation: 'telemetry:load', requestId: 'request-a', clientId: 'browser-a',
+    })).toBe(true);
+    expect(registerAgentSettingsRequest({
+      agentId: 'agent-a', operation: 'telemetry:update', requestId: 'request-b', clientId: 'browser-b',
+    })).toBe(true);
+    expect(pendingAgentSettingsRequests.size).toBe(2);
+
+    expect(consumeAgentSettingsRequest({
+      agentId: 'agent-a', operation: 'telemetry:load', requestId: 'request-b',
+    })).toBeNull();
+    expect(consumeAgentSettingsRequest({
+      agentId: 'agent-a', operation: 'telemetry:update', requestId: 'request-b',
+    })).toMatchObject({ clientId: 'browser-b' });
+    clearAgentSettingsRequestsForClient('browser-a');
+    expect(pendingAgentSettingsRequests.size).toBe(0);
+  });
+
+  it('routes concurrent replies by Server-owned request provenance', async () => {
+    CONFIG.skipAuth = true;
+    const forwarded = [];
+    const firstMessages = [];
+    const secondMessages = [];
+    const agent = {
+      id: 'agent-concurrent', name: 'Concurrent', ownerId: 'user-1',
+      ws: { readyState: WS_OPEN, send: payload => forwarded.push(JSON.parse(payload)) },
+    };
+    agents.set(agent.id, agent);
+    const first = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => firstMessages.push(JSON.parse(payload)) } };
+    const second = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => secondMessages.push(JSON.parse(payload)) } };
+    webClients.set('browser-first', first);
+    webClients.set('browser-second', second);
+
+    await handleClientMisc('browser-first', first, {
+      type: 'get_telemetry_settings', agentId: agent.id, requestId: 'load-first',
+    }, async () => true);
+    await handleClientMisc('browser-second', second, {
+      type: 'get_telemetry_settings', agentId: agent.id, requestId: 'load-second',
+    }, async () => true);
+
+    // Deliberately reverse response order and forge clientId. The Server registry,
+    // not Agent-controlled clientId or arrival order, decides the recipient.
+    await handleAgentSync(agent.id, agent, {
+      type: 'telemetry_settings', requestId: 'load-second', clientId: 'browser-first', enabled: false,
+    });
+    await handleAgentSync(agent.id, agent, {
+      type: 'telemetry_settings', requestId: 'load-first', clientId: 'browser-second', enabled: true,
+    });
+
+    expect(forwarded.map(message => message.requestId)).toEqual(['load-first', 'load-second']);
+    expect(firstMessages).toEqual([expect.objectContaining({ requestId: 'load-first', enabled: true })]);
+    expect(secondMessages).toEqual([expect.objectContaining({ requestId: 'load-second', enabled: false })]);
+  });
+
+  it('does not let a delayed identity-less response settle a later request', async () => {
+    CONFIG.skipAuth = true;
+    const firstMessages = [];
+    const secondMessages = [];
+    const agent = { id: 'agent-delayed', name: 'Delayed', ownerId: 'user-1', ws: { readyState: WS_OPEN, send() {} } };
+    agents.set(agent.id, agent);
+    const first = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => firstMessages.push(JSON.parse(payload)) } };
+    const second = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => secondMessages.push(JSON.parse(payload)) } };
+    webClients.set('browser-first', first);
+    webClients.set('browser-second', second);
+
+    await handleClientMisc('browser-first', first, {
+      type: 'update_telemetry_settings', agentId: agent.id, requestId: 'update-old', settings: { enabled: false },
+    }, async () => true);
+    await handleAgentSync(agent.id, agent, {
+      type: 'telemetry_settings_updated', requestId: 'update-old', enabled: false,
+    });
+    await handleClientMisc('browser-second', second, {
+      type: 'update_telemetry_settings', agentId: agent.id, requestId: 'update-new', settings: { enabled: true },
+    }, async () => true);
+
+    await handleAgentSync(agent.id, agent, {
+      type: 'telemetry_settings_updated', enabled: false,
+    });
+    expect(secondMessages).toEqual([]);
+
+    await handleAgentSync(agent.id, agent, {
+      type: 'telemetry_settings_updated', requestId: 'update-new', enabled: true,
+    });
+    expect(firstMessages).toEqual([expect.objectContaining({ requestId: 'update-old', enabled: false })]);
+    expect(secondMessages).toEqual([expect.objectContaining({ requestId: 'update-new', enabled: true })]);
   });
 
   it('routes correlated Agent maintenance and Dream replies only to the originating browser', async () => {

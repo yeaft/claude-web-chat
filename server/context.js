@@ -45,6 +45,64 @@ const YEAFT_DEBUG_REQUEST_TTL_MS = 30_000;
 const YEAFT_DEBUG_REQUEST_MAX_PENDING = 2048;
 export const pendingYeaftDebugRequests = new Map();
 
+// Agent settings replies share one Agent connection across browser clients.
+// Keep request ownership on the Server; response payloads without requestId have
+// no usable provenance and must never be assigned by arrival order.
+const AGENT_SETTINGS_REQUEST_TTL_MS = 120_000;
+const AGENT_SETTINGS_REQUEST_MAX_PENDING = 2048;
+export const pendingAgentSettingsRequests = new Map();
+
+function agentSettingsRequestKey(agentId, requestId) {
+  return `${String(agentId || '')}\u0000${String(requestId || '')}`;
+}
+
+function pruneAgentSettingsRequests(now = Date.now()) {
+  for (const [key, pending] of pendingAgentSettingsRequests) {
+    if (!pending || pending.expiresAt <= now || !webClients.has(pending.clientId)) {
+      pendingAgentSettingsRequests.delete(key);
+    }
+  }
+}
+
+/** Register an owner-checked settings request before it is sent to the Agent. */
+export function registerAgentSettingsRequest({ agentId, operation, requestId, clientId }) {
+  if (!agentId || !operation || !requestId || !clientId) return false;
+  const now = Date.now();
+  pruneAgentSettingsRequests(now);
+  const key = agentSettingsRequestKey(agentId, requestId);
+  if (pendingAgentSettingsRequests.has(key)) return false;
+  if (pendingAgentSettingsRequests.size >= AGENT_SETTINGS_REQUEST_MAX_PENDING) {
+    const oldestKey = pendingAgentSettingsRequests.keys().next().value;
+    if (oldestKey != null) pendingAgentSettingsRequests.delete(oldestKey);
+  }
+  pendingAgentSettingsRequests.set(key, {
+    agentId,
+    operation,
+    requestId,
+    clientId,
+    expiresAt: now + AGENT_SETTINGS_REQUEST_TTL_MS,
+  });
+  return true;
+}
+
+/** Consume one exact response. Identity-less or cross-operation replies fail closed. */
+export function consumeAgentSettingsRequest({ agentId, operation, requestId }) {
+  if (!agentId || !operation || !requestId) return null;
+  pruneAgentSettingsRequests();
+  const key = agentSettingsRequestKey(agentId, requestId);
+  const pending = pendingAgentSettingsRequests.get(key);
+  if (!pending || pending.operation !== operation) return null;
+  pendingAgentSettingsRequests.delete(key);
+  return pending;
+}
+
+export function clearAgentSettingsRequestsForClient(clientId) {
+  if (!clientId) return;
+  for (const [key, pending] of pendingAgentSettingsRequests) {
+    if (pending?.clientId === clientId) pendingAgentSettingsRequests.delete(key);
+  }
+}
+
 function yeaftDebugRequestKey(agentId, requestId) {
   return `${String(agentId || '')}\u0000${String(requestId || '')}`;
 }

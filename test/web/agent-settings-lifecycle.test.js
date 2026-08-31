@@ -80,11 +80,13 @@ describe('Agent-scoped settings lifecycle', () => {
     await expect(secondUpdate).resolves.toMatchObject({ enabled: true });
   });
 
-  it('settles a sole legacy telemetry request while fencing concurrent browser requests', async () => {
+  it('times out identity-less telemetry replies even when only one request is pending', async () => {
     const soleBrowser = freshStore();
     const soleUpdate = soleBrowser.updateTelemetrySettings({ enabled: false }, 'agent-a');
     handleMessage(soleBrowser, { type: 'telemetry_settings_updated', agentId: 'agent-a', enabled: false });
-    await expect(soleUpdate).resolves.toMatchObject({ enabled: false });
+    const soleTimeout = expect(soleUpdate).rejects.toThrow(/timed out/i);
+    await vi.advanceTimersByTimeAsync(15001);
+    await soleTimeout;
 
     const firstBrowser = freshStore();
     const firstUpdate = firstBrowser.updateTelemetrySettings({ enabled: false }, 'agent-a');
@@ -113,7 +115,7 @@ describe('Agent-scoped settings lifecycle', () => {
     const restartRequestId = store.agentOperations['agent-a'].restart.requestId;
     handleMessage(store, { type: 'restart_agent_ack', agentId: 'agent-a', requestId: 'stale-restart' });
     expect(store.agentOperations['agent-a'].restart.acknowledged).toBe(false);
-    handleMessage(store, { type: 'restart_agent_ack', agentId: 'agent-a' });
+    handleMessage(store, { type: 'restart_agent_ack', agentId: 'agent-a', requestId: restartRequestId });
     expect(store.agentOperations['agent-a'].restart.acknowledged).toBe(true);
     handleMessage(store, { type: 'agent_list', agents: [{ id: 'agent-a', online: true, version: '1.0.0' }] });
     expect(store.agentOperations['agent-a'].restart.pending).toBe(true);
@@ -127,7 +129,7 @@ describe('Agent-scoped settings lifecycle', () => {
     const upgradeRequestId = store.agentOperations['agent-a'].upgrade.requestId;
     handleMessage(store, { type: 'upgrade_agent_ack', agentId: 'agent-a', requestId: 'stale-upgrade', success: false, error: 'stale' });
     expect(store.agentOperations['agent-a'].upgrade).toMatchObject({ pending: true, error: null });
-    handleMessage(store, { type: 'upgrade_agent_ack', agentId: 'agent-a', success: false, error: 'nope' });
+    handleMessage(store, { type: 'upgrade_agent_ack', agentId: 'agent-a', requestId: upgradeRequestId, success: false, error: 'nope' });
     expect(store.agentOperations['agent-a'].upgrade).toMatchObject({ pending: false, error: 'nope' });
   });
 
@@ -146,10 +148,11 @@ describe('Agent-scoped settings lifecycle', () => {
     expect(store.agents[0].dreamEnabled).toBe(true);
 
     expect(store.setDreamEnabled('agent-a', false)).toBe(true);
+    const successRequestId = store.agentDreamState['agent-a'].requestId;
     handleMessage(store, { type: 'dream_enabled_changed', agentId: 'agent-a', requestId: 'stale-dream-2', enabled: false });
     expect(store.agentDreamState['agent-a']).toMatchObject({ pending: true, requested: false });
     expect(store.agents[0].dreamEnabled).toBe(true);
-    handleMessage(store, { type: 'dream_enabled_changed', agentId: 'agent-a', enabled: false });
+    handleMessage(store, { type: 'dream_enabled_changed', agentId: 'agent-a', requestId: successRequestId, enabled: false });
     expect(store.agentDreamState['agent-a']).toMatchObject({ pending: false, error: null });
     expect(store.agents[0].dreamEnabled).toBe(false);
 

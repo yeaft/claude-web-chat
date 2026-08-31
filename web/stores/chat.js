@@ -10,10 +10,6 @@ import {
 import { setLocale, getLocale } from '../utils/i18n.js';
 import { agentSupportsYeaftPlugins } from '../utils/yeaft-plugin-capability.js';
 import { agentSupportsYeaftManagedSkills } from '../utils/yeaft-managed-skill-capability.js';
-import {
-  registerLegacyAgentRequest,
-  unregisterLegacyAgentRequest,
-} from './helpers/legacyAgentRequest.js';
 
 // Helper modules
 import * as wsHelpers from './helpers/websocket.js';
@@ -6631,11 +6627,9 @@ export const useChatStore = defineStore('chat', {
       if (!agentId) return Promise.reject(new Error('no agent'));
       const requestId = `telemetry-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       this.telemetryRequestByAgent = { ...this.telemetryRequestByAgent, [agentId]: requestId };
-      registerLegacyAgentRequest(agentId, `telemetry:${operation}`, requestId, 15000);
       return new Promise((resolve, reject) => {
         if (!this._telemetryPending) this._telemetryPending = {};
         const timer = setTimeout(() => {
-          unregisterLegacyAgentRequest(requestId);
           delete this._telemetryPending[requestId];
           if (this.telemetryRequestByAgent?.[agentId] === requestId) {
             const nextRequests = { ...this.telemetryRequestByAgent };
@@ -6667,7 +6661,6 @@ export const useChatStore = defineStore('chat', {
       if (!agentId || this.agentOperations?.[agentId]?.restart?.pending) return false;
       const requestId = `restart-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const timer = setTimeout(() => this.finishAgentOperation(agentId, 'restart', 'timeout'), 120000);
-      registerLegacyAgentRequest(agentId, 'maintenance:restart', requestId, 120000);
       this.agentOperations = { ...this.agentOperations, [agentId]: { ...(this.agentOperations[agentId] || {}), restart: { pending: true, acknowledged: false, startedAt: Date.now(), requestId, timer, error: null } } };
       this.sendWsMessage({ type: 'restart_agent', agentId, requestId });
       return true;
@@ -6678,7 +6671,6 @@ export const useChatStore = defineStore('chat', {
       const agent = this.agents.find(item => item.id === agentId);
       const requestId = `upgrade-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const timer = setTimeout(() => this.finishAgentOperation(agentId, 'upgrade', 'timeout'), 120000);
-      registerLegacyAgentRequest(agentId, 'maintenance:upgrade', requestId, 120000);
       this.agentOperations = { ...this.agentOperations, [agentId]: { ...(this.agentOperations[agentId] || {}), upgrade: { pending: true, acknowledged: false, startedAt: Date.now(), requestId, oldVersion: agent?.version || null, timer, error: null } } };
       this.sendWsMessage({ type: 'upgrade_agent', agentId, requestId });
       return true;
@@ -6688,7 +6680,6 @@ export const useChatStore = defineStore('chat', {
       const current = this.agentOperations?.[agentId]?.[operation];
       if (!current) return;
       clearTimeout(current.timer);
-      unregisterLegacyAgentRequest(current.requestId);
       this.agentOperations = { ...this.agentOperations, [agentId]: { ...(this.agentOperations[agentId] || {}), [operation]: { ...current, pending: false, timer: null, error } } };
     },
 
@@ -7801,11 +7792,9 @@ export const useChatStore = defineStore('chat', {
       const agent = this.agents.find(item => item.id === agentId);
       const requested = enabled !== false;
       const requestId = `dream-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      registerLegacyAgentRequest(agentId, 'dream:update', requestId, 15000);
       const timer = setTimeout(() => {
         const current = this.agentDreamState?.[agentId];
         if (!current?.pending || current.requestId !== requestId) return;
-        unregisterLegacyAgentRequest(requestId);
         this.agentDreamState = {
           ...this.agentDreamState,
           [agentId]: { ...current, pending: false, timer: null, error: 'timeout' },

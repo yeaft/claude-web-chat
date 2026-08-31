@@ -30,9 +30,10 @@ describe('Agent settings surface', () => {
   });
 
   it('keeps per-Agent telemetry requests correlated by request and agent', () => {
-    expect(chatStore).toContain("this._telemetryPending[requestId] = { resolve, reject, timer, agentId, operation }");
+    expect(chatStore).toContain("this._telemetryPending[requestId] = { resolve, reject, timer, agentId, operation, requestId }");
     expect(messageHandler).toContain("pending: store._telemetryPending?.[msg.requestId]");
-    expect(messageHandler).not.toContain('uniquePending(');
+    expect(messageHandler).toContain('A response without request identity has no provenance');
+    expect(messageHandler).not.toContain('isUniqueLegacyAgentRequest');
     expect(panel).toContain('this.store.loadTelemetrySettings(agentId)');
     expect(panel).toContain('this.store.updateTelemetrySettings(this.telemetryDraft, agentId)');
   });
