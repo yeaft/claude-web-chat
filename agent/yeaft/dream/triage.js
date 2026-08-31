@@ -6,9 +6,10 @@ import { isValidTopic } from '../memory/store.js';
  * The decision is two-staged on purpose:
  *
  *   1. **Hard rules** (this module, no LLM): everything we can determine
- *      from message metadata. Always include the active session, every VP
- *      that spoke as an assistant in the diff, and `user` (so painted-over
- *      user-profile signals can't be missed). (Feature scope was dropped
+ *      from message metadata. Always include the active session and every VP
+ *      that spoke as an assistant in the diff. User-profile scopes are not a
+ *      structural property, so they are added only when soft classification
+ *      confirms a durable profile signal. (Feature scope was dropped
  *      2026-05-13 along with the rest of the Feature system.)
  *
  *   2. **Soft classification** (LLM, two passes):
@@ -18,14 +19,15 @@ import { isValidTopic } from '../memory/store.js';
  *                              it to an exact existing path or propose
  *                              a new ≤2-level path.
  *
- *      VP / group are deliberately NOT asked of the LLM — Hard Rules
+ *      VP / Session are deliberately NOT asked of the LLM — Hard Rules
  *      already cover them, and giving the LLM a chance to drop a
  *      structurally-required scope would weaken the contract.
  *
- *      `user_profile_signals === true` does not need Pass-2 either: the
- *      Hard Rule already added `user` and Apply itself decides whether
- *      to actually rewrite anything (an UPDATE with no relevant content
- *      reads as a no-op rewrite of the existing memory).
+ *      `user_profile_signals === true` does not need Pass-2: it directly
+ *      adds the global `user` scope and, for a real collaborative Session,
+ *      the Session-local `sessions/<id>/user` scope. Keeping those scopes
+ *      out when the classifier says false avoids two Apply rewrites and two
+ *      extraction requests for ordinary task-focused conversation.
  *
  * The LLM is injected as a callable: `llm({ pass, prompt, system })` →
  * Promise<string>. Tests pass a stub; runner injects the real adapter.
@@ -63,8 +65,8 @@ export function applyHardRules({ sessionId, chatId, messages }) {
   const out = new Map();
   const add = (scope) => { if (!out.has(scope)) out.set(scope, { kind: 'update', scope }); };
 
-  // global user is always in.
-  add('user');
+  // User-profile scopes are content-dependent and are added by soft
+  // classification only when the diff contains a durable profile signal.
 
   // chat path takes precedence: chat sessions have no collaborative session context.
   if (chatId) {
@@ -84,7 +86,6 @@ export function applyHardRules({ sessionId, chatId, messages }) {
   // active collaborative session, except the virtual _no-session bucket.
   if (sessionId && sessionId !== '_no-session') {
     add(`sessions/${sessionId}`);
-    add(`sessions/${sessionId}/user`);
   }
 
   for (const m of (messages || [])) {
@@ -161,11 +162,13 @@ export async function classifySoft({ root, sessionId, messages, topicSummaries, 
   const pass1 = parseJsonSafe(pass1Raw);
   const out = [];
 
-  // user_profile_signals: covered by hard rules; we only emit explicit
-  // user action here when Pass-1 says yes (idempotent if hard rules
-  // already added it).
+  // User-profile scopes are expensive shared-memory rewrites, not structural
+  // Session scopes. Route to them only when Pass-1 finds a durable signal.
   if (pass1 && pass1.user_profile_signals === true) {
     out.push({ kind: 'update', scope: 'user' });
+    if (sessionId && sessionId !== '_no-session') {
+      out.push({ kind: 'update', scope: `sessions/${sessionId}/user` });
+    }
   }
 
   const topicDescriptions = (pass1 && Array.isArray(pass1.topics)) ? pass1.topics : [];

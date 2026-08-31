@@ -30,7 +30,7 @@ import { NullTrace, DebugTrace, projectDebugDetailForWire } from '../../../agent
 import { consolidateSessionTopics } from '../../../agent/yeaft/dream/topic-consolidation.js';
 import { resolveTopicRedirect } from '../../../agent/yeaft/memory/topic-redirect.js';
 import { runDream } from '../../../agent/yeaft/dream/runner.js';
-import { classifySoft } from '../../../agent/yeaft/dream/triage.js';
+import { applyHardRules, classifySoft, triageOneSegment } from '../../../agent/yeaft/dream/triage.js';
 import { readDreamError, readSessionState, writeSessionState } from '../../../agent/yeaft/dream/state.js';
 import { extractAndWriteMemorySegments } from '../../../agent/yeaft/dream/segment-extract.js';
 import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
@@ -1512,6 +1512,7 @@ describe('Engine memory prompt hygiene', () => {
           { id: 'm101', role: 'assistant', vpId: 'linus', body: 'I will inspect the repository.' },
           { id: 'm102', role: 'tool', body: '{"command":"git status --short"}' },
         ],
+        targets: ['sessions/s1'],
         nowIso: () => '2026-08-07T00:00:00.000Z',
         llm: async () => '[]',
       });
@@ -1567,6 +1568,37 @@ describe('Engine memory prompt hygiene', () => {
     }
   });
 
+  it('routes Dream user-profile scopes only when triage finds a durable profile signal', async () => {
+    const sessionId = 'profile-signal-session';
+    const messages = [{ id: 'm1', role: 'user', body: 'Keep the parser tests green.' }];
+
+    expect(applyHardRules({ sessionId, messages })).toEqual([
+      { kind: 'update', scope: `sessions/${sessionId}` },
+    ]);
+
+    const withoutProfile = await triageOneSegment({
+      sessionId,
+      messages,
+      topicSummaries: [],
+      llm: async () => JSON.stringify({ user_profile_signals: false, topics: [] }),
+    });
+    expect(withoutProfile).toEqual([
+      { kind: 'update', scope: `sessions/${sessionId}` },
+    ]);
+
+    const withProfile = await triageOneSegment({
+      sessionId,
+      messages: [{ id: 'm2', role: 'user', body: 'I prefer concise review summaries.' }],
+      topicSummaries: [],
+      llm: async () => JSON.stringify({ user_profile_signals: true, topics: [] }),
+    });
+    expect(withProfile).toEqual([
+      { kind: 'update', scope: `sessions/${sessionId}` },
+      { kind: 'update', scope: 'user' },
+      { kind: 'update', scope: `sessions/${sessionId}/user` },
+    ]);
+  });
+
   it('resolves Dream soft-triage topic redirects without losing the memory root', async () => {
     const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-triage-redirect-'));
     const redirectDir = join(root, 'sessions', 's1', 'topic', 'old-topic');
@@ -1595,16 +1627,20 @@ describe('Engine memory prompt hygiene', () => {
     const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-triage-runner-'));
     const sessionId = 'triage-session';
     const message = { id: 'm1', role: 'user', body: 'Dream topic routing must keep redirects valid.' };
+    const extractedScopes = [];
     try {
       const report = await runDream({
         root,
         manual: true,
-        llm: async ({ pass }) => {
+        llm: async ({ pass, prompt }) => {
           if (pass === 'triage-pass1') {
             return JSON.stringify({ user_profile_signals: false, topics: ['Dream topic routing'] });
           }
           if (pass === 'triage-pass2') return JSON.stringify({ decision: 'new', path: 'dream-routing' });
-          if (pass === 'extract-segments') return '[]';
+          if (pass === 'extract-segments') {
+            extractedScopes.push(/Target scope: ([^\n]+)/.exec(prompt)?.[1]);
+            return '[]';
+          }
           if (pass === 'topic-consolidation') return JSON.stringify({ groups: [] });
           return JSON.stringify({ content_md: 'Dream topic routing remains valid.', summary_md: 'Dream routing.' });
         },
@@ -1617,11 +1653,15 @@ describe('Engine memory prompt hygiene', () => {
       });
 
       expect(report.sessions).toEqual([
-        expect.objectContaining({ sessionId, status: 'triaged', actions: 4 }),
+        expect.objectContaining({ sessionId, status: 'triaged', actions: 2 }),
       ]);
       expect(report.targets).toEqual(expect.arrayContaining([
         expect.objectContaining({ target: `sessions/${sessionId}/topic/dream-routing`, status: 'done' }),
       ]));
+      expect(extractedScopes).toEqual([
+        `sessions/${sessionId}`,
+        `sessions/${sessionId}/topic/dream-routing`,
+      ]);
       expect(await readSessionState(root, sessionId)).toEqual({
         lastDreamMessageId: 'm1',
         lastDreamAt: '2026-08-07T08:00:00.000Z',
@@ -1695,7 +1735,7 @@ describe('Engine memory prompt hygiene', () => {
         manual: true,
         scopeFilter: ['user', `sessions/${sessionId}`],
         llm: async ({ pass, prompt }) => {
-          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [] });
           if (pass === 'update') {
             if (prompt.includes('Scope: user')) throw new Error('synthetic user target failure');
             return JSON.stringify({ content_md: 'session content', summary_md: 'session summary' });
@@ -1747,7 +1787,7 @@ describe('Engine memory prompt hygiene', () => {
           MAX_DREAM_PROMPT_CHARS: 32_000,
         },
         llm: async ({ pass }) => {
-          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [] });
           if (pass === 'update') {
             updateCalls += 1;
             if (updateCalls === 2) throw new Error('synthetic middle batch failure');
@@ -1829,7 +1869,7 @@ describe('Engine memory prompt hygiene', () => {
         expect.objectContaining({
           sessionId,
           status: 'error',
-          attemptedScopes: 3,
+          attemptedScopes: 1,
           successfulScopes: 0,
           errors: expect.arrayContaining([
             expect.objectContaining({ error: expect.stringContaining(expectedError) }),
@@ -1861,9 +1901,9 @@ describe('Engine memory prompt hygiene', () => {
       const report = await runDream({
         root,
         manual: true,
-        scopeFilter: [`sessions/${sessionId}`],
+        scopeFilter: ['*'],
         llm: async ({ pass }) => {
-          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [] });
           if (pass === 'update') return JSON.stringify({ content_md: 'applied content', summary_md: 'applied summary' });
           if (pass === 'extract-segments') {
             extractionCalls += 1;
@@ -1921,7 +1961,7 @@ describe('Engine memory prompt hygiene', () => {
         ...common,
         manual: false,
         llm: async ({ pass }) => {
-          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [] });
           throw new Error('synthetic Apply failure');
         },
         nowIso: () => '2026-08-07T10:00:00.000Z',
@@ -1952,7 +1992,7 @@ describe('Engine memory prompt hygiene', () => {
         ...common,
         manual: true,
         llm: async ({ pass }) => {
-          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [] });
           if (pass === 'extract-segments') return '[]';
           if (pass === 'topic-consolidation') return JSON.stringify({ groups: [] });
           return JSON.stringify({ content_md: 'recovered', summary_md: 'recovered' });
@@ -1981,7 +2021,7 @@ describe('Engine memory prompt hygiene', () => {
         manual: true,
         scopeFilter: ['user', `sessions/${sessionId}`],
         llm: async ({ pass }) => {
-          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: false, topics: [] });
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [] });
           if (pass === 'update') return JSON.stringify({ content_md: 'all targets content', summary_md: 'all targets summary' });
           if (pass === 'extract-segments') return '[]';
           return JSON.stringify({ groups: [] });

@@ -1,9 +1,9 @@
 /**
  * dream/segment-extract.js.
  *
- * Extract atomic evidence segments for scopes touched by a Dream pass and
- * persist them through memory/segment-store. Dream Apply separately maintains
- * canonical content.md and the short catalog summary.md.
+ * Extract atomic evidence segments only for scopes successfully touched by a
+ * Dream pass and persist them through memory/segment-store. Dream Apply
+ * separately maintains canonical content.md and the short catalog summary.md.
  */
 
 import { readScope, writeScope } from '../memory/segment-store.js';
@@ -144,7 +144,7 @@ function templateVarsForScope(scope, sessionId) {
 }
 
 function normalizeTargetScopes(sessionId, targets) {
-  const out = new Set(['user', `sessions/${sessionId}`, `sessions/${sessionId}/user`]);
+  const out = new Set();
   for (const target of targets) {
     if (typeof target !== 'string') continue;
     const clean = target.trim();
