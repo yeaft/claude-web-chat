@@ -56,6 +56,14 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       break;
     }
 
+    case 'set_dream_enabled': {
+      const agentId = msg.agentId;
+      if (!agentId) break;
+      if (!await checkAgentAccess(agentId)) break;
+      await forwardToAgent(agentId, { type: 'set_dream_enabled', enabled: msg.enabled !== false });
+      break;
+    }
+
     case 'upgrade_agent': {
       const upgradeAgentId = msg.agentId;
       if (!upgradeAgentId) break;

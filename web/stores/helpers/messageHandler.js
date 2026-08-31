@@ -979,6 +979,12 @@ export function handleMessage(store, msg) {
       }
       break;
 
+    case 'dream_enabled_changed': {
+      const agent = Array.isArray(store.agents) ? store.agents.find(item => item.id === msg.agentId) : null;
+      if (agent && !msg.error) agent.dreamEnabled = msg.enabled !== false;
+      break;
+    }
+
     case 'restart_agent_ack':
       console.log(`[Agent] Restart acknowledged by agent: ${msg.agentId}`);
       window.dispatchEvent(new CustomEvent('agent-restart-ack', { detail: { agentId: msg.agentId } }));

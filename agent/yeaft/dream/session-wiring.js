@@ -668,8 +668,8 @@ export function createV2DreamScheduler(session) {
     keepAlive: !!session?.config?.serverMode,
     logger: session.config?.debug ? console : undefined,
   });
-  // Auto-start the timer.
-  v2.start();
+  let enabled = session?.config?.dream?.enabled !== false;
+  if (enabled) v2.start();
 
   // task-710: wire `noteUserMessage` to a real per-session message
   // counter. When the count crosses DREAM_NUDGE_AFTER_MESSAGES (default
@@ -685,6 +685,7 @@ export function createV2DreamScheduler(session) {
   // immediately, defeating the 50-message guarantee.
   let messagesSinceLastNudgeFire = 0;
   function nudgeOnUserMessage() {
+    if (!enabled) return;
     messagesSinceLastNudgeFire += 1;
     if (messagesSinceLastNudgeFire < DREAM_NUDGE_AFTER_MESSAGES) return;
     if (v2.isRunning()) {
@@ -709,8 +710,20 @@ export function createV2DreamScheduler(session) {
      * below threshold are skipped — same shape as the interval timer
      * tick. Used by `bootCatchUpStaleDream`.
      */
-    catchUpNudge() { return v2.nudge(); },
+    catchUpNudge() {
+      return enabled ? v2.nudge() : Promise.resolve({ skipped: true, skippedReason: 'disabled', trigger: 'auto' });
+    },
+    setEnabled(nextEnabled) {
+      enabled = nextEnabled !== false;
+      if (enabled) v2.start();
+      else {
+        messagesSinceLastNudgeFire = 0;
+        v2.stop();
+      }
+      return enabled;
+    },
     shutdown() { v2.stop(); },
+    get enabled() { return enabled; },
     get isRunning() { return v2.isRunning(); },
     // Preserve direct access for tests.
     _v2: v2,

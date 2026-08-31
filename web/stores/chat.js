@@ -7748,7 +7748,7 @@ export const useChatStore = defineStore('chat', {
     answerUserQuestion(requestId, answers, conversationId) { convHelpers.answerUserQuestion(this, requestId, answers, conversationId); },
     refreshAgents() { convHelpers.refreshAgents(this); },
     refreshConversation() { convHelpers.refreshConversation(this); },
-    restartAgent(agentId) { convHelpers.restartAgent(this, agentId); },
+    setDreamEnabled(agentId, enabled) { convHelpers.setDreamEnabled(this, agentId, enabled); },
     upgradeAgent(agentId) { convHelpers.upgradeAgent(this, agentId); },
 
     // ★ Phase 6.1: 分页加载（基于 turn，统一走 DB）

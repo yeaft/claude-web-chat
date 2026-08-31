@@ -62,7 +62,7 @@ export default {
             :restarting-agents="restartingAgents"
             :upgrading-agents="upgradingAgents"
             :show-agent-actions="true"
-            @restart-agent="restartAgent"
+            @set-dream-enabled="setDreamEnabled"
             @upgrade-agent="upgradeAgent"
           />
           <div class="sidebar-header-actions">
@@ -724,15 +724,9 @@ export default {
       setTimeout(() => window.addEventListener('click', close, true), 0);
       if (evt && typeof evt.stopPropagation === 'function') evt.stopPropagation();
     },
-    async restartAgent(agentId) {
+    setDreamEnabled(agentId, enabled) {
       const s = this.chatStore || this.store;
-      if (!s || !Array.isArray(s.agents) || typeof s.restartAgent !== 'function') return;
-      const agent = s.agents.find(a => a && a.id === agentId);
-      const name = agent?.name || agentId;
-      if (!await confirmDialog(this.$t('chat.agent.restartConfirm', { name }))) return;
-      this.restartingAgents[agentId] = true;
-      setTimeout(() => { delete this.restartingAgents[agentId]; }, 120000);
-      s.restartAgent(agentId);
+      if (typeof s?.setDreamEnabled === 'function') s.setDreamEnabled(agentId, enabled);
     },
     clearRecoveredAgentStatuses() {
       const s = this.chatStore || this.store;

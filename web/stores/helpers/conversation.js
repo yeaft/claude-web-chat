@@ -663,12 +663,9 @@ export function refreshConversation(store) {
   });
 }
 
-export function restartAgent(store, agentId) {
+export function setDreamEnabled(store, agentId, enabled) {
   if (!agentId) return;
-  store.sendWsMessage({
-    type: 'restart_agent',
-    agentId
-  });
+  store.sendWsMessage({ type: 'set_dream_enabled', agentId, enabled: enabled !== false });
 }
 
 export function upgradeAgent(store, agentId) {
