@@ -31,14 +31,17 @@ describe('Agent settings surface', () => {
 
   it('keeps per-Agent telemetry requests correlated by request and agent', () => {
     expect(chatStore).toContain("this._telemetryPending[requestId] = { resolve, reject, timer, agentId, operation }");
-    expect(messageHandler).toContain("uniquePending(store._telemetryPending, pending => pending.agentId === msg.agentId && pending.operation === expectedOperation)");
+    expect(messageHandler).toContain("pending: store._telemetryPending?.[msg.requestId]");
+    expect(messageHandler).not.toContain('uniquePending(');
     expect(panel).toContain('this.store.loadTelemetrySettings(agentId)');
     expect(panel).toContain('this.store.updateTelemetrySettings(this.telemetryDraft, agentId)');
   });
 
-  it('shows the authoritative Agent update state', () => {
+  it('treats the pushed Agent version as a hint and keeps manual registry checks available', () => {
     expect(panel).toContain('selectedAgent.upgradeAvailable');
-    expect(panel).toContain("$t('agentSettings.runtime.upToDate')");
+    expect(panel).toContain("$t('agentSettings.runtime.updateUnknown')");
+    expect(panel).not.toContain("$t('agentSettings.runtime.upToDate')");
+    expect(panel).toContain(':disabled="busy || !selectedAgent.online"');
     expect(en).toContain("'agentSettings.runtime.updateAvailable': 'Update available: v{version}'");
     expect(zh).toContain("'agentSettings.runtime.updateAvailable': '可更新至 v{version}'");
   });

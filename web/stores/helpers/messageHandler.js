@@ -38,11 +38,6 @@ const DEBUG_HISTORY_DEFAULT_LIMIT = 1;
 const DEBUG_HISTORY_SEARCH_LIMIT = 5;
 const LEGACY_YEAFT_SESSION_INVENTORY_QUIET_MS = 500;
 
-function uniquePending(pendingMap, predicate) {
-  const matches = Object.entries(pendingMap || {}).filter(([, pending]) => predicate(pending));
-  return matches.length === 1 ? { requestId: matches[0][0], pending: matches[0][1] } : null;
-}
-
 function sessionsStore() {
   return window.Pinia?.useSessionsStore?.()
     || (window.__useSessionsStore && window.__useSessionsStore());
@@ -986,8 +981,7 @@ export function handleMessage(store, msg) {
 
     case 'dream_enabled_changed': {
       const previous = store.agentDreamState?.[msg.agentId] || {};
-      if (!previous.pending) break;
-      if (msg.requestId ? previous.requestId !== msg.requestId : !msg.agentId) break;
+      if (!previous.pending || !msg.requestId || previous.requestId !== msg.requestId) break;
       clearTimeout(previous.timer);
       const agent = Array.isArray(store.agents) ? store.agents.find(item => item.id === msg.agentId) : null;
       if (agent) agent.dreamEnabled = msg.enabled !== false;
@@ -997,8 +991,8 @@ export function handleMessage(store, msg) {
 
     case 'restart_agent_ack': {
       const current = store.agentOperations?.[msg.agentId]?.restart;
-      if (msg.requestId && (!current?.pending || current.requestId !== msg.requestId)) break;
-      if (current?.pending) {
+      if (!msg.requestId || !current?.pending || current.requestId !== msg.requestId) break;
+      if (current.pending) {
         store.agentOperations = { ...store.agentOperations, [msg.agentId]: { ...(store.agentOperations[msg.agentId] || {}), restart: { ...current, acknowledged: true } } };
       }
       window.dispatchEvent(new CustomEvent('agent-restart-ack', { detail: { agentId: msg.agentId, requestId: msg.requestId } }));
@@ -1007,8 +1001,8 @@ export function handleMessage(store, msg) {
 
     case 'upgrade_agent_ack': {
       const current = store.agentOperations?.[msg.agentId]?.upgrade;
-      if (msg.requestId && (!current?.pending || current.requestId !== msg.requestId)) break;
-      if (current?.pending) {
+      if (!msg.requestId || !current?.pending || current.requestId !== msg.requestId) break;
+      if (current.pending) {
         if (!msg.success || msg.alreadyLatest) store.finishAgentOperation?.(msg.agentId, 'upgrade', msg.error || null);
         else store.agentOperations = { ...store.agentOperations, [msg.agentId]: { ...(store.agentOperations[msg.agentId] || {}), upgrade: { ...current, acknowledged: true } } };
       }
@@ -1232,9 +1226,11 @@ export function handleMessage(store, msg) {
         at: Date.now(),
       };
       const expectedOperation = msg.type === 'telemetry_settings_updated' ? 'update' : 'load';
+      // Identity-less legacy replies may be broadcast to every browser owned by
+      // the same user. Never guess request ownership from this tab's local state.
       const match = msg.requestId
         ? { requestId: msg.requestId, pending: store._telemetryPending?.[msg.requestId] }
-        : uniquePending(store._telemetryPending, pending => pending.agentId === msg.agentId && pending.operation === expectedOperation);
+        : null;
       const pending = match?.pending;
       if (!pending || pending.agentId !== msg.agentId || pending.operation !== expectedOperation) break;
       clearTimeout(pending.timer);

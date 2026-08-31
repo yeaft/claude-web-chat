@@ -30,6 +30,40 @@ function buildAgentMapKey(ownerId, agentName) {
   return `${prefix}:${agentName}`;
 }
 
+function parseSemver(version) {
+  const match = String(version || '').trim().match(/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
+  if (!match) return null;
+  return {
+    core: match.slice(1, 4).map(Number),
+    prerelease: match[4] ? match[4].split('.') : [],
+  };
+}
+
+export function isNewerAgentVersion(candidate, current) {
+  const next = parseSemver(candidate);
+  const installed = parseSemver(current);
+  if (!next || !installed) return false;
+  for (let index = 0; index < 3; index += 1) {
+    if (next.core[index] !== installed.core[index]) return next.core[index] > installed.core[index];
+  }
+  if (next.prerelease.length === 0 || installed.prerelease.length === 0) {
+    return next.prerelease.length === 0 && installed.prerelease.length > 0;
+  }
+  const length = Math.max(next.prerelease.length, installed.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const left = next.prerelease[index];
+    const right = installed.prerelease[index];
+    if (left === right) continue;
+    if (left === undefined || right === undefined) return right === undefined;
+    const leftNumeric = /^\d+$/.test(left);
+    const rightNumeric = /^\d+$/.test(right);
+    if (leftNumeric && rightNumeric) return Number(left) > Number(right);
+    if (leftNumeric !== rightNumeric) return !leftNumeric;
+    return left > right;
+  }
+  return false;
+}
+
 let nextAgentConnectionGeneration = 0;
 // Keep the latest generation as a tombstone while an older auth may still arrive.
 const latestAgentConnectionGenerations = new Map();
@@ -306,7 +340,11 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
   const encryptOutbound = !effectiveCapabilities.includes('plaintext-ok');
 
   const latestAgentVersion = process.env.AGENT_LATEST_VERSION || null;
-  const upgradeAvailable = (latestAgentVersion && agentVersion && latestAgentVersion !== agentVersion) ? latestAgentVersion : null;
+  // This environment value is only an optional push hint. It is not a registry
+  // query and must never claim an equal, older, or malformed version is newer.
+  const upgradeAvailable = isNewerAgentVersion(latestAgentVersion, agentVersion)
+    ? latestAgentVersion
+    : null;
 
   agents.set(agentId, {
     ws,

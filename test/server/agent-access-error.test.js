@@ -27,11 +27,21 @@ import {
   YEAFT_MANAGED_SKILLS_CAPABILITY,
   YEAFT_MANAGED_SKILLS_UNSUPPORTED_ERROR,
 } from '../../server/yeaft-managed-skill-capability.js';
-import { handleAgentConnection } from '../../server/ws-agent.js';
+import { handleAgentConnection, isNewerAgentVersion } from '../../server/ws-agent.js';
 import { MockWebSocket, WS_OPEN } from '../helpers/mockWs.js';
 
 describe('resolveAgentAccessError', () => {
   const originalSkipAuth = CONFIG.skipAuth;
+
+  it('only treats a valid newer semver push hint as an available upgrade', () => {
+    expect(isNewerAgentVersion('1.10.0', '1.9.9')).toBe(true);
+    expect(isNewerAgentVersion('v2.0.0', '1.99.99')).toBe(true);
+    expect(isNewerAgentVersion('1.0.0', '1.0.0')).toBe(false);
+    expect(isNewerAgentVersion('1.0.0', '1.1.0')).toBe(false);
+    expect(isNewerAgentVersion('1.0.0-beta.2', '1.0.0-beta.1')).toBe(true);
+    expect(isNewerAgentVersion('1.0.0-beta.1', '1.0.0')).toBe(false);
+    expect(isNewerAgentVersion('latest', '1.0.0')).toBe(false);
+  });
 
   afterEach(() => {
     CONFIG.skipAuth = originalSkipAuth;
@@ -71,6 +81,29 @@ describe('resolveAgentAccessError', () => {
     });
     expect(originMessages).toEqual([{ type: 'telemetry_settings', requestId: 'telemetry-1', clientId: 'browser-origin', enabled: true, agentId: agent.id }]);
     expect(siblingMessages).toEqual([]);
+  });
+
+  it('broadcasts legacy identity-less telemetry replies without inventing browser ownership', async () => {
+    CONFIG.skipAuth = true;
+    const firstMessages = [];
+    const secondMessages = [];
+    const agent = { id: 'agent-legacy', name: 'Legacy', ownerId: 'user-1' };
+    webClients.set('browser-first', {
+      authenticated: true, userId: 'user-1', role: 'user',
+      ws: { readyState: WS_OPEN, send: payload => firstMessages.push(JSON.parse(payload)) },
+    });
+    webClients.set('browser-second', {
+      authenticated: true, userId: 'user-1', role: 'user',
+      ws: { readyState: WS_OPEN, send: payload => secondMessages.push(JSON.parse(payload)) },
+    });
+
+    await handleAgentSync(agent.id, agent, {
+      type: 'telemetry_settings_updated', enabled: false,
+    });
+
+    const expected = [{ type: 'telemetry_settings_updated', enabled: false, agentId: agent.id }];
+    expect(firstMessages).toEqual(expected);
+    expect(secondMessages).toEqual(expected);
   });
 
   it('routes correlated Agent maintenance and Dream replies only to the originating browser', async () => {

@@ -72,7 +72,6 @@ export default {
                   <span>{{ $t('agentSettings.runtime.version') }}</span>
                   <strong>{{ selectedAgent.version ? 'v' + selectedAgent.version : '—' }}</strong>
                   <small v-if="selectedAgent.upgradeAvailable">{{ $t('agentSettings.runtime.updateAvailable', { version: selectedAgent.upgradeAvailable }) }}</small>
-                  <small v-else-if="selectedAgent.version">{{ $t('agentSettings.runtime.upToDate') }}</small>
                   <small v-else>{{ $t('agentSettings.runtime.updateUnknown') }}</small>
                 </div>
                 <div class="agent-settings-field">
@@ -142,7 +141,7 @@ export default {
                 </div>
               </div>
               <div class="agent-settings-actions">
-                <button class="btn-secondary" type="button" :disabled="busy || !selectedAgent.online || !selectedAgent.upgradeAvailable" @click="upgradeAgent">
+                <button class="btn-secondary" type="button" :disabled="busy || !selectedAgent.online" @click="upgradeAgent">
                   {{ upgrading ? $t('chat.agent.upgrading') : $t('chat.agent.upgrade') }}
                 </button>
                 <button class="agent-settings-danger-button" type="button" :disabled="busy || !selectedAgent.online" @click="restartAgent">

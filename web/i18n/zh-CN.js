@@ -133,7 +133,6 @@ export default {
   'agentSettings.runtime.description': '身份、工作目录和本地后台处理。',
   'agentSettings.runtime.version': '版本',
   'agentSettings.runtime.updateAvailable': '可更新至 v{version}',
-  'agentSettings.runtime.upToDate': '已是最新版本',
   'agentSettings.runtime.updateUnknown': '无法获取更新状态',
   'agentSettings.runtime.workDir': '工作目录',
   'agentSettings.telemetry.title': '诊断',

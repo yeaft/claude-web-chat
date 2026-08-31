@@ -56,30 +56,25 @@ describe('Agent-scoped settings lifecycle', () => {
     expect(Object.keys(store._telemetryPending)).toHaveLength(0);
   });
 
-  it('accepts only safely attributable legacy telemetry responses', async () => {
-    const store = freshStore();
-    const legacyLoad = store.loadTelemetrySettings('agent-a');
-    handleMessage(store, { type: 'telemetry_settings', agentId: 'agent-a', enabled: false });
-    await expect(legacyLoad).resolves.toMatchObject({ enabled: false });
+  it('does not settle concurrent browser mutations from identity-less legacy replies', async () => {
+    const firstBrowser = freshStore();
+    const firstUpdate = firstBrowser.updateTelemetrySettings({ enabled: false }, 'agent-a');
+    const firstRequestId = firstBrowser.sendWsMessage.mock.calls.at(-1)[0].requestId;
 
-    const first = store.loadTelemetrySettings('agent-a');
-    const second = store.loadTelemetrySettings('agent-a');
-    handleMessage(store, { type: 'telemetry_settings', agentId: 'agent-a', enabled: true });
-    expect(Object.keys(store._telemetryPending)).toHaveLength(2);
-    const requests = store.sendWsMessage.mock.calls.slice(-2).map(call => call[0].requestId);
-    for (const requestId of requests) {
-      handleMessage(store, { type: 'telemetry_settings', agentId: 'agent-a', requestId, enabled: true });
-    }
-    await Promise.all([first, second]);
+    const secondBrowser = freshStore();
+    const secondUpdate = secondBrowser.updateTelemetrySettings({ enabled: true }, 'agent-a');
+    const secondRequestId = secondBrowser.sendWsMessage.mock.calls.at(-1)[0].requestId;
 
-    const load = store.loadTelemetrySettings('agent-a');
-    const update = store.updateTelemetrySettings({ enabled: false }, 'agent-a');
-    handleMessage(store, { type: 'telemetry_settings_updated', agentId: 'agent-a', enabled: false });
-    await expect(update).resolves.toMatchObject({ enabled: false });
-    expect(Object.values(store._telemetryPending).map(item => item.operation)).toEqual(['load']);
-    const loadRequestId = store.sendWsMessage.mock.calls.at(-2)[0].requestId;
-    handleMessage(store, { type: 'telemetry_settings', agentId: 'agent-a', requestId: loadRequestId, enabled: true });
-    await load;
+    const legacyReply = { type: 'telemetry_settings_updated', agentId: 'agent-a', enabled: false };
+    handleMessage(firstBrowser, legacyReply);
+    handleMessage(secondBrowser, legacyReply);
+    expect(Object.keys(firstBrowser._telemetryPending)).toEqual([firstRequestId]);
+    expect(Object.keys(secondBrowser._telemetryPending)).toEqual([secondRequestId]);
+
+    handleMessage(firstBrowser, { ...legacyReply, requestId: firstRequestId });
+    handleMessage(secondBrowser, { ...legacyReply, requestId: secondRequestId, enabled: true });
+    await expect(firstUpdate).resolves.toMatchObject({ enabled: false });
+    await expect(secondUpdate).resolves.toMatchObject({ enabled: true });
   });
 
   it('keeps restart and upgrade lifecycle in shared Agent-scoped state and fences duplicates', () => {
@@ -125,7 +120,11 @@ describe('Agent-scoped settings lifecycle', () => {
     expect(store.agents[0].dreamEnabled).toBe(true);
 
     expect(store.setDreamEnabled('agent-a', false)).toBe(true);
+    const pendingRequestId = store.agentDreamState['agent-a'].requestId;
     handleMessage(store, { type: 'dream_enabled_changed', agentId: 'agent-a', enabled: false });
+    expect(store.agentDreamState['agent-a']).toMatchObject({ pending: true, requested: false });
+    expect(store.agents[0].dreamEnabled).toBe(true);
+    handleMessage(store, { type: 'dream_enabled_changed', agentId: 'agent-a', requestId: pendingRequestId, enabled: false });
     expect(store.agentDreamState['agent-a']).toMatchObject({ pending: false, error: null });
     expect(store.agents[0].dreamEnabled).toBe(false);
 

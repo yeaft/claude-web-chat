@@ -133,7 +133,6 @@ export default {
   'agentSettings.runtime.description': 'Identity, workspace, and local background processing.',
   'agentSettings.runtime.version': 'Version',
   'agentSettings.runtime.updateAvailable': 'Update available: v{version}',
-  'agentSettings.runtime.upToDate': 'Up to date',
   'agentSettings.runtime.updateUnknown': 'Update status unavailable',
   'agentSettings.runtime.workDir': 'Working directory',
   'agentSettings.telemetry.title': 'Diagnostics',
