@@ -262,6 +262,30 @@ export default {
       this.chatStore.pendingUnifiedSessionSettings = null;
       this.openGroupSettings({ id: pending.sessionId, agentId: pending.agentId }, pending.section || 'session');
     }
+    this._agentUpgradeAckHandler = (event) => {
+      const { success, error, alreadyLatest, version, reason, currentNode, requiredNode } = event.detail || {};
+      if (!success) {
+        if (reason === 'node_incompatible') {
+          alertDialog(this.$t('chat.agent.nodeIncompatible', {
+            current: currentNode || '?',
+            required: requiredNode || '?',
+            version: version || '',
+          }));
+        } else if (reason === 'container_image_upgrade_required') {
+          alertDialog(this.$t('chat.agent.containerImageUpgradeRequired', { version: version || '?' }));
+        } else if (reason === 'manual_upgrade_required') {
+          alertDialog(this.$t('chat.agent.manualUpgradeRequired', { version: version || '?' }));
+        } else {
+          alertDialog(`Agent upgrade failed: ${error || 'Unknown error'}`);
+        }
+      } else if (alreadyLatest) {
+        alertDialog(this.$t('chat.agent.alreadyLatest', { version: version || '' }));
+      }
+    };
+    if (typeof window !== 'undefined') window.addEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
+  },
+  beforeUnmount() {
+    if (typeof window !== 'undefined') window.removeEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
   },
   computed: {
     // Resolve the Pinia store lazily. Guarded so unit tests that mount

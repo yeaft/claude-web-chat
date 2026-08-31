@@ -6654,18 +6654,20 @@ export const useChatStore = defineStore('chat', {
 
     restartAgent(agentId) {
       if (!agentId || this.agentOperations?.[agentId]?.restart?.pending) return false;
+      const requestId = `restart-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const timer = setTimeout(() => this.finishAgentOperation(agentId, 'restart', 'timeout'), 120000);
-      this.agentOperations = { ...this.agentOperations, [agentId]: { ...(this.agentOperations[agentId] || {}), restart: { pending: true, acknowledged: false, startedAt: Date.now(), timer, error: null } } };
-      this.sendWsMessage({ type: 'restart_agent', agentId });
+      this.agentOperations = { ...this.agentOperations, [agentId]: { ...(this.agentOperations[agentId] || {}), restart: { pending: true, acknowledged: false, startedAt: Date.now(), requestId, timer, error: null } } };
+      this.sendWsMessage({ type: 'restart_agent', agentId, requestId });
       return true;
     },
 
     upgradeAgent(agentId) {
       if (!agentId || this.agentOperations?.[agentId]?.upgrade?.pending) return false;
       const agent = this.agents.find(item => item.id === agentId);
+      const requestId = `upgrade-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const timer = setTimeout(() => this.finishAgentOperation(agentId, 'upgrade', 'timeout'), 120000);
-      this.agentOperations = { ...this.agentOperations, [agentId]: { ...(this.agentOperations[agentId] || {}), upgrade: { pending: true, acknowledged: false, startedAt: Date.now(), oldVersion: agent?.version || null, timer, error: null } } };
-      this.sendWsMessage({ type: 'upgrade_agent', agentId });
+      this.agentOperations = { ...this.agentOperations, [agentId]: { ...(this.agentOperations[agentId] || {}), upgrade: { pending: true, acknowledged: false, startedAt: Date.now(), requestId, oldVersion: agent?.version || null, timer, error: null } } };
+      this.sendWsMessage({ type: 'upgrade_agent', agentId, requestId });
       return true;
     },
 
@@ -7784,8 +7786,9 @@ export const useChatStore = defineStore('chat', {
       if (!agentId || this.agentDreamState?.[agentId]?.pending) return false;
       const agent = this.agents.find(item => item.id === agentId);
       const requested = enabled !== false;
-      this.agentDreamState = { ...this.agentDreamState, [agentId]: { pending: true, requested, authoritative: agent?.dreamEnabled !== false, error: null } };
-      convHelpers.setDreamEnabled(this, agentId, requested);
+      const requestId = `dream-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      this.agentDreamState = { ...this.agentDreamState, [agentId]: { pending: true, requestId, requested, authoritative: agent?.dreamEnabled !== false, error: null } };
+      convHelpers.setDreamEnabled(this, agentId, requested, requestId);
       return true;
     },
 

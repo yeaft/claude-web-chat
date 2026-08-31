@@ -92,9 +92,9 @@ function cleanupAndExit(exitCode) {
   }, 500);
 }
 
-export async function handleRestartAgent() {
+export async function handleRestartAgent(correlation = {}) {
   console.log('[Agent] Restart requested, shutting down for PM2/systemd restart...');
-  await sendToServer({ type: 'restart_agent_ack' });
+  await sendToServer({ type: 'restart_agent_ack', requestId: correlation.requestId, clientId: correlation.clientId });
   cleanupAndExit(1);
 }
 
@@ -178,13 +178,18 @@ function compareCmp(cur, cmp) {
   }
 }
 
-export async function handleUpgradeAgent() {
+export async function handleUpgradeAgent(correlation = {}) {
+  const sendUpgradeAck = (payload) => sendToServer({
+    type: 'upgrade_agent_ack',
+    ...payload,
+    requestId: correlation.requestId,
+    clientId: correlation.clientId,
+  });
   if (isContainerAgentRuntime() || ctx.agentCapabilities?.includes(CONTAINER_AGENT_CAPABILITY)) {
     const version = ctx.agentVersion || null;
     const error = buildContainerImageUpgradeMessage(version);
     console.warn(`[Agent] Upgrade rejected (${CONTAINER_IMAGE_UPGRADE_REASON}): ${error}`);
-    await sendToServer({
-      type: 'upgrade_agent_ack',
+    await sendUpgradeAck({
       success: false,
       reason: CONTAINER_IMAGE_UPGRADE_REASON,
       error,
@@ -205,7 +210,7 @@ export async function handleUpgradeAgent() {
     });
     if (!isUpgradeAvailable(ctx.agentVersion, latestVersion)) {
       console.log(`[Agent] No newer version than ${ctx.agentVersion} is available (registry: ${latestVersion}), skipping upgrade.`);
-      await sendToServer({ type: 'upgrade_agent_ack', success: true, alreadyLatest: true, version: ctx.agentVersion });
+      await sendUpgradeAck({ success: true, alreadyLatest: true, version: ctx.agentVersion });
       return;
     }
 
@@ -218,8 +223,7 @@ export async function handleUpgradeAgent() {
     if (requiredNode && !nodeRangeSatisfied(currentNode, requiredNode)) {
       const msg = `Node ${currentNode} does not satisfy required ${requiredNode} for ${pkgName}@${latestVersion}`;
       console.warn(`[Agent] Upgrade aborted: ${msg}`);
-      await sendToServer({
-        type: 'upgrade_agent_ack',
+      await sendUpgradeAck({
         success: false,
         reason: 'node_incompatible',
         error: msg,
@@ -240,7 +244,7 @@ export async function handleUpgradeAgent() {
     if (!isNpmInstall) {
       // 源码运行不支持远程升级（代码在 git repo 中，需要手动 git pull）
       console.log('[Agent] Source-based install detected, remote upgrade not supported.');
-      await sendToServer({ type: 'upgrade_agent_ack', success: false, error: 'Source-based install: please use git pull to upgrade' });
+      await sendUpgradeAck({ success: false, error: 'Source-based install: please use git pull to upgrade' });
       return;
     }
 
@@ -260,9 +264,9 @@ export async function handleUpgradeAgent() {
     const instanceId = resolveInstanceId();
 
     if (isWindows) {
-      await spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion, instanceId);
+      await spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion, instanceId, sendUpgradeAck);
     } else {
-      await spawnUnixUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion, instanceId);
+      await spawnUnixUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion, instanceId, sendUpgradeAck);
     }
 
     // On Windows the detached runner removes the PM2 app only after this
@@ -281,11 +285,11 @@ export async function handleUpgradeAgent() {
     cleanupAndExit(0);
   } catch (e) {
     console.error('[Agent] Upgrade failed:', e.message);
-    await sendToServer({ type: 'upgrade_agent_ack', success: false, error: e.message });
+    await sendUpgradeAck({ success: false, error: e.message });
   }
 }
 
-async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion, instanceId = DEFAULT_INSTANCE_ID) {
+async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion, instanceId = DEFAULT_INSTANCE_ID, sendUpgradeAck = (payload) => sendToServer({ type: 'upgrade_agent_ack', ...payload })) {
   const configDir = getConfigDir(instanceId);
   const upgradeDir = join(configDir, 'upgrade-runtime');
   const logDir = join(configDir, 'logs');
@@ -364,7 +368,7 @@ async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, l
     spawnProcess: spawn,
   });
   console.log(`[Agent] Spawned Windows upgrade runner via ${launcher} (pm2=${isPm2}, dir=${installDir})`);
-  await sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion, pendingRestart: true });
+  await sendUpgradeAck({ success: true, version: latestVersion, pendingRestart: true });
 }
 
 /**
@@ -529,7 +533,7 @@ export function buildUnixUpgradeScript({
   return shLines.join('\n');
 }
 
-async function spawnUnixUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion, instanceId = DEFAULT_INSTANCE_ID) {
+async function spawnUnixUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion, instanceId = DEFAULT_INSTANCE_ID, sendUpgradeAck = (payload) => sendToServer({ type: 'upgrade_agent_ack', ...payload })) {
   const configDir = getConfigDir(instanceId);
   // Create logs/ too: the generated script's `exec > "$LOGFILE" 2>&1` aborts
   // the whole upgrade silently if that directory is missing.
@@ -555,5 +559,5 @@ async function spawnUnixUpgradeScript(pkgName, installDir, isGlobalInstall, late
   });
   child.unref();
   console.log(`[Agent] Spawned upgrade script: ${shPath}`);
-  await sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion, pendingRestart: true });
+  await sendUpgradeAck({ success: true, version: latestVersion, pendingRestart: true });
 }

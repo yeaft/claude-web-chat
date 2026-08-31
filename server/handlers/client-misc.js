@@ -52,7 +52,7 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       const restartAgentId = msg.agentId;
       if (!restartAgentId) break;
       if (!await checkAgentAccess(restartAgentId)) break;
-      await forwardToAgent(restartAgentId, { type: 'restart_agent' });
+      await forwardToAgent(restartAgentId, { type: 'restart_agent', ...(msg.requestId ? { requestId: msg.requestId, clientId } : {}) });
       break;
     }
 
@@ -60,7 +60,7 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       const agentId = msg.agentId;
       if (!agentId) break;
       if (!await checkAgentAccess(agentId)) break;
-      await forwardToAgent(agentId, { type: 'set_dream_enabled', enabled: msg.enabled !== false });
+      await forwardToAgent(agentId, { type: 'set_dream_enabled', enabled: msg.enabled !== false, ...(msg.requestId ? { requestId: msg.requestId, clientId } : {}) });
       break;
     }
 
@@ -79,6 +79,7 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
           version: upgradeAgent?.version || null,
           requiredCapability: CONTAINER_AGENT_CAPABILITY,
           error: 'Container Agent is managed as a Docker image. Pull the configured image and recreate the same container through the Server/Sandbox lifecycle while keeping its persistent volumes and host-side agent-secret file.',
+          requestId: msg.requestId,
         });
         break;
       }
@@ -91,10 +92,11 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
           version: upgradeAgent?.version || null,
           requiredCapability: SAFE_REMOTE_UPGRADE_CAPABILITY,
           error: `Agent ${upgradeAgent?.version || 'unknown'} does not advertise the safe remote-upgrade contract. First stop the selected Agent/service on that machine: if it runs under PM2 or another service manager, stop that exact instance there; if it runs in a foreground terminal, terminate that process. Confirm that process has exited, then run "npm install -g @yeaft/webchat-agent@latest --registry=https://pkg.yeaft.com/". Finally, restart the same Agent instance with its original configuration.`,
+          requestId: msg.requestId,
         });
         break;
       }
-      await forwardToAgent(upgradeAgentId, { type: 'upgrade_agent' });
+      await forwardToAgent(upgradeAgentId, { type: 'upgrade_agent', ...(msg.requestId ? { requestId: msg.requestId, clientId } : {}) });
       break;
     }
 

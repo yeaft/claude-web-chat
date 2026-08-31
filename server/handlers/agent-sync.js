@@ -80,15 +80,25 @@ export async function handleAgentSync(agentId, agent, msg) {
         agent.dreamEnabled = msg.enabled !== false;
         await broadcastAgentList();
       }
+      const payload = {
+        type: 'dream_enabled_changed',
+        agentId,
+        requestId: msg.requestId,
+        enabled: msg.error ? agent.dreamEnabled !== false : msg.enabled !== false,
+        ...(msg.error ? { error: msg.error } : {}),
+      };
+      if (msg.clientId) {
+        const client = webClients.get(msg.clientId);
+        if (client?.authenticated && (CONFIG.skipAuth ||
+          (agent.ownerId && client.userId === agent.ownerId) ||
+          (!agent.ownerId && client.role === 'admin')
+        )) await sendToWebClient(client, payload);
+        break;
+      }
       for (const [, client] of webClients) {
         if (!client.authenticated) continue;
         if (!CONFIG.skipAuth && agent.ownerId !== client.userId && !(!agent.ownerId && client.role === 'admin')) continue;
-        await sendToWebClient(client, {
-          type: 'dream_enabled_changed',
-          agentId,
-          enabled: msg.error ? agent.dreamEnabled !== false : msg.enabled !== false,
-          ...(msg.error ? { error: msg.error } : {}),
-        });
+        await sendToWebClient(client, payload);
       }
       break;
     }
@@ -202,26 +212,39 @@ export async function handleAgentSync(agentId, agent, msg) {
     }
 
     case 'restart_agent_ack': {
-      // 只通知该 Agent 的 owner
+      const payload = { type: 'restart_agent_ack', agentId, requestId: msg.requestId };
+      if (msg.clientId) {
+        const client = webClients.get(msg.clientId);
+        if (client?.authenticated && (CONFIG.skipAuth ||
+          (agent.ownerId && client.userId === agent.ownerId) ||
+          (!agent.ownerId && client.role === 'admin')
+        )) await sendToWebClient(client, payload);
+        break;
+      }
       for (const [, client] of webClients) {
         if (client.authenticated && (CONFIG.skipAuth ||
           (agent.ownerId && client.userId === agent.ownerId) ||
           (!agent.ownerId && client.role === 'admin')
-        )) {
-          await sendToWebClient(client, { type: 'restart_agent_ack', agentId });
-        }
+        )) await sendToWebClient(client, payload);
       }
       break;
     }
 
     case 'upgrade_agent_ack': {
+      const payload = { type: 'upgrade_agent_ack', agentId, requestId: msg.requestId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version, reason: msg.reason, currentNode: msg.currentNode, requiredNode: msg.requiredNode, requiredCapability: msg.requiredCapability };
+      if (msg.clientId) {
+        const client = webClients.get(msg.clientId);
+        if (client?.authenticated && (CONFIG.skipAuth ||
+          (agent.ownerId && client.userId === agent.ownerId) ||
+          (!agent.ownerId && client.role === 'admin')
+        )) await sendToWebClient(client, payload);
+        break;
+      }
       for (const [, client] of webClients) {
         if (client.authenticated && (CONFIG.skipAuth ||
           (agent.ownerId && client.userId === agent.ownerId) ||
           (!agent.ownerId && client.role === 'admin')
-        )) {
-          await sendToWebClient(client, { type: 'upgrade_agent_ack', agentId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version, reason: msg.reason, currentNode: msg.currentNode, requiredNode: msg.requiredNode, requiredCapability: msg.requiredCapability });
-        }
+        )) await sendToWebClient(client, payload);
       }
       break;
     }

@@ -1119,11 +1119,33 @@ export default {
     // Fetch server version
     fetch('/api/version').then(r => r.json()).then(d => { this.serverVersion = d.version; }).catch(() => {});
 
+    this._agentUpgradeAckHandler = (event) => {
+      const { success, error, alreadyLatest, version, reason, currentNode, requiredNode } = event.detail || {};
+      if (!success) {
+        if (reason === 'node_incompatible') {
+          alertDialog(this.$t('chat.agent.nodeIncompatible', {
+            current: currentNode || '?',
+            required: requiredNode || '?',
+            version: version || '',
+          }));
+        } else if (reason === 'container_image_upgrade_required') {
+          alertDialog(this.$t('chat.agent.containerImageUpgradeRequired', { version: version || '?' }));
+        } else if (reason === 'manual_upgrade_required') {
+          alertDialog(this.$t('chat.agent.manualUpgradeRequired', { version: version || '?' }));
+        } else {
+          alertDialog(`Agent upgrade failed: ${error || 'Unknown error'}`);
+        }
+      } else if (alreadyLatest) {
+        alertDialog(this.$t('chat.agent.alreadyLatest', { version: version || '' }));
+      }
+    };
+    window.addEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
   },
   beforeUnmount() {
     document.removeEventListener('click', this._clickOutsideHandler);
     window.removeEventListener('resize', this.handleResize);
     window.removeEventListener('workbench-message', this.handleFolderPickerMessage);
+    window.removeEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
     if (this._folderPickerTimer) clearTimeout(this._folderPickerTimer);
   }
 };

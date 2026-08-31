@@ -63,7 +63,10 @@ describe('Agent-scoped settings lifecycle', () => {
     expect(store.sendWsMessage).toHaveBeenCalledTimes(1);
     expect(store.agentOperations['agent-a'].restart.pending).toBe(true);
 
-    handleMessage(store, { type: 'restart_agent_ack', agentId: 'agent-a' });
+    const restartRequestId = store.agentOperations['agent-a'].restart.requestId;
+    handleMessage(store, { type: 'restart_agent_ack', agentId: 'agent-a', requestId: 'stale-restart' });
+    expect(store.agentOperations['agent-a'].restart.acknowledged).toBe(false);
+    handleMessage(store, { type: 'restart_agent_ack', agentId: 'agent-a', requestId: restartRequestId });
     expect(store.agentOperations['agent-a'].restart.acknowledged).toBe(true);
     handleMessage(store, { type: 'agent_list', agents: [{ id: 'agent-a', online: true, version: '1.0.0' }] });
     expect(store.agentOperations['agent-a'].restart.pending).toBe(true);
@@ -74,7 +77,10 @@ describe('Agent-scoped settings lifecycle', () => {
 
     expect(store.upgradeAgent('agent-a')).toBe(true);
     expect(store.upgradeAgent('agent-a')).toBe(false);
-    handleMessage(store, { type: 'upgrade_agent_ack', agentId: 'agent-a', success: false, error: 'nope' });
+    const upgradeRequestId = store.agentOperations['agent-a'].upgrade.requestId;
+    handleMessage(store, { type: 'upgrade_agent_ack', agentId: 'agent-a', requestId: 'stale-upgrade', success: false, error: 'stale' });
+    expect(store.agentOperations['agent-a'].upgrade).toMatchObject({ pending: true, error: null });
+    handleMessage(store, { type: 'upgrade_agent_ack', agentId: 'agent-a', requestId: upgradeRequestId, success: false, error: 'nope' });
     expect(store.agentOperations['agent-a'].upgrade).toMatchObject({ pending: false, error: 'nope' });
   });
 
@@ -84,13 +90,17 @@ describe('Agent-scoped settings lifecycle', () => {
     expect(store.setDreamEnabled('agent-a', true)).toBe(false);
     expect(store.agentDreamState['agent-a']).toMatchObject({ pending: true, requested: false });
     expect(store.agents[0].dreamEnabled).toBe(true);
+    const failedRequestId = store.agentDreamState['agent-a'].requestId;
 
-    handleMessage(store, { type: 'dream_enabled_changed', agentId: 'agent-a', enabled: true, error: 'write failed' });
+    handleMessage(store, { type: 'dream_enabled_changed', agentId: 'agent-a', requestId: 'stale-dream', enabled: false });
+    expect(store.agentDreamState['agent-a']).toMatchObject({ pending: true, error: null });
+    handleMessage(store, { type: 'dream_enabled_changed', agentId: 'agent-a', requestId: failedRequestId, enabled: true, error: 'write failed' });
     expect(store.agentDreamState['agent-a']).toMatchObject({ pending: false, error: 'write failed' });
     expect(store.agents[0].dreamEnabled).toBe(true);
 
     expect(store.setDreamEnabled('agent-a', false)).toBe(true);
-    handleMessage(store, { type: 'dream_enabled_changed', agentId: 'agent-a', enabled: false });
+    const successRequestId = store.agentDreamState['agent-a'].requestId;
+    handleMessage(store, { type: 'dream_enabled_changed', agentId: 'agent-a', requestId: successRequestId, enabled: false });
     expect(store.agentDreamState['agent-a']).toMatchObject({ pending: false, error: null });
     expect(store.agents[0].dreamEnabled).toBe(false);
   });

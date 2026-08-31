@@ -980,24 +980,32 @@ export function handleMessage(store, msg) {
       break;
 
     case 'dream_enabled_changed': {
+      const previous = store.agentDreamState?.[msg.agentId] || {};
+      if (!previous.pending || !msg.requestId || previous.requestId !== msg.requestId) break;
       const agent = Array.isArray(store.agents) ? store.agents.find(item => item.id === msg.agentId) : null;
       if (agent) agent.dreamEnabled = msg.enabled !== false;
-      const previous = store.agentDreamState?.[msg.agentId] || {};
       store.agentDreamState = { ...store.agentDreamState, [msg.agentId]: { ...previous, pending: false, authoritative: msg.enabled !== false, error: msg.error || null } };
       break;
     }
 
     case 'restart_agent_ack': {
       const current = store.agentOperations?.[msg.agentId]?.restart;
-      if (current) store.agentOperations = { ...store.agentOperations, [msg.agentId]: { ...(store.agentOperations[msg.agentId] || {}), restart: { ...current, acknowledged: true } } };
+      if (msg.requestId && (!current?.pending || current.requestId !== msg.requestId)) break;
+      if (current?.pending) {
+        store.agentOperations = { ...store.agentOperations, [msg.agentId]: { ...(store.agentOperations[msg.agentId] || {}), restart: { ...current, acknowledged: true } } };
+      }
+      window.dispatchEvent(new CustomEvent('agent-restart-ack', { detail: { agentId: msg.agentId, requestId: msg.requestId } }));
       break;
     }
 
     case 'upgrade_agent_ack': {
       const current = store.agentOperations?.[msg.agentId]?.upgrade;
-      if (!current) break;
-      if (!msg.success || msg.alreadyLatest) store.finishAgentOperation?.(msg.agentId, 'upgrade', msg.error || null);
-      else store.agentOperations = { ...store.agentOperations, [msg.agentId]: { ...(store.agentOperations[msg.agentId] || {}), upgrade: { ...current, acknowledged: true } } };
+      if (msg.requestId && (!current?.pending || current.requestId !== msg.requestId)) break;
+      if (current?.pending) {
+        if (!msg.success || msg.alreadyLatest) store.finishAgentOperation?.(msg.agentId, 'upgrade', msg.error || null);
+        else store.agentOperations = { ...store.agentOperations, [msg.agentId]: { ...(store.agentOperations[msg.agentId] || {}), upgrade: { ...current, acknowledged: true } } };
+      }
+      window.dispatchEvent(new CustomEvent('agent-upgrade-ack', { detail: { agentId: msg.agentId, requestId: msg.requestId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version, reason: msg.reason, currentNode: msg.currentNode, requiredNode: msg.requiredNode, requiredCapability: msg.requiredCapability } }));
       break;
     }
 

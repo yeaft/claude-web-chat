@@ -73,6 +73,44 @@ describe('resolveAgentAccessError', () => {
     expect(siblingMessages).toEqual([]);
   });
 
+  it('routes correlated Agent maintenance and Dream replies only to the originating browser', async () => {
+    CONFIG.skipAuth = true;
+    const forwarded = [];
+    const originMessages = [];
+    const siblingMessages = [];
+    const agent = {
+      id: 'agent-lifecycle', name: 'Lifecycle', ownerId: 'user-1', dreamEnabled: true,
+      conversations: new Map(),
+      ws: { readyState: WS_OPEN, send: payload => forwarded.push(JSON.parse(payload)) },
+    };
+    agents.set(agent.id, agent);
+    const origin = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => originMessages.push(JSON.parse(payload)) } };
+    const sibling = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => siblingMessages.push(JSON.parse(payload)) } };
+    webClients.set('browser-origin', origin);
+    webClients.set('browser-sibling', sibling);
+
+    await handleClientMisc('browser-origin', origin, {
+      type: 'set_dream_enabled', agentId: agent.id, requestId: 'dream-1', enabled: false,
+    }, async () => true);
+    await handleAgentSync(agent.id, agent, {
+      type: 'dream_enabled_changed', requestId: 'dream-1', clientId: 'browser-origin', enabled: false,
+    });
+    await handleClientMisc('browser-origin', origin, {
+      type: 'restart_agent', agentId: agent.id, requestId: 'restart-1',
+    }, async () => true);
+    await handleAgentSync(agent.id, agent, {
+      type: 'restart_agent_ack', requestId: 'restart-1', clientId: 'browser-origin',
+    });
+
+    expect(forwarded).toEqual([
+      { type: 'set_dream_enabled', enabled: false, requestId: 'dream-1', clientId: 'browser-origin' },
+      { type: 'restart_agent', requestId: 'restart-1', clientId: 'browser-origin' },
+    ]);
+    expect(originMessages).toContainEqual({ type: 'dream_enabled_changed', agentId: agent.id, requestId: 'dream-1', enabled: false });
+    expect(originMessages).toContainEqual({ type: 'restart_agent_ack', agentId: agent.id, requestId: 'restart-1' });
+    expect(siblingMessages.some(message => message.type === 'dream_enabled_changed' || message.type === 'restart_agent_ack')).toBe(false);
+  });
+
   it('classifies Agent access states and rejects foreign Project mutations', async () => {
     CONFIG.skipAuth = false;
     expect(resolveAgentAccessError('agent-missing', 'user-1', 'user')).toBe('Agent not found or offline');
