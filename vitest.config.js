@@ -2,6 +2,14 @@ import { defineConfig } from 'vitest/config';
 import { CORE_TEST_FILES } from './scripts/test-suite-manifest.mjs';
 
 export default defineConfig({
+  plugins: [{
+    name: 'strip-node-shebang',
+    enforce: 'pre',
+    transform(code) {
+      if (!code.startsWith('#!')) return null;
+      return { code: code.replace(/^#![^\r\n]*/, ''), map: null };
+    },
+  }],
   test: {
     environment: 'node',
     testTimeout: 10000,

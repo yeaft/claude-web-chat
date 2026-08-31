@@ -11,6 +11,7 @@ import {
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createCliSessionRunner, createCliVpEngine } from '../../../agent/yeaft/cli-session-runner.js';
 import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
@@ -1242,7 +1243,7 @@ describe('stream-json Session runtime protocol', () => {
         '--input-format', 'stream-json',
         '--output-format', 'stream-json',
       ], input, {
-        NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --import=${timeShiftPath}`.trim(),
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --import=${pathToFileURL(timeShiftPath).href}`.trim(),
       });
       const frames = outcome.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
       const results = frames.filter(frame => frame.type === 'result');
@@ -1312,7 +1313,7 @@ describe('stream-json Session runtime protocol', () => {
         '--input-format', 'stream-json',
         '--output-format', 'stream-json',
       ], input, {
-        NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --import=${timeShiftPath}`.trim(),
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --import=${pathToFileURL(timeShiftPath).href}`.trim(),
       });
       const frames = outcome.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
       const results = frames.filter(frame => frame.type === 'result');
