@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-import { constants, readFileSync, statSync } from 'node:fs';
-import { access } from 'node:fs/promises';
+import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -48,12 +47,8 @@ export async function validateAgentPackageBins(agentDir, { platform = process.pl
       errors.push(`${label} target ${JSON.stringify(target)} is not a file`);
       continue;
     }
-    if (platform !== 'win32') {
-      try {
-        await access(targetPath, constants.X_OK);
-      } catch {
-        errors.push(`${label} target ${JSON.stringify(target)} is not executable`);
-      }
+    if (platform !== 'win32' && (stat.mode & 0o111) === 0) {
+      errors.push(`${label} target ${JSON.stringify(target)} is not executable`);
     }
     const firstLine = readFileSync(targetPath, 'utf8').split(/\r?\n/, 1)[0];
     if (firstLine !== '#!/usr/bin/env node') {
