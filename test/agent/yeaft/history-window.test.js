@@ -137,7 +137,7 @@ describe('deterministic provider history window', () => {
     expect(messages).toHaveLength(6);
   });
 
-  it('drops oldest turns until the deterministic token budget fits', () => {
+  it('retains recent dialogue turns by shrinking text before deleting below the floor', () => {
     const messages = [
       { role: 'user', content: 'a'.repeat(100) },
       { role: 'assistant', content: 'b'.repeat(100) },
@@ -150,11 +150,64 @@ describe('deterministic provider history window', () => {
       messageTokenBudget: 55,
     });
 
-    expect(window.map(message => message.content)).toEqual([
-      'c'.repeat(100),
-      'd'.repeat(100),
-    ]);
+    expect(window).toHaveLength(4);
+    expect(window.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect(window[0].content).toMatch(/^a+/);
+    expect(window[1].content).toMatch(/^b+/);
+    expect(window[2].content).toMatch(/^c+/);
+    expect(window[3].content).toMatch(/^d+/);
     expect(estimateMessagesTokens(window)).toBeLessThanOrEqual(55);
+  });
+
+  it('drops tool payload before evicting the five most recent dialogue turns', () => {
+    const messages = [];
+    for (let turn = 1; turn <= 7; turn += 1) {
+      messages.push({ role: 'user', content: `question ${turn} ${'q'.repeat(80)}` });
+      if (turn === 7) {
+        messages.push({
+          role: 'assistant',
+          content: `answer ${turn} ${'a'.repeat(80)}`,
+          toolCalls: [{ id: 'huge-call', name: 'Bash', input: { command: 'inspect' } }],
+        });
+        messages.push({ role: 'tool', toolCallId: 'huge-call', content: 'x'.repeat(100_000) });
+      } else {
+        messages.push({ role: 'assistant', content: `answer ${turn} ${'a'.repeat(80)}` });
+      }
+    }
+
+    const window = trimSnapshotForBudget(messages, {
+      recentTurnCap: 25,
+      messageTokenBudget: 180,
+    });
+
+    const users = window.filter(message => message.role === 'user');
+    const assistants = window.filter(message => message.role === 'assistant');
+    expect(users).toHaveLength(5);
+    expect(assistants).toHaveLength(5);
+    expect(users.map(message => message.content.match(/^question \d+/)?.[0])).toEqual([
+      'question 3',
+      'question 4',
+      'question 5',
+      'question 6',
+      'question 7',
+    ]);
+    expect(assistants.map(message => message.content.match(/^answer \d+/)?.[0])).toEqual([
+      'answer 3',
+      'answer 4',
+      'answer 5',
+      'answer 6',
+      'answer 7',
+    ]);
+    expect(window.some(message => message.role === 'tool')).toBe(false);
+    expect(window.some(message => Array.isArray(message.toolCalls) && message.toolCalls.length > 0)).toBe(false);
+    expect(estimateMessagesTokens(window)).toBeLessThanOrEqual(180);
+
+    // Engine and bridge both shape provider snapshots. Re-trimming (including
+    // after a model/config change) must not erode the retained dialogue again.
+    expect(trimSnapshotForBudget(window, {
+      recentTurnCap: 25,
+      messageTokenBudget: 180,
+    })).toEqual(window);
   });
 
   it('removes old tool noise but preserves recent tool pairs', () => {
