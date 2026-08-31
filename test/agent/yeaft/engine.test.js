@@ -8971,8 +8971,8 @@ describe('Engine', () => {
       expect(enToolDefs.PromptAgent).toContain('WaitAgent in the same parent turn');
       expect(enToolDefs.PromptAgent).toContain('relay the result to the user');
       expect(enToolDefs.PromptAgent).toContain('Do not end the parent turn immediately');
-      expect(enToolDefs.WaitAgent).toContain('Do not repeatedly re-wait for a');
-      expect(enToolDefs.WaitAgent).toContain('running agent; later parent turns receive completion notifications');
+      expect(enToolDefs.WaitAgent).toContain("has 'mustCollectReply=true': call WaitAgent again");
+      expect(enToolDefs.WaitAgent).toContain('For ordinary SpawnAgent background work, use');
       expect(zhToolDefs.FileRead).toContain('只读取能回答当前问题的最小范围');
       expect(zhToolDefs.Grep).toContain('默认结果限制 250 条');
       expect(zhToolDefs.WebSearch).toContain('优先抓取最权威、最相关的结果');
