@@ -72,6 +72,10 @@
  * @property {boolean | ((input?: object) => boolean)} [cacheWithinQuery] — explicitly safe to reuse for identical calls in one query
  * @property {boolean | ((input?: object) => boolean)} [mayMutateWorkspaceAfterReturn] — may keep changing the workspace after execute() resolves; disables same-query read reuse
  * @property {(input?: object) => boolean} [isDestructive] — destructive operation?
+ * @property {(input?: object) => 'allow' | 'warn' | 'suppress'} [duplicateCallPolicy]
+ *   — repeated exact-call policy for one query. Use `allow` for polling/time-varying
+ *   tools and `suppress` only when the result is stable for the whole query.
+ *   Errors are never counted as successful duplicates.
  * @property {'json-error-envelope' | null} [errorOutput] — explicit returned-output error contract; null means only thrown errors fail
  * @property {string} [mcpServer] — owning MCP server for flattened MCP tools
  * @property {'external' | 'run'} [sideEffectScope] — whether mutations escape the current Run collector
@@ -90,6 +94,7 @@
  *   cacheWithinQuery?: boolean | ((input?: object) => boolean),
  *   mayMutateWorkspaceAfterReturn?: boolean | ((input?: object) => boolean),
  *   isDestructive?: (input?: object) => boolean,
+ *   duplicateCallPolicy?: (input?: object) => 'allow' | 'warn' | 'suppress',
  *   errorOutput?: 'json-error-envelope' | null,
  *   mcpServer?: string,
  *   sideEffectScope?: 'external' | 'run',
@@ -108,6 +113,7 @@ export function defineTool({
   cacheWithinQuery = false,
   mayMutateWorkspaceAfterReturn = false,
   isDestructive = () => false,
+  duplicateCallPolicy = () => 'warn',
   errorOutput = 'json-error-envelope',
   mcpServer,
   sideEffectScope = 'external',
@@ -126,6 +132,7 @@ export function defineTool({
     cacheWithinQuery,
     mayMutateWorkspaceAfterReturn,
     isDestructive,
+    duplicateCallPolicy,
     errorOutput,
     sideEffectScope,
   };

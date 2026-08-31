@@ -3364,6 +3364,7 @@ describe('Engine', () => {
       engine.registerTool({
         name: 'repeat_tool',
         description: 'counts executions',
+        duplicateCallPolicy: () => 'suppress',
         parameters: { type: 'object', properties: { value: { type: 'number' } } },
         execute: async () => {
           executions += 1;
@@ -3401,6 +3402,99 @@ describe('Engine', () => {
       }));
     });
 
+    it('allows a legitimate third poll with identical arguments', async () => {
+      const adapter = new MockAdapter();
+      for (let i = 1; i <= 3; i += 1) {
+        adapter.pushResponse([
+          { type: 'tool_call', id: `poll_${i}`, name: 'poll_tool', input: { taskId: 'task-1' } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+      }
+      adapter.pushResponse([{ type: 'text_delta', text: 'done' }, { type: 'stop', stopReason: 'end_turn' }]);
+      let executions = 0;
+      const engine = new Engine({ adapter, trace, config: { model: 'test-model', maxOutputTokens: 1024 } });
+      engine.registerTool({
+        name: 'poll_tool',
+        description: 'returns changing task state',
+        parameters: { type: 'object', properties: {} },
+        duplicateCallPolicy: () => 'allow',
+        execute: async () => `state ${++executions}`,
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'wait for completion' })) events.push(event);
+
+      expect(executions).toBe(3);
+      expect(events.filter(event => event.type === 'tool_exec' && event.suppressed)).toHaveLength(0);
+    });
+
+    it('does not count tool errors toward duplicate suppression', async () => {
+      const adapter = new MockAdapter();
+      for (let i = 1; i <= 3; i += 1) {
+        adapter.pushResponse([
+          { type: 'tool_call', id: `retry_${i}`, name: 'retry_tool', input: { value: 7 } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+      }
+      adapter.pushResponse([{ type: 'text_delta', text: 'recovered' }, { type: 'stop', stopReason: 'end_turn' }]);
+      let executions = 0;
+      const engine = new Engine({ adapter, trace, config: { model: 'test-model', maxOutputTokens: 1024 } });
+      engine.registerTool({
+        name: 'retry_tool',
+        description: 'fails transiently',
+        parameters: { type: 'object', properties: {} },
+        duplicateCallPolicy: () => 'suppress',
+        execute: async () => {
+          executions += 1;
+          if (executions < 3) throw new Error('transient');
+          return 'ok';
+        },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'retry transient errors' })) events.push(event);
+
+      expect(executions).toBe(3);
+      expect(events.filter(event => event.type === 'tool_exec' && event.suppressed)).toHaveLength(0);
+    });
+
+    it('terminates after bounded repeated suppressions and records them distinctly', async () => {
+      const adapter = new MockAdapter();
+      for (let i = 1; i <= 6; i += 1) {
+        adapter.pushResponse([
+          { type: 'tool_call', id: `loop_${i}`, name: 'static_tool', input: { value: 7 } },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+      }
+      let executions = 0;
+      const stats = { record: vi.fn() };
+      const engine = new Engine({
+        adapter,
+        trace,
+        toolStats: stats,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+      engine.registerTool({
+        name: 'static_tool',
+        description: 'stable lookup',
+        parameters: { type: 'object', properties: {} },
+        duplicateCallPolicy: () => 'suppress',
+        execute: async () => `stable ${++executions}`,
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'do not loop' })) events.push(event);
+
+      expect(executions).toBe(2);
+      expect(adapter.callLog).toHaveLength(5);
+      expect(stats.record).toHaveBeenCalledTimes(2);
+      expect(events.filter(event => event.type === 'tool_exec' && event.suppressed)).toHaveLength(3);
+      expect(events).toContainEqual(expect.objectContaining({
+        type: 'turn_end',
+        stopReason: 'duplicate_tool_loop',
+        terminal: true,
+      }));
+    });
     it('persists a T1 folding reflection and hides the original tool arc after restart', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-t1-fold-persist-'));
       try {

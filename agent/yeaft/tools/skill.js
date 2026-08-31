@@ -86,6 +86,7 @@ Actions:
   },
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
+  duplicateCallPolicy: () => 'suppress',
   async execute(input, ctx) {
     const skillManager = ctx?.skillManager;
 
