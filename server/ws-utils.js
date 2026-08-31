@@ -44,20 +44,21 @@ export async function sendToWebClient(client, msg) {
 // to plaintext when the agent advertised the `plaintext-ok` capability.
 // Falls back to ciphertext for old agents that haven't.
 export async function sendToAgent(agent, msg) {
-  if (agent.ws.readyState !== WebSocket.OPEN) return;
+  if (!agent?.ws || agent.ws.readyState !== WebSocket.OPEN) return false;
 
   if (CONFIG.skipAuth || agent.encryptOutbound === false) {
     agent.ws.send(JSON.stringify(msg));
-    return;
+    return true;
   }
 
   if (!agent.sessionKey) {
     console.error('Cannot send to agent: missing session key in production mode');
     agent.ws.close(1008, 'Encryption required');
-    return;
+    return false;
   }
   const encrypted = await encrypt(msg, agent.sessionKey);
   agent.ws.send(JSON.stringify(encrypted));
+  return true;
 }
 
 // Parse incoming message (decrypt if needed)
@@ -375,9 +376,8 @@ export async function forwardToClients(agentId, conversationId, msg) {
 // 转发消息给指定 agent
 export async function forwardToAgent(agentId, msg) {
   const agent = agents.get(agentId);
-  if (agent) {
-    await sendToAgent(agent, msg);
-  }
+  if (!agent) return false;
+  return sendToAgent(agent, msg);
 }
 
 // 通过 agent name 查找 agent

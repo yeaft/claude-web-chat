@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const forwardToAgent = vi.fn(async () => {});
+const forwardToAgent = vi.fn(async () => true);
 const sendToWebClient = vi.fn(async (target, msg) => { target.sent ??= []; target.sent.push(msg); });
 const getForAgent = vi.fn(() => ({ id: 'sess-1', agentId: 'agent-1', userId: 'owner-1' }));
 const contextForSession = vi.fn(() => null);

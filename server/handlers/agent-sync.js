@@ -408,9 +408,13 @@ export async function handleAgentSync(agentId, agent, msg) {
     // trace payloads stay on the Agent.
     case 'telemetry_settings':
     case 'telemetry_settings_updated': {
-      const operation = msg.type === 'telemetry_settings_updated'
-        ? 'telemetry:update'
-        : 'telemetry:load';
+      const operation = msg.type === 'yeaft_plugins_updated'
+        ? 'plugins:update'
+        : msg.type === 'yeaft_plugins'
+          ? 'plugins:load'
+          : msg.type === 'telemetry_settings_updated'
+            ? 'telemetry:update'
+            : 'telemetry:load';
       await sendAgentSettingsReply(agentId, agent, operation, msg, { ...msg, agentId });
       break;
     }

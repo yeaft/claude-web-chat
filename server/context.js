@@ -43,6 +43,7 @@ export const previewFiles = new Map();
 // original Agent/Session ownership check happened, and consume it exactly once.
 const YEAFT_DEBUG_REQUEST_TTL_MS = 30_000;
 const YEAFT_DEBUG_REQUEST_MAX_PENDING = 2048;
+const YEAFT_DEBUG_REQUEST_MAX_PENDING_PER_CLIENT = 256;
 export const pendingYeaftDebugRequests = new Map();
 
 // Agent settings replies share one Agent connection across browser clients.
@@ -50,6 +51,7 @@ export const pendingYeaftDebugRequests = new Map();
 // no usable provenance and must never be assigned by arrival order.
 const AGENT_SETTINGS_REQUEST_TTL_MS = 120_000;
 const AGENT_SETTINGS_REQUEST_MAX_PENDING = 2048;
+const AGENT_SETTINGS_REQUEST_MAX_PENDING_PER_CLIENT = 256;
 export const pendingAgentSettingsRequests = new Map();
 
 function agentSettingsRequestKey(agentId, requestId) {
@@ -71,10 +73,12 @@ export function registerAgentSettingsRequest({ agentId, operation, requestId, cl
   pruneAgentSettingsRequests(now);
   const key = agentSettingsRequestKey(agentId, requestId);
   if (pendingAgentSettingsRequests.has(key)) return false;
-  if (pendingAgentSettingsRequests.size >= AGENT_SETTINGS_REQUEST_MAX_PENDING) {
-    const oldestKey = pendingAgentSettingsRequests.keys().next().value;
-    if (oldestKey != null) pendingAgentSettingsRequests.delete(oldestKey);
+  let clientPending = 0;
+  for (const pending of pendingAgentSettingsRequests.values()) {
+    if (pending?.clientId === clientId) clientPending++;
   }
+  if (clientPending >= AGENT_SETTINGS_REQUEST_MAX_PENDING_PER_CLIENT
+      || pendingAgentSettingsRequests.size >= AGENT_SETTINGS_REQUEST_MAX_PENDING) return false;
   pendingAgentSettingsRequests.set(key, {
     agentId,
     operation,
@@ -96,11 +100,29 @@ export function consumeAgentSettingsRequest({ agentId, operation, requestId }) {
   return pending;
 }
 
+export function deleteAgentSettingsRequest({ agentId, requestId, clientId = null }) {
+  const key = agentSettingsRequestKey(agentId, requestId);
+  const pending = pendingAgentSettingsRequests.get(key);
+  if (!pending || (clientId && pending.clientId !== clientId)) return false;
+  return pendingAgentSettingsRequests.delete(key);
+}
+
 export function clearAgentSettingsRequestsForClient(clientId) {
   if (!clientId) return;
   for (const [key, pending] of pendingAgentSettingsRequests) {
     if (pending?.clientId === clientId) pendingAgentSettingsRequests.delete(key);
   }
+}
+
+export function takeAgentSettingsRequestsForAgent(agentId) {
+  const removed = [];
+  if (!agentId) return removed;
+  for (const [key, pending] of pendingAgentSettingsRequests) {
+    if (pending?.agentId !== agentId) continue;
+    pendingAgentSettingsRequests.delete(key);
+    removed.push(pending);
+  }
+  return removed;
 }
 
 function yeaftDebugRequestKey(agentId, requestId) {
@@ -126,10 +148,12 @@ export function registerYeaftDebugRequest({ agentId, requestId, sessionId, clien
   pruneYeaftDebugRequests(now);
   const key = yeaftDebugRequestKey(agentId, requestId);
   if (pendingYeaftDebugRequests.has(key)) return false;
-  if (pendingYeaftDebugRequests.size >= YEAFT_DEBUG_REQUEST_MAX_PENDING) {
-    const oldestKey = pendingYeaftDebugRequests.keys().next().value;
-    if (oldestKey != null) pendingYeaftDebugRequests.delete(oldestKey);
+  let clientPending = 0;
+  for (const pending of pendingYeaftDebugRequests.values()) {
+    if (pending?.clientId === clientId) clientPending++;
   }
+  if (clientPending >= YEAFT_DEBUG_REQUEST_MAX_PENDING_PER_CLIENT
+      || pendingYeaftDebugRequests.size >= YEAFT_DEBUG_REQUEST_MAX_PENDING) return false;
   pendingYeaftDebugRequests.set(key, {
     agentId,
     requestId,

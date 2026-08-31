@@ -135,6 +135,129 @@ describe('resolveAgentAccessError', () => {
     expect(pendingAgentSettingsRequests.size).toBe(0);
   });
 
+  it('keeps the global registry intact when one browser exhausts its own quota', () => {
+    webClients.set('browser-abusive', { authenticated: true });
+    webClients.set('browser-healthy', { authenticated: true });
+    for (let i = 0; i < 256; i++) {
+      expect(registerAgentSettingsRequest({
+        agentId: 'agent-a', operation: 'telemetry:load', requestId: `abusive-${i}`, clientId: 'browser-abusive',
+      })).toBe(true);
+    }
+    expect(registerAgentSettingsRequest({
+      agentId: 'agent-a', operation: 'telemetry:load', requestId: 'abusive-overflow', clientId: 'browser-abusive',
+    })).toBe(false);
+    expect(registerAgentSettingsRequest({
+      agentId: 'agent-a', operation: 'telemetry:load', requestId: 'healthy', clientId: 'browser-healthy',
+    })).toBe(true);
+    expect(consumeAgentSettingsRequest({ agentId: 'agent-a', operation: 'telemetry:load', requestId: 'healthy' }))
+      .toMatchObject({ clientId: 'browser-healthy' });
+  });
+
+  it('removes a registered request when dispatch cannot reach the Agent', async () => {
+    CONFIG.skipAuth = true;
+    const replies = [];
+    const client = {
+      authenticated: true, userId: 'user-1', role: 'user',
+      ws: { readyState: WS_OPEN, send: payload => replies.push(JSON.parse(payload)) },
+    };
+    webClients.set('browser-origin', client);
+    agents.set('agent-closed', {
+      ownerId: 'user-1', capabilities: [YEAFT_PLUGINS_CAPABILITY],
+      ws: { readyState: 3, send() { throw new Error('must not send'); } },
+    });
+
+    await handleClientMisc('browser-origin', client, {
+      type: 'get_yeaft_plugins', agentId: 'agent-closed', requestId: 'plugins-closed',
+    }, async () => true);
+
+    expect(pendingAgentSettingsRequests.size).toBe(0);
+    expect(replies).toEqual([expect.objectContaining({
+      type: 'yeaft_plugins', requestId: 'plugins-closed', error: 'Agent is unavailable.',
+    })]);
+  });
+
+  it('removes a registered request when Agent dispatch throws', async () => {
+    CONFIG.skipAuth = true;
+    const replies = [];
+    const client = {
+      authenticated: true, userId: 'user-1', role: 'user',
+      ws: { readyState: WS_OPEN, send: payload => replies.push(JSON.parse(payload)) },
+    };
+    webClients.set('browser-origin', client);
+    agents.set('agent-throwing', {
+      ownerId: 'user-1', capabilities: [YEAFT_PLUGINS_CAPABILITY],
+      ws: { readyState: WS_OPEN, send() { throw new Error('socket write failed'); } },
+    });
+
+    await handleClientMisc('browser-origin', client, {
+      type: 'get_yeaft_plugins', agentId: 'agent-throwing', requestId: 'plugins-throwing',
+    }, async () => true);
+
+    expect(pendingAgentSettingsRequests.size).toBe(0);
+    expect(replies).toEqual([expect.objectContaining({
+      type: 'yeaft_plugins', requestId: 'plugins-throwing',
+      error: 'Failed to send request to Agent: socket write failed',
+    })]);
+  });
+
+  it('fails and clears pending requests when the Agent disconnects', async () => {
+    CONFIG.skipAuth = true;
+    const replies = [];
+    const client = {
+      authenticated: true, userId: 'user-1', role: 'user',
+      ws: { readyState: WS_OPEN, send: payload => replies.push(JSON.parse(payload)) },
+    };
+    webClients.set('browser-origin', client);
+    const socket = new MockWebSocket(WS_OPEN);
+    const agentId = 'agent-disconnecting';
+    const url = new URL(`ws://localhost/?type=agent&id=${agentId}&name=${agentId}&instanceId=${agentId}&capabilities=plaintext-ok`);
+    handleAgentConnection(socket, url);
+    const challenge = socket.getLastMessage();
+    socket.simulateMessage({
+      type: 'auth', tempId: challenge.tempId, secret: '', capabilities: ['plaintext-ok'], version: '1.0.0',
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(registerAgentSettingsRequest({
+      agentId, operation: 'telemetry:load', requestId: 'disconnect-pending', clientId: 'browser-origin',
+    })).toBe(true);
+    socket.close(1000, 'test disconnect');
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(pendingAgentSettingsRequests.size).toBe(0);
+    expect(replies).toContainEqual(expect.objectContaining({
+      type: 'telemetry_settings', agentId, requestId: 'disconnect-pending',
+      error: 'Agent disconnected before completing the request.',
+    }));
+  });
+
+  it('routes Plugin replies only to the originating browser', async () => {
+    CONFIG.skipAuth = true;
+    const forwarded = [];
+    const firstMessages = [];
+    const secondMessages = [];
+    const agent = {
+      id: 'agent-plugins', ownerId: 'user-1', capabilities: [YEAFT_PLUGINS_CAPABILITY],
+      ws: { readyState: WS_OPEN, send: payload => forwarded.push(JSON.parse(payload)) },
+    };
+    agents.set(agent.id, agent);
+    const first = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => firstMessages.push(JSON.parse(payload)) } };
+    const second = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => secondMessages.push(JSON.parse(payload)) } };
+    webClients.set('browser-first', first);
+    webClients.set('browser-second', second);
+
+    await handleClientMisc('browser-first', first, {
+      type: 'get_yeaft_plugins', agentId: agent.id, requestId: 'plugins-first',
+    }, async () => true);
+    expect(forwarded).toEqual([{ type: 'get_yeaft_plugins', requestId: 'plugins-first' }]);
+    await handleAgentSync(agent.id, agent, {
+      type: 'yeaft_plugins', requestId: 'plugins-first', plugins: { tools: ['FileRead'] }, clientId: 'browser-second',
+    });
+
+    expect(firstMessages).toEqual([expect.objectContaining({ type: 'yeaft_plugins', requestId: 'plugins-first' })]);
+    expect(secondMessages).toEqual([]);
+  });
+
   it('routes concurrent replies by Server-owned request provenance', async () => {
     CONFIG.skipAuth = true;
     const forwarded = [];

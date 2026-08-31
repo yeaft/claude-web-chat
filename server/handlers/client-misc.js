@@ -1,5 +1,6 @@
 import {
   agents,
+  deleteAgentSettingsRequest,
   registerAgentSettingsRequest,
   userFileTabs,
 } from '../context.js';
@@ -31,6 +32,23 @@ async function rejectUnsupportedYeaftPlugins(client, msg, agentId) {
   });
 }
 
+async function forwardRegisteredAgentRequest({ client, clientId, agentId, operation, requestId, message, responseType }) {
+  if (!registerAgentSettingsRequest({ agentId, operation, requestId, clientId })) {
+    await sendToWebClient(client, { type: responseType, agentId, requestId, error: 'Request rejected: too many pending requests or duplicate requestId.' });
+    return false;
+  }
+  try {
+    if (await forwardToAgent(agentId, message)) return true;
+  } catch (error) {
+    deleteAgentSettingsRequest({ agentId, requestId, clientId });
+    await sendToWebClient(client, { type: responseType, agentId, requestId, error: `Failed to send request to Agent: ${error.message}` });
+    return false;
+  }
+  deleteAgentSettingsRequest({ agentId, requestId, clientId });
+  await sendToWebClient(client, { type: responseType, agentId, requestId, error: 'Agent is unavailable.' });
+  return false;
+}
+
 export function requiresManualUpgradeBridge(capabilities, platform = null) {
   if (Array.isArray(capabilities) && capabilities.includes(SAFE_REMOTE_UPGRADE_CAPABILITY)) return false;
   const normalizedPlatform = typeof platform === 'string' ? platform.trim().toLowerCase() : '';
@@ -56,8 +74,12 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       const restartAgentId = msg.agentId;
       if (!restartAgentId) break;
       if (!await checkAgentAccess(restartAgentId)) break;
-      if (msg.requestId && !registerAgentSettingsRequest({ agentId: restartAgentId, operation: 'restart', requestId: msg.requestId, clientId })) break;
-      await forwardToAgent(restartAgentId, { type: 'restart_agent', ...(msg.requestId ? { requestId: msg.requestId, clientId } : {}) });
+      if (msg.requestId) {
+        await forwardRegisteredAgentRequest({ client, clientId, agentId: restartAgentId, operation: 'restart', requestId: msg.requestId,
+          message: { type: 'restart_agent', requestId: msg.requestId, clientId }, responseType: 'restart_agent_ack' });
+      } else {
+        await forwardToAgent(restartAgentId, { type: 'restart_agent' });
+      }
       break;
     }
 
@@ -65,8 +87,12 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       const agentId = msg.agentId;
       if (!agentId) break;
       if (!await checkAgentAccess(agentId)) break;
-      if (msg.requestId && !registerAgentSettingsRequest({ agentId, operation: 'dream', requestId: msg.requestId, clientId })) break;
-      await forwardToAgent(agentId, { type: 'set_dream_enabled', enabled: msg.enabled !== false, ...(msg.requestId ? { requestId: msg.requestId, clientId } : {}) });
+      if (msg.requestId) {
+        await forwardRegisteredAgentRequest({ client, clientId, agentId, operation: 'dream', requestId: msg.requestId,
+          message: { type: 'set_dream_enabled', enabled: msg.enabled !== false, requestId: msg.requestId, clientId }, responseType: 'dream_enabled_updated' });
+      } else {
+        await forwardToAgent(agentId, { type: 'set_dream_enabled', enabled: msg.enabled !== false });
+      }
       break;
     }
 
@@ -102,8 +128,12 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
         });
         break;
       }
-      if (msg.requestId && !registerAgentSettingsRequest({ agentId: upgradeAgentId, operation: 'upgrade', requestId: msg.requestId, clientId })) break;
-      await forwardToAgent(upgradeAgentId, { type: 'upgrade_agent', ...(msg.requestId ? { requestId: msg.requestId, clientId } : {}) });
+      if (msg.requestId) {
+        await forwardRegisteredAgentRequest({ client, clientId, agentId: upgradeAgentId, operation: 'upgrade', requestId: msg.requestId,
+          message: { type: 'upgrade_agent', requestId: msg.requestId, clientId }, responseType: 'upgrade_agent_ack' });
+      } else {
+        await forwardToAgent(upgradeAgentId, { type: 'upgrade_agent' });
+      }
       break;
     }
 
@@ -256,10 +286,8 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
         await rejectUnsupportedYeaftPlugins(client, msg, targetAgentId);
         break;
       }
-      await forwardToAgent(targetAgentId, {
-        type: 'get_yeaft_plugins',
-        requestId: msg.requestId || null,
-      });
+      await forwardRegisteredAgentRequest({ client, clientId, agentId: targetAgentId, operation: 'plugins:load', requestId: msg.requestId,
+        message: { type: 'get_yeaft_plugins', requestId: msg.requestId }, responseType: 'yeaft_plugins' });
       break;
     }
 
@@ -273,12 +301,15 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       }
       const hasPlugins = Object.prototype.hasOwnProperty.call(msg, 'plugins');
       const hasConfig = Object.prototype.hasOwnProperty.call(msg, 'config');
-      await forwardToAgent(targetAgentId, {
-        type: 'update_yeaft_plugins',
-        requestId: msg.requestId || null,
-        // Preserve explicit falsy values so Agent-side schema validation can
-        // reject them. Only an absent payload is the legacy empty selection.
-        plugins: hasPlugins ? msg.plugins : (hasConfig ? msg.config : {}),
+      await forwardRegisteredAgentRequest({ client, clientId, agentId: targetAgentId, operation: 'plugins:update', requestId: msg.requestId,
+        message: {
+          type: 'update_yeaft_plugins',
+          requestId: msg.requestId,
+          // Preserve explicit falsy values so Agent-side schema validation can
+          // reject them. Only an absent payload is the legacy empty selection.
+          plugins: hasPlugins ? msg.plugins : (hasConfig ? msg.config : {}),
+        },
+        responseType: 'yeaft_plugins_updated',
       });
       break;
     }
@@ -300,12 +331,8 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       const a = msg.agentId || client.currentAgent;
       if (!a) break;
       if (!await checkAgentAccess(a)) break;
-      if (!registerAgentSettingsRequest({ agentId: a, operation: 'telemetry:load', requestId: msg.requestId, clientId })) break;
-      await forwardToAgent(a, {
-        type: 'get_telemetry_settings',
-        requestId: msg.requestId,
-        clientId,
-      });
+      await forwardRegisteredAgentRequest({ client, clientId, agentId: a, operation: 'telemetry:load', requestId: msg.requestId,
+        message: { type: 'get_telemetry_settings', requestId: msg.requestId, clientId }, responseType: 'telemetry_settings' });
       break;
     }
 
@@ -313,13 +340,9 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       const a = msg.agentId || client.currentAgent;
       if (!a) break;
       if (!await checkAgentAccess(a)) break;
-      if (!registerAgentSettingsRequest({ agentId: a, operation: 'telemetry:update', requestId: msg.requestId, clientId })) break;
-      await forwardToAgent(a, {
-        type: 'update_telemetry_settings',
-        requestId: msg.requestId,
-        clientId,
-        settings: msg.settings || msg.config || {},
-      });
+      await forwardRegisteredAgentRequest({ client, clientId, agentId: a, operation: 'telemetry:update', requestId: msg.requestId,
+        message: { type: 'update_telemetry_settings', requestId: msg.requestId, clientId, settings: msg.settings || msg.config || {} },
+        responseType: 'telemetry_settings_updated' });
       break;
     }
 

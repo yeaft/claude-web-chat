@@ -4,10 +4,10 @@ import { CONFIG } from './config.js';
 import { verifyAgent } from './auth.js';
 
 import { encodeKey } from './encryption.js';
-import { agents, pendingAgentConnections } from './context.js';
+import { agents, pendingAgentConnections, takeAgentSettingsRequestsForAgent, webClients } from './context.js';
 import { agentInventoryDb, userDb } from './database.js';
 import {
-  parseMessage, broadcastAgentList, clearAgentDirCache
+  parseMessage, broadcastAgentList, clearAgentDirCache, sendToWebClient
 } from './ws-utils.js';
 import { handleAgentConversation } from './handlers/agent-conversation.js';
 import { handleAgentOutput } from './handlers/agent-output.js';
@@ -307,6 +307,21 @@ function handleAgentDisconnect(agentId, agentName, ws) {
   clearAgentDirCache(agentId);
   clearWorkbenchCorrelationsForAgent(agentId);
   clearBrowserRuntimeForAgent(agentId);
+  for (const pending of takeAgentSettingsRequestsForAgent(agentId)) {
+    const client = webClients.get(pending.clientId);
+    if (!client?.authenticated) continue;
+    const responseTypes = {
+      restart: 'restart_agent_ack', dream: 'dream_enabled_updated', upgrade: 'upgrade_agent_ack',
+      'plugins:load': 'yeaft_plugins', 'plugins:update': 'yeaft_plugins_updated',
+      'telemetry:load': 'telemetry_settings', 'telemetry:update': 'telemetry_settings_updated',
+    };
+    void sendToWebClient(client, {
+      type: responseTypes[pending.operation] || 'agent_request_error',
+      agentId,
+      requestId: pending.requestId,
+      error: 'Agent disconnected before completing the request.',
+    });
+  }
   // Phase 1: 清理同步超时
   if (agent._syncTimeout) {
     clearTimeout(agent._syncTimeout);

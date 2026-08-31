@@ -1339,9 +1339,12 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         clientId,
         userId: client.userId,
       });
-      if (!registered) return;
+      if (!registered) {
+        await sendToWebClient(client, { type: 'yeaft_debug_history', agentId: debugAgentId, sessionId: debugSessionId, requestId: debugRequestId, error: 'Request rejected: too many pending requests or duplicate requestId.' });
+        return;
+      }
       try {
-        await forwardToAgent(debugAgentId, {
+        const dispatched = await forwardToAgent(debugAgentId, {
           type: 'yeaft_fetch_debug_history',
           sessionId: debugSessionId,
           requestId: debugRequestId,
@@ -1353,9 +1356,13 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           search: typeof msg.search === 'string' ? msg.search.slice(0, 500) : '',
           _requestClientId: clientId,
         });
+        if (!dispatched) {
+          deleteYeaftDebugRequest({ agentId: debugAgentId, requestId: debugRequestId, clientId });
+          await sendToWebClient(client, { type: 'yeaft_debug_history', agentId: debugAgentId, sessionId: debugSessionId, requestId: debugRequestId, error: 'Agent is unavailable.' });
+        }
       } catch (err) {
         deleteYeaftDebugRequest({ agentId: debugAgentId, requestId: debugRequestId, clientId });
-        throw err;
+        await sendToWebClient(client, { type: 'yeaft_debug_history', agentId: debugAgentId, sessionId: debugSessionId, requestId: debugRequestId, error: `Failed to send request to Agent: ${err.message}` });
       }
       break;
     }
