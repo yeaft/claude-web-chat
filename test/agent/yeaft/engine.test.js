@@ -978,9 +978,11 @@ describe('Engine', () => {
         { type: 'stop', stopReason: 'end_turn' },
       ]);
       let executions = 0;
+      const traceDir = mkdtempSync(join(tmpdir(), 'yeaft-duplicate-trace-'));
+      const dbTrace = new DebugTrace(traceDir);
       const engine = new Engine({
         adapter,
-        trace,
+        trace: dbTrace,
         config: { model: 'test-model', maxOutputTokens: 1024 },
       });
       engine.registerTool({
@@ -1022,6 +1024,13 @@ describe('Engine', () => {
         stopReason: 'end_turn',
         terminal: true,
       }));
+
+      const tools = await dbTrace.queryTools({ name: 'repeat_tool' });
+      expect(tools).toHaveLength(3);
+      expect(tools.filter(tool => tool.suppressed)).toHaveLength(1);
+      expect(tools.filter(tool => !tool.suppressed)).toHaveLength(2);
+      await dbTrace.close();
+      rmSync(traceDir, { recursive: true, force: true });
     });
 
     it('allows a legitimate third poll with identical arguments', async () => {

@@ -578,6 +578,7 @@ function traceToolToLegacy(trace, tool) {
     tool_call_id: tool.toolCallId || null,
     duration_ms: tool.durationMs || 0,
     is_error: tool.isError ? 1 : 0,
+    suppressed: !!tool.suppressed,
     created_at: tool.createdAt || trace.openedAt || 0,
   };
 }
@@ -772,7 +773,15 @@ export class DebugTrace {
     this.#markDirty(trace, { dirtyLoops: 1, force: !trace.active });
   }
 
-  logTool(turnId, { toolName, toolCallId = null, toolInput = null, toolOutput = null, durationMs = null, isError = false } = {}) {
+  logTool(turnId, {
+    toolName,
+    toolCallId = null,
+    toolInput = null,
+    toolOutput = null,
+    durationMs = null,
+    isError = false,
+    suppressed = false,
+  } = {}) {
     const id = randomUUID();
     const ctx = this.#turnIndex.get(turnId);
     if (!ctx) return id;
@@ -789,6 +798,7 @@ export class DebugTrace {
       toolOutput: truncateText(toolOutput == null ? null : String(toolOutput), MAX_TEXT_BYTES),
       durationMs: Number(durationMs || 0),
       isError: !!isError,
+      suppressed: !!suppressed,
       createdAt: Date.now(),
     });
     trace.updatedAt = Date.now();
