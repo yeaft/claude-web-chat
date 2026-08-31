@@ -159,6 +159,35 @@ describe('deterministic provider history window', () => {
     expect(estimateMessagesTokens(window)).toBeLessThanOrEqual(55);
   });
 
+  it('keeps only newest complete non-empty turns when the dialogue floor cannot fit', () => {
+    const messages = [];
+    for (let turn = 1; turn <= 5; turn += 1) {
+      messages.push({ role: 'user', content: `${turn} question` });
+      messages.push({ role: 'assistant', content: `${turn} answer` });
+    }
+
+    const belowOneTurn = trimSnapshotForBudget(messages, { messageTokenBudget: 3 });
+    const subOverhead = trimSnapshotForBudget(messages, { messageTokenBudget: 10 });
+    const tiny = trimSnapshotForBudget(messages, { messageTokenBudget: 20 });
+
+    expect(belowOneTurn).toEqual([]);
+    expect(subOverhead.map(message => message.role)).toEqual(['user', 'assistant']);
+    expect(subOverhead.map(message => message.content)).toEqual(['5 question', '5 answer']);
+    expect(tiny.map(message => message.role)).toEqual([
+      'user', 'assistant',
+      'user', 'assistant',
+      'user', 'assistant',
+    ]);
+    expect(tiny.every(message => typeof message.content === 'string' && message.content.length > 0)).toBe(true);
+    expect(tiny.at(-2).content).toMatch(/^5/);
+    expect(tiny.at(-1).content).toMatch(/^5/);
+    expect(estimateMessagesTokens(subOverhead)).toBeLessThanOrEqual(10);
+    expect(estimateMessagesTokens(tiny)).toBeLessThanOrEqual(20);
+
+    expect(trimSnapshotForBudget(subOverhead, { messageTokenBudget: 10 })).toEqual(subOverhead);
+    expect(trimSnapshotForBudget(tiny, { messageTokenBudget: 20 })).toEqual(tiny);
+  });
+
   it('drops tool payload before evicting the five most recent dialogue turns', () => {
     const messages = [];
     for (let turn = 1; turn <= 7; turn += 1) {

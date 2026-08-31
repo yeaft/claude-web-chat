@@ -468,32 +468,123 @@ function fitProviderUnit(unit, tokenBudget) {
   return fitted;
 }
 
+function dialogueTurnUnits(messages) {
+  const turns = countTurns(messages);
+  if (turns === 0) return [];
+
+  const units = [];
+  for (let turnsFromEnd = turns; turnsFromEnd >= 1; turnsFromEnd -= 1) {
+    const start = indexOfNthTurnFromEnd(messages, turnsFromEnd);
+    const end = turnsFromEnd === 1
+      ? messages.length
+      : indexOfNthTurnFromEnd(messages, turnsFromEnd - 1);
+    if (start >= 0 && end > start) units.push(messages.slice(start, end));
+  }
+  return units;
+}
+
+function fitDialogueTurn(turn, tokenBudget) {
+  if (!Array.isArray(turn) || turn.length === 0 || tokenBudget <= 0) return [];
+
+  const units = providerUnits(turn);
+  const fittedUnits = [];
+  let remaining = tokenBudget;
+  for (let index = 0; index < units.length; index += 1) {
+    const unitsLeft = units.length - index;
+    const allowance = Math.max(0, Math.floor(remaining / unitsLeft));
+    const fitted = fitProviderUnit(units[index], allowance);
+    fittedUnits.push(fitted);
+    remaining -= estimateMessagesTokens(fitted);
+  }
+
+  const fitted = dropEmptyAssistantRows(pairSanitize(fittedUnits.flat()));
+  const requiredUsers = turn.filter(message => message?.role === 'user').length;
+  const meaningfulAssistant = message => message?.role === 'assistant'
+    && (hasContentAfterToolStrip(message.content)
+      || (Array.isArray(message.toolCalls) && message.toolCalls.length > 0));
+  const requiredAssistants = turn.filter(meaningfulAssistant).length;
+  const retainedUsers = fitted.filter(message => message?.role === 'user'
+    && hasContentAfterToolStrip(message.content)).length;
+  const retainedAssistants = fitted.filter(meaningfulAssistant).length;
+
+  // A dialogue floor is useful only when both sides still carry meaning. Never
+  // retain empty user placeholders or silently discard an ordinary response.
+  if (retainedUsers !== requiredUsers || retainedAssistants !== requiredAssistants) return [];
+  if (requiredUsers === 0 || requiredAssistants === 0) return [];
+  return fitted;
+}
+
+function minimumDialogueTurnFit(turn, tokenBudget) {
+  let low = 1;
+  let high = tokenBudget;
+  let best = null;
+  while (low <= high) {
+    const allowance = Math.floor((low + high) / 2);
+    const fitted = fitDialogueTurn(turn, allowance);
+    if (fitted.length > 0) {
+      best = { fitted, tokens: estimateMessagesTokens(fitted) };
+      high = allowance - 1;
+    } else {
+      low = allowance + 1;
+    }
+  }
+  return best;
+}
+
+function fitDialogueTurnsToBudget(turns, tokenBudget) {
+  const minimumFits = turns.map(turn => minimumDialogueTurnFit(turn, tokenBudget));
+  const retained = [];
+  let minimumTotal = minimumFits.reduce((total, fit) => total + (fit?.tokens || tokenBudget + 1), 0);
+
+  if (minimumFits.every(Boolean) && minimumTotal <= tokenBudget) {
+    for (let index = 0; index < turns.length; index += 1) retained.push(index);
+  } else {
+    minimumTotal = 0;
+    for (let index = turns.length - 1; index >= 0; index -= 1) {
+      const fit = minimumFits[index];
+      if (!fit || minimumTotal + fit.tokens > tokenBudget) continue;
+      retained.unshift(index);
+      minimumTotal += fit.tokens;
+    }
+  }
+
+  const fittedTurns = [];
+  let remaining = tokenBudget;
+  for (let retainedIndex = 0; retainedIndex < retained.length; retainedIndex += 1) {
+    const turnIndex = retained[retainedIndex];
+    const minimumReservedAfter = retained
+      .slice(retainedIndex + 1)
+      .reduce((total, index) => total + minimumFits[index].tokens, 0);
+    const turnsLeft = retained.length - retainedIndex;
+    const fairAllowance = Math.floor(remaining / turnsLeft);
+    const allowance = Math.max(minimumFits[turnIndex].tokens, Math.min(
+      remaining - minimumReservedAfter,
+      fairAllowance,
+    ));
+    const fitted = fitDialogueTurn(turns[turnIndex], allowance);
+    fittedTurns.push(fitted.length > 0 ? fitted : minimumFits[turnIndex].fitted);
+    remaining -= estimateMessagesTokens(fittedTurns.at(-1));
+  }
+  return fittedTurns.flat();
+}
+
 function fitMessagesToBudget(messages, tokenBudget, minimumTurns = 1) {
   let out = dropOldestHistoryUntilBudget(pairSanitize(messages), tokenBudget, minimumTurns);
   if (estimateMessagesTokens(out) <= tokenBudget) return dropEmptyAssistantRows(out);
 
-  // Treat assistant(toolCalls)+tool rows as one provider unit. When a dialogue
-  // floor is active, share the remaining budget across all retained units so a
-  // large newest answer cannot starve the older turns we deliberately kept.
-  // With the legacy one-turn floor, keep newest-first allocation semantics.
+  const turns = dialogueTurnUnits(out);
+  if (minimumTurns > 1 && turns.length > 1) {
+    return fitDialogueTurnsToBudget(turns, tokenBudget);
+  }
+
+  // Legacy single-turn/assistant-only history keeps provider-unit allocation.
   const units = providerUnits(out);
   const fittedUnits = Array.from({ length: units.length }, () => []);
-  if (minimumTurns > 1 && countTurns(out) > 1) {
-    let remaining = tokenBudget;
-    for (let index = 0; index < units.length; index += 1) {
-      const unitsLeft = units.length - index;
-      const allowance = Math.max(0, Math.floor(remaining / unitsLeft));
-      const fitted = fitProviderUnit(units[index], allowance);
-      fittedUnits[index] = fitted;
-      remaining -= estimateMessagesTokens(fitted);
-    }
-  } else {
-    let reserved = 0;
-    for (let index = units.length - 1; index >= 0; index -= 1) {
-      const fitted = fitProviderUnit(units[index], Math.max(0, tokenBudget - reserved));
-      fittedUnits[index] = fitted;
-      reserved += estimateMessagesTokens(fitted);
-    }
+  let reserved = 0;
+  for (let index = units.length - 1; index >= 0; index -= 1) {
+    const fitted = fitProviderUnit(units[index], Math.max(0, tokenBudget - reserved));
+    fittedUnits[index] = fitted;
+    reserved += estimateMessagesTokens(fitted);
   }
   out = fittedUnits.flat();
   return dropEmptyAssistantRows(pairSanitize(out));
