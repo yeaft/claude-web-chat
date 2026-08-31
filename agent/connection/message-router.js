@@ -495,7 +495,7 @@ export async function handleMessage(msg) {
     // section of config.json. This does not expose trace payloads.
     case 'get_telemetry_settings': {
       const settings = getTelemetrySettings(ctx.CONFIG?.yeaftDir);
-      sendToServer({ type: 'telemetry_settings', ...settings });
+      sendToServer({ type: 'telemetry_settings', requestId: msg.requestId, clientId: msg.clientId, ...settings });
       break;
     }
 
@@ -515,7 +515,7 @@ export async function handleMessage(msg) {
           result.runtimeRefreshError = error?.message || String(error);
         }
       }
-      sendToServer({ type: 'telemetry_settings_updated', ...result });
+      sendToServer({ type: 'telemetry_settings_updated', requestId: msg.requestId, clientId: msg.clientId, ...result });
       break;
     }
 

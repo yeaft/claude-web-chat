@@ -238,8 +238,6 @@ export default {
       dragOverSessionKey: null,
       // task-342: server version shown in sidebar-bottom (mirrors ChatPage).
       serverVersion: '',
-      restartingAgents: {},
-      upgradingAgents: {},
     };
   },
   created() {
@@ -264,58 +262,6 @@ export default {
       this.chatStore.pendingUnifiedSessionSettings = null;
       this.openGroupSettings({ id: pending.sessionId, agentId: pending.agentId }, pending.section || 'session');
     }
-    this._agentUpgradeAckHandler = (e) => {
-      const { agentId, success, error, alreadyLatest, version, reason, currentNode, requiredNode } = e.detail || {};
-      if (!agentId) return;
-      if (!success) {
-        delete this.upgradingAgents[agentId];
-        if (reason === 'node_incompatible') {
-          alertDialog(this.$t('chat.agent.nodeIncompatible', {
-            current: currentNode || '?',
-            required: requiredNode || '?',
-            version: version || '',
-          }));
-        } else {
-          if (reason === 'container_image_upgrade_required') {
-            alertDialog(this.$t('chat.agent.containerImageUpgradeRequired', {
-              version: version || '?',
-            }));
-          } else if (reason === 'manual_upgrade_required') {
-            alertDialog(this.$t('chat.agent.manualUpgradeRequired', {
-              version: version || '?',
-            }));
-          } else {
-            alertDialog(`Agent upgrade failed: ${error || 'Unknown error'}`);
-          }
-        }
-      } else if (alreadyLatest) {
-        delete this.upgradingAgents[agentId];
-        alertDialog(this.$t('chat.agent.alreadyLatest', { version: version || '' }));
-      }
-      // success && !alreadyLatest means the agent process will restart. Keep
-      // the upgrading marker until the next agent_list shows it is back.
-    };
-    if (typeof window !== 'undefined') {
-      window.addEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
-    }
-
-    if (typeof this.$watch === 'function') {
-      this._checkAgentTransientStates = this.$watch(
-        () => {
-          const s = this.chatStore || this.store;
-          return Array.isArray(s?.agents)
-            ? s.agents.map(a => `${a.id}:${a.online}:${a.version || ''}`)
-            : [];
-        },
-        () => this.clearRecoveredAgentStatuses()
-      );
-    }
-  },
-  beforeUnmount() {
-    if (this._agentUpgradeAckHandler && typeof window !== 'undefined') {
-      window.removeEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
-    }
-    if (this._checkAgentTransientStates) this._checkAgentTransientStates();
   },
   computed: {
     // Resolve the Pinia store lazily. Guarded so unit tests that mount
@@ -362,6 +308,12 @@ export default {
         .map(row => `${row.routeRef?.agentId || ''}\u001f${row.routeRef?.sessionId || ''}`));
       const currentAgentId = this.chatStore?.currentAgent || '';
       return rows.filter(row => !hidden.has(`${row.raw?.agentId || currentAgentId}\u001f${row.id || ''}`));
+    },
+    restartingAgents() {
+      return Object.fromEntries(Object.entries(this.chatStore?.agentOperations || {}).filter(([, value]) => value.restart?.pending));
+    },
+    upgradingAgents() {
+      return Object.fromEntries(Object.entries(this.chatStore?.agentOperations || {}).filter(([, value]) => value.upgrade?.pending));
     },
     chatStore() {
       // Needed for `sessionCrudRequest` and the Yeaft session pin menu.
@@ -722,37 +674,6 @@ export default {
       };
       setTimeout(() => window.addEventListener('click', close, true), 0);
       if (evt && typeof evt.stopPropagation === 'function') evt.stopPropagation();
-    },
-    clearRecoveredAgentStatuses() {
-      const s = this.chatStore || this.store;
-      if (!s || !Array.isArray(s.agents)) return;
-      for (const agentId of Object.keys(this.restartingAgents)) {
-        const agent = s.agents.find(a => a && a.id === agentId);
-        if (agent?.online || !agent) delete this.restartingAgents[agentId];
-      }
-      for (const agentId of Object.keys(this.upgradingAgents)) {
-        const agent = s.agents.find(a => a && a.id === agentId);
-        const info = this.upgradingAgents[agentId];
-        const elapsed = Date.now() - (info?.since || 0);
-        if (!agent || elapsed > 120000) {
-          delete this.upgradingAgents[agentId];
-        } else if (agent.online) {
-          const oldVersion = info?.oldVersion || null;
-          const versionChanged = !!(oldVersion && agent.version && agent.version !== oldVersion);
-          const minDisplayMs = 3000;
-          if (versionChanged || elapsed >= minDisplayMs) {
-            delete this.upgradingAgents[agentId];
-          } else {
-            setTimeout(() => {
-              const latestStore = this.chatStore || this.store;
-              const latest = Array.isArray(latestStore?.agents)
-                ? latestStore.agents.find(a => a && a.id === agentId)
-                : null;
-              if (latest?.online) delete this.upgradingAgents[agentId];
-            }, minDisplayMs - elapsed);
-          }
-        }
-      }
     },
     // task-yeaft-group-editor: per-group rename/delete + manage-members
     // formerly lived as discrete startManageMembers/startRenameGroup/

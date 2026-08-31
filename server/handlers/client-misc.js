@@ -291,7 +291,11 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       const a = msg.agentId || client.currentAgent;
       if (!a) break;
       if (!await checkAgentAccess(a)) break;
-      await forwardToAgent(a, { type: 'get_telemetry_settings' });
+      await forwardToAgent(a, {
+        type: 'get_telemetry_settings',
+        requestId: msg.requestId,
+        clientId,
+      });
       break;
     }
 
@@ -301,6 +305,8 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       if (!await checkAgentAccess(a)) break;
       await forwardToAgent(a, {
         type: 'update_telemetry_settings',
+        requestId: msg.requestId,
+        clientId,
         settings: msg.settings || msg.config || {},
       });
       break;

@@ -83,10 +83,11 @@ export default {
                   <p>{{ $t('chat.agent.dreamHint') }}</p>
                 </div>
                 <label class="agent-settings-switch">
-                  <input type="checkbox" :checked="selectedAgent.dreamEnabled !== false" :disabled="!selectedAgent.online" @change="setDreamEnabled($event.target.checked)">
+                  <input type="checkbox" :checked="selectedAgent.dreamEnabled !== false" :disabled="!selectedAgent.online || dreamState.pending" @change="setDreamEnabled($event.target.checked)">
                   <span aria-hidden="true"></span>
                 </label>
               </div>
+              <p v-if="dreamState.error" class="error">{{ dreamState.error }}</p>
             </section>
 
             <section class="agent-settings-section">
@@ -160,14 +161,17 @@ export default {
       telemetrySaving: false,
       telemetryMessage: '',
       telemetryError: false,
-      restarting: false,
-      upgrading: false,
+      telemetryGeneration: 0,
     };
   },
   computed: {
     store() { return Pinia.useChatStore(); },
     agents() { return this.store.agents || []; },
     selectedAgent() { return this.agents.find(agent => agent.id === this.selectedAgentId) || null; },
+    operations() { return this.store.agentOperations?.[this.selectedAgentId] || {}; },
+    restarting() { return this.operations.restart?.pending === true; },
+    upgrading() { return this.operations.upgrade?.pending === true; },
+    dreamState() { return this.store.agentDreamState?.[this.selectedAgentId] || {}; },
     busy() { return this.restarting || this.upgrading; },
   },
   watch: {
@@ -181,53 +185,56 @@ export default {
       },
     },
   },
-  mounted() {
-    window.addEventListener('agent-restart-ack', this.onRestartAck);
-    window.addEventListener('agent-upgrade-ack', this.onUpgradeAck);
-  },
-  beforeUnmount() {
-    window.removeEventListener('agent-restart-ack', this.onRestartAck);
-    window.removeEventListener('agent-upgrade-ack', this.onUpgradeAck);
-  },
   methods: {
     selectAgent(agentId) {
       if (this.selectedAgentId === agentId) return;
       this.selectedAgentId = agentId;
+      this.telemetryGeneration += 1;
+      this.telemetryLoading = false;
+      this.telemetrySaving = false;
       this.telemetryDraft = { ...DEFAULT_TELEMETRY };
       this.telemetryMessage = '';
       this.telemetryError = false;
       if (agentId && this.agents.find(agent => agent.id === agentId)?.online) this.loadTelemetry();
     },
     async loadTelemetry() {
-      if (!this.selectedAgentId) return;
+      const agentId = this.selectedAgentId;
+      if (!agentId) return;
+      const generation = ++this.telemetryGeneration;
       this.telemetryLoading = true;
       this.telemetryMessage = '';
       try {
-        const settings = await this.store.loadTelemetrySettings(this.selectedAgentId);
+        const settings = await this.store.loadTelemetrySettings(agentId);
+        if (generation !== this.telemetryGeneration || agentId !== this.selectedAgentId) return;
         if (settings?.error) throw new Error(settings.error);
         this.telemetryDraft = { ...DEFAULT_TELEMETRY, ...settings };
       } catch (error) {
+        if (generation !== this.telemetryGeneration || agentId !== this.selectedAgentId) return;
         this.telemetryError = true;
         this.telemetryMessage = error?.message || this.$t('agentSettings.telemetry.loadFailed');
       } finally {
-        this.telemetryLoading = false;
+        if (generation === this.telemetryGeneration && agentId === this.selectedAgentId) this.telemetryLoading = false;
       }
     },
     async saveTelemetry() {
-      if (!this.selectedAgentId) return;
+      const agentId = this.selectedAgentId;
+      if (!agentId) return;
+      const generation = ++this.telemetryGeneration;
       this.telemetrySaving = true;
       this.telemetryMessage = '';
       try {
-        const settings = await this.store.updateTelemetrySettings(this.telemetryDraft, this.selectedAgentId);
+        const settings = await this.store.updateTelemetrySettings(this.telemetryDraft, agentId);
+        if (generation !== this.telemetryGeneration || agentId !== this.selectedAgentId) return;
         if (settings?.error) throw new Error(settings.error);
         this.telemetryDraft = { ...DEFAULT_TELEMETRY, ...settings };
         this.telemetryError = false;
         this.telemetryMessage = this.$t('agentSettings.telemetry.saved');
       } catch (error) {
+        if (generation !== this.telemetryGeneration || agentId !== this.selectedAgentId) return;
         this.telemetryError = true;
         this.telemetryMessage = error?.message || this.$t('agentSettings.telemetry.saveFailed');
       } finally {
-        this.telemetrySaving = false;
+        if (generation === this.telemetryGeneration && agentId === this.selectedAgentId) this.telemetrySaving = false;
       }
     },
     setDreamEnabled(enabled) {
@@ -236,28 +243,12 @@ export default {
     async restartAgent() {
       const agent = this.selectedAgent;
       if (!agent || !await confirmDialog(this.$t('chat.agent.restartConfirm', { name: agent.name || agent.id }))) return;
-      this.restarting = true;
-      this.store.sendWsMessage({ type: 'restart_agent', agentId: agent.id });
-      setTimeout(() => { this.restarting = false; }, 120000);
+      this.store.restartAgent(agent.id);
     },
     async upgradeAgent() {
       const agent = this.selectedAgent;
       if (!agent || !await confirmDialog(this.$t('chat.agent.upgradeConfirm', { name: agent.name || agent.id }))) return;
-      this.upgrading = true;
       this.store.upgradeAgent(agent.id);
-      setTimeout(() => { this.upgrading = false; }, 120000);
-    },
-    onRestartAck(event) {
-      if (event.detail?.agentId === this.selectedAgentId) this.restarting = true;
-    },
-    onUpgradeAck(event) {
-      if (event.detail?.agentId !== this.selectedAgentId) return;
-      const { success, alreadyLatest, error } = event.detail || {};
-      if (!success || alreadyLatest) this.upgrading = false;
-      if (!success) {
-        this.telemetryError = true;
-        this.telemetryMessage = error || this.$t('agentSettings.maintenance.upgradeFailed');
-      }
     },
   },
 };

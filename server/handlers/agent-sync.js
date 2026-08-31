@@ -408,13 +408,20 @@ export async function handleAgentSync(agentId, agent, msg) {
     // trace payloads stay on the Agent.
     case 'telemetry_settings':
     case 'telemetry_settings_updated': {
+      if (msg.clientId) {
+        const client = webClients.get(msg.clientId);
+        if (client?.authenticated && (CONFIG.skipAuth ||
+          (agent.ownerId && client.userId === agent.ownerId) ||
+          (!agent.ownerId && client.role === 'admin')
+        )) await sendToWebClient(client, { ...msg, agentId });
+        break;
+      }
+      // Legacy Agents do not return client correlation; preserve the old owner broadcast.
       for (const [, client] of webClients) {
         if (client.authenticated && (CONFIG.skipAuth ||
           (agent.ownerId && client.userId === agent.ownerId) ||
           (!agent.ownerId && client.role === 'admin')
-        )) {
-          await sendToWebClient(client, { ...msg, agentId });
-        }
+        )) await sendToWebClient(client, { ...msg, agentId });
       }
       break;
     }

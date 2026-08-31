@@ -490,8 +490,6 @@ export default {
       showSettingsPanel: false,
       showAgentSettings: false,
       agentSettingsAgentId: null,
-      restartingAgents: {},
-      upgradingAgents: {},
       // Unified conversation modal state
       showConversationModal: false,
       unifiedSessionCreateOpen: false,
@@ -524,6 +522,12 @@ export default {
   computed: {
     store() {
       return Pinia.useChatStore();
+    },
+    restartingAgents() {
+      return Object.fromEntries(Object.entries(this.store.agentOperations || {}).filter(([, value]) => value.restart?.pending));
+    },
+    upgradingAgents() {
+      return Object.fromEntries(Object.entries(this.store.agentOperations || {}).filter(([, value]) => value.upgrade?.pending));
     },
     providerOptions() {
       return [
@@ -945,9 +949,6 @@ export default {
       const agent = this.store.agents.find(a => a.id === agentId);
       const name = agent?.name || agentId;
       if (!await confirmDialog(this.$t('chat.agent.upgradeConfirm', { name }))) return;
-      this.upgradingAgents[agentId] = { since: Date.now(), oldVersion: agent?.version || null };
-      // 2 分钟后强制清除升级状态（兜底）
-      setTimeout(() => { delete this.upgradingAgents[agentId]; }, 120000);
       this.store.upgradeAgent(agentId);
     },
     // Folder picker methods
@@ -1118,87 +1119,11 @@ export default {
     // Fetch server version
     fetch('/api/version').then(r => r.json()).then(d => { this.serverVersion = d.version; }).catch(() => {});
 
-    // 监听 agent 重启确认
-    this._agentRestartAckHandler = (e) => {
-      const { agentId } = e.detail;
-      // ack 已收到，agent 即将退出，保持 restarting 状态
-      // 等 agent 重新上线后再清除
-    };
-    window.addEventListener('agent-restart-ack', this._agentRestartAckHandler);
-
-    // 监听 agent 升级结果
-    this._agentUpgradeAckHandler = (e) => {
-      const { agentId, success, error, alreadyLatest, version, reason, currentNode, requiredNode } = e.detail;
-      if (!success) {
-        delete this.upgradingAgents[agentId];
-        if (reason === 'node_incompatible') {
-          alertDialog(this.$t('chat.agent.nodeIncompatible', {
-            current: currentNode || '?',
-            required: requiredNode || '?',
-            version: version || '',
-          }));
-        } else {
-          if (reason === 'container_image_upgrade_required') {
-            alertDialog(this.$t('chat.agent.containerImageUpgradeRequired', {
-              version: version || '?',
-            }));
-          } else if (reason === 'manual_upgrade_required') {
-            alertDialog(this.$t('chat.agent.manualUpgradeRequired', {
-              version: version || '?',
-            }));
-          } else {
-            alertDialog(`Agent upgrade failed: ${error || 'Unknown error'}`);
-          }
-        }
-      } else if (alreadyLatest) {
-        delete this.upgradingAgents[agentId];
-        alertDialog(this.$t('chat.agent.alreadyLatest', { version: version || '' }));
-      }
-      // success && !alreadyLatest 时 agent 会重启，等上线后由 watcher 清除状态
-    };
-    window.addEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
-
-    // 监听 agent 列表更新，检查重启中/升级中的 agent 是否已恢复
-    this._checkRestartingAgents = this.$watch(
-      () => this.store.agents.map(a => a.id + ':' + a.online),
-      () => {
-        for (const agentId of Object.keys(this.restartingAgents)) {
-          const agent = this.store.agents.find(a => a.id === agentId);
-          // agent 上线了，或者 agent 已消失（可能以新 ID 重连）则清除
-          if (agent?.online || !agent) {
-            delete this.restartingAgents[agentId];
-          }
-        }
-        for (const agentId of Object.keys(this.upgradingAgents)) {
-          const agent = this.store.agents.find(a => a.id === agentId);
-          const info = this.upgradingAgents[agentId];
-          const elapsed = Date.now() - (info?.since || 0);
-          // agent 已消失（可能以新 ID 重连），或超过 2 分钟，强制清除
-          if (!agent || elapsed > 120000) {
-            delete this.upgradingAgents[agentId];
-          } else if (agent.online) {
-            // Agent came back online — delay clearing to ensure user sees the status
-            const minDisplayMs = 3000;
-            if (elapsed < minDisplayMs) {
-              setTimeout(() => {
-                const ag = this.store.agents.find(a => a.id === agentId);
-                if (ag?.online) delete this.upgradingAgents[agentId];
-              }, minDisplayMs - elapsed);
-            } else {
-              delete this.upgradingAgents[agentId];
-            }
-          }
-        }
-      }
-    );
   },
   beforeUnmount() {
     document.removeEventListener('click', this._clickOutsideHandler);
     window.removeEventListener('resize', this.handleResize);
     window.removeEventListener('workbench-message', this.handleFolderPickerMessage);
-    window.removeEventListener('agent-restart-ack', this._agentRestartAckHandler);
-    window.removeEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
-    if (this._checkRestartingAgents) this._checkRestartingAgents();
     if (this._folderPickerTimer) clearTimeout(this._folderPickerTimer);
   }
 };

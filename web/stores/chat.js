@@ -863,6 +863,10 @@ export const useChatStore = defineStore('chat', {
     // Local telemetry settings cache. Trace payloads never travel through
     // this state; only the bounded configuration does.
     telemetrySettings: null,
+    telemetrySettingsByAgent: {},
+    telemetryRequestByAgent: {},
+    agentOperations: {},
+    agentDreamState: {},
     // Last live Tavily /usage probe.
     //   { plan, used, limit, paygoUsed, paygoLimit } | { error }
     tavilyUsage: null,
@@ -6619,29 +6623,57 @@ export const useChatStore = defineStore('chat', {
     },
 
     // ─── Telemetry settings ─────────────────────────────────────
-    loadTelemetrySettings(agentId = this.currentAgent) {
-      if (!agentId) {
-        this.telemetrySettings = { enabled: true, retentionDays: 3, flushIntervalMs: 1000, maxQueueSize: 5000, rawExchangeMaxBytes: 524288, traceTextMaxBytes: 262144, loaded: true };
-        return Promise.resolve(this.telemetrySettings);
-      }
-      return new Promise((resolve) => {
+    requestTelemetrySettings(operation, agentId, settings = null) {
+      if (!agentId) return Promise.reject(new Error('no agent'));
+      const requestId = `telemetry-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      this.telemetryRequestByAgent = { ...this.telemetryRequestByAgent, [agentId]: requestId };
+      return new Promise((resolve, reject) => {
         if (!this._telemetryPending) this._telemetryPending = {};
-        this._telemetryPending[`load:${agentId}`] = resolve;
-        this.sendWsMessage({ type: 'get_telemetry_settings', agentId });
+        const timer = setTimeout(() => {
+          delete this._telemetryPending[requestId];
+          reject(new Error('Telemetry request timed out'));
+        }, 15000);
+        this._telemetryPending[requestId] = { resolve, reject, timer, agentId, operation };
+        this.sendWsMessage({
+          type: operation === 'load' ? 'get_telemetry_settings' : 'update_telemetry_settings',
+          agentId,
+          requestId,
+          ...(operation === 'update' ? { settings: settings || {} } : {}),
+        });
       });
     },
 
+    loadTelemetrySettings(agentId = this.currentAgent) {
+      if (!agentId) return Promise.resolve({ enabled: true, retentionDays: 3, flushIntervalMs: 1000, maxQueueSize: 5000, rawExchangeMaxBytes: 524288, traceTextMaxBytes: 262144, loaded: true });
+      return this.requestTelemetrySettings('load', agentId);
+    },
+
     updateTelemetrySettings(payload, agentId = this.currentAgent) {
-      if (!agentId) return Promise.resolve({ error: 'no agent' });
-      return new Promise((resolve) => {
-        if (!this._telemetryPending) this._telemetryPending = {};
-        this._telemetryPending[`update:${agentId}`] = resolve;
-        this.sendWsMessage({
-          type: 'update_telemetry_settings',
-          agentId,
-          settings: payload || {},
-        });
-      });
+      return this.requestTelemetrySettings('update', agentId, payload);
+    },
+
+    restartAgent(agentId) {
+      if (!agentId || this.agentOperations?.[agentId]?.restart?.pending) return false;
+      const timer = setTimeout(() => this.finishAgentOperation(agentId, 'restart', 'timeout'), 120000);
+      this.agentOperations = { ...this.agentOperations, [agentId]: { ...(this.agentOperations[agentId] || {}), restart: { pending: true, acknowledged: false, startedAt: Date.now(), timer, error: null } } };
+      this.sendWsMessage({ type: 'restart_agent', agentId });
+      return true;
+    },
+
+    upgradeAgent(agentId) {
+      if (!agentId || this.agentOperations?.[agentId]?.upgrade?.pending) return false;
+      const agent = this.agents.find(item => item.id === agentId);
+      const timer = setTimeout(() => this.finishAgentOperation(agentId, 'upgrade', 'timeout'), 120000);
+      this.agentOperations = { ...this.agentOperations, [agentId]: { ...(this.agentOperations[agentId] || {}), upgrade: { pending: true, acknowledged: false, startedAt: Date.now(), oldVersion: agent?.version || null, timer, error: null } } };
+      this.sendWsMessage({ type: 'upgrade_agent', agentId });
+      return true;
+    },
+
+    finishAgentOperation(agentId, operation, error = null) {
+      const current = this.agentOperations?.[agentId]?.[operation];
+      if (!current) return;
+      clearTimeout(current.timer);
+      this.agentOperations = { ...this.agentOperations, [agentId]: { ...(this.agentOperations[agentId] || {}), [operation]: { ...current, pending: false, timer: null, error } } };
     },
 
     // ─── Search settings (Tavily backend + key + on-demand quota) ───
@@ -7748,8 +7780,14 @@ export const useChatStore = defineStore('chat', {
     answerUserQuestion(requestId, answers, conversationId) { convHelpers.answerUserQuestion(this, requestId, answers, conversationId); },
     refreshAgents() { convHelpers.refreshAgents(this); },
     refreshConversation() { convHelpers.refreshConversation(this); },
-    setDreamEnabled(agentId, enabled) { convHelpers.setDreamEnabled(this, agentId, enabled); },
-    upgradeAgent(agentId) { convHelpers.upgradeAgent(this, agentId); },
+    setDreamEnabled(agentId, enabled) {
+      if (!agentId || this.agentDreamState?.[agentId]?.pending) return false;
+      const agent = this.agents.find(item => item.id === agentId);
+      const requested = enabled !== false;
+      this.agentDreamState = { ...this.agentDreamState, [agentId]: { pending: true, requested, authoritative: agent?.dreamEnabled !== false, error: null } };
+      convHelpers.setDreamEnabled(this, agentId, requested);
+      return true;
+    },
 
     // ★ Phase 6.1: 分页加载（基于 turn，统一走 DB）
     loadMoreMessages() {

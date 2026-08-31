@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { CONFIG } from '../../server/config.js';
-import { agents, pendingAgentConnections } from '../../server/context.js';
+import { agents, pendingAgentConnections, webClients } from '../../server/context.js';
 import { sessionDb, yeaftProjectDb, yeaftSessionDb, sessionUiMetadataDb } from '../../server/database.js';
 import {
   buildHiddenSessionCatalog,
@@ -10,6 +10,7 @@ import {
   verifyConversationOwnership,
 } from '../../server/ws-utils.js';
 import { handleAgentOutput } from '../../server/handlers/agent-output.js';
+import { handleAgentSync } from '../../server/handlers/agent-sync.js';
 import { handleAgentConversation } from '../../server/handlers/agent-conversation.js';
 import { handleClientConversation } from '../../server/handlers/client-conversation.js';
 import {
@@ -42,6 +43,34 @@ describe('resolveAgentAccessError', () => {
     }
     agents.clear();
     pendingAgentConnections.clear();
+    webClients.clear();
+  });
+
+  it('preserves telemetry correlation and replies only to the originating browser', async () => {
+    CONFIG.skipAuth = true;
+    const forwarded = [];
+    const originMessages = [];
+    const siblingMessages = [];
+    const agent = {
+      id: 'agent-telemetry', name: 'Telemetry', ownerId: 'user-1',
+      ws: { readyState: WS_OPEN, send: payload => forwarded.push(JSON.parse(payload)) },
+    };
+    agents.set(agent.id, agent);
+    const origin = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => originMessages.push(JSON.parse(payload)) } };
+    const sibling = { authenticated: true, userId: 'user-1', role: 'user', ws: { readyState: WS_OPEN, send: payload => siblingMessages.push(JSON.parse(payload)) } };
+    webClients.set('browser-origin', origin);
+    webClients.set('browser-sibling', sibling);
+
+    await handleClientMisc('browser-origin', origin, {
+      type: 'get_telemetry_settings', agentId: agent.id, requestId: 'telemetry-1',
+    }, async () => true);
+    expect(forwarded).toEqual([{ type: 'get_telemetry_settings', requestId: 'telemetry-1', clientId: 'browser-origin' }]);
+
+    await handleAgentSync(agent.id, agent, {
+      type: 'telemetry_settings', requestId: 'telemetry-1', clientId: 'browser-origin', enabled: true,
+    });
+    expect(originMessages).toEqual([{ type: 'telemetry_settings', requestId: 'telemetry-1', clientId: 'browser-origin', enabled: true, agentId: agent.id }]);
+    expect(siblingMessages).toEqual([]);
   });
 
   it('classifies Agent access states and rejects foreign Project mutations', async () => {

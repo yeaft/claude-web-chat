@@ -981,19 +981,25 @@ export function handleMessage(store, msg) {
 
     case 'dream_enabled_changed': {
       const agent = Array.isArray(store.agents) ? store.agents.find(item => item.id === msg.agentId) : null;
-      if (agent && !msg.error) agent.dreamEnabled = msg.enabled !== false;
+      if (agent) agent.dreamEnabled = msg.enabled !== false;
+      const previous = store.agentDreamState?.[msg.agentId] || {};
+      store.agentDreamState = { ...store.agentDreamState, [msg.agentId]: { ...previous, pending: false, authoritative: msg.enabled !== false, error: msg.error || null } };
       break;
     }
 
-    case 'restart_agent_ack':
-      console.log(`[Agent] Restart acknowledged by agent: ${msg.agentId}`);
-      window.dispatchEvent(new CustomEvent('agent-restart-ack', { detail: { agentId: msg.agentId } }));
+    case 'restart_agent_ack': {
+      const current = store.agentOperations?.[msg.agentId]?.restart;
+      if (current) store.agentOperations = { ...store.agentOperations, [msg.agentId]: { ...(store.agentOperations[msg.agentId] || {}), restart: { ...current, acknowledged: true } } };
       break;
+    }
 
-    case 'upgrade_agent_ack':
-      console.log(`[Agent] Upgrade ${msg.success ? 'succeeded' : 'failed'} for agent: ${msg.agentId}`, msg.error || '');
-      window.dispatchEvent(new CustomEvent('agent-upgrade-ack', { detail: { agentId: msg.agentId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version, reason: msg.reason, currentNode: msg.currentNode, requiredNode: msg.requiredNode, requiredCapability: msg.requiredCapability } }));
+    case 'upgrade_agent_ack': {
+      const current = store.agentOperations?.[msg.agentId]?.upgrade;
+      if (!current) break;
+      if (!msg.success || msg.alreadyLatest) store.finishAgentOperation?.(msg.agentId, 'upgrade', msg.error || null);
+      else store.agentOperations = { ...store.agentOperations, [msg.agentId]: { ...(store.agentOperations[msg.agentId] || {}), upgrade: { ...current, acknowledged: true } } };
       break;
+    }
 
     // Browser Runtime setup/lifecycle/signaling belongs to the dedicated browser store.
     case 'browser_runtime_status_result':
@@ -1210,14 +1216,15 @@ export function handleMessage(store, msg) {
         loaded: true,
         at: Date.now(),
       };
-      store.telemetrySettings = record;
-      const pending = store._telemetryPending;
-      const operation = msg.type === 'telemetry_settings' ? 'load' : 'update';
-      const key = msg.agentId ? `${operation}:${msg.agentId}` : operation;
-      if (pending && pending[key]) {
-        pending[key](record);
-        delete pending[key];
+      const pending = msg.requestId ? store._telemetryPending?.[msg.requestId] : null;
+      if (!pending || (msg.agentId && pending.agentId !== msg.agentId)) break;
+      clearTimeout(pending.timer);
+      delete store._telemetryPending[msg.requestId];
+      if (store.telemetryRequestByAgent?.[pending.agentId] === msg.requestId) {
+        store.telemetrySettingsByAgent = { ...store.telemetrySettingsByAgent, [pending.agentId]: record };
+        if (store.currentAgent === pending.agentId) store.telemetrySettings = record;
       }
+      pending.resolve(record);
       break;
     }
 
