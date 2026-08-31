@@ -1,3 +1,5 @@
+import { inspect } from 'util';
+
 import { isValidTopic } from '../memory/store.js';
 /**
  * dream/triage.js.
@@ -160,6 +162,15 @@ export async function classifySoft({ root, sessionId, messages, topicSummaries, 
   const pass1Prompt = buildPass1Prompt({ sessionId, messages, topicSummaries, language, maxPromptChars });
   const pass1Raw = await llm({ pass: 'triage-pass1', prompt: pass1Prompt, system: triageSystem(language) });
   const pass1 = parseJsonSafe(pass1Raw);
+  if (!pass1
+    || typeof pass1 !== 'object'
+    || Array.isArray(pass1)
+    || typeof pass1.user_profile_signals !== 'boolean'
+    || !Array.isArray(pass1.topics)) {
+    const err = new Error('triage: Pass-1 returned malformed JSON');
+    err.rawSnippet = rawResponseSnippet(pass1Raw);
+    throw err;
+  }
   const out = [];
 
   // User-profile scopes are expensive shared-memory rewrites, not structural
@@ -269,6 +280,12 @@ function dedupeActions(list) {
 
 function oneLine(s) {
   return String(s || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+}
+
+function rawResponseSnippet(raw) {
+  if (typeof raw === 'string') return raw.slice(0, 1000);
+  if (raw == null) return String(raw);
+  return inspect(raw, { depth: 2, maxArrayLength: 10, breakLength: 120 }).slice(0, 1000);
 }
 
 /** Lenient JSON parse: tolerate fenced ```json blocks. Returns null on failure. */

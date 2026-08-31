@@ -1599,6 +1599,82 @@ describe('Engine memory prompt hygiene', () => {
     ]);
   });
 
+  it('keeps profile evidence retryable when Dream Pass-1 returns malformed JSON', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-malformed-profile-triage-'));
+    const sessionId = 'malformed-profile';
+    const message = { id: 'm1', role: 'user', body: 'I prefer concise review summaries.' };
+    const now = '2026-08-07T07:30:00.000Z';
+    try {
+      const failed = await runDream({
+        root,
+        manual: true,
+        llm: async ({ pass }) => {
+          if (pass === 'triage-pass1') return '{ malformed';
+          throw new Error(`Unexpected Dream pass after malformed triage: ${pass}`);
+        },
+        listSessions: async () => [sessionId],
+        countMessages: async () => 1,
+        loadSessionDiff: async () => [message],
+        loadOverlapPreamble: async () => [],
+        listTopicSummaries: async () => [],
+        nowIso: () => now,
+      });
+
+      expect(failed.sessions).toEqual([
+        expect.objectContaining({
+          sessionId,
+          status: 'error',
+          error: 'triage: Pass-1 returned malformed JSON',
+        }),
+      ]);
+      expect(failed.targets).toEqual([]);
+      expect(await readSessionState(root, sessionId)).toEqual({
+        lastDreamMessageId: null,
+        lastDreamAt: null,
+        messageCount: 0,
+        failureCount: 1,
+        lastFailureAt: now,
+      });
+      expect(await readDreamError(root, `sessions/${sessionId}`)).toMatchObject({
+        phase: 'triage',
+        message: 'triage: Pass-1 returned malformed JSON',
+        rawSnippet: '{ malformed',
+      });
+
+      const retried = await runDream({
+        root,
+        manual: true,
+        llm: async ({ pass }) => {
+          if (pass === 'triage-pass1') return JSON.stringify({ user_profile_signals: true, topics: [] });
+          if (pass === 'extract-segments') return '[]';
+          if (pass === 'topic-consolidation') return JSON.stringify({ groups: [] });
+          return JSON.stringify({ content_md: 'concise review preference', summary_md: 'review preference' });
+        },
+        listSessions: async () => [sessionId],
+        countMessages: async () => 1,
+        loadSessionDiff: async (_id, cursor) => cursor ? [] : [message],
+        loadOverlapPreamble: async () => [],
+        listTopicSummaries: async () => [],
+        nowIso: () => '2026-08-07T07:45:00.000Z',
+      });
+
+      expect(retried.targets).toEqual(expect.arrayContaining([
+        expect.objectContaining({ target: `sessions/${sessionId}`, status: 'done' }),
+        expect.objectContaining({ target: 'user', status: 'done' }),
+        expect.objectContaining({ target: `sessions/${sessionId}/user`, status: 'done' }),
+      ]));
+      expect(await readSessionState(root, sessionId)).toMatchObject({
+        lastDreamMessageId: 'm1',
+        messageCount: 1,
+        failureCount: 0,
+        lastFailureAt: null,
+      });
+      expect(await readDreamError(root, `sessions/${sessionId}`)).toBe(null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('resolves Dream soft-triage topic redirects without losing the memory root', async () => {
     const root = mkdtempSync(join(tmpdir(), 'yeaft-dream-triage-redirect-'));
     const redirectDir = join(root, 'sessions', 's1', 'topic', 'old-topic');
