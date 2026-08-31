@@ -305,6 +305,9 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
   // agent and keep encrypting outbound (back-compat).
   const encryptOutbound = !effectiveCapabilities.includes('plaintext-ok');
 
+  const latestAgentVersion = process.env.AGENT_LATEST_VERSION || null;
+  const upgradeAvailable = (latestAgentVersion && agentVersion && latestAgentVersion !== agentVersion) ? latestAgentVersion : null;
+
   agents.set(agentId, {
     ws,
     name: agentName,
@@ -327,6 +330,7 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
     ownerId,
     ownerUsername,
     version: agentVersion,
+    upgradeAvailable,
     platform: agentPlatform,
     encryptOutbound
   });
@@ -362,9 +366,6 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
   });
 
   // Send registration (with session key only in production mode)
-  const latestAgentVersion = process.env.AGENT_LATEST_VERSION || null;
-  const upgradeAvailable = (latestAgentVersion && agentVersion && latestAgentVersion !== agentVersion) ? latestAgentVersion : null;
-
   ws.send(JSON.stringify({
     type: 'registered',
     agentId,

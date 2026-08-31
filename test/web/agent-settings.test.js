@@ -29,13 +29,18 @@ describe('Agent settings surface', () => {
     expect(yeaftPage).toContain('@open-agent-settings="openAgentSettings"');
   });
 
-  it('keeps per-Agent telemetry requests correlated by agentId', () => {
-    expect(chatStore).toContain('loadTelemetrySettings(agentId = this.currentAgent)');
-    expect(chatStore).toContain('this._telemetryPending[`load:${agentId}`]');
-    expect(chatStore).toContain('updateTelemetrySettings(payload, agentId = this.currentAgent)');
-    expect(messageHandler).toContain('`${operation}:${msg.agentId}`');
-    expect(panel).toContain('this.store.loadTelemetrySettings(this.selectedAgentId)');
-    expect(panel).toContain('this.store.updateTelemetrySettings(this.telemetryDraft, this.selectedAgentId)');
+  it('keeps per-Agent telemetry requests correlated by request and agent', () => {
+    expect(chatStore).toContain("this._telemetryPending[requestId] = { resolve, reject, timer, agentId, operation }");
+    expect(messageHandler).toContain("uniquePending(store._telemetryPending, pending => pending.agentId === msg.agentId && pending.operation === expectedOperation)");
+    expect(panel).toContain('this.store.loadTelemetrySettings(agentId)');
+    expect(panel).toContain('this.store.updateTelemetrySettings(this.telemetryDraft, agentId)');
+  });
+
+  it('shows the authoritative Agent update state', () => {
+    expect(panel).toContain('selectedAgent.upgradeAvailable');
+    expect(panel).toContain("$t('agentSettings.runtime.upToDate')");
+    expect(en).toContain("'agentSettings.runtime.updateAvailable': 'Update available: v{version}'");
+    expect(zh).toContain("'agentSettings.runtime.updateAvailable': '可更新至 v{version}'");
   });
 
   it('uses the fixed settings shell, responsive layout, and bilingual copy', () => {

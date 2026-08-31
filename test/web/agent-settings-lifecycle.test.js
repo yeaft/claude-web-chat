@@ -56,6 +56,32 @@ describe('Agent-scoped settings lifecycle', () => {
     expect(Object.keys(store._telemetryPending)).toHaveLength(0);
   });
 
+  it('accepts only safely attributable legacy telemetry responses', async () => {
+    const store = freshStore();
+    const legacyLoad = store.loadTelemetrySettings('agent-a');
+    handleMessage(store, { type: 'telemetry_settings', agentId: 'agent-a', enabled: false });
+    await expect(legacyLoad).resolves.toMatchObject({ enabled: false });
+
+    const first = store.loadTelemetrySettings('agent-a');
+    const second = store.loadTelemetrySettings('agent-a');
+    handleMessage(store, { type: 'telemetry_settings', agentId: 'agent-a', enabled: true });
+    expect(Object.keys(store._telemetryPending)).toHaveLength(2);
+    const requests = store.sendWsMessage.mock.calls.slice(-2).map(call => call[0].requestId);
+    for (const requestId of requests) {
+      handleMessage(store, { type: 'telemetry_settings', agentId: 'agent-a', requestId, enabled: true });
+    }
+    await Promise.all([first, second]);
+
+    const load = store.loadTelemetrySettings('agent-a');
+    const update = store.updateTelemetrySettings({ enabled: false }, 'agent-a');
+    handleMessage(store, { type: 'telemetry_settings_updated', agentId: 'agent-a', enabled: false });
+    await expect(update).resolves.toMatchObject({ enabled: false });
+    expect(Object.values(store._telemetryPending).map(item => item.operation)).toEqual(['load']);
+    const loadRequestId = store.sendWsMessage.mock.calls.at(-2)[0].requestId;
+    handleMessage(store, { type: 'telemetry_settings', agentId: 'agent-a', requestId: loadRequestId, enabled: true });
+    await load;
+  });
+
   it('keeps restart and upgrade lifecycle in shared Agent-scoped state and fences duplicates', () => {
     const store = freshStore();
     expect(store.restartAgent('agent-a')).toBe(true);
@@ -84,7 +110,7 @@ describe('Agent-scoped settings lifecycle', () => {
     expect(store.agentOperations['agent-a'].upgrade).toMatchObject({ pending: false, error: 'nope' });
   });
 
-  it('uses authoritative Dream state on failure and rejects rapid toggles', () => {
+  it('uses authoritative Dream state on failure and rejects rapid toggles', async () => {
     const store = freshStore();
     expect(store.setDreamEnabled('agent-a', false)).toBe(true);
     expect(store.setDreamEnabled('agent-a', true)).toBe(false);
@@ -99,9 +125,14 @@ describe('Agent-scoped settings lifecycle', () => {
     expect(store.agents[0].dreamEnabled).toBe(true);
 
     expect(store.setDreamEnabled('agent-a', false)).toBe(true);
-    const successRequestId = store.agentDreamState['agent-a'].requestId;
-    handleMessage(store, { type: 'dream_enabled_changed', agentId: 'agent-a', requestId: successRequestId, enabled: false });
+    handleMessage(store, { type: 'dream_enabled_changed', agentId: 'agent-a', enabled: false });
     expect(store.agentDreamState['agent-a']).toMatchObject({ pending: false, error: null });
+    expect(store.agents[0].dreamEnabled).toBe(false);
+
+    expect(store.setDreamEnabled('agent-a', true)).toBe(true);
+    await vi.advanceTimersByTimeAsync(15001);
+    expect(store.agentDreamState['agent-a']).toMatchObject({ pending: false, error: 'timeout' });
+    handleMessage(store, { type: 'dream_enabled_changed', agentId: 'agent-a', enabled: true });
     expect(store.agents[0].dreamEnabled).toBe(false);
   });
 });

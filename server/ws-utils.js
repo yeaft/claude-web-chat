@@ -171,6 +171,7 @@ export async function broadcastAgentList() {
           capabilities: agent.capabilities || ['terminal', 'file_editor', 'background_tasks'],
           ...(agent.capabilityMetadataProvided === true ? { capabilityMetadataProvided: true } : {}),
           version: agent.version || null,
+          upgradeAvailable: agent.upgradeAvailable || null,
           dreamEnabled: agent.dreamEnabled !== false,
           yeaftStatus: agent.yeaftStatus || null,
           proxyPorts: agent.proxyPorts || [],

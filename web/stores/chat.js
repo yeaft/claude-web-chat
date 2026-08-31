@@ -6631,6 +6631,11 @@ export const useChatStore = defineStore('chat', {
         if (!this._telemetryPending) this._telemetryPending = {};
         const timer = setTimeout(() => {
           delete this._telemetryPending[requestId];
+          if (this.telemetryRequestByAgent?.[agentId] === requestId) {
+            const nextRequests = { ...this.telemetryRequestByAgent };
+            delete nextRequests[agentId];
+            this.telemetryRequestByAgent = nextRequests;
+          }
           reject(new Error('Telemetry request timed out'));
         }, 15000);
         this._telemetryPending[requestId] = { resolve, reject, timer, agentId, operation };
@@ -7787,7 +7792,15 @@ export const useChatStore = defineStore('chat', {
       const agent = this.agents.find(item => item.id === agentId);
       const requested = enabled !== false;
       const requestId = `dream-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      this.agentDreamState = { ...this.agentDreamState, [agentId]: { pending: true, requestId, requested, authoritative: agent?.dreamEnabled !== false, error: null } };
+      const timer = setTimeout(() => {
+        const current = this.agentDreamState?.[agentId];
+        if (!current?.pending || current.requestId !== requestId) return;
+        this.agentDreamState = {
+          ...this.agentDreamState,
+          [agentId]: { ...current, pending: false, timer: null, error: 'timeout' },
+        };
+      }, 15000);
+      this.agentDreamState = { ...this.agentDreamState, [agentId]: { pending: true, requestId, requested, authoritative: agent?.dreamEnabled !== false, timer, error: null } };
       convHelpers.setDreamEnabled(this, agentId, requested, requestId);
       return true;
     },

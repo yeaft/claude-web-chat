@@ -38,6 +38,11 @@ const DEBUG_HISTORY_DEFAULT_LIMIT = 1;
 const DEBUG_HISTORY_SEARCH_LIMIT = 5;
 const LEGACY_YEAFT_SESSION_INVENTORY_QUIET_MS = 500;
 
+function uniquePending(pendingMap, predicate) {
+  const matches = Object.entries(pendingMap || {}).filter(([, pending]) => predicate(pending));
+  return matches.length === 1 ? { requestId: matches[0][0], pending: matches[0][1] } : null;
+}
+
 function sessionsStore() {
   return window.Pinia?.useSessionsStore?.()
     || (window.__useSessionsStore && window.__useSessionsStore());
@@ -981,10 +986,12 @@ export function handleMessage(store, msg) {
 
     case 'dream_enabled_changed': {
       const previous = store.agentDreamState?.[msg.agentId] || {};
-      if (!previous.pending || !msg.requestId || previous.requestId !== msg.requestId) break;
+      if (!previous.pending) break;
+      if (msg.requestId ? previous.requestId !== msg.requestId : !msg.agentId) break;
+      clearTimeout(previous.timer);
       const agent = Array.isArray(store.agents) ? store.agents.find(item => item.id === msg.agentId) : null;
       if (agent) agent.dreamEnabled = msg.enabled !== false;
-      store.agentDreamState = { ...store.agentDreamState, [msg.agentId]: { ...previous, pending: false, authoritative: msg.enabled !== false, error: msg.error || null } };
+      store.agentDreamState = { ...store.agentDreamState, [msg.agentId]: { ...previous, pending: false, timer: null, authoritative: msg.enabled !== false, error: msg.error || null } };
       break;
     }
 
@@ -1224,11 +1231,15 @@ export function handleMessage(store, msg) {
         loaded: true,
         at: Date.now(),
       };
-      const pending = msg.requestId ? store._telemetryPending?.[msg.requestId] : null;
-      if (!pending || (msg.agentId && pending.agentId !== msg.agentId)) break;
+      const expectedOperation = msg.type === 'telemetry_settings_updated' ? 'update' : 'load';
+      const match = msg.requestId
+        ? { requestId: msg.requestId, pending: store._telemetryPending?.[msg.requestId] }
+        : uniquePending(store._telemetryPending, pending => pending.agentId === msg.agentId && pending.operation === expectedOperation);
+      const pending = match?.pending;
+      if (!pending || pending.agentId !== msg.agentId || pending.operation !== expectedOperation) break;
       clearTimeout(pending.timer);
-      delete store._telemetryPending[msg.requestId];
-      if (store.telemetryRequestByAgent?.[pending.agentId] === msg.requestId) {
+      delete store._telemetryPending[match.requestId];
+      if (store.telemetryRequestByAgent?.[pending.agentId] === match.requestId) {
         store.telemetrySettingsByAgent = { ...store.telemetrySettingsByAgent, [pending.agentId]: record };
         if (store.currentAgent === pending.agentId) store.telemetrySettings = record;
       }
