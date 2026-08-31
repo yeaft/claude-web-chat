@@ -1212,7 +1212,8 @@ export function handleMessage(store, msg) {
       };
       store.telemetrySettings = record;
       const pending = store._telemetryPending;
-      const key = msg.type === 'telemetry_settings' ? 'load' : 'update';
+      const operation = msg.type === 'telemetry_settings' ? 'load' : 'update';
+      const key = msg.agentId ? `${operation}:${msg.agentId}` : operation;
       if (pending && pending[key]) {
         pending[key](record);
         delete pending[key];

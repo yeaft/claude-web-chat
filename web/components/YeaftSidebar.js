@@ -1,4 +1,4 @@
-import { alertDialog, confirmDialog } from '../utils/dialog.js';
+import { alertDialog } from '../utils/dialog.js';
 /**
  * YeaftSidebar — H2.f.6 trimmed.
  *
@@ -31,7 +31,7 @@ import { buildYeaftSidebarSessionList } from '../stores/helpers/yeaft-sidebar-se
 export default {
   name: 'YeaftSidebar',
   components: { SessionCreateModal, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter, SessionSidebarShell, UnifiedSessionList },
-  emits: ['select-group', 'select-chat', 'toggle-sidebar', 'back', 'open-settings', 'open-group-settings'],
+  emits: ['select-group', 'select-chat', 'toggle-sidebar', 'back', 'open-settings', 'open-agent-settings', 'open-group-settings'],
   template: `
     <SessionSidebarShell class="yeaft-sidebar" :collapsed="collapsed">
       <template #collapsed>
@@ -62,8 +62,7 @@ export default {
             :restarting-agents="restartingAgents"
             :upgrading-agents="upgradingAgents"
             :show-agent-actions="true"
-            @set-dream-enabled="setDreamEnabled"
-            @upgrade-agent="upgradeAgent"
+            @open-agent-settings="agentId => $emit('open-agent-settings', agentId)"
           />
           <div class="sidebar-header-actions">
             <SidebarModeToggle v-if="!chatStore || !chatStore.sessionCatalogLoaded" view="yeaft" @flip="onModeFlip" />
@@ -724,10 +723,6 @@ export default {
       setTimeout(() => window.addEventListener('click', close, true), 0);
       if (evt && typeof evt.stopPropagation === 'function') evt.stopPropagation();
     },
-    setDreamEnabled(agentId, enabled) {
-      const s = this.chatStore || this.store;
-      if (typeof s?.setDreamEnabled === 'function') s.setDreamEnabled(agentId, enabled);
-    },
     clearRecoveredAgentStatuses() {
       const s = this.chatStore || this.store;
       if (!s || !Array.isArray(s.agents)) return;
@@ -758,16 +753,6 @@ export default {
           }
         }
       }
-    },
-    async upgradeAgent(agentId) {
-      const s = this.chatStore || this.store;
-      if (!s || !Array.isArray(s.agents) || typeof s.upgradeAgent !== 'function') return;
-      const agent = s.agents.find(a => a && a.id === agentId);
-      const name = agent?.name || agentId;
-      if (!await confirmDialog(this.$t('chat.agent.upgradeConfirm', { name }))) return;
-      this.upgradingAgents[agentId] = { since: Date.now(), oldVersion: agent?.version || null };
-      setTimeout(() => { delete this.upgradingAgents[agentId]; }, 120000);
-      s.upgradeAgent(agentId);
     },
     // task-yeaft-group-editor: per-group rename/delete + manage-members
     // formerly lived as discrete startManageMembers/startRenameGroup/

@@ -1,6 +1,7 @@
 import ChatInput from './ChatInput.js';
 import MessageList from './MessageList.js';
 import SettingsPanel from './SettingsPanel.js';
+import AgentSettingsPanel from './AgentSettingsPanel.js';
 import YeaftSidebar from './YeaftSidebar.js';
 import SessionInviteModal from './SessionInviteModal.js';
 import SessionCreateModal from './SessionCreateModal.js';
@@ -99,7 +100,7 @@ export function visibleSessionStatusTasks(taskMap) {
 
 export default {
   name: 'YeaftPage',
-  components: { ChatInput, MessageList, SettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, PluginCenterPage, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, YeaftConversationOutline, LlmTab },
+  components: { ChatInput, MessageList, SettingsPanel, AgentSettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, PluginCenterPage, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, YeaftConversationOutline, LlmTab },
   template: `
     <div class="yeaft-page" ref="pageRef">
       <!-- Mobile sidebar overlay -->
@@ -114,6 +115,7 @@ export default {
         @toggle-sidebar="toggleSidebar"
         @back="goBack"
         @open-settings="toggleSettings"
+        @open-agent-settings="openAgentSettings"
         @open-group-settings="openSessionSettings"
       />
 
@@ -476,6 +478,7 @@ export default {
 
       <!-- Keep global Settings outside the conversation/Work Center branch so
            the shared sidebar entry works from either content surface. -->
+      <AgentSettingsPanel v-if="showAgentSettings" :initial-agent-id="agentSettingsAgentId" @close="showAgentSettings = false" />
       <SettingsPanel
         v-if="showSettings"
         :visible="showSettings"
@@ -539,6 +542,8 @@ export default {
     ));
     const composerMenuOpen = Vue.ref(null);
     const showSettings = Vue.ref(false);
+    const showAgentSettings = Vue.ref(false);
+    const agentSettingsAgentId = Vue.ref(null);
     const showLlmConfig = Vue.ref(false);
     const sessionCreateOpen = Vue.ref(false);
     const copiedOnboardingCommand = Vue.ref('');
@@ -1231,6 +1236,11 @@ export default {
       if (!control) closeComposerMenu();
     };
 
+    const openAgentSettings = (agentId) => {
+      agentSettingsAgentId.value = agentId || null;
+      showAgentSettings.value = true;
+    };
+
     const toggleSettings = () => {
       if (!showSettings.value) {
         settingsInitialTab.value = 'vp';
@@ -1630,6 +1640,8 @@ export default {
       selectableEffortsForModel,
       modelOptionMatchesRef,
       showSettings,
+      showAgentSettings,
+      agentSettingsAgentId,
       showLlmConfig,
       sessionCreateOpen,
       settingsInitialTab,
@@ -1687,6 +1699,7 @@ export default {
       formatTokens,
       formatModelCtx,
       toggleSettings,
+      openAgentSettings,
       onSettingsSaved,
       sidebarV2Enabled,
       onSelectGroupV2,

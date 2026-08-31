@@ -6619,26 +6619,26 @@ export const useChatStore = defineStore('chat', {
     },
 
     // ─── Telemetry settings ─────────────────────────────────────
-    loadTelemetrySettings() {
-      if (!this.currentAgent) {
+    loadTelemetrySettings(agentId = this.currentAgent) {
+      if (!agentId) {
         this.telemetrySettings = { enabled: true, retentionDays: 3, flushIntervalMs: 1000, maxQueueSize: 5000, rawExchangeMaxBytes: 524288, traceTextMaxBytes: 262144, loaded: true };
         return Promise.resolve(this.telemetrySettings);
       }
       return new Promise((resolve) => {
         if (!this._telemetryPending) this._telemetryPending = {};
-        this._telemetryPending.load = resolve;
-        this.sendWsMessage({ type: 'get_telemetry_settings', agentId: this.currentAgent });
+        this._telemetryPending[`load:${agentId}`] = resolve;
+        this.sendWsMessage({ type: 'get_telemetry_settings', agentId });
       });
     },
 
-    updateTelemetrySettings(payload) {
-      if (!this.currentAgent) return Promise.resolve({ error: 'no agent' });
+    updateTelemetrySettings(payload, agentId = this.currentAgent) {
+      if (!agentId) return Promise.resolve({ error: 'no agent' });
       return new Promise((resolve) => {
         if (!this._telemetryPending) this._telemetryPending = {};
-        this._telemetryPending.update = resolve;
+        this._telemetryPending[`update:${agentId}`] = resolve;
         this.sendWsMessage({
           type: 'update_telemetry_settings',
-          agentId: this.currentAgent,
+          agentId,
           settings: payload || {},
         });
       });

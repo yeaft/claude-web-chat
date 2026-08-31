@@ -4,6 +4,7 @@ import MessageList from './MessageList.js';
 import ChatInput from './ChatInput.js';
 import WorkbenchPanel from './WorkbenchPanel.js';
 import SettingsPanel from './SettingsPanel.js';
+import AgentSettingsPanel from './AgentSettingsPanel.js';
 import ExpertPanel from './ExpertPanel.js';
 import SubAgentPanel from './SubAgentPanel.js';
 import BtwOverlay from './BtwOverlay.js';
@@ -24,7 +25,7 @@ import { collapseSidebar } from '../utils/sidebar-collapse.js';
 
 export default {
   name: 'ChatPage',
-  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, WorkCenterPage, SettingsPanel, ExpertPanel, SubAgentPanel, BtwOverlay, SplitPane, ModernSelect, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter, SessionSidebarShell, UnifiedSessionList, SessionCreateModal },
+  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, WorkCenterPage, SettingsPanel, AgentSettingsPanel, ExpertPanel, SubAgentPanel, BtwOverlay, SplitPane, ModernSelect, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter, SessionSidebarShell, UnifiedSessionList, SessionCreateModal },
   template: `
     <div class="chat-page" :class="{ 'show-sidebar': store.sessionSidebarOpen }">
 
@@ -64,8 +65,7 @@ export default {
               :restarting-agents="restartingAgents"
               :upgrading-agents="upgradingAgents"
               :show-agent-actions="true"
-              @set-dream-enabled="setDreamEnabled"
-              @upgrade-agent="upgradeAgent"
+              @open-agent-settings="openAgentSettings"
             />
             <div class="sidebar-header-actions">
               <SidebarModeToggle
@@ -299,6 +299,7 @@ export default {
 
       <!-- Settings (floating modal) -->
       <SettingsPanel :visible="showSettingsPanel" @close="showSettingsPanel = false" />
+      <AgentSettingsPanel v-if="showAgentSettings" :initial-agent-id="agentSettingsAgentId" @close="showAgentSettings = false" />
 
 
 
@@ -487,6 +488,8 @@ export default {
     return {
       showAgentDropdown: false,
       showSettingsPanel: false,
+      showAgentSettings: false,
+      agentSettingsAgentId: null,
       restartingAgents: {},
       upgradingAgents: {},
       // Unified conversation modal state
@@ -934,8 +937,9 @@ export default {
     handleResize() {
       this.windowWidth = window.innerWidth;
     },
-    setDreamEnabled(agentId, enabled) {
-      this.store.setDreamEnabled(agentId, enabled);
+    openAgentSettings(agentId) {
+      this.agentSettingsAgentId = agentId || null;
+      this.showAgentSettings = true;
     },
     async upgradeAgent(agentId) {
       const agent = this.store.agents.find(a => a.id === agentId);

@@ -17,7 +17,7 @@ export default {
     // Per-agent action buttons are optional.
     showAgentActions: { type: Boolean, default: false },
   },
-  emits: ['set-dream-enabled', 'upgrade-agent'],
+  emits: ['open-agent-settings'],
   data() {
     return { open: false };
   },
@@ -45,9 +45,6 @@ export default {
         return (v && v !== key) ? v : (fallback || key);
       } catch (_) { return fallback || key; }
     },
-    canUseAgentAction(agent) {
-      return !!(agent && agent.online && !this.restartingAgents[agent.id] && !this.upgradingAgents[agent.id]);
-    },
   },
   template: `
     <div class="sidebar-brand agent-dropdown-trigger" @click.stop="open = !open" :title="tr('chat.agent.manage', 'Manage agents')">
@@ -61,27 +58,15 @@ export default {
           <span class="agent-dropdown-version" v-if="agent.version">v{{ agent.version }}</span>
           <span class="agent-dropdown-status" v-if="restartingAgents[agent.id]">{{ tr('chat.agent.restarting', 'Restarting…') }}</span>
           <span class="agent-dropdown-status" v-else-if="upgradingAgents[agent.id]">{{ tr('chat.agent.upgrading', 'Upgrading…') }}</span>
-          <template v-if="showAgentActions">
-            <button
-              class="agent-dropdown-upgrade-btn"
-              @click.stop="$emit('upgrade-agent', agent.id)"
-              :disabled="!agent.online || restartingAgents[agent.id] || upgradingAgents[agent.id]"
-              :title="tr('chat.agent.upgrade', 'Upgrade')"
-            >
-              <span v-if="upgradingAgents[agent.id]" class="spinner-mini"></span>
-              <svg v-else viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z"/></svg>
-            </button>
-            <label class="agent-dropdown-dream-toggle" :title="tr('chat.agent.dreamHint', 'Enable automatic Dream memory processing')">
-              <span>{{ tr('chat.agent.dream', 'Dream') }}</span>
-              <input
-                type="checkbox"
-                :checked="agent.dreamEnabled !== false"
-                :disabled="!canUseAgentAction(agent)"
-                @change="$emit('set-dream-enabled', agent.id, $event.target.checked)"
-              />
-              <span class="agent-dream-switch" aria-hidden="true"></span>
-            </label>
-          </template>
+          <button
+            v-if="showAgentActions"
+            class="agent-dropdown-settings-btn"
+            type="button"
+            @click.stop="open = false; $emit('open-agent-settings', agent.id)"
+            :title="tr('agentSettings.open', 'Agent settings')"
+          >
+            {{ tr('agentSettings.manage', 'Manage') }}
+          </button>
         </div>
         <div v-if="onlineAgents.length === 0" class="agent-dropdown-empty">{{ tr('chat.agent.none', 'No agents online') }}</div>
       </div>

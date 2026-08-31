@@ -29,6 +29,7 @@ describe('test budget gate', () => {
       'test/agent/container-init.test.js',
       'test/server/sandbox-routes.test.js',
       'test/web/sandbox-settings.test.js',
+      'test/web/agent-settings.test.js',
     ]);
     expect(REVIEWED_TEST_FILES).toEqual([...CORE_TEST_FILES, ...SANDBOX_TEST_FILES]);
     for (const file of SANDBOX_TEST_FILES) {

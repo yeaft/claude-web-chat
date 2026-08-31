@@ -85,6 +85,7 @@ export const SANDBOX_TEST_FILES = Object.freeze([
   'test/agent/container-init.test.js',
   'test/server/sandbox-routes.test.js',
   'test/web/sandbox-settings.test.js',
+  'test/web/agent-settings.test.js',
 ]);
 
 export const REVIEWED_TEST_FILES = Object.freeze([
