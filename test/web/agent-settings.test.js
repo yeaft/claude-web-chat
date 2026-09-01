@@ -34,9 +34,29 @@ describe('Agent settings surface', () => {
     expect(header).toContain('class="agent-dropdown-meta"');
     expect(header).toContain("$emit('upgrade-agent', agent.id)");
     expect(header).not.toContain('agent-dropdown-settings-hint');
-    expect(sidebarCss).toMatch(/\.agent-dropdown\s*\{[^}]*box-sizing:\s*border-box;/s);
+    expect(sidebarCss).toMatch(/\.session-sidebar-shell\s*\{[^}]*overflow:\s*hidden;/s);
+    expect(sidebarCss).toMatch(/\.agent-dropdown\s*\{[^}]*left:\s*0;[^}]*width:\s*min\(280px,\s*calc\(var\(--session-sidebar-width\)\s*-\s*24px\),\s*calc\(100vw\s*-\s*24px\)\);[^}]*box-sizing:\s*border-box;/s);
+    expect(sidebarCss).not.toMatch(/\.agent-dropdown\s*\{[^}]*left:\s*-\d/s);
     expect(sidebarCss).toMatch(/\.agent-dropdown-upgrade-btn\s*\{[^}]*flex-shrink:\s*0;/s);
     expect(sidebarCss).not.toContain('.agent-dropdown-settings-hint');
+  });
+
+  it('keeps the upgrade action clickable from the Agent list', async () => {
+    const wrapper = mount(SidebarAgentHeader, {
+      props: {
+        onlineAgents: [{ id: 'agent-a', name: 'Agent A', online: true, version: '1.0.437' }],
+        onlineAgentCount: 1,
+        showAgentActions: true,
+      },
+      global: { mocks: { $t: key => key } },
+    });
+
+    await wrapper.get('.agent-dropdown-trigger').trigger('click');
+    const upgrade = wrapper.get('.agent-dropdown-upgrade-btn');
+    expect(upgrade.attributes('disabled')).toBeUndefined();
+    await upgrade.trigger('click');
+    expect(wrapper.emitted('upgrade-agent')).toEqual([['agent-a']]);
+    wrapper.unmount();
   });
 
   it('opens Agent settings from the bottom of the Agent list', async () => {
