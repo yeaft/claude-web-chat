@@ -34,7 +34,7 @@ export default {
                 :aria-label="$t('agentSettings.agentList')"
                 :empty-text="$t('agentSettings.empty')"
                 menu-class="agent-settings-agent-menu"
-                :menu-min-width="240"
+                :menu-min-width="200"
                 @update:model-value="selectAgent"
               />
             </div>
@@ -183,7 +183,6 @@ export default {
       return this.agents.map(agent => ({
         value: agent.id,
         label: agent.name || agent.id,
-        sublabel: agent.name && agent.name !== agent.id ? agent.id : '',
         badge: agent.online ? this.$t('agentSettings.online') : this.$t('agentSettings.offline'),
       }));
     },

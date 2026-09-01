@@ -57,12 +57,8 @@ export default {
       <div class="sidebar-top">
         <div class="sidebar-header-row">
           <SidebarAgentHeader
-            :online-agents="onlineAgents"
             :online-agent-count="onlineAgentCount"
-            :restarting-agents="restartingAgents"
-            :upgrading-agents="upgradingAgents"
-            :show-agent-actions="true"
-            @open-agent-settings="agentId => $emit('open-agent-settings', agentId)"
+            @open-agent-settings="$emit('open-agent-settings')"
           />
           <div class="sidebar-header-actions">
             <SidebarModeToggle v-if="!chatStore || !chatStore.sessionCatalogLoaded" view="yeaft" @flip="onModeFlip" />

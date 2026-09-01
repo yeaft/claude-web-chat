@@ -46,11 +46,30 @@
   text-transform: uppercase;
 }
 
+.agent-settings-agent-picker .modern-select {
+  width: 200px;
+  max-width: 100%;
+}
+
 .agent-settings-agent-picker .modern-select-trigger {
-  min-height: 40px;
-  padding-left: 11px;
+  min-height: 36px;
+  padding: 7px 8px;
+  border: 0;
   border-radius: 8px;
-  background: var(--bg-main);
+  background: transparent;
+  box-shadow: none;
+}
+
+.agent-settings-agent-picker .modern-select-trigger:hover:not(:disabled),
+.agent-settings-agent-picker .modern-select.is-open .modern-select-trigger,
+.agent-settings-agent-picker .modern-select-trigger:focus-visible {
+  border: 0;
+  background: var(--sidebar-hover);
+  box-shadow: none;
+}
+
+.agent-settings-agent-menu {
+  border: 0;
 }
 
 .agent-settings-agent-menu .modern-select-badge {
@@ -380,7 +399,6 @@
 
 .agent-settings-llm .llm-config-surface { padding: 0; }
 .agent-settings-llm .llm-hero { margin-top: 0; }
-.agent-dropdown-settings-btn { margin-left: auto; border: 0; background: transparent; color: var(--accent); font-size: 12px; cursor: pointer; }
 
 @media (max-height: 680px) and (min-width: 681px) {
   .agent-settings-dialog { height: 92vh; }
