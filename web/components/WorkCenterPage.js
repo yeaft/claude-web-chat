@@ -4,7 +4,7 @@ import WorkCenterSettingsModal from './WorkCenterSettingsModal.js';
 import MessageComposer from './MessageComposer.js';
 import UserTurnBlock from './UserTurnBlock.js';
 import VpTurnBlock from './VpTurnBlock.js';
-import LlmTab from './LlmTab.js';
+import AgentSettingsPanel from './AgentSettingsPanel.js';
 import ModernSelect from './ModernSelect.js';
 import folderPickerMixin from './mixins/folder-picker-mixin.js';
 import { normalizeSessionMessageQuote } from '../utils/session-message-quote.js';
@@ -13,12 +13,6 @@ import {
   mergeActionMessages,
   workCenterActionMessageKey,
 } from '../stores/helpers/work-center.js';
-import {
-  clearOverlayPointerGesture,
-  shouldDismissFromOverlayClick,
-  trackOverlayPointerDown,
-  trackOverlayPointerUp,
-} from '../utils/overlay-dismiss.js';
 
 function invalidateWorkCenterUrlRestore(target) {
   const generation = (Number(target?.workCenterUrlRestoreGeneration) || 0) + 1;
@@ -30,7 +24,7 @@ export default {
   name: 'WorkCenterPage',
   components: {
     MessageComposer, UserTurnBlock, VpTurnBlock, WorkCenterActionDetail,
-    WorkCenterSettingsModal, LlmTab, ModernSelect,
+    WorkCenterSettingsModal, AgentSettingsPanel, ModernSelect,
   },
   mixins: [folderPickerMixin],
   data() {
@@ -487,14 +481,6 @@ export default {
     this.applyCreateDefaults();
   },
   methods: {
-    trackOverlayPointerDown,
-    trackOverlayPointerUp,
-    clearOverlayPointerGesture,
-
-    closeLlmConfigFromOverlay(event) {
-      if (shouldDismissFromOverlayClick(event)) this.llmConfigOpen = false;
-    },
-
     tr(key, fallback) {
       const translated = this.$t ? this.$t(key) : key;
       return translated && translated !== key ? translated : fallback;
@@ -598,6 +584,10 @@ export default {
     },
     refresh() {
       return this.store.listWorkItems(this.agentId, this.boardFilters()).catch(() => {});
+    },
+    refreshWorkCenterRuntime(agentId) {
+      if (!agentId || agentId !== this.agentId) return;
+      return this.store.refreshWorkCenterRuntime(agentId).catch(() => {});
     },
     loadMoreBoardItems() {
       return this.store.loadMoreWorkItems(this.agentId).catch(() => {});
@@ -1158,11 +1148,6 @@ export default {
       this.closeFolderPicker();
       this.createOpen = false;
       this.store.workCenterCreateDraft = null;
-    },
-    onLlmConfigSaved() {
-      const agentId = this.agentId;
-      if (!agentId) return;
-      return this.store.refreshWorkCenterRuntime(agentId).catch(() => {});
     },
     async submitCreate() {
       const requirement = String(this.form.requirement || this.form.goal || this.form.title || '').trim();
@@ -1758,24 +1743,7 @@ export default {
     </main>
 
       <WorkCenterSettingsModal v-if="settingsOpen" :key="agentId" :agent-id="agentId" @close="settingsOpen = false" @saved="refresh" @open-agent-models="settingsOpen = false; llmConfigOpen = true" />
-      <div
-        v-if="llmConfigOpen"
-        class="modal-overlay yeaft-llm-config-overlay"
-        @pointerdown="trackOverlayPointerDown"
-        @pointerup="trackOverlayPointerUp"
-        @pointercancel="clearOverlayPointerGesture"
-        @click="closeLlmConfigFromOverlay"
-      >
-        <div class="modal-card yeaft-llm-config-modal" role="dialog" aria-modal="true" :aria-label="$t('settings.llm.configureAgent')">
-          <div class="modal-header">
-            <h3>{{ $t('settings.llm.configureAgent') }}</h3>
-            <button class="modal-close" type="button" @click="llmConfigOpen = false" :aria-label="$t('common.close')">×</button>
-          </div>
-          <div class="yeaft-llm-config-body">
-            <LlmTab context="yeaft" @saved="onLlmConfigSaved" />
-          </div>
-        </div>
-      </div>
+      <AgentSettingsPanel v-if="llmConfigOpen" :initial-agent-id="agentId" initial-category="llm" @close="llmConfigOpen = false" @saved="refreshWorkCenterRuntime" />
 
       <div v-if="createOpen" class="modal-overlay work-center-modal-overlay" @click.self="closeCreate">
         <form class="modal-card work-center-modal" role="dialog" aria-modal="true" aria-labelledby="work-center-create-title" @submit.prevent="submitCreate">
