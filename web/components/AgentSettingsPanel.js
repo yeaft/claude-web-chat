@@ -19,11 +19,7 @@ export default {
     <div class="settings-overlay" @click.self="$emit('close')">
       <section class="agent-settings-dialog" role="dialog" aria-modal="true" :aria-label="$t('agentSettings.title')">
         <header class="agent-settings-header">
-          <div>
-            <p class="agent-settings-eyebrow">{{ $t('agentSettings.eyebrow') }}</p>
-            <h2>{{ $t('agentSettings.title') }}</h2>
-            <p>{{ $t('agentSettings.description') }}</p>
-          </div>
+          <h2>{{ $t('agentSettings.title') }}</h2>
           <button class="settings-close" type="button" :aria-label="$t('common.close')" @click="$emit('close')">&times;</button>
         </header>
 
@@ -48,9 +44,8 @@ export default {
           </aside>
 
           <main v-if="selectedAgent" class="agent-settings-content">
-            <section class="agent-settings-hero">
+            <div class="agent-settings-identity">
               <div>
-                <span class="agent-settings-kicker">{{ $t('agentSettings.selectedAgent') }}</span>
                 <h3>{{ selectedAgent.name || selectedAgent.id }}</h3>
                 <code>{{ selectedAgent.id }}</code>
               </div>
@@ -58,13 +53,18 @@ export default {
                 <span class="status-dot" :class="{ online: selectedAgent.online }"></span>
                 {{ selectedAgent.online ? $t('agentSettings.online') : $t('agentSettings.offline') }}
               </span>
-            </section>
+            </div>
 
             <section class="agent-settings-section">
               <div class="agent-settings-section-heading">
-                <div>
-                  <h4>{{ $t('agentSettings.runtime.title') }}</h4>
-                  <p>{{ $t('agentSettings.runtime.description') }}</p>
+                <h4>{{ $t('agentSettings.runtime.title') }}</h4>
+                <div class="agent-settings-actions">
+                  <button class="btn-secondary" type="button" :disabled="busy || !selectedAgent.online" @click="upgradeAgent">
+                    {{ upgrading ? $t('chat.agent.upgrading') : $t('chat.agent.upgrade') }}
+                  </button>
+                  <button class="agent-settings-danger-button" type="button" :disabled="busy || !selectedAgent.online" @click="restartAgent">
+                    {{ restarting ? $t('chat.agent.restarting') : $t('chat.agent.restart') }}
+                  </button>
                 </div>
               </div>
               <div class="agent-settings-grid">
@@ -133,22 +133,6 @@ export default {
               </template>
             </section>
 
-            <section class="agent-settings-section agent-settings-danger">
-              <div class="agent-settings-section-heading">
-                <div>
-                  <h4>{{ $t('agentSettings.maintenance.title') }}</h4>
-                  <p>{{ $t('agentSettings.maintenance.description') }}</p>
-                </div>
-              </div>
-              <div class="agent-settings-actions">
-                <button class="btn-secondary" type="button" :disabled="busy || !selectedAgent.online" @click="upgradeAgent">
-                  {{ upgrading ? $t('chat.agent.upgrading') : $t('chat.agent.upgrade') }}
-                </button>
-                <button class="agent-settings-danger-button" type="button" :disabled="busy || !selectedAgent.online" @click="restartAgent">
-                  {{ restarting ? $t('chat.agent.restarting') : $t('chat.agent.restart') }}
-                </button>
-              </div>
-            </section>
           </main>
           <main v-else class="agent-settings-content agent-settings-empty">{{ $t('agentSettings.empty') }}</main>
         </div>
