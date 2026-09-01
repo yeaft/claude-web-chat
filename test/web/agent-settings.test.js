@@ -47,9 +47,15 @@ describe('Agent settings surface', () => {
     expect(zh).toContain("'agentSettings.runtime.updateAvailable': '可更新至 v{version}'");
   });
 
-  it('uses the fixed settings shell, responsive layout, and bilingual copy', () => {
-    expect(css).toContain('height: min(760px, 92vh)');
-    expect(css).toContain('.agent-settings-content { min-width: 0; overflow-y: auto;');
+  it('keeps the three-area desktop layout compact and only scrolls as a viewport fallback', () => {
+    expect(panel).toContain('class="agent-settings-list"');
+    expect(panel).toContain('class="agent-settings-section"');
+    expect(panel.match(/<section class="agent-settings-section/g)).toHaveLength(2);
+    expect(panel).not.toContain('agent-settings-hero');
+    expect(panel).not.toContain('agent-settings-danger"');
+    expect(css).toContain('max-height: 92vh');
+    expect(css).toContain('.agent-settings-content { min-width: 0; padding: 18px 20px 20px; }');
+    expect(css).toContain('@media (max-height: 680px) and (min-width: 681px)');
     expect(css).toContain('@media (max-width: 680px)');
     expect(en).toContain("'agentSettings.title': 'Agent settings'");
     expect(zh).toContain("'agentSettings.title': 'Agent 设置'");
