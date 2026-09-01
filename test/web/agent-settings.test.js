@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest';
+// @vitest-environment happy-dom
+import { mount } from '@vue/test-utils';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import * as Vue from 'vue';
+import AgentSettingsPanel from '../../web/components/AgentSettingsPanel.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const panel = readFileSync(join(root, 'web/components/AgentSettingsPanel.js'), 'utf8');
@@ -73,6 +77,29 @@ describe('Agent settings surface', () => {
     expect(yeaftPage).not.toContain('yeaft-llm-config-modal');
     expect(workCenterPage).toContain('<AgentSettingsPanel v-if="llmConfigOpen" :initial-agent-id="agentId" initial-category="llm"');
     expect(workCenterPage).not.toContain('<LlmTab context="yeaft"');
+  });
+
+  it('propagates a successful LLM save with the exact selected Agent', async () => {
+    const store = Vue.reactive({
+      agents: [{ id: 'agent-a', name: 'Agent A', online: true }],
+      currentAgent: 'agent-a',
+      agentOperations: {},
+      agentDreamState: {},
+      loadTelemetrySettings: vi.fn(() => Promise.resolve({})),
+    });
+    globalThis.Pinia = { useChatStore: () => store };
+    globalThis.Vue = Vue;
+    const wrapper = mount(AgentSettingsPanel, {
+      props: { initialAgentId: 'agent-a', initialCategory: 'llm' },
+      global: {
+        mocks: { $t: key => key },
+        stubs: { LlmTab: { template: '<button class="save-llm" @click="$emit(\'saved\')">save</button>' } },
+      },
+    });
+    await Vue.nextTick();
+    await wrapper.get('.save-llm').trigger('click');
+    expect(wrapper.emitted('saved')).toEqual([['agent-a']]);
+    wrapper.unmount();
   });
 
   it('keeps content scroll inside the fixed shell and adapts navigation on mobile', () => {

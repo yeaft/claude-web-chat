@@ -585,6 +585,10 @@ export default {
     refresh() {
       return this.store.listWorkItems(this.agentId, this.boardFilters()).catch(() => {});
     },
+    refreshWorkCenterRuntime(agentId) {
+      if (!agentId || agentId !== this.agentId) return;
+      return this.store.refreshWorkCenterRuntime(agentId).catch(() => {});
+    },
     loadMoreBoardItems() {
       return this.store.loadMoreWorkItems(this.agentId).catch(() => {});
     },
@@ -1739,7 +1743,7 @@ export default {
     </main>
 
       <WorkCenterSettingsModal v-if="settingsOpen" :key="agentId" :agent-id="agentId" @close="settingsOpen = false" @saved="refresh" @open-agent-models="settingsOpen = false; llmConfigOpen = true" />
-      <AgentSettingsPanel v-if="llmConfigOpen" :initial-agent-id="agentId" initial-category="llm" @close="llmConfigOpen = false" />
+      <AgentSettingsPanel v-if="llmConfigOpen" :initial-agent-id="agentId" initial-category="llm" @close="llmConfigOpen = false" @saved="refreshWorkCenterRuntime" />
 
       <div v-if="createOpen" class="modal-overlay work-center-modal-overlay" @click.self="closeCreate">
         <form class="modal-card work-center-modal" role="dialog" aria-modal="true" aria-labelledby="work-center-create-title" @submit.prevent="submitCreate">

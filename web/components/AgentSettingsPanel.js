@@ -17,7 +17,7 @@ export default {
     initialAgentId: { type: String, default: null },
     initialCategory: { type: String, default: 'operations' },
   },
-  emits: ['close'],
+  emits: ['close', 'saved'],
   template: `
     <div class="settings-overlay" @click.self="$emit('close')">
       <section class="agent-settings-dialog" role="dialog" aria-modal="true" :aria-label="$t('agentSettings.title')">
@@ -144,7 +144,7 @@ export default {
 
             <div v-else class="agent-settings-llm">
               <div v-if="llmMessage" class="agent-settings-inline-message" :class="{ error: llmMessageError }">{{ llmMessage }}</div>
-              <LlmTab context="yeaft" :agent-id="selectedAgentId" @message="onLlmMessage" />
+              <LlmTab context="yeaft" :agent-id="selectedAgentId" @message="onLlmMessage" @saved="$emit('saved', selectedAgentId)" />
             </div>
           </main>
           <main v-else class="agent-settings-content agent-settings-empty">{{ $t('agentSettings.empty') }}</main>

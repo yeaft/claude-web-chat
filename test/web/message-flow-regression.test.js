@@ -2856,6 +2856,12 @@ describe('message flow regressions', () => {
       },
     });
     expect(workCenterPage.get('.work-center-agent-picker .modern-select-label').text()).toBe('server');
+    workCenterStore.refreshWorkCenterRuntime = vi.fn(() => Promise.resolve());
+    await WorkCenterPage.methods.refreshWorkCenterRuntime.call(workCenterPage.vm, 'agent-b');
+    expect(workCenterStore.refreshWorkCenterRuntime).not.toHaveBeenCalled();
+    await WorkCenterPage.methods.refreshWorkCenterRuntime.call(workCenterPage.vm, 'agent-a');
+    expect(workCenterStore.refreshWorkCenterRuntime).toHaveBeenCalledOnce();
+    expect(workCenterStore.refreshWorkCenterRuntime).toHaveBeenCalledWith('agent-a');
 
     const pluginConfigRequests = [];
     const pluginStore = Vue.reactive({
