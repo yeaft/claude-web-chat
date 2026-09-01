@@ -121,6 +121,7 @@ export default {
   'chat.agent.none': 'No Agents',
   'chat.agent.restarting': 'Restarting',
   'agentSettings.open': 'Agent settings',
+  'agentSettings.openHint': 'Runtime, telemetry, and models',
   'agentSettings.manage': 'Manage',
   'agentSettings.eyebrow': 'Local runtime',
   'agentSettings.title': 'Agent settings',
