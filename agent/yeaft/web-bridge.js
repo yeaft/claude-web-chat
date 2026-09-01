@@ -175,6 +175,19 @@ function applyLiveLanguage(language) {
   try { session?.engine?.setLanguage?.(language); } catch { /* best-effort */ }
 }
 
+/**
+ * Apply an Agent-level Dream toggle to an already loaded runtime.
+ * This must never bootstrap a Session: config.json is the authoritative commit,
+ * while the live scheduler update is only a best-effort cache refresh.
+ */
+export function setLiveDreamEnabled(enabled) {
+  const next = enabled !== false;
+  if (session?.config && typeof session.config === 'object') {
+    session.config.dream = { ...(session.config.dream || {}), enabled: next };
+  }
+  session?.dreamScheduler?.setEnabled?.(next);
+}
+
 function modelRefIdentity(value) {
   const text = String(value || '');
   const slash = text.indexOf('/');
