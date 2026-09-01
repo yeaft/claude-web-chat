@@ -6,6 +6,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import * as Vue from 'vue';
 import AgentSettingsPanel from '../../web/components/AgentSettingsPanel.js';
+import SidebarAgentHeader from '../../web/components/SidebarAgentHeader.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const panel = readFileSync(join(root, 'web/components/AgentSettingsPanel.js'), 'utf8');
@@ -21,19 +22,44 @@ const en = readFileSync(join(root, 'web/i18n/en.js'), 'utf8');
 const zh = readFileSync(join(root, 'web/i18n/zh-CN.js'), 'utf8');
 
 describe('Agent settings surface', () => {
-  it('turns the Agent count into a direct settings trigger without a dropdown', () => {
-    expect(header).toContain("emits: ['open-agent-settings']");
+  it('keeps the Agent list trigger and adds a separate settings icon', () => {
+    expect(header).toContain("emits: ['open-agent-settings', 'upgrade-agent']");
+    expect(header).toContain('class="sidebar-brand agent-dropdown-trigger"');
+    expect(header).toContain('class="agent-settings-icon-btn"');
     expect(header).toContain("$emit('open-agent-settings')");
-    expect(header).toContain("tr('chat.agent.count', onlineAgentCount + ' agents'");
-    expect(header).not.toContain('agent-dropdown');
-    expect(header).not.toContain('onlineAgents');
+    expect(header).toContain('v-for="agent in onlineAgents"');
+    expect(header).toContain("$emit('upgrade-agent', agent.id)");
   });
 
-  it('opens Agent settings directly from both Session sidebar headers', () => {
+  it('keeps Agent list and settings clicks independent', async () => {
+    const wrapper = mount(SidebarAgentHeader, {
+      props: {
+        onlineAgents: [{ id: 'agent-a', name: 'Agent A', online: true }],
+        onlineAgentCount: 1,
+      },
+      global: { mocks: { $t: key => key } },
+    });
+
+    await wrapper.get('.agent-dropdown-trigger').trigger('click');
+    expect(wrapper.find('.agent-dropdown').exists()).toBe(true);
+    expect(wrapper.emitted('open-agent-settings')).toBeUndefined();
+
+    await wrapper.get('.agent-settings-icon-btn').trigger('click');
+    expect(wrapper.emitted('open-agent-settings')).toHaveLength(1);
+    expect(wrapper.find('.agent-dropdown').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('wires Agent list state and settings navigation from both Session sidebars', () => {
+    const yeaftSidebar = readFileSync(join(root, 'web/components/YeaftSidebar.js'), 'utf8');
     expect(chatPage).toContain('<AgentSettingsPanel v-if="showAgentSettings"');
+    expect(chatPage).toContain(':online-agents="onlineAgents"');
     expect(chatPage).toContain('@open-agent-settings="openAgentSettings(store.currentAgent || null)"');
+    expect(chatPage).toContain('@upgrade-agent="upgradeAgent"');
     expect(yeaftPage).toContain('<AgentSettingsPanel v-if="showAgentSettings"');
-    expect(readFileSync(join(root, 'web/components/YeaftSidebar.js'), 'utf8')).toContain('@open-agent-settings="$emit(\'open-agent-settings\')"');
+    expect(yeaftSidebar).toContain(':online-agents="onlineAgents"');
+    expect(yeaftSidebar).toContain('@open-agent-settings="$emit(\'open-agent-settings\')"');
+    expect(yeaftSidebar).toContain('@upgrade-agent="upgradeAgent"');
   });
 
   it('keeps per-Agent telemetry requests correlated by request and agent', () => {
