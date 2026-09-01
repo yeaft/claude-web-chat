@@ -1,5 +1,6 @@
 import { confirmDialog } from '../utils/dialog.js';
 import LlmTab from './LlmTab.js';
+import ModernSelect from './ModernSelect.js';
 
 const DEFAULT_TELEMETRY = Object.freeze({
   enabled: true,
@@ -12,7 +13,7 @@ const DEFAULT_TELEMETRY = Object.freeze({
 
 export default {
   name: 'AgentSettingsPanel',
-  components: { LlmTab },
+  components: { LlmTab, ModernSelect },
   props: {
     initialAgentId: { type: String, default: null },
     initialCategory: { type: String, default: 'operations' },
@@ -25,25 +26,29 @@ export default {
 
         <div class="agent-settings-body">
           <aside class="agent-settings-nav">
-            <label class="agent-settings-agent-picker">
-              <span>{{ $t('agentSettings.agentList') }}</span>
-              <select v-model="selectedAgentId" @change="selectAgent(selectedAgentId)">
-                <option v-for="agent in agents" :key="agent.id" :value="agent.id">
-                  {{ agent.name || agent.id }} · {{ agent.online ? $t('agentSettings.online') : $t('agentSettings.offline') }}
-                </option>
-              </select>
-            </label>
+            <div class="agent-settings-agent-picker">
+              <span class="agent-settings-picker-label">{{ $t('agentSettings.agentList') }}</span>
+              <ModernSelect
+                :model-value="selectedAgentId"
+                :options="agentOptions"
+                :aria-label="$t('agentSettings.agentList')"
+                :empty-text="$t('agentSettings.empty')"
+                menu-class="agent-settings-agent-menu"
+                :menu-min-width="240"
+                @update:model-value="selectAgent"
+              />
+            </div>
 
             <nav :aria-label="$t('agentSettings.categories')">
-              <button type="button" :class="{ active: activeCategory === 'operations' }" @click="activeCategory = 'operations'">
+              <button type="button" class="agent-settings-nav-item" :class="{ active: activeCategory === 'operations' }" @click="activeCategory = 'operations'">
                 <svg viewBox="0 0 24 24" width="17" height="17"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7.4 7.4 0 0 0-1.62-.94L14.38 2.8a.49.49 0 0 0-.49-.41h-3.84a.49.49 0 0 0-.49.41L9.2 5.34c-.59.24-1.13.56-1.62.94l-2.39-.96a.5.5 0 0 0-.61.22L2.66 8.86a.5.5 0 0 0 .12.64l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .61.22l2.39-.96c.49.38 1.03.7 1.62.94l.36 2.54c.04.24.24.41.49.41h3.84c.25 0 .45-.17.49-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96a.5.5 0 0 0 .61-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.02-1.6zM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5z"/></svg>
                 {{ $t('agentSettings.categories.operations') }}
               </button>
-              <button type="button" :class="{ active: activeCategory === 'trace' }" @click="activeCategory = 'trace'">
+              <button type="button" class="agent-settings-nav-item" :class="{ active: activeCategory === 'trace' }" @click="activeCategory = 'trace'">
                 <svg viewBox="0 0 24 24" width="17" height="17"><path fill="currentColor" d="M3 3h2v16h16v2H3V3zm4 12 4-4 3 3 5-6 1.5 1.3-6.4 7.7-3.1-3.1-2.6 2.5L7 15z"/></svg>
                 {{ $t('agentSettings.categories.trace') }}
               </button>
-              <button type="button" :class="{ active: activeCategory === 'llm' }" @click="activeCategory = 'llm'">
+              <button type="button" class="agent-settings-nav-item" :class="{ active: activeCategory === 'llm' }" @click="activeCategory = 'llm'">
                 <svg viewBox="0 0 24 24" width="17" height="17"><path fill="currentColor" d="M12 2a4 4 0 0 1 3.87 3h.63a3.5 3.5 0 0 1 2.62 5.82A4 4 0 0 1 17 18.87V20h-2v-2h1a2 2 0 0 0 .45-3.95l-.8-.18.03-.82a1.5 1.5 0 0 0 1.72-2.43l-.68-.69.5-.84A1.5 1.5 0 0 0 16.5 7H14V6a2 2 0 1 0-4 0v12a2 2 0 1 0 4 0h2a4 4 0 0 1-7 2.65A4 4 0 0 1 4.13 15H4a3.5 3.5 0 0 1-1.7-6.56A4 4 0 0 1 9 4.35 4 4 0 0 1 12 2zM6 6a2 2 0 0 0-1.9 2.62l.3.9-.88.38A1.5 1.5 0 0 0 4 13h2v1a2 2 0 0 0 2 2V6.5A2 2 0 0 0 6 6z"/></svg>
                 {{ $t('agentSettings.categories.llm') }}
               </button>
@@ -66,27 +71,21 @@ export default {
               <section class="agent-settings-section">
                 <div class="agent-settings-section-heading">
                   <h4>{{ $t('agentSettings.runtime.title') }}</h4>
-                  <div class="agent-settings-actions">
-                    <button class="btn-secondary" type="button" :disabled="busy || !selectedAgent.online" @click="upgradeAgent">
-                      {{ upgrading ? $t('chat.agent.upgrading') : $t('chat.agent.upgrade') }}
-                    </button>
-                    <button class="agent-settings-danger-button" type="button" :disabled="busy || !selectedAgent.online" @click="restartAgent">
-                      {{ restarting ? $t('chat.agent.restarting') : $t('chat.agent.restart') }}
-                    </button>
-                  </div>
                 </div>
-                <div class="agent-settings-grid">
-                  <div class="agent-settings-field">
-                    <span>{{ $t('agentSettings.runtime.version') }}</span>
-                    <strong>{{ selectedAgent.version ? 'v' + selectedAgent.version : '—' }}</strong>
-                    <small v-if="selectedAgent.upgradeAvailable">{{ $t('agentSettings.runtime.updateAvailable', { version: selectedAgent.upgradeAvailable }) }}</small>
-                    <small v-else>{{ $t('agentSettings.runtime.updateUnknown') }}</small>
+                <dl class="agent-settings-detail-list">
+                  <div class="agent-settings-detail-item">
+                    <dt>{{ $t('agentSettings.runtime.version') }}</dt>
+                    <dd>
+                      <strong>{{ selectedAgent.version ? 'v' + selectedAgent.version : '—' }}</strong>
+                      <small v-if="selectedAgent.upgradeAvailable">{{ $t('agentSettings.runtime.updateAvailable', { version: selectedAgent.upgradeAvailable }) }}</small>
+                      <small v-else>{{ $t('agentSettings.runtime.updateUnknown') }}</small>
+                    </dd>
                   </div>
-                  <div class="agent-settings-field">
-                    <span>{{ $t('agentSettings.runtime.workDir') }}</span>
-                    <strong :title="selectedAgent.workDir || ''">{{ selectedAgent.workDir || '—' }}</strong>
+                  <div class="agent-settings-detail-item">
+                    <dt>{{ $t('agentSettings.runtime.workDir') }}</dt>
+                    <dd><strong :title="selectedAgent.workDir || ''">{{ selectedAgent.workDir || '—' }}</strong></dd>
                   </div>
-                </div>
+                </dl>
                 <div class="agent-settings-row">
                   <div>
                     <strong>{{ $t('chat.agent.dream') }}</strong>
@@ -98,6 +97,17 @@ export default {
                   </label>
                 </div>
                 <p v-if="dreamState.error" class="error">{{ dreamState.error }}</p>
+                <div class="agent-settings-maintenance">
+                  <p>{{ $t('agentSettings.maintenance.description') }}</p>
+                  <div class="agent-settings-actions">
+                    <button class="btn-secondary" type="button" :disabled="busy || !selectedAgent.online" @click="upgradeAgent">
+                      {{ upgrading ? $t('chat.agent.upgrading') : $t('chat.agent.upgrade') }}
+                    </button>
+                    <button class="agent-settings-danger-button" type="button" :disabled="busy || !selectedAgent.online" @click="restartAgent">
+                      {{ restarting ? $t('chat.agent.restarting') : $t('chat.agent.restart') }}
+                    </button>
+                  </div>
+                </div>
               </section>
             </template>
 
@@ -169,6 +179,14 @@ export default {
   computed: {
     store() { return Pinia.useChatStore(); },
     agents() { return this.store.agents || []; },
+    agentOptions() {
+      return this.agents.map(agent => ({
+        value: agent.id,
+        label: agent.name || agent.id,
+        sublabel: agent.name && agent.name !== agent.id ? agent.id : '',
+        badge: agent.online ? this.$t('agentSettings.online') : this.$t('agentSettings.offline'),
+      }));
+    },
     selectedAgent() { return this.agents.find(agent => agent.id === this.selectedAgentId) || null; },
     operations() { return this.store.agentOperations?.[this.selectedAgentId] || {}; },
     restarting() { return this.operations.restart?.pending === true; },

@@ -53,8 +53,12 @@ describe('Agent settings surface', () => {
     expect(zh).toContain("'agentSettings.runtime.updateAvailable': '可更新至 v{version}'");
   });
 
-  it('uses one Agent picker and category navigation without a large header', () => {
-    expect(panel).toContain('class="agent-settings-agent-picker"');
+  it('uses the shared rich selector and Settings navigation pattern without a large header', () => {
+    expect(panel).toContain("import ModernSelect from './ModernSelect.js'");
+    expect(panel).toContain('<ModernSelect');
+    expect(panel).toContain(':options="agentOptions"');
+    expect(panel).not.toContain('<select v-model="selectedAgentId"');
+    expect(panel).toContain('class="agent-settings-nav-item"');
     expect(panel).toContain("activeCategory === 'operations'");
     expect(panel).toContain("activeCategory === 'trace'");
     expect(panel).toContain("activeCategory === 'llm'");
@@ -102,9 +106,15 @@ describe('Agent settings surface', () => {
     wrapper.unmount();
   });
 
-  it('keeps content scroll inside the fixed shell and adapts navigation on mobile', () => {
-    expect(css).toContain('height: min(820px, 92vh)');
-    expect(css).toContain('.agent-settings-content { min-width: 0; overflow-y: auto;');
+  it('uses content-first rows, scoped buttons, and a mobile layout inside the fixed shell', () => {
+    expect(panel).toContain('class="agent-settings-detail-list"');
+    expect(panel).toContain("$t('agentSettings.maintenance.description')");
+    expect(css).toContain('height: min(760px, 90vh)');
+    expect(css).toContain('.agent-settings-content {');
+    expect(css).toContain('overflow-y: auto;');
+    expect(css).toContain('.agent-settings-dialog .btn-primary');
+    expect(css).toContain('var(--accent-fg)');
+    expect(css).not.toContain('box-shadow: inset 2px 0 var(--accent)');
     expect(css).toContain('@media (max-height: 680px) and (min-width: 681px)');
     expect(css).toContain('@media (max-width: 680px)');
     expect(css).toContain('.agent-settings-nav nav { flex-direction: row; overflow-x: auto; }');
