@@ -145,7 +145,7 @@ export async function handleMessage(msg) {
 
       // ★ Phase 1: 通知 server 同步完成
       const runtimeConfig = loadConfig({ dir: ctx.CONFIG?.yeaftDir });
-      sendToServer({ type: 'agent_sync_complete', dreamEnabled: runtimeConfig.dream?.enabled !== false });
+      sendToServer({ type: 'agent_sync_complete', dreamEnabled: runtimeConfig.dream?.enabled === true });
 
       // ★ 发送 MCP servers 列表给 server（供前端 Settings > Tools tab 使用）
       if (ctx.mcpServers.length > 0) {
@@ -360,7 +360,7 @@ export async function handleMessage(msg) {
           if (!config.dream || typeof config.dream !== 'object' || Array.isArray(config.dream)) config.dream = {};
           config.dream.enabled = enabled;
         });
-        const persisted = loadConfig({ dir: ctx.CONFIG?.yeaftDir }).dream?.enabled !== false;
+        const persisted = loadConfig({ dir: ctx.CONFIG?.yeaftDir }).dream?.enabled === true;
         if (persisted !== enabled) throw new Error('Dream setting was not persisted');
         try {
           setLiveDreamEnabled(persisted);

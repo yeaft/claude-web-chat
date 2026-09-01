@@ -377,7 +377,7 @@ function loadLegacyConfig(dir, overrides) {
     // task-318: legacy path never had the `yeaft` section — defaults.
     yeaft: normaliseYeaftSection(null),
     telemetry: normaliseTelemetrySection(null),
-    dream: { enabled: true },
+    dream: { enabled: false },
     browserRuntime: normaliseBrowserRuntimeSection(null),
     plugins: {},
     providers: null,
@@ -535,7 +535,7 @@ export function loadConfig(overrides = {}) {
     // don't pollute the flat config namespace used by chat code.
     yeaft: normaliseYeaftSection(jsonConfig.yeaft),
     telemetry: normaliseTelemetrySection(jsonConfig.telemetry),
-    dream: { enabled: jsonConfig.dream?.enabled !== false },
+    dream: { enabled: jsonConfig.dream?.enabled === true },
     browserRuntime: normaliseBrowserRuntimeSection(jsonConfig.browserRuntime),
 
     // Agent-level tools / skills / MCP server allowlists. Missing fields mean

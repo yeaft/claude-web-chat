@@ -92,7 +92,7 @@ export default {
                     <p>{{ $t('chat.agent.dreamHint') }}</p>
                   </div>
                   <label class="agent-settings-switch">
-                    <input type="checkbox" :checked="selectedAgent.dreamEnabled !== false" :disabled="!selectedAgent.online || dreamState.pending" @change="setDreamEnabled($event.target.checked)">
+                    <input type="checkbox" :checked="selectedAgent.dreamEnabled === true" :disabled="!selectedAgent.online || dreamState.pending" @change="setDreamEnabled($event.target.checked)">
                     <span aria-hidden="true"></span>
                   </label>
                 </div>

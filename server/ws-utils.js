@@ -173,7 +173,7 @@ export async function broadcastAgentList() {
           ...(agent.capabilityMetadataProvided === true ? { capabilityMetadataProvided: true } : {}),
           version: agent.version || null,
           upgradeAvailable: agent.upgradeAvailable || null,
-          dreamEnabled: agent.dreamEnabled !== false,
+          dreamEnabled: agent.dreamEnabled === true,
           yeaftStatus: agent.yeaftStatus || null,
           proxyPorts: agent.proxyPorts || [],
           conversations: Array.from(agent.conversations.values()).filter(c =>

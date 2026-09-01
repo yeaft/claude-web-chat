@@ -7800,7 +7800,7 @@ export const useChatStore = defineStore('chat', {
           [agentId]: { ...current, pending: false, timer: null, error: 'timeout' },
         };
       }, 15000);
-      this.agentDreamState = { ...this.agentDreamState, [agentId]: { pending: true, requestId, requested, authoritative: agent?.dreamEnabled !== false, timer, error: null } };
+      this.agentDreamState = { ...this.agentDreamState, [agentId]: { pending: true, requestId, requested, authoritative: agent?.dreamEnabled === true, timer, error: null } };
       convHelpers.setDreamEnabled(this, agentId, requested, requestId);
       return true;
     },

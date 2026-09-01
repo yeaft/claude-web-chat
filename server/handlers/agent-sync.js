@@ -81,7 +81,7 @@ export async function handleAgentSync(agentId, agent, msg) {
     // Phase 1: Agent 同步完成
     case 'agent_sync_complete': {
       agent.status = 'ready';
-      agent.dreamEnabled = msg.dreamEnabled !== false;
+      agent.dreamEnabled = msg.dreamEnabled === true;
       if (agent._syncTimeout) {
         clearTimeout(agent._syncTimeout);
         delete agent._syncTimeout;
@@ -100,7 +100,7 @@ export async function handleAgentSync(agentId, agent, msg) {
         type: 'dream_enabled_changed',
         agentId,
         requestId: msg.requestId,
-        enabled: msg.error ? agent.dreamEnabled !== false : msg.enabled !== false,
+        enabled: msg.error ? agent.dreamEnabled === true : msg.enabled !== false,
         ...(msg.error ? { error: msg.error } : {}),
       };
       await sendAgentSettingsReply(agentId, agent, 'dream', msg, payload);
