@@ -723,6 +723,7 @@ legacy session`, { encoding: 'utf8' });
 
       const indexedStore = new ConversationStore(root);
       indexedStore.append({ role: 'user', content: 'indexed needle result', sessionId: 'session_search' });
+      indexedStore.append({ role: 'user', content: 'sibling needle result', sessionId: 'session_sibling' });
       const markerPath = join(root, 'sessions-manifest.json');
       writeFileSync(markerPath, JSON.stringify({ version: 1, sessions: [] }, null, 2));
       const markerBefore = readFileSync(markerPath, 'utf8');
@@ -732,11 +733,45 @@ legacy session`, { encoding: 'utf8' });
       const found = JSON.parse(await historySearch.execute({ keyword: 'needle' }, {
         yeaftDir: root,
         sessionId: 'session_search',
+        projectSessionIds: ['session_search', 'session_sibling'],
       }));
+      expect(found).toMatchObject({ scope: 'session' });
       expect(found.results).toHaveLength(1);
-      expect(found.results[0]).toMatchObject({ content: expect.stringContaining('needle') });
+      expect(found.results[0]).toMatchObject({
+        sessionId: 'session_search',
+        content: expect.stringContaining('needle'),
+      });
+
+      const project = JSON.parse(await historySearch.execute({ keyword: 'needle', scope: 'project' }, {
+        yeaftDir: root,
+        sessionId: 'session_search',
+        projectSessionIds: ['session_search', 'session_sibling'],
+      }));
+      expect(project).toMatchObject({
+        scope: 'project',
+        notice: expect.stringContaining('not continuation'),
+      });
+      expect(project.results.map(result => result.sessionId).sort())
+        .toEqual(['session_search', 'session_sibling']);
       expect(readFileSync(markerPath, 'utf8')).toBe(markerBefore);
       expect(readdirSync(sessionDir, { recursive: true }).sort()).toEqual(sessionFilesBefore);
+    });
+
+    it('exposes an explicit Session-default search scope in the tool contract', () => {
+      expect(historySearch.parameters.properties.scope).toMatchObject({
+        type: 'string',
+        enum: ['session', 'project'],
+      });
+      expect(historySearch.description.en).toContain('default scope is only the current Session');
+      expect(historySearch.description.zh).toContain('默认只搜索当前 Session');
+    });
+
+    it('rejects unknown history search scopes', async () => {
+      const result = JSON.parse(await historySearch.execute({ keyword: 'needle', scope: 'global' }, {
+        yeaftDir: TEST_DIR,
+        sessionId: 'session_search',
+      }));
+      expect(result).toEqual({ error: 'scope must be "session" or "project"' });
     });
 
     it('searches only visible rows in the requested Session, newest first', () => {
