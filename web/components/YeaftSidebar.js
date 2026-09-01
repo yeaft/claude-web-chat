@@ -1,4 +1,5 @@
-import { alertDialog } from '../utils/dialog.js';
+import { alertDialog, confirmDialog } from '../utils/dialog.js';
+
 /**
  * YeaftSidebar — H2.f.6 trimmed.
  *
@@ -57,8 +58,13 @@ export default {
       <div class="sidebar-top">
         <div class="sidebar-header-row">
           <SidebarAgentHeader
+            :online-agents="onlineAgents"
             :online-agent-count="onlineAgentCount"
+            :restarting-agents="restartingAgents"
+            :upgrading-agents="upgradingAgents"
+            :show-agent-actions="true"
             @open-agent-settings="$emit('open-agent-settings')"
+            @upgrade-agent="upgradeAgent"
           />
           <div class="sidebar-header-actions">
             <SidebarModeToggle v-if="!chatStore || !chatStore.sessionCatalogLoaded" view="yeaft" @flip="onModeFlip" />
@@ -432,6 +438,14 @@ export default {
     onOpenPlugins() {
       const s = this.chatStore || this.store;
       if (s && typeof s.openPluginCenter === 'function') s.openPluginCenter();
+    },
+    async upgradeAgent(agentId) {
+      const s = this.chatStore || this.store;
+      if (!s || typeof s.upgradeAgent !== 'function') return;
+      const agent = s.agents?.find(candidate => candidate?.id === agentId);
+      const name = agent?.name || agentId;
+      if (!await confirmDialog(this.$t('chat.agent.upgradeConfirm', { name }))) return;
+      s.upgradeAgent(agentId);
     },
     // task-334m: session-create + selection handlers.
     onGroupCreated(_group) {

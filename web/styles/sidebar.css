@@ -129,23 +129,155 @@
 }
 
 
-/* Shared Agent Settings trigger used by Chat and Yeaft sidebars */
-.agent-settings-trigger {
+/* Shared Agent list and settings controls used by both Session sidebars. */
+.agent-header-controls {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.agent-dropdown-trigger,
+.agent-settings-icon-btn {
   border: 0;
   background: transparent;
   color: inherit;
   font: inherit;
+}
+
+.agent-dropdown-trigger {
+  min-height: 28px;
+  padding: 4px 6px;
+  border-radius: 6px;
   text-align: left;
 }
 
-.agent-settings-trigger:hover,
-.agent-settings-trigger:focus-visible {
+.agent-settings-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.agent-dropdown-trigger:hover,
+.agent-dropdown-trigger:focus-visible,
+.agent-settings-icon-btn:hover,
+.agent-settings-icon-btn:focus-visible {
   background: var(--sidebar-hover);
   outline: none;
 }
 
-.agent-settings-trigger:focus-visible {
+.agent-settings-icon-btn:hover,
+.agent-settings-icon-btn:focus-visible {
+  color: var(--text-primary);
+}
+
+.agent-dropdown-trigger:focus-visible,
+.agent-settings-icon-btn:focus-visible {
   box-shadow: 0 0 0 2px var(--accent-blue);
+}
+
+.dropdown-chevron {
+  color: var(--text-secondary);
+  transition: transform 0.2s;
+  flex-shrink: 0;
+}
+
+.dropdown-chevron.open {
+  transform: rotate(180deg);
+}
+
+.agent-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  min-width: 252px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--text-primary) 14%, transparent);
+  z-index: 100;
+  padding: 4px;
+}
+
+.agent-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  transition: background 0.15s;
+  font-weight: normal;
+}
+
+.agent-dropdown-item:hover {
+  background: var(--sidebar-hover);
+}
+
+.agent-dropdown-item .status-dot.restarting,
+.agent-dropdown-item .status-dot.upgrading {
+  background: var(--accent-blue);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.agent-dropdown-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-dropdown-version {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+}
+
+.agent-dropdown-status {
+  font-size: 11px;
+  color: var(--accent-blue);
+  font-style: italic;
+}
+
+.agent-dropdown-upgrade-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.agent-dropdown-upgrade-btn:hover:not(:disabled),
+.agent-dropdown-upgrade-btn:focus-visible:not(:disabled) {
+  background: var(--sidebar-hover);
+  color: var(--accent-blue);
+  outline: none;
+}
+
+.agent-dropdown-upgrade-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.agent-dropdown-empty {
+  padding: 10px;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
 .sidebar-header-actions {
