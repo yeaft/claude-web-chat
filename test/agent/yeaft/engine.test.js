@@ -682,6 +682,7 @@ describe('active tool exposure and scoped prompts', () => {
     expect(concise).toContain('do not revert changes you did not make');
     expect(concise).toContain('Do not amend commits unless the user explicitly asks');
     expect(concise).toContain('Do not use `git reset --hard` or `git clean -f` without user approval');
+    expect(concise).toContain('never replace the current turn\'s task');
     expect(concise).not.toContain('Available tools:');
     expect(concise).not.toContain('For non-trivial multi-step work');
     expect(planned).toContain('For non-trivial multi-step work');

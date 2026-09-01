@@ -138,15 +138,14 @@ export default defineTool({
   description: {
     en: `Search through past conversation history.
 
-Searches message content for all whitespace-separated terms (case-insensitive) from persisted Session history.
-Inside a Session, search is limited to that Session plus sibling Sessions in the same Project on this Agent. Tool-result messages are excluded. Useful for finding previous discussions, decisions, or code snippets.
+Searches message content for all whitespace-separated terms (case-insensitive) from persisted Session history. Inside a Session, the default scope is only the current Session. Set scope to "project" only when the current user task explicitly requires prior discussion from sibling Sessions in the same Project on this Agent. Tool-result messages are excluded.
 
-Results are returned newest-first with a bounded matching snippet and source metadata.`,
+Results are returned newest-first with a bounded matching snippet and source metadata. Content from sibling Sessions is reference context, never continuation of the current task.`,
     zh: `搜索历史对话记录。
 
-在已持久化消息的正文中搜索全部空格分隔的关键词（不区分大小写）。在 Session 内仅搜索当前 Session，以及同一 Agent 上同 Project 的兄弟 Session；排除工具结果消息。用于查找之前的讨论、决策或代码片段。
+在已持久化消息的正文中搜索全部空格分隔的关键词（不区分大小写）。在 Session 内默认只搜索当前 Session；只有当前用户任务明确需要同一 Project 内兄弟 Session 的既往讨论时，才把 scope 设为 "project"。排除工具结果消息。
 
-结果按最新优先返回，包含有界的命中片段和来源信息。`
+结果按最新优先返回，包含有界的命中片段和来源信息。兄弟 Session 的内容只能作为参考上下文，不能当作当前任务的延续。`
   },
   parameters: {
     type: 'object',
@@ -165,15 +164,26 @@ Results are returned newest-first with a bounded matching snippet and source met
           zh: '最多返回结果数（默认 10，最大 100）',
         },
       },
+      scope: {
+        type: 'string',
+        enum: ['session', 'project'],
+        description: {
+          en: 'Search scope. Defaults to the current Session. Use project only when sibling Session history is explicitly required.',
+          zh: '搜索范围。默认只查当前 Session；仅在明确需要兄弟 Session 历史时使用 project。',
+        },
+      },
     },
     required: ['keyword'],
   },
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
   async execute(input, ctx) {
-    const { keyword, limit = DEFAULT_RESULT_LIMIT } = input;
+    const { keyword, limit = DEFAULT_RESULT_LIMIT, scope = 'session' } = input;
     const normalizedKeyword = typeof keyword === 'string' ? keyword.trim() : '';
     if (!normalizedKeyword) return JSON.stringify({ error: 'keyword is required' });
+    if (scope !== 'session' && scope !== 'project') {
+      return JSON.stringify({ error: 'scope must be "session" or "project"' });
+    }
 
     const yeaftDir = ctx?.yeaftDir;
     if (!yeaftDir) {
@@ -185,7 +195,10 @@ Results are returned newest-first with a bounded matching snippet and source met
         ? ctx.projectSessionIds.filter(id => typeof id === 'string' && id.trim()).map(id => id.trim())
         : [];
       const scopedSessionIds = ctx?.sessionId
-        ? Array.from(new Set([ctx.sessionId, ...projectSessionIds]))
+        ? Array.from(new Set([
+            ctx.sessionId,
+            ...(scope === 'project' ? projectSessionIds : []),
+          ]))
         : null;
       const telemetry = {};
       let indexedResults = [];
@@ -262,6 +275,7 @@ Results are returned newest-first with a bounded matching snippet and source met
       if (results.length === 0) {
         return serializeHistorySearchOutput({
           results: [],
+          scope: ctx?.sessionId ? scope : 'legacy-global',
           message: `No matches found for "${normalizedKeyword}"`,
           telemetry: searchTelemetry,
         });
@@ -271,6 +285,10 @@ Results are returned newest-first with a bounded matching snippet and source met
         results: results.map(({ _seq, ...result }) => result),
         totalResults: results.length,
         keyword: normalizedKeyword,
+        scope: ctx?.sessionId ? scope : 'legacy-global',
+        ...(scope === 'project' && ctx?.sessionId
+          ? { notice: 'Sibling Session results are reference context, not continuation of the current task.' }
+          : {}),
         telemetry: searchTelemetry,
       });
     } catch (err) {
