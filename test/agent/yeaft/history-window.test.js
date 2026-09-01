@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { hasOrphanPairs } from '../../../agent/yeaft/pair-sanitize.js';
 import {
   estimateContentPartTokens,
   estimateMessageTokens,
@@ -251,6 +252,74 @@ describe('deterministic provider history window', () => {
     expect(window.filter(message => Array.isArray(message.toolCalls))).toHaveLength(3);
     expect(window.filter(message => message.role === 'tool')).toHaveLength(60);
     expect(window).toHaveLength(100);
+  });
+
+  it('drops optional recent function payload before textual turns under token pressure', () => {
+    const messages = [];
+    for (let turn = 1; turn <= 20; turn += 1) {
+      const callId = `call-${turn}`;
+      messages.push(
+        { role: 'user', content: `question-${turn}` },
+        {
+          role: 'assistant',
+          content: `answer-${turn}`,
+          toolCalls: turn >= 18
+            ? [{ id: callId, name: 'Inspect', input: { payload: 'x'.repeat(20_000) } }]
+            : undefined,
+        },
+      );
+      if (turn >= 18) {
+        messages.push({ role: 'tool', toolCallId: callId, content: `result-${turn}` });
+      }
+    }
+
+    const window = trimSnapshotForBudget(messages, {
+      recentTurnCap: 20,
+      messageTokenBudget: 1_000,
+    });
+
+    expect(window.filter(message => message.role === 'user')).toHaveLength(20);
+    expect(window[0]).toEqual({ role: 'user', content: 'question-1' });
+    expect(window.filter(message => Array.isArray(message.toolCalls))).toHaveLength(0);
+    expect(window.filter(message => message.role === 'tool')).toHaveLength(0);
+    expect(estimateMessagesTokens(window)).toBeLessThanOrEqual(1_000);
+    expect(hasOrphanPairs(window)).toBe(false);
+  });
+
+  it('drops optional recent tool rows before textual turns at the message cap', () => {
+    const messages = [];
+    for (let turn = 1; turn <= 20; turn += 1) {
+      const toolCalls = turn >= 18
+        ? Array.from({ length: 100 }, (_, index) => ({
+            id: `call-${turn}-${index}`,
+            name: 'Inspect',
+            input: { turn, index },
+          }))
+        : [];
+      messages.push(
+        { role: 'user', content: `question-${turn}` },
+        { role: 'assistant', content: `answer-${turn}`, ...(toolCalls.length > 0 ? { toolCalls } : {}) },
+        ...toolCalls.map(call => ({
+          role: 'tool',
+          toolCallId: call.id,
+          content: `result-${call.id}`,
+        })),
+      );
+    }
+
+    const window = trimSnapshotForBudget(messages, {
+      recentTurnCap: 20,
+      maxMessageCount: 256,
+      messageTokenBudget: 100_000,
+    });
+
+    expect(window.filter(message => message.role === 'user')).toHaveLength(20);
+    expect(window[0]).toEqual({ role: 'user', content: 'question-1' });
+    expect(window).toHaveLength(256);
+    expect(window.filter(message => message.role === 'tool')).toHaveLength(216);
+    expect(window.filter(message => Array.isArray(message.toolCalls))
+      .reduce((total, message) => total + message.toolCalls.length, 0)).toBe(216);
+    expect(hasOrphanPairs(window)).toBe(false);
   });
 
   it('keeps function calls only for the default three most recent turns', () => {

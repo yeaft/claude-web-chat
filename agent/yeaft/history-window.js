@@ -195,14 +195,21 @@ function hasContentAfterToolStrip(content) {
   return content != null;
 }
 
-function stripToolContentParts(content) {
+function toolContentPartCallId(part) {
+  if (!part || typeof part !== 'object') return null;
+  return part.id || part.tool_use_id || part.call_id || null;
+}
+
+function stripToolContentParts(content, selectedCallIds = null) {
   if (!Array.isArray(content)) return content;
   return content.filter(part => {
     if (!part || typeof part !== 'object') return true;
-    return part.type !== 'tool_use'
-      && part.type !== 'tool_result'
-      && part.type !== 'function_call'
-      && part.type !== 'function_call_output';
+    const isToolPart = part.type === 'tool_use'
+      || part.type === 'tool_result'
+      || part.type === 'function_call'
+      || part.type === 'function_call_output';
+    if (!isToolPart) return true;
+    return selectedCallIds instanceof Set && selectedCallIds.has(toolContentPartCallId(part));
   });
 }
 
@@ -232,12 +239,28 @@ export function stripToolNoiseFromOlderTurns(messages, options = {}) {
 
     const next = { ...message };
     if (Array.isArray(next.toolCalls)) delete next.toolCalls;
+    if (Array.isArray(next.thinkingBlocks)) delete next.thinkingBlocks;
     if (Array.isArray(next.content)) next.content = stripToolContentParts(next.content);
     if (next.role === 'assistant' && !hasContentAfterToolStrip(next.content)) continue;
     if (next.role === 'user' && Array.isArray(next.content) && next.content.length === 0) continue;
     cleanedOlder.push(next);
   }
   return [...cleanedOlder, ...recent.map(message => ({ ...message }))];
+}
+
+function stripAllToolNoise(messages) {
+  const cleaned = [];
+  for (const message of messages) {
+    if (!message || typeof message !== 'object' || message.role === 'tool') continue;
+    const next = { ...message };
+    if (Array.isArray(next.toolCalls)) delete next.toolCalls;
+    if (Array.isArray(next.thinkingBlocks)) delete next.thinkingBlocks;
+    if (Array.isArray(next.content)) next.content = stripToolContentParts(next.content);
+    if (next.role === 'assistant' && !hasContentAfterToolStrip(next.content)) continue;
+    if (next.role === 'user' && Array.isArray(next.content) && next.content.length === 0) continue;
+    cleaned.push(next);
+  }
+  return cleaned;
 }
 
 function truncateTextToTokens(text, tokenBudget) {
@@ -504,9 +527,7 @@ function fitMessagesToBudget(messages, tokenBudget) {
 function truncateToolResultsForModel(messages, options = {}) {
   if (!Array.isArray(messages) || messages.length === 0) return [];
   return messages.map(message => {
-    if (!message || message.role !== 'tool' || typeof message.content !== 'string') {
-      return { ...message };
-    }
+    if (!message || message.role !== 'tool') return { ...message };
     return {
       ...message,
       content: truncateToolResultIfNeeded(message.content, {
@@ -517,19 +538,110 @@ function truncateToolResultsForModel(messages, options = {}) {
   });
 }
 
+const HISTORY_SOURCE_INDEX = Symbol('historySourceIndex');
+
+function withHistorySourceIndexes(messages) {
+  return messages.map((message, index) => (
+    message && typeof message === 'object'
+      ? { ...message, [HISTORY_SOURCE_INDEX]: index }
+      : message
+  ));
+}
+
+function withoutHistorySourceIndexes(messages) {
+  return messages.map(message => {
+    if (!message || typeof message !== 'object') return message;
+    const next = { ...message };
+    delete next[HISTORY_SOURCE_INDEX];
+    return next;
+  });
+}
+
+function completeToolCallIds(messages) {
+  const resultIds = new Set(messages
+    .filter(message => message?.role === 'tool' && typeof message.toolCallId === 'string')
+    .map(message => message.toolCallId));
+  const ids = [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== 'assistant' || !Array.isArray(message.toolCalls)) continue;
+    for (let callIndex = message.toolCalls.length - 1; callIndex >= 0; callIndex -= 1) {
+      const id = message.toolCalls[callIndex]?.id;
+      if (typeof id === 'string' && resultIds.has(id)) ids.push(id);
+    }
+  }
+  return ids;
+}
+
+function enrichTextBaselineWithTools(textBaseline, toolSource, selectedCallIds) {
+  const messagesBySourceIndex = new Map();
+  for (const message of textBaseline) {
+    if (Number.isInteger(message?.[HISTORY_SOURCE_INDEX])) {
+      messagesBySourceIndex.set(message[HISTORY_SOURCE_INDEX], { ...message });
+    }
+  }
+
+  for (const source of toolSource) {
+    const sourceIndex = source?.[HISTORY_SOURCE_INDEX];
+    if (!Number.isInteger(sourceIndex)) continue;
+    if (source.role === 'tool') {
+      if (selectedCallIds.has(source.toolCallId)) {
+        messagesBySourceIndex.set(sourceIndex, { ...source });
+      }
+      continue;
+    }
+    if (source.role !== 'assistant' || !Array.isArray(source.toolCalls)) continue;
+
+    const selectedCalls = source.toolCalls.filter(call => selectedCallIds.has(call?.id));
+    if (selectedCalls.length === 0) continue;
+    const selectedIds = new Set(selectedCalls.map(call => call.id));
+    const baseline = messagesBySourceIndex.get(sourceIndex);
+    const owner = baseline ? { ...baseline } : { ...source };
+    owner.toolCalls = selectedCalls;
+    if (Array.isArray(source.thinkingBlocks)) owner.thinkingBlocks = source.thinkingBlocks;
+    if (Array.isArray(source.content)) {
+      const baselineContent = Array.isArray(baseline?.content)
+        ? baseline.content
+        : stripToolContentParts(source.content);
+      const selectedParts = source.content.filter(part => selectedIds.has(toolContentPartCallId(part)));
+      owner.content = [...baselineContent, ...selectedParts];
+    }
+    messagesBySourceIndex.set(sourceIndex, owner);
+  }
+
+  return pairSanitize([...messagesBySourceIndex.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, message]) => message));
+}
+
+function addOptionalRecentToolPairs(textBaseline, toolSource, options) {
+  const selectedCallIds = new Set();
+  let out = pairSanitize(textBaseline);
+  for (const callId of completeToolCallIds(toolSource)) {
+    const trialIds = new Set(selectedCallIds);
+    trialIds.add(callId);
+    const trial = enrichTextBaselineWithTools(textBaseline, toolSource, trialIds);
+    if (trial.length > options.maxMessageCount) continue;
+    const fitted = fitMessagesToBudget(trial, options.messageTokenBudget);
+    if (!completeToolCallIds(fitted).includes(callId)) continue;
+    selectedCallIds.add(callId);
+    out = fitted;
+  }
+  return out;
+}
+
 /**
  * Build a bounded, pair-safe copy for one provider request.
  *
  * The transform is deterministic and non-persistent:
  *   1. keep at most `recentTurnCap` turns;
- *   2. remove tool/function payloads outside the newest `keepToolTurns`;
- *   3. enforce the row cap at turn boundaries;
- *   4. drop oldest turns until the configured approximate message budget fits;
- *   5. bound large tool-result bodies and multimodal content;
- *   6. remove orphan tool pairs.
+ *   2. build the text-only history baseline and fit it to row/token caps;
+ *   3. consider complete tool/function pairs from the newest `keepToolTurns`;
+ *   4. add each recent pair only while the fitted text baseline still fits;
+ *   5. remove orphan tool pairs.
  *
- * Old tool noise is removed before row/token limits are evaluated so obsolete
- * function payloads cannot evict older user/assistant text that would fit.
+ * Tool replay is optional enrichment. Text history gets the hard row/token
+ * budget first so even recent function payloads cannot evict textual turns.
  *
  * @param {Array<object>} snapshot
  * @param {{ messageTokenBudget?: number, recentTurnCap?: number, maxMessageCount?: number, keepToolTurns?: number, language?: string }} [options]
@@ -548,14 +660,24 @@ export function trimSnapshotForBudget(snapshot, options = {}) {
     ? Math.floor(options.maxMessageCount)
     : DEFAULT_RUNTIME_CACHE_MESSAGE_CAP;
 
-  let trimmed = sliceLastNTurns(snapshot, recentTurnCap);
-  trimmed = stripToolNoiseFromOlderTurns(trimmed, {
-    keepToolTurns: options.keepToolTurns,
+  const keepToolTurns = Number.isFinite(options.keepToolTurns) && options.keepToolTurns >= 0
+    ? Math.floor(options.keepToolTurns)
+    : DEFAULT_KEEP_TOOL_TURNS;
+  const bounded = withHistorySourceIndexes(sliceLastNTurns(snapshot, recentTurnCap));
+  let textBaseline = stripAllToolNoise(bounded);
+  textBaseline = dropOldestHistoryUntilMessageCap(textBaseline, maxMessageCount);
+  textBaseline = fitMessagesToBudget(textBaseline, messageTokenBudget);
+
+  const toolCutIndex = indexOfNthTurnFromEnd(bounded, keepToolTurns);
+  const recentToolSource = keepToolTurns > 0
+    ? bounded.slice(toolCutIndex < 0 ? 0 : toolCutIndex)
+    : [];
+  const truncatedToolSource = truncateToolResultsForModel(recentToolSource, { language: options.language });
+  const enriched = addOptionalRecentToolPairs(textBaseline, truncatedToolSource, {
+    maxMessageCount,
+    messageTokenBudget,
   });
-  trimmed = dropOldestHistoryUntilMessageCap(trimmed, maxMessageCount);
-  trimmed = truncateToolResultsForModel(trimmed, { language: options.language });
-  trimmed = pairSanitize(trimmed);
-  return fitMessagesToBudget(trimmed, messageTokenBudget);
+  return withoutHistorySourceIndexes(enriched);
 }
 
 /**
@@ -568,11 +690,13 @@ export function trimSnapshotForBudget(snapshot, options = {}) {
  * @returns {Array<object>}
  */
 export function trimHistoryCacheForRuntime(snapshot, options = {}) {
-  return trimSnapshotForBudget(snapshot, {
-    recentTurnCap: DEFAULT_RUNTIME_CACHE_TURN_CAP,
-    messageTokenBudget: DEFAULT_RUNTIME_CACHE_TOKEN_BUDGET,
-    maxMessageCount: DEFAULT_RUNTIME_CACHE_MESSAGE_CAP,
+  if (!Array.isArray(snapshot) || snapshot.length === 0) return [];
+  let trimmed = sliceLastNTurns(snapshot, DEFAULT_RUNTIME_CACHE_TURN_CAP);
+  trimmed = stripToolNoiseFromOlderTurns(trimmed, {
     keepToolTurns: DEFAULT_KEEP_TOOL_TURNS,
-    language: options.language,
   });
+  trimmed = dropOldestHistoryUntilMessageCap(trimmed, DEFAULT_RUNTIME_CACHE_MESSAGE_CAP);
+  trimmed = truncateToolResultsForModel(trimmed, { language: options.language });
+  trimmed = pairSanitize(trimmed);
+  return fitMessagesToBudget(trimmed, DEFAULT_RUNTIME_CACHE_TOKEN_BUDGET);
 }
