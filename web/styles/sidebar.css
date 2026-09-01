@@ -167,6 +167,7 @@
   left: -4px;
   margin-top: 4px;
   width: min(280px, calc(100vw - 24px));
+  box-sizing: border-box;
   background: var(--bg-main);
   border: 1px solid var(--border-color);
   border-radius: 12px;
@@ -211,7 +212,18 @@
   white-space: nowrap;
 }
 
+.agent-dropdown-meta {
+  flex: 0 1 72px;
+  min-width: 0;
+  text-align: right;
+  overflow: hidden;
+}
+
 .agent-dropdown-version {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 11px;
   color: var(--text-muted);
   font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
@@ -258,16 +270,15 @@
 .agent-dropdown-settings-option {
   width: 100%;
   border: 0;
-  padding: 9px 10px;
+  padding: 7px 10px;
   border-radius: 8px;
   background: transparent;
   color: var(--text-primary);
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
   text-align: left;
   font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
   cursor: pointer;
 }
 
@@ -279,16 +290,6 @@
 
 .agent-dropdown-settings-option:focus-visible {
   box-shadow: 0 0 0 2px var(--accent-blue);
-}
-
-.agent-dropdown-settings-label {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.agent-dropdown-settings-hint {
-  font-size: 12px;
-  color: var(--text-muted);
 }
 
 .sidebar-header-actions {

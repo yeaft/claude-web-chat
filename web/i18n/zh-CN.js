@@ -121,7 +121,6 @@ export default {
   'chat.agent.none': '暂无 Agent',
   'chat.agent.restarting': '重启中',
   'agentSettings.open': 'Agent 设置',
-  'agentSettings.openHint': '运行、遥测与模型配置',
   'agentSettings.manage': '管理',
   'agentSettings.eyebrow': '本地运行时',
   'agentSettings.title': 'Agent 设置',
