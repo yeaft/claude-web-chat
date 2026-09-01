@@ -22,16 +22,18 @@ const en = readFileSync(join(root, 'web/i18n/en.js'), 'utf8');
 const zh = readFileSync(join(root, 'web/i18n/zh-CN.js'), 'utf8');
 
 describe('Agent settings surface', () => {
-  it('keeps the Agent list trigger and adds a separate settings icon', () => {
+  it('keeps the original Agent brand trigger and moves settings to the list footer', () => {
     expect(header).toContain("emits: ['open-agent-settings', 'upgrade-agent']");
     expect(header).toContain('class="sidebar-brand agent-dropdown-trigger"');
-    expect(header).toContain('class="agent-settings-icon-btn"');
-    expect(header).toContain("$emit('open-agent-settings')");
+    expect(header).not.toContain('agent-settings-icon-btn');
+    expect(header).toContain('class="agent-dropdown-list"');
+    expect(header).toContain('class="agent-dropdown-settings-option"');
+    expect(header).toContain("open = false; $emit('open-agent-settings')");
     expect(header).toContain('v-for="agent in onlineAgents"');
     expect(header).toContain("$emit('upgrade-agent', agent.id)");
   });
 
-  it('keeps Agent list and settings clicks independent', async () => {
+  it('opens Agent settings from the bottom of the Agent list', async () => {
     const wrapper = mount(SidebarAgentHeader, {
       props: {
         onlineAgents: [{ id: 'agent-a', name: 'Agent A', online: true }],
@@ -44,13 +46,13 @@ describe('Agent settings surface', () => {
     expect(wrapper.find('.agent-dropdown').exists()).toBe(true);
     expect(wrapper.emitted('open-agent-settings')).toBeUndefined();
 
-    await wrapper.get('.agent-settings-icon-btn').trigger('click');
+    await wrapper.get('.agent-dropdown-settings-option').trigger('click');
     expect(wrapper.emitted('open-agent-settings')).toHaveLength(1);
-    expect(wrapper.find('.agent-dropdown').exists()).toBe(true);
+    expect(wrapper.find('.agent-dropdown').exists()).toBe(false);
     wrapper.unmount();
   });
 
-  it('wires Agent list state and settings navigation from both Session sidebars', () => {
+  it('wires Agent list state and settings navigation from both Session sidebars without a duplicate plugin icon', () => {
     const yeaftSidebar = readFileSync(join(root, 'web/components/YeaftSidebar.js'), 'utf8');
     expect(chatPage).toContain('<AgentSettingsPanel v-if="showAgentSettings"');
     expect(chatPage).toContain(':online-agents="onlineAgents"');
@@ -60,6 +62,8 @@ describe('Agent settings surface', () => {
     expect(yeaftSidebar).toContain(':online-agents="onlineAgents"');
     expect(yeaftSidebar).toContain('@open-agent-settings="$emit(\'open-agent-settings\')"');
     expect(yeaftSidebar).toContain('@upgrade-agent="upgradeAgent"');
+    expect(yeaftSidebar).not.toContain('pluginCenterOpen }"');
+    expect(yeaftSidebar).toContain('class="sidebar-nav-item" :disabled="onlineAgents.length === 0" @click="onOpenPlugins"');
   });
 
   it('keeps per-Agent telemetry requests correlated by request and agent', () => {

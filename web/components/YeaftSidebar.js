@@ -68,9 +68,6 @@ export default {
           />
           <div class="sidebar-header-actions">
             <SidebarModeToggle v-if="!chatStore || !chatStore.sessionCatalogLoaded" view="yeaft" @flip="onModeFlip" />
-            <button class="sidebar-icon-btn" :class="{ active: chatStore && chatStore.pluginCenterOpen }" :disabled="onlineAgents.length === 0" :title="$t('yeaft.plugins.title')" :aria-label="$t('yeaft.plugins.title')" @click="onOpenPlugins">
-              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M14 3.5a3 3 0 0 0-4.24 4.24L3.5 14l6.5 6.5 6.26-6.26A3 3 0 0 0 20.5 10L17 13.5l-2.5-2.5L18 7.5A3 3 0 0 0 14 3.5z"/></svg>
-            </button>
             <button class="sidebar-icon-btn sidebar-work-center-header-btn" :class="{ active: chatStore && chatStore.workCenterOpen }" :disabled="workCenterAgents.length === 0" :title="tr('workCenter.title', 'Work Center')" :aria-label="tr('workCenter.title', 'Work Center')" @click="onOpenWorkCenter()">
               <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path fill="currentColor" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 5v2h10V8H7zm0 4v2h7v-2H7zm0 4v2h5v-2H7z"/></svg>
             </button>
