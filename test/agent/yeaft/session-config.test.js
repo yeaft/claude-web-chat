@@ -2612,6 +2612,29 @@ describe('Yeaft session-scoped model config', () => {
   });
 
 
+  it('omits the Work Center producer tool by default and restores it when explicitly enabled', async () => {
+    const root = makeDir();
+    let disabledSession = null;
+    let enabledSession = null;
+    try {
+      disabledSession = await loadSession({ dir: root, skipMCP: true, skipSkills: true });
+      expect(disabledSession.toolRegistry.has('CreateWorkItem')).toBe(false);
+      await disabledSession.shutdown();
+      disabledSession = null;
+
+      enabledSession = await loadSession({
+        dir: root,
+        skipMCP: true,
+        skipSkills: true,
+        workCenterEnabled: true,
+      });
+      expect(enabledSession.toolRegistry.has('CreateWorkItem')).toBe(true);
+    } finally {
+      await disabledSession?.shutdown?.();
+      await enabledSession?.shutdown?.();
+    }
+  });
+
   it('flushes lifecycle telemetry through a Session config dir', async () => {
     const root = makeDir();
     const originalFetch = global.fetch;

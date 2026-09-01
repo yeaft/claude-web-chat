@@ -25,6 +25,7 @@ import {
 } from './upgrade-command.js';
 import { loadConfig as loadYeaftConfig } from './yeaft/config.js';
 import { initYeaftDir } from './yeaft/init.js';
+import { isWorkCenterEnabled } from './yeaft/work-center/feature.js';
 import { updateBrowserRuntimeSettings } from './yeaft/config-api.js';
 import { bootBrowserRuntime, shutdownBrowserRuntime } from './browser-runtime/index.js';
 import {
@@ -138,6 +139,7 @@ const CONFIG = {
   workDir: WORK_DIR,
   yeaftDir: YEAFT_DIR,
   telemetry: loadYeaftConfig({ dir: YEAFT_DIR }).telemetry,
+  workCenterEnabled: isWorkCenterEnabled(),
   reconnectInterval: fileConfig.reconnectInterval,
   agentSecret,
   // 显式禁用的工具（非 MCP 相关）
@@ -175,9 +177,12 @@ async function detectCapabilities() {
   // agent build can speak plaintext WS frames. New servers see this and
   // flip `agent.encryptOutbound = false`, stopping outbound encryption
   // to this peer. Old servers ignore the unknown capability token.
-  const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'workbench_session_routes', 'work_center', 'work_center_message_v2', 'session_history_search', 'session_history_outline', 'session_history_window_prefetch', 'file_reference_resolution', 'yeaft_plugins', 'yeaft_managed_skills', 'settings_request_correlation'];
+  const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'workbench_session_routes', 'session_history_search', 'session_history_outline', 'session_history_window_prefetch', 'file_reference_resolution', 'yeaft_plugins', 'yeaft_managed_skills', 'settings_request_correlation'];
   capabilities.push(getAgentUpgradeCapability());
-  if (process.platform === 'linux') capabilities.push('work_item_attachments');
+  if (isWorkCenterEnabled()) {
+    capabilities.push('work_center', 'work_center_message_v2');
+    if (process.platform === 'linux') capabilities.push('work_item_attachments');
+  }
   const pty = await loadNodePty();
   if (pty) capabilities.push('terminal');
   if (ctx.browserRuntime) {
@@ -467,12 +472,16 @@ process.on('SIGTERM', async () => {
   } catch (err) {
     console.warn(`[Agent] models.dev prime failed (will use config/defaults): ${err?.message || err}`);
   }
-  try {
-    const { bootWorkCenter } = await import('./yeaft/work-center/bridge.js');
-    await bootWorkCenter();
-    console.log('[Agent] Work Center watcher started');
-  } catch (err) {
-    console.warn(`[Agent] Work Center failed to start: ${err?.message || err}`);
+  if (isWorkCenterEnabled()) {
+    try {
+      const { bootWorkCenter } = await import('./yeaft/work-center/bridge.js');
+      await bootWorkCenter();
+      console.log('[Agent] Work Center watcher started');
+    } catch (err) {
+      console.warn(`[Agent] Work Center failed to start: ${err?.message || err}`);
+    }
+  } else {
+    console.log('[Agent] Work Center disabled; watcher not started');
   }
   connect();
 })();

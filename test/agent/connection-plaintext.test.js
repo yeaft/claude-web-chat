@@ -51,7 +51,7 @@ import {
 } from '../../agent/service/config.js';
 import { shouldLoadLegacyLocalConfig as shouldLoadLegacyLocalConfigFromService } from '../../agent/service.js';
 import { handleLocalCommand } from '../../agent/cli.js';
-import { applyRegisteredTransport } from '../../agent/connection/message-router.js';
+import { applyRegisteredTransport, handleMessage } from '../../agent/connection/message-router.js';
 import { buildUnixUpgradeScript, handleUpgradeAgent } from '../../agent/connection/upgrade.js';
 import { generateSessionKey, isEncrypted } from '../../agent/encryption.js';
 
@@ -88,6 +88,51 @@ async function sendToServerUnderTest(ctxLike, msg) {
 }
 
 describe('agent ctx defaults and upgrade contract', () => {
+  it('rejects Work Center relay requests while the feature is disabled', async () => {
+    const previousWebSocket = globalThis.WebSocket;
+    const original = {
+      ws: ctx.ws,
+      sessionKey: ctx.sessionKey,
+      serverEncryptionRequired: ctx.serverEncryptionRequired,
+      CONFIG: ctx.CONFIG,
+      outboundSendQueue: ctx.outboundSendQueue,
+      outboundSendQueueBytes: ctx.outboundSendQueueBytes,
+      outboundSendQueueActive: ctx.outboundSendQueueActive,
+    };
+    try {
+      globalThis.WebSocket = { OPEN: WS_OPEN };
+      const ws = new MockWebSocket(WS_OPEN);
+      Object.assign(ctx, {
+        ws,
+        sessionKey: null,
+        serverEncryptionRequired: false,
+        CONFIG: { workCenterEnabled: false },
+        outboundSendQueue: [],
+        outboundSendQueueBytes: 0,
+        outboundSendQueueActive: false,
+      });
+
+      await handleMessage({
+        type: 'work_center_request',
+        requestId: 'wc-disabled',
+        op: 'list',
+        _requestUserId: 'user-a',
+      });
+
+      expect(ws.getSentMessages()).toEqual([{
+        type: 'work_center_response',
+        requestId: 'wc-disabled',
+        op: 'list',
+        ok: false,
+        error: 'Work Center is disabled',
+        _requestUserId: 'user-a',
+      }]);
+    } finally {
+      globalThis.WebSocket = previousWebSocket;
+      Object.assign(ctx, original);
+    }
+  });
+
   it('rejects container upgrades before any npm metadata lookup', async () => {
     const previousWebSocket = globalThis.WebSocket;
     const original = {
@@ -658,11 +703,13 @@ describe('agent capability advertisement', () => {
     expect(source).toMatch(/const capabilities = \[[^\]]*'yeaft_plugins'/s);
   });
 
-  it('keeps plaintext-ok, workbench routes, and Plugin protocol capabilities in the source list', () => {
+  it('keeps core capabilities and gates Work Center capabilities behind explicit enablement', () => {
     const source = readFileSync(resolve(process.cwd(), 'agent/index.js'), 'utf8');
-    for (const capability of ['plaintext-ok', 'workbench_session_routes', 'work_center', 'yeaft_plugins']) {
+    for (const capability of ['plaintext-ok', 'workbench_session_routes', 'yeaft_plugins']) {
       expect(source).toContain(`'${capability}'`);
     }
+    expect(source).toMatch(/if \(isWorkCenterEnabled\(\)\) \{\s*capabilities\.push\('work_center', 'work_center_message_v2'\)/s);
+    expect(source).not.toMatch(/const capabilities = \[[^\]]*'work_center'/s);
   });
 });
 
