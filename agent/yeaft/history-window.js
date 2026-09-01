@@ -411,6 +411,21 @@ function dropOldestHistoryUntilBudget(messages, tokenBudget) {
   return out;
 }
 
+function dropOldestHistoryUntilMessageCap(messages, maxMessageCount) {
+  let out = pairSanitize(messages);
+  let turns = countTurns(out);
+  while (out.length > maxMessageCount && turns > 1) {
+    const next = pairSanitize(sliceLastNTurns(out, turns - 1));
+    if (next.length === out.length) break;
+    out = next;
+    turns = countTurns(out);
+  }
+  if (out.length > maxMessageCount) {
+    out = pairSanitize(out.slice(-maxMessageCount));
+  }
+  return out;
+}
+
 function providerUnits(messages) {
   const units = [];
   for (let index = 0; index < messages.length;) {
@@ -506,11 +521,15 @@ function truncateToolResultsForModel(messages, options = {}) {
  * Build a bounded, pair-safe copy for one provider request.
  *
  * The transform is deterministic and non-persistent:
- *   1. keep at most `recentTurnCap` turns and `maxMessageCount` rows;
- *   2. drop oldest turns until the configured approximate message budget fits;
- *   3. remove old tool noise;
- *   4. bound large tool-result bodies and multimodal content;
- *   5. remove orphan tool pairs.
+ *   1. keep at most `recentTurnCap` turns;
+ *   2. remove tool/function payloads outside the newest `keepToolTurns`;
+ *   3. enforce the row cap at turn boundaries;
+ *   4. drop oldest turns until the configured approximate message budget fits;
+ *   5. bound large tool-result bodies and multimodal content;
+ *   6. remove orphan tool pairs.
+ *
+ * Old tool noise is removed before row/token limits are evaluated so obsolete
+ * function payloads cannot evict older user/assistant text that would fit.
  *
  * @param {Array<object>} snapshot
  * @param {{ messageTokenBudget?: number, recentTurnCap?: number, maxMessageCount?: number, keepToolTurns?: number, language?: string }} [options]
@@ -530,21 +549,10 @@ export function trimSnapshotForBudget(snapshot, options = {}) {
     : DEFAULT_RUNTIME_CACHE_MESSAGE_CAP;
 
   let trimmed = sliceLastNTurns(snapshot, recentTurnCap);
-  if (trimmed.length > maxMessageCount) trimmed = trimmed.slice(-maxMessageCount);
-  let remainingTurnCap = recentTurnCap;
-  let tokens = estimateMessagesTokens(trimmed);
-  while (tokens > messageTokenBudget && remainingTurnCap > 1) {
-    const nextTurnCap = remainingTurnCap - 1;
-    const next = sliceLastNTurns(trimmed, nextTurnCap);
-    if (next.length === trimmed.length) break;
-    remainingTurnCap = nextTurnCap;
-    trimmed = next;
-    tokens = estimateMessagesTokens(trimmed);
-  }
-
   trimmed = stripToolNoiseFromOlderTurns(trimmed, {
     keepToolTurns: options.keepToolTurns,
   });
+  trimmed = dropOldestHistoryUntilMessageCap(trimmed, maxMessageCount);
   trimmed = truncateToolResultsForModel(trimmed, { language: options.language });
   trimmed = pairSanitize(trimmed);
   return fitMessagesToBudget(trimmed, messageTokenBudget);

@@ -190,4 +190,89 @@ describe('deterministic provider history window', () => {
     ]);
     expect(messages[1].toolCalls).toHaveLength(1);
   });
+
+  it('keeps twenty text turns when old function payloads would otherwise consume the budget', () => {
+    const messages = [];
+    for (let turn = 1; turn <= 20; turn += 1) {
+      const callId = `call-${turn}`;
+      const oldPayload = turn <= 17 ? 'x'.repeat(20_000) : `input-${turn}`;
+      const oldResult = turn <= 17 ? 'y'.repeat(20_000) : `result-${turn}`;
+      messages.push(
+        { role: 'user', content: `question-${turn}` },
+        {
+          role: 'assistant',
+          content: `answer-${turn}`,
+          toolCalls: [{ id: callId, name: 'Inspect', input: { payload: oldPayload } }],
+        },
+        { role: 'tool', toolCallId: callId, content: oldResult },
+      );
+    }
+
+    const window = trimSnapshotForBudget(messages, {
+      recentTurnCap: 20,
+      messageTokenBudget: 1_000,
+    });
+
+    expect(window.filter(message => message.role === 'user')).toHaveLength(20);
+    expect(window[0]).toEqual({ role: 'user', content: 'question-1' });
+    expect(window.filter(message => Array.isArray(message.toolCalls))).toHaveLength(3);
+    expect(window.filter(message => message.role === 'tool')).toHaveLength(3);
+    expect(JSON.stringify(window)).not.toContain('x'.repeat(1_000));
+    expect(JSON.stringify(window)).not.toContain('y'.repeat(1_000));
+  });
+
+  it('applies the message cap after removing old tool rows', () => {
+    const messages = [];
+    for (let turn = 1; turn <= 20; turn += 1) {
+      const toolCalls = Array.from({ length: 20 }, (_, index) => ({
+        id: `call-${turn}-${index}`,
+        name: 'Inspect',
+        input: { turn, index },
+      }));
+      messages.push(
+        { role: 'user', content: `question-${turn}` },
+        { role: 'assistant', content: `answer-${turn}`, toolCalls },
+        ...toolCalls.map(call => ({
+          role: 'tool',
+          toolCallId: call.id,
+          content: `result-${call.id}`,
+        })),
+      );
+    }
+
+    const window = trimSnapshotForBudget(messages, {
+      recentTurnCap: 20,
+      maxMessageCount: 256,
+      messageTokenBudget: 100_000,
+    });
+
+    expect(window.filter(message => message.role === 'user')).toHaveLength(20);
+    expect(window[0]).toEqual({ role: 'user', content: 'question-1' });
+    expect(window.filter(message => Array.isArray(message.toolCalls))).toHaveLength(3);
+    expect(window.filter(message => message.role === 'tool')).toHaveLength(60);
+    expect(window).toHaveLength(100);
+  });
+
+  it('keeps function calls only for the default three most recent turns', () => {
+    const messages = [];
+    for (let turn = 1; turn <= 5; turn += 1) {
+      const callId = `call-${turn}`;
+      messages.push(
+        { role: 'user', content: `question-${turn}` },
+        {
+          role: 'assistant',
+          content: `answer-${turn}`,
+          toolCalls: [{ id: callId, name: 'Inspect', input: { turn } }],
+        },
+        { role: 'tool', toolCallId: callId, content: `result-${turn}` },
+      );
+    }
+
+    const window = trimSnapshotForBudget(messages, { messageTokenBudget: 10_000 });
+
+    expect(window.filter(message => Array.isArray(message.toolCalls)).map(message => message.toolCalls[0].id))
+      .toEqual(['call-3', 'call-4', 'call-5']);
+    expect(window.filter(message => message.role === 'tool').map(message => message.toolCallId))
+      .toEqual(['call-3', 'call-4', 'call-5']);
+  });
 });
