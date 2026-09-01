@@ -614,6 +614,17 @@ function enrichTextBaselineWithTools(textBaseline, toolSource, selectedCallIds) 
     .map(([, message]) => message));
 }
 
+function preservesTextBaseline(textBaseline, enriched) {
+  const projected = stripAllToolNoise(enriched);
+  if (projected.length !== textBaseline.length) return false;
+  return textBaseline.every((baseline, index) => {
+    const candidate = projected[index];
+    return candidate?.[HISTORY_SOURCE_INDEX] === baseline?.[HISTORY_SOURCE_INDEX]
+      && candidate?.role === baseline?.role
+      && serializeJsonValue(candidate?.content) === serializeJsonValue(baseline?.content);
+  });
+}
+
 function addOptionalRecentToolPairs(textBaseline, toolSource, options) {
   const selectedCallIds = new Set();
   let out = pairSanitize(textBaseline);
@@ -623,7 +634,9 @@ function addOptionalRecentToolPairs(textBaseline, toolSource, options) {
     const trial = enrichTextBaselineWithTools(textBaseline, toolSource, trialIds);
     if (trial.length > options.maxMessageCount) continue;
     const fitted = fitMessagesToBudget(trial, options.messageTokenBudget);
-    if (!completeToolCallIds(fitted).includes(callId)) continue;
+    const fittedCallIds = new Set(completeToolCallIds(fitted));
+    if (![...trialIds].every(id => fittedCallIds.has(id))) continue;
+    if (!preservesTextBaseline(textBaseline, fitted)) continue;
     selectedCallIds.add(callId);
     out = fitted;
   }

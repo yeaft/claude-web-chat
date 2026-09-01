@@ -286,6 +286,42 @@ describe('deterministic provider history window', () => {
     expect(hasOrphanPairs(window)).toBe(false);
   });
 
+  it('does not spend partial token headroom by evicting an already-fitted text turn', () => {
+    const messages = [];
+    for (let turn = 1; turn <= 5; turn += 1) {
+      const callId = `call-${turn}`;
+      messages.push(
+        { role: 'user', content: `question-${turn} ${'q'.repeat(120)}` },
+        {
+          role: 'assistant',
+          content: `answer-${turn} ${'a'.repeat(120)}`,
+          ...(turn === 5
+            ? { toolCalls: [{ id: callId, name: 'Inspect', input: { payload: 'x'.repeat(220) } }] }
+            : {}),
+        },
+      );
+      if (turn === 5) {
+        messages.push({ role: 'tool', toolCallId: callId, content: `result-${turn}` });
+      }
+    }
+
+    const textOnly = trimSnapshotForBudget(messages, {
+      messageTokenBudget: 340,
+      keepToolTurns: 0,
+    });
+    const enriched = trimSnapshotForBudget(messages, {
+      messageTokenBudget: 340,
+      keepToolTurns: 3,
+    });
+
+    expect(estimateMessagesTokens(textOnly)).toBe(280);
+    expect(textOnly.filter(message => message.role === 'user').map(message => message.content.slice(0, 10)))
+      .toEqual(['question-2', 'question-3', 'question-4', 'question-5']);
+    expect(enriched).toEqual(textOnly);
+    expect(enriched.filter(message => Array.isArray(message.toolCalls))).toHaveLength(0);
+    expect(enriched.filter(message => message.role === 'tool')).toHaveLength(0);
+  });
+
   it('drops optional recent tool rows before textual turns at the message cap', () => {
     const messages = [];
     for (let turn = 1; turn <= 20; turn += 1) {
