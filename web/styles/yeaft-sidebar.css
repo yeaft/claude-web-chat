@@ -35,10 +35,6 @@
   font-size: 13px;
 }
 
-.yeaft-sidebar .agent-dropdown-item {
-  position: relative;
-}
-
 .yeaft-sidebar .yeaft-session-draggable {
   user-select: none;
 }

@@ -117,6 +117,7 @@ export default {
   // ============ Chat / Sidebar ============
   'chat.agent.select': '选择 Agent',
   'chat.agent.manage': '管理 Agent',
+  'chat.agent.count': '{count} agents',
   'chat.agent.none': '暂无 Agent',
   'chat.agent.restarting': '重启中',
   'agentSettings.open': 'Agent 设置',

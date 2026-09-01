@@ -21,18 +21,19 @@ const en = readFileSync(join(root, 'web/i18n/en.js'), 'utf8');
 const zh = readFileSync(join(root, 'web/i18n/zh-CN.js'), 'utf8');
 
 describe('Agent settings surface', () => {
-  it('replaces cramped dropdown controls with one dedicated entry', () => {
+  it('turns the Agent count into a direct settings trigger without a dropdown', () => {
     expect(header).toContain("emits: ['open-agent-settings']");
-    expect(header).toContain("$emit('open-agent-settings', agent.id)");
-    expect(header).not.toContain("$emit('upgrade-agent'");
-    expect(header).not.toContain("$emit('set-dream-enabled'");
+    expect(header).toContain("$emit('open-agent-settings')");
+    expect(header).toContain("tr('chat.agent.count', onlineAgentCount + ' agents'");
+    expect(header).not.toContain('agent-dropdown');
+    expect(header).not.toContain('onlineAgents');
   });
 
-  it('is reachable from both Chat and Yeaft sidebars', () => {
+  it('opens Agent settings directly from both Session sidebar headers', () => {
     expect(chatPage).toContain('<AgentSettingsPanel v-if="showAgentSettings"');
-    expect(chatPage).toContain('@open-agent-settings="openAgentSettings"');
+    expect(chatPage).toContain('@open-agent-settings="openAgentSettings(store.currentAgent || null)"');
     expect(yeaftPage).toContain('<AgentSettingsPanel v-if="showAgentSettings"');
-    expect(yeaftPage).toContain('@open-agent-settings="openAgentSettings"');
+    expect(readFileSync(join(root, 'web/components/YeaftSidebar.js'), 'utf8')).toContain('@open-agent-settings="$emit(\'open-agent-settings\')"');
   });
 
   it('keeps per-Agent telemetry requests correlated by request and agent', () => {
@@ -57,6 +58,8 @@ describe('Agent settings surface', () => {
     expect(panel).toContain("import ModernSelect from './ModernSelect.js'");
     expect(panel).toContain('<ModernSelect');
     expect(panel).toContain(':options="agentOptions"');
+    expect(panel).toContain(':menu-min-width="200"');
+    expect(panel).not.toContain('sublabel: agent.name');
     expect(panel).not.toContain('<select v-model="selectedAgentId"');
     expect(panel).toContain('class="agent-settings-nav-item"');
     expect(panel).toContain("activeCategory === 'operations'");
@@ -111,6 +114,8 @@ describe('Agent settings surface', () => {
     expect(panel).toContain("$t('agentSettings.maintenance.description')");
     expect(css).toContain('height: min(760px, 90vh)');
     expect(css).toContain('.agent-settings-content {');
+    expect(css).toContain('.agent-settings-agent-picker .modern-select {');
+    expect(css).toContain('width: 200px;');
     expect(css).toContain('overflow-y: auto;');
     expect(css).toContain('.agent-settings-dialog .btn-primary');
     expect(css).toContain('var(--accent-fg)');

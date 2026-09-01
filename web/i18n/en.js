@@ -117,6 +117,7 @@ export default {
   // ============ Chat / Sidebar ============
   'chat.agent.select': 'Select Agent',
   'chat.agent.manage': 'Manage Agents',
+  'chat.agent.count': '{count} agents',
   'chat.agent.none': 'No Agents',
   'chat.agent.restarting': 'Restarting',
   'agentSettings.open': 'Agent settings',

@@ -60,12 +60,8 @@ export default {
           <!-- Header Row: Agent status + action icons (Copilot style) -->
           <div class="sidebar-header-row">
             <SidebarAgentHeader
-              :online-agents="onlineAgents"
               :online-agent-count="onlineAgentCount"
-              :restarting-agents="restartingAgents"
-              :upgrading-agents="upgradingAgents"
-              :show-agent-actions="true"
-              @open-agent-settings="openAgentSettings"
+              @open-agent-settings="openAgentSettings(store.currentAgent || null)"
             />
             <div class="sidebar-header-actions">
               <SidebarModeToggle
