@@ -12,7 +12,6 @@ import YeaftDebugPanel from './YeaftDebugPanel.js';
 import VpTimelinePane from './VpTimelinePane.js';
 import YeaftSessionActions from './YeaftSessionActions.js';
 import YeaftConversationOutline from './YeaftConversationOutline.js';
-import LlmTab from './LlmTab.js';
 import WorkCenterPage from './WorkCenterPage.js';
 import { parseMentions } from '../utils/parseMentions.js';
 import { buildTimelineRows, resolveTimelineSession, selectGroupRosterVpList } from '../stores/helpers/vp-timeline.js';
@@ -25,7 +24,6 @@ import {
 } from '../utils/overlay-dismiss.js';
 import { shouldShowYeaftOnboardingGuide } from '../utils/yeaftOnboarding.js';
 import { hasUsableYeaftAgent, resolveActiveSessionIdForSettings } from '../utils/yeaftSessionSettings.js';
-import { shouldCloseLlmConfigAfterSave } from '../utils/llm-config-save.js';
 import { revealOutlineResult, shouldDismissHistorySearch } from '../utils/message-search-navigation.js';
 
 const HISTORY_SENDER_PREFERENCES_KEY = 'yeaft-history-sender-preferences';
@@ -100,7 +98,7 @@ export function visibleSessionStatusTasks(taskMap) {
 
 export default {
   name: 'YeaftPage',
-  components: { ChatInput, MessageList, SettingsPanel, AgentSettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, PluginCenterPage, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, YeaftConversationOutline, LlmTab },
+  components: { ChatInput, MessageList, SettingsPanel, AgentSettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, PluginCenterPage, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, YeaftConversationOutline },
   template: `
     <div class="yeaft-page" ref="pageRef">
       <!-- Mobile sidebar overlay -->
@@ -317,25 +315,6 @@ export default {
         />
         </div>
 
-        <div
-          v-if="showLlmConfig"
-          class="modal-overlay yeaft-llm-config-overlay"
-          @pointerdown="trackOverlayPointerDown"
-          @pointerup="trackOverlayPointerUp"
-          @pointercancel="clearOverlayPointerGesture"
-          @click="closeLlmConfigFromOverlay"
-        >
-          <div class="modal-card yeaft-llm-config-modal" role="dialog" aria-modal="true" :aria-label="$t('settings.llm.configureAgent')">
-            <div class="modal-header">
-              <h3>{{ $t('settings.llm.configureAgent') }}</h3>
-              <button class="modal-close" @click="showLlmConfig = false" :aria-label="$t('common.close')">×</button>
-            </div>
-            <div class="yeaft-llm-config-body">
-              <LlmTab context="yeaft" @message="onLlmConfigMessage" @saved="onLlmConfigSaved" />
-            </div>
-          </div>
-        </div>
-
         <!-- Input Area -->
         <ChatInput
           v-if="!showSettings && !showOnboardingGuide"
@@ -478,7 +457,7 @@ export default {
 
       <!-- Keep global Settings outside the conversation/Work Center branch so
            the shared sidebar entry works from either content surface. -->
-      <AgentSettingsPanel v-if="showAgentSettings" :initial-agent-id="agentSettingsAgentId" @close="showAgentSettings = false" />
+      <AgentSettingsPanel v-if="showAgentSettings" :initial-agent-id="agentSettingsAgentId" :initial-category="agentSettingsInitialCategory" @close="showAgentSettings = false" />
       <SettingsPanel
         v-if="showSettings"
         :visible="showSettings"
@@ -544,7 +523,7 @@ export default {
     const showSettings = Vue.ref(false);
     const showAgentSettings = Vue.ref(false);
     const agentSettingsAgentId = Vue.ref(null);
-    const showLlmConfig = Vue.ref(false);
+    const agentSettingsInitialCategory = Vue.ref('operations');
     const sessionCreateOpen = Vue.ref(false);
     const copiedOnboardingCommand = Vue.ref('');
     const agentSecret = Vue.ref('');
@@ -1236,8 +1215,9 @@ export default {
       if (!control) closeComposerMenu();
     };
 
-    const openAgentSettings = (agentId) => {
+    const openAgentSettings = (agentId, category = 'operations') => {
       agentSettingsAgentId.value = agentId || null;
+      agentSettingsInitialCategory.value = ['operations', 'trace', 'llm'].includes(category) ? category : 'operations';
       showAgentSettings.value = true;
     };
 
@@ -1259,11 +1239,7 @@ export default {
 
     const openLlmConfig = () => {
       closeComposerMenu();
-      showLlmConfig.value = true;
-    };
-
-    const closeLlmConfigFromOverlay = (event) => {
-      if (shouldDismissFromOverlayClick(event)) showLlmConfig.value = false;
+      openAgentSettings(store.currentAgent || null, 'llm');
     };
 
     const loadAgentSecret = async () => {
@@ -1317,17 +1293,6 @@ export default {
       } catch (_) {
         // Clipboard is best-effort; the command remains visible for manual copy.
       }
-    };
-
-    const onLlmConfigMessage = (msg, isError) => {
-      if (isError) console.error('[Yeaft] LLM config:', msg);
-      else console.log('[Yeaft] LLM config:', msg);
-    };
-
-    const onLlmConfigSaved = (result = {}) => {
-      // The Agent installs the persisted catalog before acknowledging the save.
-      // Keep the modal open on partial success so the warning remains visible.
-      if (shouldCloseLlmConfigAfterSave(result)) showLlmConfig.value = false;
     };
 
     // task-334m: Group invite modal wiring. The modal is shown whenever
@@ -1642,7 +1607,7 @@ export default {
       showSettings,
       showAgentSettings,
       agentSettingsAgentId,
-      showLlmConfig,
+      agentSettingsInitialCategory,
       sessionCreateOpen,
       settingsInitialTab,
       settingsInitialEditVpId,
@@ -1689,13 +1654,10 @@ export default {
       trackOverlayPointerDown,
       trackOverlayPointerUp,
       clearOverlayPointerGesture,
-      closeLlmConfigFromOverlay,
       openSessionCreate,
       onSessionCreated,
       copyOnboardingCommand,
       copiedOnboardingCommand,
-      onLlmConfigMessage,
-      onLlmConfigSaved,
       formatTokens,
       formatModelCtx,
       toggleSettings,

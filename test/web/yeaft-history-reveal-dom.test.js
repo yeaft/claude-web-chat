@@ -474,9 +474,10 @@ describe('Yeaft history result rendered reveal', () => {
     await modelButton.trigger('focusout', { relatedTarget: configOption.element });
     await configOption.trigger('click');
     await Vue.nextTick();
-    expect(wrapper.get('.yeaft-llm-config-overlay').isVisible()).toBe(true);
+    expect(wrapper.get('.agent-settings-dialog').isVisible()).toBe(true);
+    expect(wrapper.get('.agent-settings-nav button.active').text()).toContain('agentSettings.categories.llm');
     expect(wrapper.find('.yeaft-composer-model-dropdown').exists()).toBe(false);
-    await wrapper.get('.yeaft-llm-config-overlay .modal-close').trigger('click');
+    await wrapper.get('.agent-settings-close').trigger('click');
     await Vue.nextTick();
 
     await modelButton.trigger('click');

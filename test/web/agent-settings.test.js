@@ -5,9 +5,11 @@ import { fileURLToPath } from 'url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const panel = readFileSync(join(root, 'web/components/AgentSettingsPanel.js'), 'utf8');
+const llmTab = readFileSync(join(root, 'web/components/LlmTab.js'), 'utf8');
 const header = readFileSync(join(root, 'web/components/SidebarAgentHeader.js'), 'utf8');
 const chatPage = readFileSync(join(root, 'web/components/ChatPage.js'), 'utf8');
 const yeaftPage = readFileSync(join(root, 'web/components/YeaftPage.js'), 'utf8');
+const workCenterPage = readFileSync(join(root, 'web/components/WorkCenterPage.js'), 'utf8');
 const chatStore = readFileSync(join(root, 'web/stores/chat.js'), 'utf8');
 const messageHandler = readFileSync(join(root, 'web/stores/helpers/messageHandler.js'), 'utf8');
 const css = readFileSync(join(root, 'web/styles/agent-settings.css'), 'utf8');
@@ -47,17 +49,37 @@ describe('Agent settings surface', () => {
     expect(zh).toContain("'agentSettings.runtime.updateAvailable': '可更新至 v{version}'");
   });
 
-  it('keeps the three-area desktop layout compact and only scrolls as a viewport fallback', () => {
-    expect(panel).toContain('class="agent-settings-list"');
-    expect(panel).toContain('class="agent-settings-section"');
-    expect(panel.match(/<section class="agent-settings-section/g)).toHaveLength(2);
-    expect(panel).not.toContain('agent-settings-hero');
-    expect(panel).not.toContain('agent-settings-danger"');
-    expect(css).toContain('max-height: 92vh');
-    expect(css).toContain('.agent-settings-content { min-width: 0; padding: 18px 20px 20px; }');
+  it('uses one Agent picker and category navigation without a large header', () => {
+    expect(panel).toContain('class="agent-settings-agent-picker"');
+    expect(panel).toContain("activeCategory === 'operations'");
+    expect(panel).toContain("activeCategory === 'trace'");
+    expect(panel).toContain("activeCategory === 'llm'");
+    expect(panel).not.toContain('agent-settings-header');
+    expect(panel).not.toContain('agent-settings-list');
+    expect(en).toContain("'agentSettings.categories.operations': 'Operations'");
+    expect(zh).toContain("'agentSettings.categories.llm': 'LLM 配置'");
+  });
+
+  it('reuses LlmTab with an explicit selected-Agent target', () => {
+    expect(panel).toContain("import LlmTab from './LlmTab.js'");
+    expect(panel).toContain('<LlmTab context="yeaft" :agent-id="selectedAgentId"');
+    expect(panel).toContain("initialCategory: { type: String, default: 'operations' }");
+    expect(llmTab).toContain("agentId: { type: String, default: null }");
+    expect(llmTab).toContain('return this.agentId || this.chatStore.currentAgent');
+  });
+
+  it('routes existing model configuration entry points into Agent Settings', () => {
+    expect(yeaftPage).toContain("openAgentSettings(store.currentAgent || null, 'llm')");
+    expect(yeaftPage).not.toContain('yeaft-llm-config-modal');
+    expect(workCenterPage).toContain('<AgentSettingsPanel v-if="llmConfigOpen" :initial-agent-id="agentId" initial-category="llm"');
+    expect(workCenterPage).not.toContain('<LlmTab context="yeaft"');
+  });
+
+  it('keeps content scroll inside the fixed shell and adapts navigation on mobile', () => {
+    expect(css).toContain('height: min(820px, 92vh)');
+    expect(css).toContain('.agent-settings-content { min-width: 0; overflow-y: auto;');
     expect(css).toContain('@media (max-height: 680px) and (min-width: 681px)');
     expect(css).toContain('@media (max-width: 680px)');
-    expect(en).toContain("'agentSettings.title': 'Agent settings'");
-    expect(zh).toContain("'agentSettings.title': 'Agent 设置'");
+    expect(css).toContain('.agent-settings-nav nav { flex-direction: row; overflow-x: auto; }');
   });
 });

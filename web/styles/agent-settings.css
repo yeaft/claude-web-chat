@@ -1,6 +1,7 @@
 .agent-settings-dialog {
-  width: min(1040px, 94vw);
-  max-height: 92vh;
+  position: relative;
+  width: min(1120px, 94vw);
+  height: min(820px, 92vh);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -10,34 +11,22 @@
   box-shadow: var(--modal-shadow);
 }
 
-.agent-settings-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border-color);
-}
+.agent-settings-close { position: absolute; z-index: 3; top: 12px; right: 14px; }
+.agent-settings-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 0; height: 100%; }
+.agent-settings-nav { min-width: 0; padding: 16px 10px; background: var(--bg-sidebar); border-right: 1px solid var(--border-color); }
+.agent-settings-agent-picker { display: block; padding: 0 6px 14px; }
+.agent-settings-agent-picker > span { display: block; margin-bottom: 6px; color: var(--text-muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.agent-settings-agent-picker select { width: 100%; padding: 9px 28px 9px 10px; color: var(--text-primary); background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 8px; }
+.agent-settings-agent-picker select:focus { border-color: var(--accent); outline: none; }
+.agent-settings-nav nav { display: flex; flex-direction: column; gap: 3px; }
+.agent-settings-nav nav button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 10px; color: var(--text-secondary); background: transparent; border: 0; border-radius: 8px; cursor: pointer; text-align: left; }
+.agent-settings-nav nav button:hover { background: var(--sidebar-hover); color: var(--text-primary); }
+.agent-settings-nav nav button.active { color: var(--text-primary); background: var(--session-active); box-shadow: inset 2px 0 var(--accent); }
 
-.agent-settings-header h2,
+.agent-settings-content { min-width: 0; overflow-y: auto; padding: 22px 48px 24px 24px; }
+.agent-settings-identity { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .agent-settings-identity h3,
 .agent-settings-section h4 { margin: 0; color: var(--text-primary); }
-.agent-settings-header h2 { font-size: 18px; }
-
-.agent-settings-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 0; }
-.agent-settings-list { padding: 10px; background: var(--bg-sidebar); border-right: 1px solid var(--border-color); }
-.agent-settings-agent { width: 100%; display: flex; align-items: center; gap: 9px; padding: 10px; border: 0; border-radius: 9px; background: transparent; color: var(--text-primary); cursor: pointer; text-align: left; }
-.agent-settings-agent:hover,
-.agent-settings-agent.active { background: var(--sidebar-hover); }
-.agent-settings-agent.active { box-shadow: inset 2px 0 var(--accent); }
-.agent-settings-agent-copy { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 2px; }
-.agent-settings-agent-copy strong,
-.agent-settings-agent-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-settings-agent-copy small,
-.agent-settings-version { color: var(--text-muted); font-size: 11px; }
-
-.agent-settings-content { min-width: 0; padding: 18px 20px 20px; }
-.agent-settings-identity { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
 .agent-settings-identity h3 { font-size: 20px; }
 .agent-settings-identity code { display: block; max-width: 560px; margin-top: 3px; overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .agent-settings-status { display: inline-flex; align-items: center; gap: 7px; padding: 6px 9px; color: var(--text-secondary); background: var(--bg-sidebar); border-radius: 999px; font-size: 12px; }
@@ -74,27 +63,30 @@
 .agent-settings-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .agent-settings-save-row { margin-top: 12px; }
 .agent-settings-save-row span { margin-right: auto; color: var(--success); font-size: 12px; }
-.agent-settings-save-row span.error { color: var(--error); }
+.agent-settings-save-row span.error,
+.agent-settings-inline-message.error { color: var(--error); }
 .agent-settings-loading,
 .agent-settings-empty { padding: 24px; color: var(--text-muted); text-align: center; }
 .agent-settings-danger-button { padding: 7px 12px; border: 1px solid var(--error); border-radius: 8px; background: transparent; color: var(--error); cursor: pointer; }
 .agent-settings-danger-button:disabled { opacity: .45; cursor: not-allowed; }
-
+.agent-settings-inline-message { margin-bottom: 10px; color: var(--success); font-size: 12px; }
+.agent-settings-llm .llm-config-surface { padding: 0; }
+.agent-settings-llm .llm-hero { margin-top: 0; }
 .agent-dropdown-settings-btn { margin-left: auto; border: 0; background: transparent; color: var(--accent); font-size: 12px; cursor: pointer; }
 
 @media (max-height: 680px) and (min-width: 681px) {
   .agent-settings-dialog { height: 92vh; }
-  .agent-settings-list,
-  .agent-settings-content { overflow-y: auto; }
 }
 
 @media (max-width: 680px) {
   .agent-settings-dialog { width: 100vw; height: 100dvh; max-width: none; max-height: none; border: 0; border-radius: 0; }
-  .agent-settings-header { padding: 14px 16px; }
+  .agent-settings-close { top: 8px; right: 8px; }
   .agent-settings-body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
-  .agent-settings-list { display: flex; gap: 6px; padding: 8px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border-color); }
-  .agent-settings-agent { min-width: 170px; }
-  .agent-settings-content { overflow-y: auto; padding: 14px 12px 20px; }
+  .agent-settings-nav { padding: 10px 46px 8px 8px; border-right: 0; border-bottom: 1px solid var(--border-color); }
+  .agent-settings-agent-picker { padding: 0 0 8px; }
+  .agent-settings-nav nav { flex-direction: row; overflow-x: auto; }
+  .agent-settings-nav nav button { width: auto; min-width: max-content; }
+  .agent-settings-content { padding: 14px 12px 20px; }
   .agent-settings-identity { align-items: flex-start; }
   .agent-settings-grid,
   .agent-settings-input-grid { grid-template-columns: 1fr; }
