@@ -14,6 +14,7 @@ import { truncateToolResultIfNeeded } from './tools/registry.js';
 import { countTurns, indexOfNthTurnFromEnd, sliceLastNTurns } from './turn-utils.js';
 
 export const DEFAULT_KEEP_TOOL_TURNS = 3;
+export const MIN_RECENT_DIALOGUE_TURNS = 5;
 export const DEFAULT_RECENT_TURN_CAP = 25;
 export const DEFAULT_MESSAGE_TOKEN_BUDGET = 32768;
 
@@ -399,10 +400,11 @@ function shrinkMessageToBudget(message, tokenBudget) {
   return next;
 }
 
-function dropOldestHistoryUntilBudget(messages, tokenBudget) {
+function dropOldestHistoryUntilBudget(messages, tokenBudget, minimumTurns = 1) {
   let out = pairSanitize(messages);
   let turns = countTurns(out);
-  while (estimateMessagesTokens(out) > tokenBudget && out.length > 0 && turns > 1) {
+  const turnFloor = Math.min(turns, Math.max(1, Math.floor(minimumTurns)));
+  while (estimateMessagesTokens(out) > tokenBudget && out.length > 0 && turns > turnFloor) {
     const next = pairSanitize(sliceLastNTurns(out, turns - 1));
     if (next.length === out.length) break;
     out = next;
@@ -466,14 +468,116 @@ function fitProviderUnit(unit, tokenBudget) {
   return fitted;
 }
 
-function fitMessagesToBudget(messages, tokenBudget) {
-  let out = dropOldestHistoryUntilBudget(pairSanitize(messages), tokenBudget);
+function dialogueTurnUnits(messages) {
+  const turns = countTurns(messages);
+  if (turns === 0) return [];
+
+  const units = [];
+  for (let turnsFromEnd = turns; turnsFromEnd >= 1; turnsFromEnd -= 1) {
+    const start = indexOfNthTurnFromEnd(messages, turnsFromEnd);
+    const end = turnsFromEnd === 1
+      ? messages.length
+      : indexOfNthTurnFromEnd(messages, turnsFromEnd - 1);
+    if (start >= 0 && end > start) units.push(messages.slice(start, end));
+  }
+  return units;
+}
+
+function fitDialogueTurn(turn, tokenBudget) {
+  if (!Array.isArray(turn) || turn.length === 0 || tokenBudget <= 0) return [];
+
+  const units = providerUnits(turn);
+  const fittedUnits = [];
+  let remaining = tokenBudget;
+  for (let index = 0; index < units.length; index += 1) {
+    const unitsLeft = units.length - index;
+    const allowance = Math.max(0, Math.floor(remaining / unitsLeft));
+    const fitted = fitProviderUnit(units[index], allowance);
+    fittedUnits.push(fitted);
+    remaining -= estimateMessagesTokens(fitted);
+  }
+
+  const fitted = dropEmptyAssistantRows(pairSanitize(fittedUnits.flat()));
+  const requiredUsers = turn.filter(message => message?.role === 'user').length;
+  const meaningfulAssistant = message => message?.role === 'assistant'
+    && (hasContentAfterToolStrip(message.content)
+      || (Array.isArray(message.toolCalls) && message.toolCalls.length > 0));
+  const requiredAssistants = turn.filter(meaningfulAssistant).length;
+  const retainedUsers = fitted.filter(message => message?.role === 'user'
+    && hasContentAfterToolStrip(message.content)).length;
+  const retainedAssistants = fitted.filter(meaningfulAssistant).length;
+
+  // A dialogue floor is useful only when both sides still carry meaning. Never
+  // retain empty user placeholders or silently discard an ordinary response.
+  if (retainedUsers !== requiredUsers || retainedAssistants !== requiredAssistants) return [];
+  if (requiredUsers === 0 || requiredAssistants === 0) return [];
+  return fitted;
+}
+
+function minimumDialogueTurnFit(turn, tokenBudget) {
+  let low = 1;
+  let high = tokenBudget;
+  let best = null;
+  while (low <= high) {
+    const allowance = Math.floor((low + high) / 2);
+    const fitted = fitDialogueTurn(turn, allowance);
+    if (fitted.length > 0) {
+      best = { fitted, tokens: estimateMessagesTokens(fitted) };
+      high = allowance - 1;
+    } else {
+      low = allowance + 1;
+    }
+  }
+  return best;
+}
+
+function fitDialogueTurnsToBudget(turns, tokenBudget) {
+  const minimumFits = turns.map(turn => minimumDialogueTurnFit(turn, tokenBudget));
+  const retained = [];
+  let minimumTotal = minimumFits.reduce((total, fit) => total + (fit?.tokens || tokenBudget + 1), 0);
+
+  if (minimumFits.every(Boolean) && minimumTotal <= tokenBudget) {
+    for (let index = 0; index < turns.length; index += 1) retained.push(index);
+  } else {
+    minimumTotal = 0;
+    for (let index = turns.length - 1; index >= 0; index -= 1) {
+      const fit = minimumFits[index];
+      if (!fit || minimumTotal + fit.tokens > tokenBudget) continue;
+      retained.unshift(index);
+      minimumTotal += fit.tokens;
+    }
+  }
+
+  const fittedTurns = [];
+  let remaining = tokenBudget;
+  for (let retainedIndex = 0; retainedIndex < retained.length; retainedIndex += 1) {
+    const turnIndex = retained[retainedIndex];
+    const minimumReservedAfter = retained
+      .slice(retainedIndex + 1)
+      .reduce((total, index) => total + minimumFits[index].tokens, 0);
+    const turnsLeft = retained.length - retainedIndex;
+    const fairAllowance = Math.floor(remaining / turnsLeft);
+    const allowance = Math.max(minimumFits[turnIndex].tokens, Math.min(
+      remaining - minimumReservedAfter,
+      fairAllowance,
+    ));
+    const fitted = fitDialogueTurn(turns[turnIndex], allowance);
+    fittedTurns.push(fitted.length > 0 ? fitted : minimumFits[turnIndex].fitted);
+    remaining -= estimateMessagesTokens(fittedTurns.at(-1));
+  }
+  return fittedTurns.flat();
+}
+
+function fitMessagesToBudget(messages, tokenBudget, minimumTurns = 1) {
+  let out = dropOldestHistoryUntilBudget(pairSanitize(messages), tokenBudget, minimumTurns);
   if (estimateMessagesTokens(out) <= tokenBudget) return dropEmptyAssistantRows(out);
 
-  // Treat assistant(toolCalls)+tool rows as one provider unit. The newest unit
-  // gets the remaining budget first, but its paired tool results share that
-  // budget with the assistant owner. This preserves valid tool protocol shape
-  // while bounding serialized object output and signed thinking together.
+  const turns = dialogueTurnUnits(out);
+  if (minimumTurns > 1 && turns.length > 1) {
+    return fitDialogueTurnsToBudget(turns, tokenBudget);
+  }
+
+  // Legacy single-turn/assistant-only history keeps provider-unit allocation.
   const units = providerUnits(out);
   const fittedUnits = Array.from({ length: units.length }, () => []);
   let reserved = 0;
@@ -529,25 +633,32 @@ export function trimSnapshotForBudget(snapshot, options = {}) {
     ? Math.floor(options.maxMessageCount)
     : DEFAULT_RUNTIME_CACHE_MESSAGE_CAP;
 
+  const dialogueTurnFloor = Math.min(recentTurnCap, MIN_RECENT_DIALOGUE_TURNS);
   let trimmed = sliceLastNTurns(snapshot, recentTurnCap);
-  if (trimmed.length > maxMessageCount) trimmed = trimmed.slice(-maxMessageCount);
-  let remainingTurnCap = recentTurnCap;
-  let tokens = estimateMessagesTokens(trimmed);
-  while (tokens > messageTokenBudget && remainingTurnCap > 1) {
-    const nextTurnCap = remainingTurnCap - 1;
-    const next = sliceLastNTurns(trimmed, nextTurnCap);
-    if (next.length === trimmed.length) break;
-    remainingTurnCap = nextTurnCap;
-    trimmed = next;
-    tokens = estimateMessagesTokens(trimmed);
-  }
 
+  // Tool payload is disposable execution detail. Remove it before deciding to
+  // evict ordinary dialogue; otherwise one huge result can make the old order
+  // delete every prior turn before this cleanup ever runs.
   trimmed = stripToolNoiseFromOlderTurns(trimmed, {
     keepToolTurns: options.keepToolTurns,
   });
   trimmed = truncateToolResultsForModel(trimmed, { language: options.language });
   trimmed = pairSanitize(trimmed);
-  return fitMessagesToBudget(trimmed, messageTokenBudget);
+  if (estimateMessagesTokens(trimmed) > messageTokenBudget || trimmed.length > maxMessageCount) {
+    trimmed = pairSanitize(stripToolNoiseFromOlderTurns(trimmed, { keepToolTurns: 0 }));
+  }
+
+  // The row cap may evict old turns, but it must not punch through the same
+  // recent-dialogue floor used by the token budget.
+  let turns = countTurns(trimmed);
+  while (trimmed.length > maxMessageCount && turns > dialogueTurnFloor) {
+    const next = pairSanitize(sliceLastNTurns(trimmed, turns - 1));
+    if (next.length === trimmed.length) break;
+    trimmed = next;
+    turns = countTurns(trimmed);
+  }
+
+  return fitMessagesToBudget(trimmed, messageTokenBudget, dialogueTurnFloor);
 }
 
 /**
