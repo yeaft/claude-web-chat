@@ -18,6 +18,7 @@ const workCenterPage = readFileSync(join(root, 'web/components/WorkCenterPage.js
 const chatStore = readFileSync(join(root, 'web/stores/chat.js'), 'utf8');
 const messageHandler = readFileSync(join(root, 'web/stores/helpers/messageHandler.js'), 'utf8');
 const css = readFileSync(join(root, 'web/styles/agent-settings.css'), 'utf8');
+const sidebarCss = readFileSync(join(root, 'web/styles/sidebar.css'), 'utf8');
 const en = readFileSync(join(root, 'web/i18n/en.js'), 'utf8');
 const zh = readFileSync(join(root, 'web/i18n/zh-CN.js'), 'utf8');
 
@@ -30,7 +31,12 @@ describe('Agent settings surface', () => {
     expect(header).toContain('class="agent-dropdown-settings-option"');
     expect(header).toContain("open = false; $emit('open-agent-settings')");
     expect(header).toContain('v-for="agent in onlineAgents"');
+    expect(header).toContain('class="agent-dropdown-meta"');
     expect(header).toContain("$emit('upgrade-agent', agent.id)");
+    expect(header).not.toContain('agent-dropdown-settings-hint');
+    expect(sidebarCss).toMatch(/\.agent-dropdown\s*\{[^}]*box-sizing:\s*border-box;/s);
+    expect(sidebarCss).toMatch(/\.agent-dropdown-upgrade-btn\s*\{[^}]*flex-shrink:\s*0;/s);
+    expect(sidebarCss).not.toContain('.agent-dropdown-settings-hint');
   });
 
   it('opens Agent settings from the bottom of the Agent list', async () => {
@@ -45,6 +51,8 @@ describe('Agent settings surface', () => {
     await wrapper.get('.agent-dropdown-trigger').trigger('click');
     expect(wrapper.find('.agent-dropdown').exists()).toBe(true);
     expect(wrapper.emitted('open-agent-settings')).toBeUndefined();
+    expect(wrapper.get('.agent-dropdown-settings-option').text()).toBe('Agent settings');
+    expect(wrapper.find('.agent-dropdown-settings-hint').exists()).toBe(false);
 
     await wrapper.get('.agent-dropdown-settings-option').trigger('click');
     expect(wrapper.emitted('open-agent-settings')).toHaveLength(1);
