@@ -668,7 +668,7 @@ export function createV2DreamScheduler(session) {
     keepAlive: !!session?.config?.serverMode,
     logger: session.config?.debug ? console : undefined,
   });
-  let enabled = session?.config?.dream?.enabled !== false;
+  let enabled = session?.config?.dream?.enabled === true;
   if (enabled) v2.start();
 
   // task-710: wire `noteUserMessage` to a real per-session message

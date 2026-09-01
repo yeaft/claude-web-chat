@@ -229,6 +229,18 @@ describe('Agent-scoped settings lifecycle', () => {
     });
   });
 
+  it('treats a missing Dream state as disabled while a toggle is pending', () => {
+    const store = freshStore();
+    delete store.agents[0].dreamEnabled;
+
+    expect(store.setDreamEnabled('agent-a', true)).toBe(true);
+    expect(store.agentDreamState['agent-a']).toMatchObject({
+      pending: true,
+      requested: true,
+      authoritative: false,
+    });
+  });
+
   it('uses authoritative Dream state on failure and rejects rapid toggles', async () => {
     const store = freshStore();
     expect(store.setDreamEnabled('agent-a', false)).toBe(true);

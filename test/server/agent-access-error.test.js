@@ -359,6 +359,20 @@ describe('resolveAgentAccessError', () => {
     expect(secondMessages).toEqual([expect.objectContaining({ requestId: 'update-new', enabled: true })]);
   });
 
+  it('treats a missing Dream sync field as disabled', async () => {
+    CONFIG.skipAuth = true;
+    const agent = {
+      id: 'agent-dream-default', name: 'Dream default', ownerId: 'user-1',
+      conversations: new Map(),
+      ws: { readyState: WS_OPEN, send() {} },
+    };
+    agents.set(agent.id, agent);
+
+    await handleAgentSync(agent.id, agent, { type: 'agent_sync_complete' });
+
+    expect(agent.dreamEnabled).toBe(false);
+  });
+
   it('routes correlated Agent maintenance and Dream replies only to the originating browser', async () => {
     CONFIG.skipAuth = true;
     const forwarded = [];
