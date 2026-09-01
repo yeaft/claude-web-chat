@@ -5,12 +5,22 @@ import { tmpdir } from 'node:os';
 import { WorkItemWatcher } from '../../../../agent/yeaft/work-center/watcher.js';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
+import { isWorkCenterEnabled } from '../../../../agent/yeaft/work-center/feature.js';
 
 function deferred() {
   let resolve;
   const promise = new Promise(r => { resolve = r; });
   return { promise, resolve };
 }
+
+describe('Work Center feature gate', () => {
+  it('is disabled by default and only accepts an explicit true value', () => {
+    expect(isWorkCenterEnabled({})).toBe(false);
+    expect(isWorkCenterEnabled({ YEAFT_WORK_CENTER_ENABLED: 'false' })).toBe(false);
+    expect(isWorkCenterEnabled({ YEAFT_WORK_CENTER_ENABLED: 'TRUE' })).toBe(false);
+    expect(isWorkCenterEnabled({ YEAFT_WORK_CENTER_ENABLED: 'true' })).toBe(true);
+  });
+});
 
 describe('WorkItemWatcher', () => {
   it('interrupts a claimed Run when stop races with preparation', async () => {

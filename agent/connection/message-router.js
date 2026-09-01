@@ -779,7 +779,18 @@ export async function handleMessage(msg) {
       break;
 
     case 'work_center_request':
-      await handleWorkCenterRequest(msg);
+      if (ctx.CONFIG?.workCenterEnabled === true) {
+        await handleWorkCenterRequest(msg);
+      } else {
+        await sendToServer({
+          type: 'work_center_response',
+          requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
+          op: typeof msg.op === 'string' ? msg.op : '',
+          ok: false,
+          error: 'Work Center is disabled',
+          _requestUserId: msg._requestUserId || null,
+        });
+      }
       break;
 
     // Expert roles definition (for ExpertPanel detail view)

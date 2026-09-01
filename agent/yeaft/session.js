@@ -50,6 +50,7 @@ import { seedDefaultVps } from './vp/seed-defaults.js';
 import { topUpDefaultVps } from './vp/seed-topup.js';
 import { archiveLegacyScopes } from './memory/seed-backfill.js';
 import { createV2DreamScheduler, bootInitEmptyGroups, bootCatchUpStaleDream } from './dream/session-wiring.js';
+import { isWorkCenterEnabled } from './work-center/feature.js';
 import { openSegmentIndex } from './memory/index-db.js';
 import { syncAll as syncSegmentIndex } from './memory/segment-sync.js';
 import { backfillCanonicalContent } from './memory/content-backfill.js';
@@ -69,6 +70,7 @@ import { existsSync as existsSyncSafe, readFileSync as readFileSyncSafe, mkdirSy
  * @property {object[]} [extraTools] — Additional ToolDef objects to register
  * @property {object} [configOverrides] — Additional config overrides
  * @property {Promise<Array>} [managedCliReady] — optional entrypoint-owned CLI setup
+ * @property {boolean} [workCenterEnabled] — override Work Center producer-tool registration
  */
 
 /**
@@ -138,6 +140,7 @@ export async function loadSession(options = {}) {
     serverMode = false,
     dreamEnabled,
     managedCliReady = null,
+    workCenterEnabled = isWorkCenterEnabled(),
   } = options;
 
   // ─── 1. Determine config + store directories ─────────────
@@ -408,6 +411,7 @@ export async function loadSession(options = {}) {
   // ─── 8. Build tool registry ────────────────────────────
   const taskManager = new TaskManager({ yeaftDir });
   const toolRegistry = createFullRegistry();
+  if (!workCenterEnabled) toolRegistry.unregister('CreateWorkItem');
 
   // Register any extra tools from caller
   for (const tool of extraTools) {
