@@ -38,8 +38,9 @@ describe('Agent settings surface', () => {
     expect(sidebarCss).toMatch(/\.agent-dropdown\s*\{[^}]*left:\s*0;[^}]*width:\s*min\(360px,\s*calc\(var\(--session-sidebar-width\)\s*-\s*12px\),\s*calc\(100vw\s*-\s*12px\)\);[^}]*box-sizing:\s*border-box;/s);
     expect(sidebarCss).not.toMatch(/\.agent-dropdown\s*\{[^}]*left:\s*-\d/s);
     expect(sidebarCss).toMatch(/\.agent-dropdown-action-btn\s*\{[^}]*width:\s*32px;[^}]*height:\s*32px;[^}]*flex-shrink:\s*0;/s);
-    expect(sidebarCss).toMatch(/\.agent-dropdown-name\s*\{[^}]*font-size:\s*16px;/s);
-    expect(sidebarCss).toMatch(/\.agent-dropdown-version\s*\{[^}]*font-size:\s*13px;[^}]*font-family:\s*'SF Mono'/s);
+    expect(sidebarCss).toMatch(/\.agent-dropdown-name\s*\{[^}]*font-size:\s*13px;[^}]*font-weight:\s*500;/s);
+    expect(sidebarCss).toMatch(/\.agent-dropdown-version\s*\{[^}]*font-size:\s*11px;[^}]*font-family:\s*'SF Mono'/s);
+    expect(sidebarCss).toMatch(/\.agent-dropdown-status\s*\{[^}]*font-size:\s*11px;/s);
     expect(sidebarCss).not.toContain('.agent-dropdown-settings-hint');
   });
 

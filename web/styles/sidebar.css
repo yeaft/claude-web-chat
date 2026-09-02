@@ -206,7 +206,7 @@
 .agent-dropdown-name {
   flex: 1;
   min-width: 0;
-  font-size: 16px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--text-primary);
   overflow: hidden;
@@ -226,14 +226,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: 11px;
   color: var(--text-muted);
   font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
   font-variant-numeric: tabular-nums;
 }
 
 .agent-dropdown-status {
-  font-size: 13px;
+  font-size: 11px;
   color: var(--accent-blue);
   font-style: italic;
   white-space: nowrap;
