@@ -32,15 +32,20 @@ describe('Agent settings surface', () => {
     expect(header).toContain("open = false; $emit('open-agent-settings')");
     expect(header).toContain('v-for="agent in onlineAgents"');
     expect(header).toContain('class="agent-dropdown-meta"');
+    expect(header).toContain('class="agent-dropdown-trailing"');
+    expect(header).toContain('class="agent-dropdown-actions"');
+    expect(header).toContain(':title="agent.name"');
     expect(header).toContain("$emit('upgrade-agent', agent.id)");
     expect(header).not.toContain('agent-dropdown-settings-hint');
     expect(sidebarCss).toMatch(/\.session-sidebar-shell\s*\{[^}]*overflow:\s*hidden;/s);
     expect(sidebarCss).toMatch(/\.agent-dropdown\s*\{[^}]*left:\s*0;[^}]*width:\s*min\(360px,\s*calc\(var\(--session-sidebar-width\)\s*-\s*12px\),\s*calc\(100vw\s*-\s*12px\)\);[^}]*box-sizing:\s*border-box;/s);
     expect(sidebarCss).not.toMatch(/\.agent-dropdown\s*\{[^}]*left:\s*-\d/s);
-    expect(sidebarCss).toMatch(/\.agent-dropdown-action-btn\s*\{[^}]*width:\s*32px;[^}]*height:\s*32px;[^}]*flex-shrink:\s*0;/s);
-    expect(sidebarCss).toMatch(/\.agent-dropdown-name\s*\{[^}]*font-size:\s*13px;[^}]*font-weight:\s*500;/s);
-    expect(sidebarCss).toMatch(/\.agent-dropdown-version\s*\{[^}]*font-size:\s*11px;[^}]*font-family:\s*'SF Mono'/s);
-    expect(sidebarCss).toMatch(/\.agent-dropdown-status\s*\{[^}]*font-size:\s*11px;/s);
+    expect(sidebarCss).toMatch(/\.agent-dropdown-name\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;[^}]*font-size:\s*14px;[^}]*font-weight:\s*500;/s);
+    expect(sidebarCss).toMatch(/\.agent-dropdown-trailing\s*\{[^}]*flex:\s*0 0 auto;[^}]*gap:\s*8px;[^}]*margin-left:\s*auto;/s);
+    expect(sidebarCss).toMatch(/\.agent-dropdown-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*gap:\s*2px;/s);
+    expect(sidebarCss).toMatch(/\.agent-dropdown-action-btn\s*\{[^}]*width:\s*30px;[^}]*height:\s*30px;[^}]*flex-shrink:\s*0;/s);
+    expect(sidebarCss).toMatch(/\.agent-dropdown-version\s*\{[^}]*font-size:\s*10px;[^}]*font-family:\s*'SF Mono'/s);
+    expect(sidebarCss).toMatch(/\.agent-dropdown-status\s*\{[^}]*font-size:\s*10px;/s);
     expect(sidebarCss).not.toContain('.agent-dropdown-settings-hint');
   });
 
