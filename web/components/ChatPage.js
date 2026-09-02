@@ -66,6 +66,7 @@ export default {
               :upgrading-agents="upgradingAgents"
               :show-agent-actions="true"
               @open-agent-settings="openAgentSettings(store.currentAgent || null)"
+              @restart-agent="restartAgent"
               @upgrade-agent="upgradeAgent"
             />
             <div class="sidebar-header-actions">
@@ -945,6 +946,12 @@ export default {
     openAgentSettings(agentId) {
       this.agentSettingsAgentId = agentId || null;
       this.showAgentSettings = true;
+    },
+    async restartAgent(agentId) {
+      const agent = this.store.agents.find(a => a.id === agentId);
+      const name = agent?.name || agentId;
+      if (!await confirmDialog(this.$t('chat.agent.restartConfirm', { name }))) return;
+      this.store.restartAgent(agentId);
     },
     async upgradeAgent(agentId) {
       const agent = this.store.agents.find(a => a.id === agentId);

@@ -64,6 +64,7 @@ export default {
             :upgrading-agents="upgradingAgents"
             :show-agent-actions="true"
             @open-agent-settings="$emit('open-agent-settings')"
+            @restart-agent="restartAgent"
             @upgrade-agent="upgradeAgent"
           />
           <div class="sidebar-header-actions">
@@ -435,6 +436,14 @@ export default {
     onOpenPlugins() {
       const s = this.chatStore || this.store;
       if (s && typeof s.openPluginCenter === 'function') s.openPluginCenter();
+    },
+    async restartAgent(agentId) {
+      const s = this.chatStore || this.store;
+      if (!s || typeof s.restartAgent !== 'function') return;
+      const agent = s.agents?.find(candidate => candidate?.id === agentId);
+      const name = agent?.name || agentId;
+      if (!await confirmDialog(this.$t('chat.agent.restartConfirm', { name }))) return;
+      s.restartAgent(agentId);
     },
     async upgradeAgent(agentId) {
       const s = this.chatStore || this.store;
