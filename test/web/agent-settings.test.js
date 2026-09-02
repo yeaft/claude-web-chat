@@ -42,6 +42,8 @@ describe('Agent settings surface', () => {
     expect(sidebarCss).toMatch(/\.agent-dropdown\s*\{[^}]*left:\s*0;[^}]*width:\s*min\(360px,\s*calc\(var\(--session-sidebar-width\)\s*-\s*12px\),\s*calc\(100vw\s*-\s*12px\)\);[^}]*box-sizing:\s*border-box;/s);
     expect(sidebarCss).not.toMatch(/\.agent-dropdown\s*\{[^}]*left:\s*-\d/s);
     expect(sidebarCss).toMatch(/\.sidebar-brand\s*\{[^}]*font-size:\s*14px;[^}]*font-weight:\s*600;/s);
+    expect(sidebarCss).not.toMatch(/\.agent-dropdown-trigger\s*\{[^}]*\bfont\s*:/s);
+    expect(sidebarCss).toMatch(/\.agent-dropdown-trigger\s*\{[^}]*font-family:\s*inherit;/s);
     expect(sidebarCss).toMatch(/\.agent-dropdown-identity\s*\{[^}]*align-items:\s*baseline;[^}]*min-width:\s*0;[^}]*gap:\s*4px;/s);
     expect(sidebarCss).toMatch(/\.agent-dropdown-name\s*\{[^}]*min-width:\s*0;[^}]*font-size:\s*16px;[^}]*font-weight:\s*400;/s);
     expect(sidebarCss).toMatch(/\.agent-dropdown-settings-option\s*\{[^}]*padding:\s*7px 10px 7px 26px;/s);
