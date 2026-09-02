@@ -38,7 +38,7 @@ import { isVpForeign, readContent as readScopeContent } from './memory/store.js'
 import { ActiveMemorySet } from './memory/ams.js';
 import { cleanMemoryPromptText } from './memory/prompt-cleanup.js';
 import { isVpSeedBackfillStub } from './memory/seed-backfill.js';
-import { boundRawExchange, perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
+import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
 // Default thread marker for legacy / non-group flows. Group VP runtime may
 // pass a real threadId per (sessionId, vpId, threadId) engine instance.
 const MAIN_THREAD_ID = 'main';
@@ -2622,17 +2622,24 @@ export class Engine {
       const thinkingBlocks = []; // task-327d: collected from adapter for round-trip
       let stopReason = 'end_turn';
       const totalUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheInputDeltaTokens: 0 };
-      // task-344: capture bounded raw request / raw response for the debug
-      // panel. Both exchanges obey the live telemetry budget before they
-      // reach durable debug trace storage.
+      // Raw provider exchange is diagnostic source data, not model context or
+      // ordinary history. The legacy telemetry byte setting must not destroy it;
+      // explicit debug detail transport is chunked instead.
       let rawRequest = null;
       let rawResponse = null;
-      const rawExchangeMaxBytes = Number.isFinite(Number(this.#config?.telemetry?.rawExchangeMaxBytes))
-        ? Math.max(0, Number(this.#config.telemetry.rawExchangeMaxBytes))
-        : 512 * 1024;
+      const rawExchangeMaxBytes = Number.MAX_SAFE_INTEGER;
+      const cloneRawExchange = (value) => {
+        if (value == null || typeof value === 'string') return value;
+        try { return JSON.parse(JSON.stringify(value)); }
+        catch { return null; }
+      };
       const captureRawExchange = (exchange) => {
-        if (exchange?.rawRequest) rawRequest = boundRawExchange(exchange.rawRequest, rawExchangeMaxBytes);
-        if (exchange?.rawResponse) rawResponse = boundRawExchange(exchange.rawResponse, rawExchangeMaxBytes);
+        if (exchange && Object.prototype.hasOwnProperty.call(exchange, 'rawRequest')) {
+          rawRequest = cloneRawExchange(exchange.rawRequest);
+        }
+        if (exchange && Object.prototype.hasOwnProperty.call(exchange, 'rawResponse')) {
+          rawResponse = cloneRawExchange(exchange.rawResponse);
+        }
       };
 
       // task-704b: resolve the live model's context window for this turn.

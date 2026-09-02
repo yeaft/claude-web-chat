@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { messageDb, sessionUiMetadataDb, yeaftProjectDb, yeaftSessionDb } from '../database.js';
 import { transaction } from '../db/connection.js';
 import { broadcastAgentList, broadcastSessionCatalog, forwardToClients, sendToAgent, sendToWebClient } from '../ws-utils.js';
-import { consumeYeaftDebugRequest, webClients, previewFiles } from '../context.js';
+import { advanceYeaftDebugRequestChunk, consumeYeaftDebugRequest, webClients, previewFiles } from '../context.js';
 import { CONFIG } from '../config.js';
 import { yeaftAssetStore } from '../yeaft-asset-store.js';
 import { recordPerfTraceEvent } from '../perf-trace.js';
@@ -1017,6 +1017,34 @@ export async function handleAgentOutput(agentId, agent, msg) {
         if (c.authenticated && (CONFIG.skipAuth || c.userId === agent.ownerId)) {
           await sendToWebClient(c, { ...outboundMsg, agentId: agentId });
         }
+      }
+      break;
+    }
+
+    case 'yeaft_debug_history_chunk': {
+      const chunkIndex = Number(msg.chunkIndex);
+      const chunkCount = Number(msg.chunkCount);
+      const validChunk = Number.isSafeInteger(chunkIndex) && Number.isSafeInteger(chunkCount)
+        && chunkCount > 1 && chunkIndex >= 0 && chunkIndex < chunkCount
+        && typeof msg.data === 'string' && Buffer.byteLength(msg.data, 'utf8') <= 512 * 1024;
+      if (!validChunk) break;
+      // Advance only a strict 0..N-1 sequence. An out-of-order "final" frame
+      // cannot consume a valid request, and every accepted frame renews the TTL.
+      const advanced = advanceYeaftDebugRequestChunk({
+        agentId, requestId: msg.requestId, sessionId: msg.sessionId,
+        chunkIndex, chunkCount,
+      });
+      const pending = advanced?.pending || null;
+      const targetClient = pending ? webClients.get(pending.clientId) : null;
+      const ownerMatches = CONFIG.skipAuth || (
+        pending?.userId === agent.ownerId && targetClient?.userId === pending.userId
+      );
+      if (targetClient?.authenticated && ownerMatches) {
+        await sendToWebClient(targetClient, {
+          type: 'yeaft_debug_history_chunk', agentId,
+          requestId: msg.requestId, sessionId: msg.sessionId,
+          chunkIndex, chunkCount, data: msg.data,
+        });
       }
       break;
     }

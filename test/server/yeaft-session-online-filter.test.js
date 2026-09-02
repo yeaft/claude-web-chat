@@ -1128,6 +1128,49 @@ describe('Yeaft Session online Agent filtering', () => {
     expect(pendingYeaftDebugRequests.size).toBe(0);
 
     ownerClient.sent = [];
+    await handleClientConversation('owner-client', debugRelayClient, {
+      type: 'yeaft_fetch_debug_history', agentId: 'agent-a', sessionId: 'same-id',
+      requestId: 'debug-chunks', requestKind: 'detail', detailTurnId: 'turn-chunks',
+    }, allow);
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_debug_history_chunk', requestId: 'debug-chunks', sessionId: 'same-id',
+      chunkIndex: 0, chunkCount: 2, data: '{"type":"yeaft_debug_',
+    });
+    expect(ownerClient.sent.at(-1)).toMatchObject({
+      type: 'yeaft_debug_history_chunk', agentId: 'agent-a', chunkIndex: 0, chunkCount: 2,
+    });
+    expect(pendingYeaftDebugRequests.size).toBe(1);
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_debug_history_chunk', requestId: 'debug-chunks', sessionId: 'same-id',
+      chunkIndex: 1, chunkCount: 2, data: 'history"}',
+    });
+    expect(ownerClient.sent.at(-1)).toMatchObject({ chunkIndex: 1, chunkCount: 2 });
+    expect(pendingYeaftDebugRequests.size).toBe(0);
+    const sentCount = ownerClient.sent.length;
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_debug_history_chunk', requestId: 'debug-chunks', sessionId: 'same-id',
+      chunkIndex: 1, chunkCount: 2, data: 'duplicate',
+    });
+    expect(ownerClient.sent).toHaveLength(sentCount);
+
+    await handleClientConversation('owner-client', debugRelayClient, {
+      type: 'yeaft_fetch_debug_history', agentId: 'agent-a', sessionId: 'same-id',
+      requestId: 'debug-out-of-order', requestKind: 'detail', detailTurnId: 'turn-out-of-order',
+    }, allow);
+    const beforeOutOfOrder = ownerClient.sent.length;
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_debug_history_chunk', requestId: 'debug-out-of-order', sessionId: 'same-id',
+      chunkIndex: 1, chunkCount: 2, data: 'forged-final',
+    });
+    expect(ownerClient.sent).toHaveLength(beforeOutOfOrder);
+    expect(pendingYeaftDebugRequests.size).toBe(0);
+    await handleAgentOutput('agent-a', agent, {
+      type: 'yeaft_debug_history_chunk', requestId: 'debug-out-of-order', sessionId: 'same-id',
+      chunkIndex: 0, chunkCount: 2, data: 'late-prefix',
+    });
+    expect(ownerClient.sent).toHaveLength(beforeOutOfOrder);
+
+    ownerClient.sent = [];
     otherTab.sent = [];
     CONFIG.skipAuth = true;
     await handleClientConversation('owner-client', debugRelayClient, {

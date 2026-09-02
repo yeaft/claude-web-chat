@@ -35,6 +35,43 @@ import { buildPluginCatalog, createPluginSkillManager, resolveMcpPluginPolicy } 
 import { MCPManager } from './mcp.js';
 import { sendToServer } from '../connection/buffer.js';
 import ctx from '../context.js';
+
+const DEBUG_HISTORY_CHUNK_BYTES = 512 * 1024;
+
+function splitUtf8Json(text, maxBytes = DEBUG_HISTORY_CHUNK_BYTES) {
+  const source = Buffer.from(text, 'utf8');
+  const chunks = [];
+  for (let start = 0; start < source.length;) {
+    let end = Math.min(source.length, start + maxBytes);
+    if (end < source.length) {
+      while (end > start && (source[end] & 0xc0) === 0x80) end -= 1;
+      if (end === start) throw new Error('Unable to split debug history UTF-8 payload');
+    }
+    chunks.push(source.subarray(start, end).toString('utf8'));
+    start = end;
+  }
+  return chunks;
+}
+
+async function sendDebugHistory(payload) {
+  const encoded = JSON.stringify(payload);
+  if (Buffer.byteLength(encoded, 'utf8') <= DEBUG_HISTORY_CHUNK_BYTES) {
+    await sendToServer(payload); // Legacy single-frame wire remains valid.
+    return;
+  }
+  const chunks = splitUtf8Json(encoded);
+  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+    await sendToServer({
+      type: 'yeaft_debug_history_chunk',
+      requestId: payload.requestId,
+      sessionId: payload.sessionId,
+      chunkIndex,
+      chunkCount: chunks.length,
+      data: chunks[chunkIndex],
+    });
+  }
+}
+
 import { hydrateYeaftStatusFromSession } from './status-cache.js';
 import { handleVpSubscribe } from './vp/vp-bridge.js';
 import { createVp, updateVp, deleteVp, readVp, VpCrudError } from './vp/vp-crud.js';
@@ -6694,7 +6731,7 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
       hasMore = !!out?.hasMore;
     }
   } catch (err) {
-    sendToServer({
+    await sendDebugHistory({
       type: 'yeaft_debug_history',
       loops: [],
       turns: [],
@@ -6712,7 +6749,7 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
     });
     return;
   }
-  sendToServer({
+  await sendDebugHistory({
     type: 'yeaft_debug_history',
     loops,
     turns,
