@@ -6,6 +6,7 @@ import * as Vue from 'vue';
 import { createWsHandler } from '../../web/components/files/wsHandler.js';
 import { createFileTabs } from '../../web/components/files/fileTabs.js';
 import { createFilePreview } from '../../web/components/files/filePreview.js';
+import { resolveDialog, useDialogState } from '../../web/utils/dialog.js';
 import ctx from '../../agent/context.js';
 import { CONFIG } from '../../server/config.js';
 import { userDb, yeaftSessionDb } from '../../server/database.js';
@@ -628,6 +629,118 @@ describe('Agent file terminal forwarding', () => {
       CONFIG.skipAuth = previousSkipAuth;
       agents.clear();
     }
+  });
+
+  it('closes file tabs in batches while preserving the nearest active tab', async () => {
+    globalThis.Vue = Vue;
+    const createEditor = vi.fn();
+    const destroyEditor = vi.fn();
+    const cleanupUndoHistory = vi.fn();
+    const tabs = createFileTabs({
+      currentAgent: 'agent-a',
+      currentConversation: 'conversation-a',
+      sendWsMessage: vi.fn(),
+    }, {
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/workspace',
+      editorContainer: Vue.ref({}),
+      createEditor,
+      destroyEditor,
+      clearFindMarkers: vi.fn(),
+      saveCurrentUndoHistory: vi.fn(),
+      saveAllUndoHistory: vi.fn(),
+      cleanupUndoHistory,
+      deleteConversationHistory: vi.fn(),
+      debugStatus: Vue.ref(''),
+      mdPreviewMode: Vue.ref(false),
+      renderOfficeLocal: vi.fn(),
+      performFind: vi.fn(),
+      findBarVisible: Vue.ref(false),
+      findQuery: Vue.ref(''),
+      t: (key, args) => `${key}:${args?.count || args?.name || ''}`,
+    });
+    for (const name of ['a.md', 'b.md', 'c.md', 'd.md']) {
+      tabs.openFileInTab(name, name, { agentId: 'agent-a', conversationId: 'conversation-a', workDir: '/workspace' });
+      tabs.activeFile.value.content = name;
+    }
+    tabs.switchToTab(2);
+    destroyEditor.mockClear();
+    createEditor.mockClear();
+
+    expect(await tabs.closeTabsToLeft(2)).toBe(true);
+    expect(tabs.openFiles.value.map(file => file.name)).toEqual(['c.md', 'd.md']);
+    expect(tabs.activeFile.value.name).toBe('c.md');
+
+    expect(await tabs.closeTabsToRight(0)).toBe(true);
+    expect(tabs.openFiles.value.map(file => file.name)).toEqual(['c.md']);
+    expect(tabs.activeFile.value.name).toBe('c.md');
+    expect(destroyEditor).not.toHaveBeenCalled();
+    expect(cleanupUndoHistory).toHaveBeenCalledTimes(3);
+  });
+
+  it('confirms dirty batch closes atomically', async () => {
+    globalThis.Vue = Vue;
+    const cleanupUndoHistory = vi.fn();
+    const tabs = createFileTabs({
+      currentAgent: 'agent-a',
+      currentConversation: 'conversation-a',
+      sendWsMessage: vi.fn(),
+    }, {
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/workspace',
+      editorContainer: Vue.ref(null),
+      createEditor: vi.fn(),
+      destroyEditor: vi.fn(),
+      clearFindMarkers: vi.fn(),
+      saveCurrentUndoHistory: vi.fn(),
+      saveAllUndoHistory: vi.fn(),
+      cleanupUndoHistory,
+      deleteConversationHistory: vi.fn(),
+      debugStatus: Vue.ref(''),
+      mdPreviewMode: Vue.ref(false),
+      renderOfficeLocal: vi.fn(),
+      performFind: vi.fn(),
+      findBarVisible: Vue.ref(false),
+      findQuery: Vue.ref(''),
+      t: (key, args) => `${key}:${args?.count || args?.name || ''}`,
+    });
+    for (const name of ['dirty-a.md', 'clean.md', 'dirty-b.md']) {
+      tabs.openFileInTab(name, name, { agentId: 'agent-a', conversationId: 'conversation-a', workDir: '/workspace' });
+      tabs.activeFile.value.content = name;
+    }
+    tabs.openFiles.value[0].isDirty = true;
+    tabs.openFiles.value[2].isDirty = true;
+
+    const cancelled = tabs.closeAllTabs();
+    expect(useDialogState()).toMatchObject({
+      open: true,
+      message: 'files.unsavedBatchConfirm:2',
+    });
+    resolveDialog(false);
+    await expect(cancelled).resolves.toBe(false);
+    expect(tabs.openFiles.value).toHaveLength(3);
+    expect(cleanupUndoHistory).not.toHaveBeenCalled();
+
+    const confirmed = tabs.closeAllTabs();
+    resolveDialog(true);
+    await expect(confirmed).resolves.toBe(true);
+    expect(tabs.openFiles.value).toHaveLength(0);
+    expect(tabs.activeFileIndex.value).toBe(-1);
+  });
+
+  it('renders a fixed open-files control and tab context actions', () => {
+    const component = readFileSync(new URL('../../web/components/FilesTab.js', import.meta.url), 'utf8');
+    const css = readFileSync(new URL('../../web/styles/files.css', import.meta.url), 'utf8');
+
+    expect(component).toContain('class="file-tabs-scroll"');
+    expect(component).toContain('class="file-tabs-list-btn"');
+    expect(component).toContain('@contextmenu.prevent="showFileTabContextMenu($event, index)"');
+    expect(component).toContain("runTabMenuAction('left')");
+    expect(component).toContain("runTabMenuAction('right')");
+    expect(component).toContain("runTabMenuAction('others')");
+    expect(component).toContain("runTabMenuAction('all')");
+    expect(css).toMatch(/\.file-tabs-scroll\s*\{[^}]*overflow-x:\s*auto;/s);
+    expect(css).toMatch(/\.file-tabs-actions\s*\{[^}]*flex-shrink:\s*0;/s);
   });
 
   it('routes an open event with its frozen Agent and conversation identity', () => {

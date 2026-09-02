@@ -205,22 +205,36 @@ export default {
           </button>
         </div>
         <div class="file-tabs-bar" v-if="openFiles.length > 0">
-          <div
-            v-for="(file, index) in openFiles" :key="file.path"
-            class="file-tab"
-            :class="{ active: index === activeFileIndex }"
-            :title="file.path"
-            @click="switchToTab(index)"
-          >
-            <span class="file-tab-dirty" v-if="file.isDirty" :title="$t('files.unsaved')">●</span>
-            <span class="file-tab-name">{{ file.name }}</span>
-            <button class="file-tab-close" @click.stop="closeFileTab(index)" :title="$t('common.close')">&times;</button>
+          <div class="file-tabs-scroll">
+            <div
+              v-for="(file, index) in openFiles" :key="file.path"
+              class="file-tab"
+              :class="{ active: index === activeFileIndex }"
+              :title="file.path"
+              @click="switchToTab(index)"
+              @contextmenu.prevent="showFileTabContextMenu($event, index)"
+            >
+              <span class="file-tab-dirty" v-if="file.isDirty" :title="$t('files.unsaved')">●</span>
+              <span class="file-tab-name">{{ file.name }}</span>
+              <button type="button" class="file-tab-close" @click.stop="closeFileTab(index)" :title="$t('common.close')" :aria-label="$t('files.closeTab', { name: file.name })">&times;</button>
+            </div>
           </div>
           <div class="file-tabs-actions">
-            <button class="zoom-btn" @click="zoomOut" :title="$t('git.zoomOut')">−</button>
+            <button
+              type="button"
+              class="file-tabs-list-btn"
+              @click.stop="toggleOpenTabsMenu"
+              :title="$t('files.showOpenTabs')"
+              :aria-label="$t('files.showOpenTabs')"
+              :aria-expanded="openTabsMenu.visible"
+              aria-haspopup="menu"
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M4 6l4 4 4-4z"/></svg>
+            </button>
+            <button type="button" class="zoom-btn" @click="zoomOut" :title="$t('git.zoomOut')">−</button>
             <span class="zoom-label">{{ fontSize }}</span>
-            <button class="zoom-btn" @click="zoomIn" :title="$t('git.zoomIn')">+</button>
-            <button class="file-action-btn" :class="{ active: activeFile?.isDirty }" @click="saveFile" :disabled="!activeFile?.isDirty || fileSaving" :title="$t('common.save') + ' (Ctrl+S)'">
+            <button type="button" class="zoom-btn" @click="zoomIn" :title="$t('git.zoomIn')">+</button>
+            <button type="button" class="file-action-btn" :class="{ active: activeFile?.isDirty }" @click="saveFile" :disabled="!activeFile?.isDirty || fileSaving" :title="$t('common.save') + ' (Ctrl+S)'">
               <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M17 3H5c-1.11 0-2 .89-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
             </button>
           </div>
@@ -458,7 +472,56 @@ export default {
         </div>
       </div>
 
-      <!-- 右键上下文菜单 -->
+      <!-- 已打开文件列表 -->
+      <div
+        v-if="openTabsMenu.visible"
+        class="ctx-menu file-open-tabs-menu"
+        :style="{ left: openTabsMenu.x + 'px', top: openTabsMenu.y + 'px' }"
+        role="menu"
+        @click.stop
+      >
+        <div
+          v-for="(file, index) in openFiles"
+          :key="file.path"
+          class="file-open-tab-item"
+          :class="{ active: index === activeFileIndex }"
+          role="none"
+        >
+          <button type="button" class="file-open-tab-select" role="menuitem" :title="file.path" @click="selectOpenTab(index)">
+            <span class="file-open-tab-check" aria-hidden="true">{{ index === activeFileIndex ? '✓' : '' }}</span>
+            <span class="file-tab-dirty" aria-hidden="true">{{ file.isDirty ? '●' : '' }}</span>
+            <span class="file-open-tab-details">
+              <span class="file-open-tab-label">{{ file.name }}</span>
+              <span class="file-open-tab-path">{{ file.path }}</span>
+            </span>
+          </button>
+          <button type="button" class="file-open-tab-close" role="menuitem" :aria-label="$t('files.closeTab', { name: file.name })" @click.stop="closeOpenTab(index)">&times;</button>
+        </div>
+        <div class="ctx-menu-separator"></div>
+        <button type="button" class="file-open-tab-item" role="menuitem" @click="runTabMenuAction('all')">
+          <span class="file-open-tab-check" aria-hidden="true"></span>
+          <span>{{ $t('files.closeAllTabs') }}</span>
+        </button>
+      </div>
+
+      <!-- 文件标签右键菜单 -->
+      <div
+        v-if="fileTabContextMenu.visible"
+        class="ctx-menu"
+        :style="{ left: fileTabContextMenu.x + 'px', top: fileTabContextMenu.y + 'px' }"
+        role="menu"
+        @click.stop
+      >
+        <button type="button" class="ctx-menu-item" role="menuitem" @click="runTabMenuAction('current')">{{ $t('files.closeTabAction') }}</button>
+        <button type="button" class="ctx-menu-item" role="menuitem" @click="runTabMenuAction('others')" :disabled="openFiles.length < 2">{{ $t('files.closeOtherTabs') }}</button>
+        <div class="ctx-menu-separator"></div>
+        <button type="button" class="ctx-menu-item" role="menuitem" @click="runTabMenuAction('left')" :disabled="fileTabContextMenu.index <= 0">{{ $t('files.closeTabsToLeft') }}</button>
+        <button type="button" class="ctx-menu-item" role="menuitem" @click="runTabMenuAction('right')" :disabled="fileTabContextMenu.index >= openFiles.length - 1">{{ $t('files.closeTabsToRight') }}</button>
+        <div class="ctx-menu-separator"></div>
+        <button type="button" class="ctx-menu-item" role="menuitem" @click="runTabMenuAction('all')">{{ $t('files.closeAllTabs') }}</button>
+      </div>
+
+      <!-- 文件树右键上下文菜单 -->
       <div v-if="contextMenu.visible" class="ctx-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @click.stop>
         <div class="ctx-menu-item" @click="ctxRename">
           <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
@@ -611,6 +674,52 @@ export default {
       t
     });
 
+    const openTabsMenu = Vue.reactive({ visible: false, x: 0, y: 0 });
+    const fileTabContextMenu = Vue.reactive({ visible: false, x: 0, y: 0, index: -1 });
+    const hideFileTabMenus = () => {
+      openTabsMenu.visible = false;
+      fileTabContextMenu.visible = false;
+      fileTabContextMenu.index = -1;
+    };
+    const clampMenuPosition = (x, y, width = 300, height = 320) => ({
+      x: Math.max(4, Math.min(x, window.innerWidth - width - 4)),
+      y: Math.max(4, Math.min(y, window.innerHeight - height - 4)),
+    });
+    const toggleOpenTabsMenu = event => {
+      if (openTabsMenu.visible) {
+        hideFileTabMenus();
+        return;
+      }
+      ops.hideContextMenu();
+      fileTabContextMenu.visible = false;
+      const rect = event.currentTarget.getBoundingClientRect();
+      const position = clampMenuPosition(rect.right - 300, rect.bottom + 4);
+      Object.assign(openTabsMenu, { visible: true, ...position });
+    };
+    const showFileTabContextMenu = (event, index) => {
+      ops.hideContextMenu();
+      openTabsMenu.visible = false;
+      const position = clampMenuPosition(event.clientX, event.clientY, 190, 230);
+      Object.assign(fileTabContextMenu, { visible: true, index, ...position });
+    };
+    const selectOpenTab = index => {
+      hideFileTabMenus();
+      tabs.switchToTab(index);
+    };
+    const closeOpenTab = async index => {
+      hideFileTabMenus();
+      await tabs.closeFileTab(index);
+    };
+    const runTabMenuAction = async action => {
+      const index = fileTabContextMenu.index >= 0 ? fileTabContextMenu.index : tabs.activeFileIndex.value;
+      hideFileTabMenus();
+      if (action === 'current') await tabs.closeFileTab(index);
+      else if (action === 'others') await tabs.closeOtherTabs(index);
+      else if (action === 'left') await tabs.closeTabsToLeft(index);
+      else if (action === 'right') await tabs.closeTabsToRight(index);
+      else if (action === 'all') await tabs.closeAllTabs();
+    };
+
     // 6. File tree (depends on ops, tabs)
     tree = createFileTree(store, {
       getEffectiveWorkDir, normalizePath,
@@ -752,10 +861,14 @@ export default {
         if (ops.selectedPaths.size > 0) ops.clearSelection();
         if (qo.quickOpenVisible.value) qo.closeQuickOpen();
         if (qo.goToLineVisible.value) qo.closeGoToLine();
+        hideFileTabMenus();
       }
     };
 
-    const handleDocumentClick = () => { ops.hideContextMenu(); };
+    const handleDocumentClick = () => {
+      ops.hideContextMenu();
+      hideFileTabMenus();
+    };
 
     // --- Mobile view: auto-switch on file open / close ---
     const onResize = () => { isMobile.value = window.innerWidth <= 768; };
@@ -797,6 +910,7 @@ export default {
       qo.closeGoToLine();
       find.closeFindBar();
       ops.hideContextMenu();
+      hideFileTabMenus();
     });
 
     Vue.onUnmounted(() => {
@@ -826,6 +940,8 @@ export default {
       treePanelWidth, isTreeResizing, startTreeResize,
       openFiles: tabs.openFiles, activeFileIndex: tabs.activeFileIndex,
       activeFile: tabs.activeFile, fileLoading: tabs.fileLoading, fileSaving: tabs.fileSaving,
+      openTabsMenu, fileTabContextMenu,
+      toggleOpenTabsMenu, showFileTabContextMenu, selectOpenTab, closeOpenTab, runTabMenuAction,
       editorContainer, officePreviewContainer: preview.officePreviewContainer,
       mdPreviewRef: preview.mdPreviewRef,
       isActiveMarkdown: preview.isActiveMarkdown, mdPreviewMode: preview.mdPreviewMode,

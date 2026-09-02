@@ -788,14 +788,23 @@
 /* File Tabs Bar (VSCode-style) */
 .file-tabs-bar {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   background: var(--bg-workbench);
-  overflow-x: auto;
   flex-shrink: 0;
+  min-width: 0;
   min-height: 30px;
+  border-bottom: 1px solid var(--border-color);
 }
 
-.file-tabs-bar::-webkit-scrollbar {
+.file-tabs-scroll {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.file-tabs-scroll::-webkit-scrollbar {
   height: 2px;
 }
 
@@ -871,7 +880,123 @@
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
-  padding-right: 4px;
+  padding: 0 4px;
+  border-left: 1px solid var(--border-color);
+  background: var(--bg-workbench);
+}
+
+.file-tabs-list-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.file-tabs-list-btn:hover,
+.file-tabs-list-btn[aria-expanded="true"] {
+  color: var(--text-primary);
+  background: var(--sidebar-hover);
+}
+
+.file-open-tabs-menu {
+  width: min(300px, calc(100vw - 8px));
+  max-height: min(360px, calc(100vh - 8px));
+  overflow-y: auto;
+}
+
+.file-open-tab-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  background: transparent;
+  color: var(--text-primary);
+}
+
+.file-open-tab-item:hover,
+.file-open-tab-item.active {
+  background: var(--sidebar-hover);
+}
+
+.file-open-tab-select {
+  display: grid;
+  grid-template-columns: 16px auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 7px 4px 7px 10px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.file-open-tab-close {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  margin-right: 4px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.file-open-tab-close:hover {
+  color: var(--text-primary);
+  background: var(--session-active);
+}
+
+.files-tab .ctx-menu-item {
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+}
+
+.files-tab .ctx-menu-item:disabled {
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 0.5;
+  background: transparent;
+}
+
+.file-open-tab-check {
+  color: var(--accent-blue);
+  text-align: center;
+}
+
+.file-open-tab-details {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.file-open-tab-label,
+.file-open-tab-path {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-open-tab-path {
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 /* Zoom controls (shared by Git diff, Files tab) */
@@ -1492,7 +1617,8 @@
   }
 
   /* Hide desktop tab bar on mobile */
-  .files-tab .file-tabs-bar {
+  .files-tab .file-tabs-bar,
+  .files-tab .file-open-tabs-menu {
     display: none;
   }
 

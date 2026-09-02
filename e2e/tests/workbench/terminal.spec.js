@@ -130,6 +130,58 @@ test.describe('Workbench', () => {
     ].includes(message.type)).length).toBe(0);
   });
 
+  test('keeps open-file controls reachable with overflowing tabs and supports batch close actions', async ({ chatPage, mockAgent }) => {
+    await openYeaftWorkbench(chatPage, mockAgent);
+
+    const panel = chatPage.locator('.workbench-panel');
+    const routeKey = `yeaft:${encodeURIComponent(mockAgent.agentId)}:workbench-session`;
+    await chatPage.evaluate(({ agentId, routeKey }) => {
+      for (let index = 0; index < 12; index++) {
+        window.dispatchEvent(new CustomEvent('workbench-open-file-in-active-view', {
+          detail: {
+            filePath: `docs/section-${index}/a-very-long-open-file-name-${index}.md`,
+            agentId,
+            conversationId: `_workbench:${routeKey}`,
+            workDir: '/tmp/test',
+            workbenchRouteKey: routeKey,
+          },
+        }));
+      }
+    }, { agentId: mockAgent.agentId, routeKey });
+
+    const tabs = panel.locator('.file-tab');
+    await expect(tabs).toHaveCount(12);
+    const listButton = panel.locator('.file-tabs-list-btn');
+    await expect(listButton).toBeVisible();
+    expect(await listButton.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      const panelRect = element.closest('.workbench-panel').getBoundingClientRect();
+      return rect.right <= panelRect.right && rect.left >= panelRect.left;
+    })).toBe(true);
+
+    await listButton.click();
+    const openTabsMenu = panel.locator('.file-open-tabs-menu');
+    await expect(openTabsMenu).toBeVisible();
+    await expect(openTabsMenu.locator('.file-open-tab-label')).toHaveCount(12);
+    await openTabsMenu.locator('.file-open-tab-select').nth(3).click();
+    await expect(tabs.nth(3)).toHaveClass(/active/);
+
+    await listButton.click();
+    await openTabsMenu.getByRole('menuitem', { name: 'Close a-very-long-open-file-name-11.md' }).click();
+    await expect(tabs).toHaveCount(11);
+
+    await tabs.nth(4).click({ button: 'right' });
+    const contextMenu = panel.locator('.ctx-menu:visible');
+    await expect(contextMenu.getByRole('menuitem', { name: 'Close to the Left' })).toBeEnabled();
+    await expect(contextMenu.getByRole('menuitem', { name: 'Close to the Right' })).toBeEnabled();
+    await contextMenu.getByRole('menuitem', { name: 'Close to the Right' }).click();
+    await expect(tabs).toHaveCount(5);
+
+    await tabs.nth(2).click({ button: 'right' });
+    await panel.locator('.ctx-menu:visible').getByRole('menuitem', { name: 'Close Others' }).click();
+    await expect(tabs).toHaveCount(1);
+  });
+
   test('opens Terminal and closes it back to the launcher', async ({ chatPage, mockAgent }) => {
     await openYeaftWorkbench(chatPage, mockAgent);
 
