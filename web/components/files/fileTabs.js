@@ -160,39 +160,76 @@ export function createFileTabs(store, {
     });
   };
 
-  const closeFileTab = async (index) => {
-    const file = openFiles.value[index];
-    if (file?.isDirty) {
-      if (!await confirmDialog(t('files.unsavedConfirm', { name: file.name }), { destructive: true })) return;
-    }
-    cleanupUndoHistory(store.currentConversation, file.path);
-    if (file.blobUrl) URL.revokeObjectURL(file.blobUrl);
+  const closeFileTabs = async (indices) => {
+    const requested = [...new Set(indices)]
+      .filter(index => Number.isInteger(index) && index >= 0 && index < openFiles.value.length)
+      .sort((a, b) => a - b);
+    if (requested.length === 0) return false;
 
-    const wasActive = (index === activeFileIndex.value);
-    openFiles.value.splice(index, 1);
+    const filesToClose = requested.map(index => openFiles.value[index]);
+    const dirtyFiles = filesToClose.filter(file => file?.isDirty);
+    if (dirtyFiles.length > 0) {
+      const message = dirtyFiles.length === 1
+        ? t('files.unsavedConfirm', { name: dirtyFiles[0].name })
+        : t('files.unsavedBatchConfirm', { count: dirtyFiles.length });
+      if (!await confirmDialog(message, { destructive: true })) return false;
+    }
+
+    const closing = new Set(requested);
+    const previousActiveIndex = activeFileIndex.value;
+    const previousActiveFile = activeFile.value;
+    let nextActiveFile = previousActiveFile;
+    if (closing.has(previousActiveIndex)) {
+      nextActiveFile = null;
+      for (let index = previousActiveIndex + 1; index < openFiles.value.length; index++) {
+        if (!closing.has(index)) {
+          nextActiveFile = openFiles.value[index];
+          break;
+        }
+      }
+      if (!nextActiveFile) {
+        for (let index = previousActiveIndex - 1; index >= 0; index--) {
+          if (!closing.has(index)) {
+            nextActiveFile = openFiles.value[index];
+            break;
+          }
+        }
+      }
+    }
+
+    for (const file of filesToClose) {
+      cleanupUndoHistory(file.conversationId || store.currentConversation, file.path);
+      if (file.blobUrl) URL.revokeObjectURL(file.blobUrl);
+    }
+    for (let position = requested.length - 1; position >= 0; position--) {
+      openFiles.value.splice(requested[position], 1);
+    }
 
     if (openFiles.value.length === 0) {
       activeFileIndex.value = -1;
       destroyEditor();
-    } else if (activeFileIndex.value >= openFiles.value.length) {
-      activeFileIndex.value = openFiles.value.length - 1;
-    } else if (activeFileIndex.value > index) {
-      activeFileIndex.value--;
-    } else if (wasActive && activeFileIndex.value >= openFiles.value.length) {
-      activeFileIndex.value = openFiles.value.length - 1;
+    } else {
+      activeFileIndex.value = Math.max(0, openFiles.value.indexOf(nextActiveFile));
     }
 
     saveTabsState(store.currentConversation);
 
-    if (openFiles.value.length > 0 && wasActive) {
+    if (previousActiveFile !== activeFile.value && activeFile.value) {
       Vue.nextTick(() => {
-        const newActive = openFiles.value[activeFileIndex.value];
+        const newActive = activeFile.value;
         if (newActive && (!newActive.fileType || newActive.fileType === 'text') && newActive.content != null && editorContainer.value) {
           createEditor(newActive);
         }
       });
     }
+    return true;
   };
+
+  const closeFileTab = index => closeFileTabs([index]);
+  const closeTabsToLeft = index => closeFileTabs(openFiles.value.map((_, tabIndex) => tabIndex).filter(tabIndex => tabIndex < index));
+  const closeTabsToRight = index => closeFileTabs(openFiles.value.map((_, tabIndex) => tabIndex).filter(tabIndex => tabIndex > index));
+  const closeOtherTabs = index => closeFileTabs(openFiles.value.map((_, tabIndex) => tabIndex).filter(tabIndex => tabIndex !== index));
+  const closeAllTabs = () => closeFileTabs(openFiles.value.map((_, index) => index));
 
   function saveFile() {
     const file = activeFile.value;
@@ -225,7 +262,9 @@ export function createFileTabs(store, {
     fileTabsMap, openFiles, activeFileIndex, activeFile,
     fileLoading, fileSaving,
     saveTabsState, restoreTabsState, openFileInTab,
-    switchToTab, closeFileTab, saveFile,
+    switchToTab, closeFileTab, closeFileTabs,
+    closeTabsToLeft, closeTabsToRight, closeOtherTabs, closeAllTabs,
+    saveFile,
     handleConversationDeleted
   };
 }
