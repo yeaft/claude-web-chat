@@ -26,7 +26,7 @@ export function createFileOperations(store, refs) {
   const renameDialogVisible = Vue.ref(false);
   const renameNewName = Vue.ref('');
   const renameInput = Vue.ref(null);
-  let pendingDownload = null;
+  const pendingDownloads = new Map();
 
   const dragState = Vue.reactive({ dragging: null, dropTarget: null });
   const externalDropActive = Vue.ref(false);
@@ -250,11 +250,14 @@ export function createFileOperations(store, refs) {
     const entry = contextMenu.entry;
     hideContextMenu();
     if (!entry || entry.type !== 'file') return;
-    pendingDownload = entry.path;
+    const requestId = `file-download-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    pendingDownloads.set(requestId, entry.path);
     store.sendWsMessage({
       type: 'read_file',
       conversationId: store.currentConversation || '_explorer',
       agentId: store.currentAgent,
+      requestId,
+      download: true,
       filePath: entry.path,
       workDir: getEffectiveWorkDir(),
       _clientId: store.clientId
@@ -402,12 +405,17 @@ export function createFileOperations(store, refs) {
     }
   };
 
-  const getPendingDownload = () => pendingDownload;
-  const clearPendingDownload = () => { pendingDownload = null; };
+  const takePendingDownload = (requestId) => {
+    if (!requestId || !pendingDownloads.has(requestId)) return null;
+    const filePath = pendingDownloads.get(requestId);
+    pendingDownloads.delete(requestId);
+    return filePath;
+  };
 
   const cleanup = () => {
     if (fileOpFeedbackTimer) clearTimeout(fileOpFeedbackTimer);
     if (fileOpTimer) clearTimeout(fileOpTimer);
+    pendingDownloads.clear();
   };
 
   return {
@@ -424,7 +432,7 @@ export function createFileOperations(store, refs) {
     ctxRename, confirmRename, ctxCopy, ctxMoveTo, ctxDelete, ctxDownload,
     onDragStart, onDragOver, onDragLeave, onDrop,
     onTreeDragOver, onTreeDragLeave, onTreeDrop, handleExternalFileDrop,
-    handleFileOpResult, getPendingDownload, clearPendingDownload,
+    handleFileOpResult, takePendingDownload,
     cleanup
   };
 }

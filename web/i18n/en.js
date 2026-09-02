@@ -1257,6 +1257,7 @@ export default {
   'files.download': 'Download',
   'files.enterNewName': 'Enter new name...',
   'files.loadingPreview': 'Loading preview...',
+  'files.previewTooLarge': 'This file is {size} MB and is too large to preview. The preview limit is {limit} MB. You can still download it.',
   'files.preview': 'Preview',
   'files.edit': 'Edit',
   'files.pptxNotSupported': 'PPTX local preview is not supported. Please switch to Office Online mode in Settings.',

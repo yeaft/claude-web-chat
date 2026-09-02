@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as Vue from 'vue';
@@ -8,7 +8,11 @@ import { createFileTabs } from '../../web/components/files/fileTabs.js';
 import ctx from '../../agent/context.js';
 import { CONFIG } from '../../server/config.js';
 import { userDb, yeaftSessionDb } from '../../server/database.js';
-import { handleWriteFile } from '../../agent/workbench/file-ops.js';
+import {
+  handleReadFile,
+  handleWriteFile,
+  MAX_WORKBENCH_PREVIEW_BYTES,
+} from '../../agent/workbench/file-ops.js';
 import { resolveFileReferences } from '../../agent/workbench/file-reference-resolver.js';
 
 const {
@@ -644,7 +648,7 @@ describe('Agent file terminal forwarding', () => {
       setTreeVisible: vi.fn(),
       fp: { handleFolderPickerListing: vi.fn() },
       qo: {},
-      ops: { getPendingDownload: () => null, clearPendingDownload: vi.fn() },
+      ops: { takePendingDownload: () => null },
       mdPreviewMode: Vue.ref(false),
       renderOfficeLocal: vi.fn(),
       editorContainer: Vue.ref(null),
@@ -744,7 +748,7 @@ describe('Agent file terminal forwarding', () => {
       setTreeVisible: vi.fn(),
       fp: { handleFolderPickerListing: vi.fn() },
       qo: {},
-      ops: { getPendingDownload: () => null, clearPendingDownload: vi.fn() },
+      ops: { takePendingDownload: () => null },
       mdPreviewMode: Vue.ref(false),
       renderOfficeLocal: vi.fn(),
       editorContainer: Vue.ref(null),
@@ -780,7 +784,7 @@ describe('Agent file terminal forwarding', () => {
       setTreeVisible: vi.fn(),
       fp: { handleFolderPickerListing: vi.fn() },
       qo: {},
-      ops: { getPendingDownload: () => null, clearPendingDownload: vi.fn() },
+      ops: { takePendingDownload: () => null },
       mdPreviewMode: Vue.ref(false),
       renderOfficeLocal: vi.fn(),
       editorContainer: Vue.ref(null),
@@ -839,6 +843,42 @@ describe('Agent file terminal forwarding', () => {
 
     tabs.saveFile();
     expect(sent.filter(msg => msg.type === 'write_file')).toHaveLength(3);
+  });
+
+  it('rejects binary previews over 20 MB before reading file content', async () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'yeaft-file-preview-'));
+    const imagePath = join(workDir, 'large.png');
+    const sent = [];
+    const previousConfig = ctx.CONFIG;
+    const previousSend = ctx.sendToServer;
+    writeFileSync(imagePath, Buffer.alloc(1));
+    truncateSync(imagePath, MAX_WORKBENCH_PREVIEW_BYTES + 1);
+    ctx.CONFIG = { workDir };
+    ctx.sendToServer = msg => sent.push(msg);
+    try {
+      await handleReadFile({
+        conversationId: '_explorer',
+        requestId: 'preview-large',
+        workDir,
+        filePath: 'large.png',
+      });
+      expect(sent).toEqual([expect.objectContaining({
+        type: 'file_content',
+        requestId: 'preview-large',
+        requestedFilePath: 'large.png',
+        errorCode: 'FILE_PREVIEW_TOO_LARGE',
+        error: expect.stringContaining('preview limit is 20 MB'),
+        errorDetails: {
+          sizeBytes: MAX_WORKBENCH_PREVIEW_BYTES + 1,
+          limitBytes: MAX_WORKBENCH_PREVIEW_BYTES,
+        },
+      })]);
+      expect(sent[0]).not.toHaveProperty('binary');
+    } finally {
+      ctx.CONFIG = previousConfig;
+      ctx.sendToServer = previousSend;
+      rmSync(workDir, { recursive: true, force: true });
+    }
   });
 
   it('preserves save correlation metadata through the Agent write handler', async () => {
@@ -1315,13 +1355,16 @@ describe('Agent file terminal forwarding', () => {
       setTreeVisible: vi.fn(),
       fp: { handleFolderPickerListing: vi.fn() },
       qo: {},
-      ops: { getPendingDownload: () => null, clearPendingDownload: vi.fn() },
+      ops: { takePendingDownload: () => null },
       mdPreviewMode: Vue.ref(false),
       renderOfficeLocal: vi.fn(),
       editorContainer: Vue.ref(null),
       debugStatus: Vue.ref(''),
+      t: (key, values) => key === 'files.previewTooLarge'
+        ? `too large: ${values.size}/${values.limit}`
+        : key,
     }).handleWorkbenchMessage;
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({ blob: async () => new Blob(['image']) });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, blob: async () => new Blob(['image']) });
     const createObjectUrl = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:preview');
 
     handle(new CustomEvent('workbench-message', { detail: { ...forwarded, agentId: 'agent-2' } }));
@@ -1337,5 +1380,64 @@ describe('Agent file terminal forwarding', () => {
     expect(wrongOwnerTab.previewLoading).toBe(true);
     fetchSpy.mockRestore();
     createObjectUrl.mockRestore();
+  });
+
+  it('consumes a correlated download response without requiring an open file tab', () => {
+    globalThis.Vue = Vue;
+    globalThis.location = { protocol: 'https:', host: 'yeaft.test' };
+    const previousDocument = globalThis.document;
+    const click = vi.fn();
+    const appendChild = vi.fn();
+    const removeChild = vi.fn();
+    const anchor = { click };
+    const createElement = vi.fn(tag => tag === 'a' ? anchor : {});
+    globalThis.document = {
+      createElement,
+      body: { appendChild, removeChild },
+    };
+    const takePendingDownload = vi.fn(requestId => (
+      requestId === 'download-1' ? 'docs/diagram.png' : null
+    ));
+    const handle = createWsHandler({
+      store: { currentConversation: 'session-1', currentAgent: 'agent-1' },
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/workspace',
+      openFiles: Vue.ref([]),
+      activeFileIndex: Vue.ref(-1),
+      activeFile: Vue.ref(null),
+      fileLoading: Vue.ref(false),
+      fileSaving: Vue.ref(false),
+      saveTabsState: vi.fn(),
+      createEditor: vi.fn(),
+      openFileInTab: vi.fn(),
+      tree: { handleDirectoryListing: vi.fn() },
+      setTreeVisible: vi.fn(),
+      fp: { handleFolderPickerListing: vi.fn() },
+      qo: {},
+      ops: { takePendingDownload },
+      mdPreviewMode: Vue.ref(false),
+      renderOfficeLocal: vi.fn(),
+      editorContainer: Vue.ref(null),
+      debugStatus: Vue.ref(''),
+    }).handleWorkbenchMessage;
+
+    handle(new CustomEvent('workbench-message', { detail: {
+      type: 'file_content',
+      agentId: 'agent-1',
+      conversationId: 'session-1',
+      requestId: 'download-1',
+      requestedFilePath: 'docs/diagram.png',
+      binary: true,
+      fileId: 'preview-download',
+      previewToken: 'secret',
+    } }));
+
+    expect(takePendingDownload).toHaveBeenCalledWith('download-1');
+    expect(click).toHaveBeenCalledOnce();
+    expect(anchor.href).toBe('https://yeaft.test/api/preview/preview-download?token=secret&download=1');
+    expect(anchor.download).toBe('diagram.png');
+    expect(appendChild).toHaveBeenCalledWith(anchor);
+    expect(removeChild).toHaveBeenCalledWith(anchor);
+    globalThis.document = previousDocument;
   });
 });

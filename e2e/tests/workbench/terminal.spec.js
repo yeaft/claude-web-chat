@@ -1,7 +1,7 @@
 import { test } from '../../fixtures/test-server.js';
 import { expect } from '@playwright/test';
 
-async function openYeaftWorkbench(chatPage, mockAgent, { closeSessionStatus = false } = {}) {
+async function openYeaftWorkbench(chatPage, mockAgent) {
   await chatPage.evaluate(({ agentId }) => {
     const store = window.Pinia.useChatStore();
     const sessionsStore = window.Pinia.useSessionsStore();
@@ -52,12 +52,6 @@ async function openYeaftWorkbench(chatPage, mockAgent, { closeSessionStatus = fa
   });
 
   await expect(chatPage.locator('.yeaft-main')).toBeVisible();
-  if (closeSessionStatus) {
-    const closeButton = chatPage.locator('.yeaft-session-status-close');
-    await expect(closeButton).toBeVisible();
-    await closeButton.click();
-    await expect(closeButton).toHaveCount(0);
-  }
   const workbenchButton = chatPage.locator('.yeaft-session-actions [aria-label="Workbench"]');
   await expect(workbenchButton).toBeVisible();
   await workbenchButton.click();
@@ -66,6 +60,12 @@ async function openYeaftWorkbench(chatPage, mockAgent, { closeSessionStatus = fa
 
 function capability(panel, id) {
   return panel.locator(`[data-workbench-capability="${id}"]`);
+}
+
+async function openCapabilityLauncher(panel) {
+  await expect(panel.locator('.files-tab')).toBeVisible();
+  await panel.locator('.workbench-view-close').click();
+  await expect(panel.locator('.workbench-launcher')).toBeVisible();
 }
 
 async function openChatWorkbench(chatPage, mockAgent) {
@@ -108,15 +108,16 @@ test.describe('Workbench', () => {
     await openChatWorkbench(chatPage, mockAgent);
 
     const panel = chatPage.locator('.workbench-panel');
-    await expect(panel.locator('.workbench-launcher')).toBeVisible();
+    await openCapabilityLauncher(panel);
     await expect(panel.locator('.workbench-capability-card')).toHaveCount(4);
   });
 
-  test('opens a four-capability launcher instead of persistent tabs', async ({ chatPage, mockAgent }) => {
+  test('opens Files by default and keeps the four-capability launcher available', async ({ chatPage, mockAgent }) => {
     await openYeaftWorkbench(chatPage, mockAgent);
 
     const panel = chatPage.locator('.workbench-panel');
-    await expect(panel.locator('.workbench-launcher')).toBeVisible();
+    await expect(panel.locator('.files-tab')).toBeVisible();
+    await openCapabilityLauncher(panel);
     await expect(panel.locator('.workbench-capability-card')).toHaveCount(4);
     await expect(capability(panel, 'terminal')).toBeVisible();
     await expect(capability(panel, 'git')).toBeVisible();
@@ -133,6 +134,7 @@ test.describe('Workbench', () => {
     await openYeaftWorkbench(chatPage, mockAgent);
 
     const panel = chatPage.locator('.workbench-panel');
+    await openCapabilityLauncher(panel);
     const terminalCard = capability(panel, 'terminal');
     await terminalCard.focus();
     await terminalCard.press('Enter');
@@ -165,10 +167,11 @@ test.describe('Workbench', () => {
     await expect.poll(() => mockAgent.messages('terminal_create').length).toBe(createCount);
   });
 
-  test('resets route state when switching same-Agent Sessions and scopes Git and Files requests', async ({ chatPage, mockAgent }) => {
+  test('restores route state when switching same-Agent Sessions and scopes Git and Files requests', async ({ chatPage, mockAgent }) => {
     await openYeaftWorkbench(chatPage, mockAgent);
 
     const panel = chatPage.locator('.workbench-panel');
+    await openCapabilityLauncher(panel);
     await capability(panel, 'terminal').click();
     await expect(panel.locator('.terminal-tab')).toBeVisible();
     const terminalA = await mockAgent.waitForMessage('terminal_create');
@@ -207,7 +210,7 @@ test.describe('Workbench', () => {
       store.yeaftActiveSessionFilter = session.id;
     }, { agentId: mockAgent.agentId, session: sessionB });
 
-    await expect(panel.locator('.workbench-launcher')).toBeVisible();
+    await expect(panel.locator('.files-tab')).toBeVisible();
     await expect(panel.locator('.git-status-tab')).toHaveCount(0);
     const terminalClose = await mockAgent.waitForMessage('terminal_close');
     expect(terminalClose).toMatchObject({
@@ -215,6 +218,7 @@ test.describe('Workbench', () => {
       workbenchRoute: { sessionId: 'workbench-session' },
     });
 
+    await openCapabilityLauncher(panel);
     await capability(panel, 'terminal').click();
     const terminalB = await mockAgent.waitForMessage('terminal_create');
     expect(terminalB).toMatchObject({
@@ -240,6 +244,7 @@ test.describe('Workbench', () => {
     await openYeaftWorkbench(chatPage, mockAgent);
 
     const panel = chatPage.locator('.workbench-panel');
+    await openCapabilityLauncher(panel);
     await capability(panel, 'browser').click();
     await expect(panel.locator('.workbench-browser-view')).toBeVisible();
     await expect(panel.locator('.workbench-browser-view')).toContainText('Browser is disabled by the administrator');
@@ -268,6 +273,7 @@ test.describe('Workbench', () => {
     }, mockAgent.agentId);
 
     const panel = chatPage.locator('.workbench-panel');
+    await openCapabilityLauncher(panel);
     await expect(capability(panel, 'browser').locator('.workbench-capability-status')).toHaveText('Enable required');
     const installsBefore = mockAgent.messages('browser_runtime_install').length;
     await capability(panel, 'browser').click();
@@ -335,6 +341,7 @@ test.describe('Workbench', () => {
     }, mockAgent.agentId);
 
     const panel = chatPage.locator('.workbench-panel');
+    await openCapabilityLauncher(panel);
     await capability(panel, 'browser').click();
     await mockAgent.waitForMessage('browser_runtime_status');
     const installButton = panel.locator('.browser-setup-stage .btn-primary');
@@ -384,6 +391,7 @@ test.describe('Workbench', () => {
     }, mockAgent.agentId);
 
     const panel = chatPage.locator('.workbench-panel');
+    await openCapabilityLauncher(panel);
     await expect(capability(panel, 'browser').locator('.workbench-capability-status')).toHaveText('Available');
     await capability(panel, 'browser').click();
     await expect(panel.locator('.browser-panel')).toBeVisible();
@@ -450,7 +458,7 @@ test.describe('Workbench', () => {
         localStorage.setItem('theme', value);
       }, theme);
 
-      await expect(panel.locator('.workbench-launcher')).toBeVisible();
+      await expect(panel.locator('.files-tab')).toBeVisible();
       await maximizeButton.click();
       await expect(panel).toHaveClass(/maximized/);
       await expect(maximizeButton).toHaveAttribute('aria-label', 'Restore panel');
@@ -471,9 +479,10 @@ test.describe('Workbench', () => {
 
   test('uses one launcher column at 320px without horizontal overflow', async ({ chatPage, mockAgent }) => {
     await chatPage.setViewportSize({ width: 320, height: 720 });
-    await openYeaftWorkbench(chatPage, mockAgent, { closeSessionStatus: true });
+    await openYeaftWorkbench(chatPage, mockAgent);
 
     const panel = chatPage.locator('.workbench-panel');
+    await openCapabilityLauncher(panel);
     const panelBox = await panel.boundingBox();
     expect(panelBox).not.toBeNull();
     expect(panelBox.x).toBeLessThanOrEqual(1);
@@ -495,14 +504,12 @@ test.describe('Workbench', () => {
     expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1);
   });
 
-  test('enters Files and uses a right-pointing control to hide the file tree', async ({ chatPage, mockAgent }) => {
+  test('opens Files with the tree visible and uses a right-pointing control to hide it', async ({ chatPage, mockAgent }) => {
     await openYeaftWorkbench(chatPage, mockAgent);
 
     const panel = chatPage.locator('.workbench-panel');
-    await capability(panel, 'files').click();
-    const showTreeButton = panel.locator('.file-tree-expand-btn');
-    await expect(showTreeButton).toBeVisible();
-    await showTreeButton.click();
+    await expect(panel.locator('.files-tab')).toBeVisible();
+    await expect(panel.locator('.file-tree-expand-btn')).toHaveCount(0);
 
     const hideTreeButton = panel.locator('.file-tree-header:not([style*="display: none"]) .file-tree-collapse-btn').last();
     await expect(hideTreeButton).toBeVisible();
