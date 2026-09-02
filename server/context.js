@@ -182,6 +182,31 @@ export function registerYeaftDebugRequest({ agentId, requestId, sessionId, clien
 }
 
 /**
+ * Advance one strictly ordered debug-detail chunk. The correlation is consumed
+ * only after the complete sequence arrives; each accepted frame renews its TTL.
+ */
+export function advanceYeaftDebugRequestChunk({ agentId, requestId, sessionId, chunkIndex, chunkCount }) {
+  if (!agentId || !requestId) return null;
+  const now = Date.now();
+  pruneYeaftDebugRequests(now);
+  const key = yeaftDebugRequestKey(agentId, requestId);
+  const pending = pendingYeaftDebugRequests.get(key);
+  if (!pending || (sessionId && pending.sessionId !== sessionId)) return null;
+  const expectedIndex = pending.nextChunkIndex ?? 0;
+  const expectedCount = pending.chunkCount ?? chunkCount;
+  if (chunkIndex !== expectedIndex || chunkCount !== expectedCount) {
+    pendingYeaftDebugRequests.delete(key);
+    return null;
+  }
+  pending.nextChunkIndex = expectedIndex + 1;
+  pending.chunkCount = chunkCount;
+  pending.expiresAt = now + YEAFT_DEBUG_REQUEST_TTL_MS;
+  const complete = pending.nextChunkIndex === chunkCount;
+  if (complete) pendingYeaftDebugRequests.delete(key);
+  return { pending, complete };
+}
+
+/**
  * Consume a matching, unexpired correlation exactly once.
  * @param {{agentId:string, requestId:string, sessionId?:string|null}} response
  * @returns {{agentId:string, requestId:string, sessionId:string, clientId:string, userId:string, expiresAt:number}|null}

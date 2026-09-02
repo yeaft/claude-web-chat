@@ -3256,6 +3256,41 @@ describe('message flow regressions', () => {
     });
     expect(staleDebugDetailStore.yeaftDebugTurnOrder).toEqual(['current']);
 
+    const chunkStore = {
+      _lastPongAt: 0,
+      yeaftDebugPanel: { agentId: 'agent-a' },
+      _yeaftDebugHistoryLatestDetailRequestId: 'detail-current',
+      _yeaftDebugHistoryLatestListRequestId: null,
+      _fetchYeaftDebugHistoryTimer: null,
+      yeaftDebugTurnsById: {}, yeaftDebugLoops: [], yeaftDebugTurnOrder: [],
+    };
+    const fullDetail = JSON.stringify({
+      type: 'yeaft_debug_history', requestId: 'detail-current', detailTurnId: 'turn-current',
+      turns: [{ turnId: 'turn-current' }],
+      loops: [{ turnId: 'turn-current', rawResponse: { body: '完整😀数据' } }],
+    });
+    const splitAt = fullDetail.indexOf('😀') + 1;
+    handleMessage(chunkStore, {
+      type: 'yeaft_debug_history_chunk', agentId: 'agent-a', requestId: 'detail-current',
+      chunkIndex: 1, chunkCount: 2, data: fullDetail.slice(splitAt),
+    });
+    expect(chunkStore.yeaftDebugTurnOrder).toEqual([]);
+    handleMessage(chunkStore, {
+      type: 'yeaft_debug_history_chunk', agentId: 'agent-a', requestId: 'detail-current',
+      chunkIndex: 0, chunkCount: 2, data: fullDetail.slice(0, splitAt),
+    });
+    handleMessage(chunkStore, {
+      type: 'yeaft_debug_history_chunk', agentId: 'agent-a', requestId: 'detail-current',
+      chunkIndex: 1, chunkCount: 2, data: fullDetail.slice(splitAt),
+    });
+    expect(chunkStore.yeaftDebugLoops[0].rawResponse.body).toBe('完整😀数据');
+    chunkStore._yeaftDebugHistoryLatestDetailRequestId = 'detail-new';
+    handleMessage(chunkStore, {
+      type: 'yeaft_debug_history_chunk', agentId: 'agent-a', requestId: 'detail-current',
+      chunkIndex: 0, chunkCount: 2, data: fullDetail.slice(0, splitAt),
+    });
+    expect(chunkStore.yeaftDebugTurnOrder).toEqual(['turn-current']);
+
     const hydrateSessions = {
       live: [],
       applySnapshot: vi.fn(function applySnapshot(rows, agentId, options = {}) {

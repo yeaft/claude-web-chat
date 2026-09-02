@@ -133,16 +133,6 @@ export default {
                     <span aria-hidden="true"></span>
                   </label>
                 </div>
-                <div class="agent-settings-input-grid">
-                  <label>
-                    <span>{{ $t('settings.general.telemetryRawLimit') }}</span>
-                    <input type="number" min="0" max="4194304" step="65536" v-model.number="telemetryDraft.rawExchangeMaxBytes" :disabled="telemetrySaving || !selectedAgent.online">
-                  </label>
-                  <label>
-                    <span>{{ $t('settings.general.telemetryTraceTextLimit') }}</span>
-                    <input type="number" min="0" max="4194304" step="65536" v-model.number="telemetryDraft.traceTextMaxBytes" :disabled="telemetrySaving || !selectedAgent.online">
-                  </label>
-                </div>
                 <div class="agent-settings-save-row">
                   <span v-if="telemetryMessage" :class="{ error: telemetryError }">{{ telemetryMessage }}</span>
                   <button class="btn-primary" type="button" :disabled="telemetrySaving || !selectedAgent.online" @click="saveTelemetry">

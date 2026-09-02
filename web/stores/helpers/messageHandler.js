@@ -37,6 +37,52 @@ function defaultAgentLlmConfig(msg = {}) {
 const DEBUG_HISTORY_DEFAULT_LIMIT = 1;
 const DEBUG_HISTORY_SEARCH_LIMIT = 5;
 const LEGACY_YEAFT_SESSION_INVENTORY_QUIET_MS = 500;
+const DEBUG_HISTORY_CHUNK_MAX_BYTES = 512 * 1024;
+const DEBUG_HISTORY_REASSEMBLY_TTL_MS = 30_000;
+const debugHistoryChunks = new Map();
+
+function acceptDebugHistoryChunk(store, msg) {
+  const agentId = typeof msg?.agentId === 'string' ? msg.agentId : '';
+  const requestId = typeof msg?.requestId === 'string' ? msg.requestId : '';
+  const chunkIndex = Number(msg?.chunkIndex);
+  const chunkCount = Number(msg?.chunkCount);
+  const data = typeof msg?.data === 'string' ? msg.data : null;
+  const panelAgentId = store.yeaftDebugPanel?.agentId || null;
+  const expected = store._yeaftDebugHistoryLatestDetailRequestId || store._yeaftDebugHistoryLatestListRequestId;
+  if (!agentId || !requestId || (panelAgentId && agentId !== panelAgentId) || requestId !== expected
+      || !Number.isSafeInteger(chunkIndex) || !Number.isSafeInteger(chunkCount)
+      || chunkCount <= 1 || chunkIndex < 0 || chunkIndex >= chunkCount
+      || data == null || new TextEncoder().encode(data).byteLength > DEBUG_HISTORY_CHUNK_MAX_BYTES) return null;
+
+  const now = Date.now();
+  for (const [key, state] of debugHistoryChunks) {
+    if (state.expiresAt <= now) debugHistoryChunks.delete(key);
+  }
+  const key = `${agentId}\u0000${requestId}`;
+  let state = debugHistoryChunks.get(key);
+  if (!state) {
+    if (chunkIndex !== 0) return null;
+    state = { nextIndex: 0, chunkCount, parts: [], bytes: 0, expiresAt: now + DEBUG_HISTORY_REASSEMBLY_TTL_MS };
+    debugHistoryChunks.set(key, state);
+  }
+  const bytes = new TextEncoder().encode(data).byteLength;
+  if (state.chunkCount !== chunkCount || chunkIndex !== state.nextIndex) {
+    debugHistoryChunks.delete(key);
+    return null;
+  }
+  state.parts.push(data);
+  state.bytes += bytes;
+  state.nextIndex += 1;
+  state.expiresAt = now + DEBUG_HISTORY_REASSEMBLY_TTL_MS;
+  if (state.nextIndex !== state.chunkCount) return null;
+  debugHistoryChunks.delete(key);
+  try {
+    const payload = JSON.parse(state.parts.join(''));
+    return payload?.type === 'yeaft_debug_history' && payload.requestId === requestId ? { ...payload, agentId } : null;
+  } catch {
+    return null;
+  }
+}
 
 function sessionsStore() {
   return window.Pinia?.useSessionsStore?.()
@@ -177,6 +223,11 @@ function hydrateDebugLoopRequests(loops = []) {
 
 export function handleMessage(store, msg) {
   const authStore = useAuthStore();
+  if (msg?.type === 'yeaft_debug_history_chunk') {
+    const assembled = acceptDebugHistoryChunk(store, msg);
+    if (!assembled) return;
+    msg = assembled;
+  }
 
   // Any message means connection is alive
   store._lastPongAt = Date.now();

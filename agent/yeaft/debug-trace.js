@@ -14,41 +14,20 @@ import { createReadStream, promises as fsp } from 'fs';
 import { basename, dirname, extname, join } from 'path';
 import { createHash, randomUUID } from 'crypto';
 import { createInterface } from 'readline';
-import { truncateUtf8Text } from './perf-trace.js';
 
 const TRACE_VERSION = 3;
 const REQUEST_RETENTION = 10;
 const MAX_HISTORY_LIMIT = 5;
 const MAX_DREAM_EVENTS = 100;
-const MAX_TEXT_BYTES = 1024 * 1024;
-const MAX_TOOL_INPUT = 10 * 1024;
-const MAX_INLINE_VALUE_BYTES = 1024 * 1024;
-const MAX_RAW_REQUEST_BYTES = 2 * 1024 * 1024;
-// Raw provider responses are diagnostic duplicates of the normalized response,
-// tool calls, usage and request delta already stored on each loop. Keeping up
-// to 1 MiB per loop made long tool turns produce 100+ MiB trace files. Every
-// buffered flush then JSON.stringify()'d and rewrote that entire file on the
-// agent's single event loop, so several active Sessions appeared deadlocked.
-// A 64 KiB prefix is enough to inspect provider envelopes without letting
-// always-on diagnostics dominate runtime latency.
-const MAX_RAW_RESPONSE_BYTES = 64 * 1024;
+// Debug records are diagnostic source data. They deliberately do not inherit
+// model-context or ordinary history budgets, and explicit detail transport is
+// chunked instead of truncating persisted values.
 const TRACE_APPEND_BATCH_MS = 100;
 const EVENT_FLUSH_INTERVAL_MS = 30_000;
 const MAX_SEARCH_PATTERN_CHARS = 300;
-const DEFAULT_TRACE_TEXT_MAX_BYTES = 256 * 1024;
-// A turn detail is returned as one WebSocket message. Keep its UI projection
-// comfortably below the Agent connection's 8 MiB outbound queue ceiling while
-// preserving the canonical file-backed trace without any extra truncation.
-const DEBUG_DETAIL_WIRE_MAX_BYTES = 6 * 1024 * 1024;
 
 function isPlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function normalizeTextMaxBytes(value, fallback = DEFAULT_TRACE_TEXT_MAX_BYTES) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(4 * 1024 * 1024, Math.max(0, Math.floor(parsed)));
 }
 
 function safeDirComponent(value, fallback = 'unknown') {
@@ -169,51 +148,10 @@ function traceMatchesRegex(trace, regex) {
   }
 }
 
-function truncateText(value, maxBytes = MAX_TEXT_BYTES) {
-  if (value == null) return value ?? null;
-  const str = String(value);
-  const budget = Math.max(0, Number(maxBytes) || 0);
-  if (Buffer.byteLength(str, 'utf8') <= budget) return str;
-  if (budget <= 0) return '';
-  const marker = `\n... [truncated to ${budget} bytes]`;
-  const markerBytes = Buffer.byteLength(marker, 'utf8');
-  if (markerBytes >= budget) return truncateUtf8Text(str, budget).value;
-  return `${truncateUtf8Text(str, budget - markerBytes).value}${marker}`;
-}
-
 function cloneJsonValue(value) {
   if (value == null) return value;
   try { return JSON.parse(JSON.stringify(value)); }
   catch { return null; }
-}
-
-function safeJsonValue(value, maxBytes = MAX_INLINE_VALUE_BYTES) {
-  if (value == null) return value;
-  try {
-    const json = JSON.stringify(value);
-    const originalBytes = Buffer.byteLength(json, 'utf8');
-    if (originalBytes <= maxBytes) return JSON.parse(json);
-    // A bounded raw-exchange sentinel already carries the useful preview.
-    // Preserve a re-bounded preview rather than reducing persisted history to
-    // metadata after an outer trace record crosses its storage budget.
-    if (value && typeof value === 'object' && value.__truncated === true
-      && typeof value.preview === 'string') {
-      const previewBudget = Math.max(0, maxBytes - 512);
-      const preview = truncateText(value.preview, previewBudget);
-      return {
-        __truncated: true,
-        ...(value.reason ? { reason: value.reason } : {}),
-        originalBytes: Number.isFinite(Number(value.originalBytes))
-          ? Number(value.originalBytes)
-          : originalBytes,
-        maxBytes,
-        ...(preview ? { preview } : {}),
-      };
-    }
-    return { __truncated: true, originalBytes, maxBytes };
-  } catch {
-    return null;
-  }
 }
 
 function normalizeUsage(usage = {}, fallback = {}) {
@@ -241,34 +179,9 @@ function stableEqual(a, b) {
   catch { return false; }
 }
 
-function jsonByteLength(value) {
-  try { return Buffer.byteLength(JSON.stringify(value), 'utf8'); }
-  catch { return Infinity; }
-}
-
-function rawRequestSentinel(reason, value = null, maxBytes = MAX_RAW_REQUEST_BYTES) {
-  const previewSource = typeof value === 'string'
-    ? value
-    : (() => { try { return JSON.stringify(value); } catch { return null; } })();
-  const preview = typeof previewSource === 'string'
-    ? truncateText(previewSource, Math.min(64 * 1024, maxBytes))
-    : null;
-  const originalBytes = value == null ? null : jsonByteLength(value);
-  return {
-    __truncated: true,
-    reason,
-    ...(originalBytes != null ? { originalBytes } : {}),
-    maxBytes,
-    ...(preview ? { preview } : {}),
-  };
-}
-
-function boundRawValue(value, reason = 'raw_request_budget') {
+function cloneRawValue(value) {
   if (value == null) return value;
-  const cloned = typeof value === 'string' ? value : cloneJsonValue(value);
-  if (cloned == null) return null;
-  if (jsonByteLength(cloned) <= MAX_RAW_REQUEST_BYTES) return cloned;
-  return rawRequestSentinel(reason, value);
+  return typeof value === 'string' ? value : cloneJsonValue(value);
 }
 
 function buildRawMessagesDelta(previousMessages, nextMessages) {
@@ -276,9 +189,9 @@ function buildRawMessagesDelta(previousMessages, nextMessages) {
   const priorMessages = Array.isArray(previousMessages) ? previousMessages : [];
   const prefix = messagesPrefixLength(priorMessages, nextMessages);
   if (prefix === priorMessages.length && prefix <= nextMessages.length) {
-    return { messagesFrom: prefix, messagesAppend: boundRawValue(nextMessages.slice(prefix), 'raw_request_messages_append_budget') };
+    return { messagesFrom: prefix, messagesAppend: cloneRawValue(nextMessages.slice(prefix)) };
   }
-  return { messagesFrom: 0, messagesAppend: boundRawValue(nextMessages, 'raw_request_messages_append_budget') };
+  return { messagesFrom: 0, messagesAppend: cloneRawValue(nextMessages) };
 }
 
 function rawRequestMessageKey(body) {
@@ -290,18 +203,18 @@ function rawRequestMessageKey(body) {
 
 function buildInitialRawRequestDelta(value) {
   if (value == null) return null;
-  if (typeof value === 'string') return { replacement: rawRequestSentinel('raw_request_string_replaced', value) };
-  if (!isPlainObject(value)) return { replacement: boundRawValue(value) };
+  if (typeof value === 'string') return { replacement: value };
+  if (!isPlainObject(value)) return { replacement: cloneRawValue(value) };
   const delta = { set: {}, body: {} };
   for (const [key, item] of Object.entries(value)) {
     if (key === 'body') continue;
-    delta.set[key] = boundRawValue(item, `raw_request_${key}_budget`);
+    delta.set[key] = cloneRawValue(item);
   }
   const body = isPlainObject(value.body) ? value.body : null;
   if (body) {
     for (const [key, bodyValue] of Object.entries(body)) {
       if (key === 'messages' || key === 'input') continue;
-      delta.body[key] = boundRawValue(bodyValue, `raw_request_body_${key}_budget`);
+      delta.body[key] = cloneRawValue(bodyValue);
     }
     const messageKey = rawRequestMessageKey(body);
     if (messageKey) {
@@ -309,12 +222,11 @@ function buildInitialRawRequestDelta(value) {
       Object.assign(delta.body, buildRawMessagesDelta([], body[messageKey]) || {});
     }
   } else if (Object.prototype.hasOwnProperty.call(value, 'body')) {
-    delta.set.body = rawRequestSentinel('raw_request_body_replaced');
+    delta.set.body = cloneRawValue(value.body);
   }
   if (Object.keys(delta.set).length === 0) delete delta.set;
   if (Object.keys(delta.body).length === 0) delete delta.body;
   if (!delta.set && !delta.body) return null;
-  if (jsonByteLength(delta) > MAX_RAW_REQUEST_BYTES) return { replacement: rawRequestSentinel('raw_request_delta_budget') };
   return delta;
 }
 
@@ -332,16 +244,16 @@ function buildRawRequestDelta(previous, next) {
   const comparablePrevious = rawComparableRequest(previous);
   const comparableNext = rawComparableRequest(next);
   if (typeof comparablePrevious === 'string' || typeof comparableNext === 'string') {
-    return comparablePrevious === comparableNext ? null : { replacement: rawRequestSentinel('raw_request_string_replaced', comparableNext) };
+    return comparablePrevious === comparableNext ? null : { replacement: cloneRawValue(comparableNext) };
   }
   if (!isPlainObject(comparablePrevious) || !isPlainObject(comparableNext)) {
-    return stableEqual(comparablePrevious, comparableNext) ? null : { replacement: rawRequestSentinel('raw_request_replaced') };
+    return stableEqual(comparablePrevious, comparableNext) ? null : { replacement: cloneRawValue(comparableNext) };
   }
 
   const delta = { set: {}, body: {} };
   for (const key of Object.keys(comparableNext)) {
     if (key === 'body') continue;
-    if (!stableEqual(comparablePrevious[key], comparableNext[key])) delta.set[key] = boundRawValue(comparableNext[key], `raw_request_${key}_budget`);
+    if (!stableEqual(comparablePrevious[key], comparableNext[key])) delta.set[key] = cloneRawValue(comparableNext[key]);
   }
   for (const key of Object.keys(comparablePrevious)) {
     if (key !== 'body' && !Object.prototype.hasOwnProperty.call(comparableNext, key)) delta.set[key] = null;
@@ -352,7 +264,7 @@ function buildRawRequestDelta(previous, next) {
   if (prevBody && nextBody) {
     for (const key of Object.keys(nextBody)) {
       if (key === 'messages' || key === 'input') continue;
-      if (!stableEqual(prevBody[key], nextBody[key])) delta.body[key] = boundRawValue(nextBody[key], `raw_request_body_${key}_budget`);
+      if (!stableEqual(prevBody[key], nextBody[key])) delta.body[key] = cloneRawValue(nextBody[key]);
     }
     for (const key of Object.keys(prevBody)) {
       if (key !== 'messages' && key !== 'input' && !Object.prototype.hasOwnProperty.call(nextBody, key)) delta.body[key] = null;
@@ -362,15 +274,12 @@ function buildRawRequestDelta(previous, next) {
     const msgDelta = buildRawMessagesDelta(prevMessages, nextMessages);
     if (msgDelta) Object.assign(delta.body, msgDelta);
   } else if (!stableEqual(previous.body, next.body)) {
-    delta.set.body = rawRequestSentinel('raw_request_body_replaced');
+    delta.set.body = cloneRawValue(next.body);
   }
 
   if (Object.keys(delta.set).length === 0) delete delta.set;
   if (Object.keys(delta.body).length === 0) delete delta.body;
   if (!delta.set && !delta.body) return null;
-  if (jsonByteLength(delta) > MAX_RAW_REQUEST_BYTES) {
-    return { replacement: rawRequestSentinel('raw_request_delta_budget') };
-  }
   return delta;
 }
 
@@ -398,9 +307,7 @@ export function applyRawRequestDelta(previous, delta) {
       const from = Number.isFinite(Number(delta.body.messagesFrom)) ? Number(delta.body.messagesFrom) : existing.length;
       body[messageKey] = existing.slice(0, from).concat(cloneJsonValue(delta.body.messagesAppend) || []);
     } else if (Object.prototype.hasOwnProperty.call(delta.body, 'messagesAppend')) {
-      // A huge append is represented by a bounded raw-request sentinel, not
-      // an array. Preserve that sentinel rather than silently dropping the
-      // entire request body during hydration.
+      // Preserve legacy non-array values written by older bounded traces.
       body[messageKey] = cloneJsonValue(delta.body.messagesAppend) ?? delta.body.messagesAppend;
     }
     next.body = body;
@@ -418,82 +325,10 @@ function messagesPrefixLength(prevMessages, nextMessages) {
   return i;
 }
 
-function snapshotTruncation(path, maxBytes, originalBytes) {
-  return { __truncated: true, path, maxBytes, originalBytes };
-}
-
-function boundedSnapshotString(value, maxBytes, path) {
-  const originalBytes = Buffer.byteLength(value, 'utf8');
-  if (originalBytes <= maxBytes) return value;
-  const marker = snapshotTruncation(path, maxBytes, originalBytes);
-  if (jsonByteLength(marker) > maxBytes) return null;
-  const markerText = `\n... [truncated to ${maxBytes} bytes]`;
-  const markerBytes = Buffer.byteLength(markerText, 'utf8');
-  if (markerBytes >= maxBytes) return marker;
-  return truncateUtf8Text(value, maxBytes - markerBytes).value + markerText;
-}
-
-function boundSnapshotValue(value, maxBytes, path = 'messages') {
-  if (maxBytes <= 0) return null;
-  const sourceBytes = jsonByteLength(value);
-  if (sourceBytes <= maxBytes) return cloneJsonValue(value);
-  const marker = snapshotTruncation(path, maxBytes, sourceBytes);
-  if (jsonByteLength(marker) > maxBytes) return null;
-  if (value == null || typeof value === 'number' || typeof value === 'boolean') return marker;
-  if (typeof value === 'string') return boundedSnapshotString(value, maxBytes, path);
-
-  // Account JSON framing incrementally. The old clone-and-stringify-prefix
-  // loop reserialized the full growing array/object per member and blocked
-  // DebugTrace.endTurn for tens of seconds on a large provider history.
-  if (Array.isArray(value)) {
-    const out = [];
-    let usedBytes = 2; // []
-    for (let index = 0; index < value.length; index += 1) {
-      const separatorBytes = out.length > 0 ? 1 : 0;
-      const remaining = Math.max(0, maxBytes - usedBytes - separatorBytes);
-      const candidate = boundSnapshotValue(value[index], remaining, `${path}[${index}]`);
-      if (candidate == null) break;
-      let encoded;
-      try { encoded = JSON.stringify(candidate); } catch { break; }
-      const candidateBytes = Buffer.byteLength(encoded, 'utf8');
-      if (usedBytes + separatorBytes + candidateBytes > maxBytes) break;
-      out.push(candidate);
-      usedBytes += separatorBytes + candidateBytes;
-    }
-    return out.length > 0 ? out : marker;
-  }
-  if (typeof value === 'object') {
-    const out = {};
-    let usedBytes = 2; // {}
-    let count = 0;
-    for (const [key, item] of Object.entries(value)) {
-      let keyJson;
-      try { keyJson = JSON.stringify(key); } catch { break; }
-      const keyBytes = Buffer.byteLength(keyJson, 'utf8');
-      const separatorBytes = count > 0 ? 1 : 0;
-      const remaining = Math.max(0, maxBytes - usedBytes - separatorBytes - keyBytes - 1);
-      const candidate = boundSnapshotValue(item, remaining, `${path}.${key}`);
-      if (candidate == null) break;
-      let encoded;
-      try { encoded = JSON.stringify(candidate); } catch { break; }
-      const candidateBytes = Buffer.byteLength(encoded, 'utf8');
-      if (usedBytes + separatorBytes + keyBytes + 1 + candidateBytes > maxBytes) break;
-      out[key] = candidate;
-      usedBytes += separatorBytes + keyBytes + 1 + candidateBytes;
-      count += 1;
-    }
-    return count > 0 ? out : marker;
-  }
-  return marker;
-}
-
-function buildRequestSnapshot(info = {}, textMaxBytes = DEFAULT_TRACE_TEXT_MAX_BYTES) {
-  const messageBudget = normalizeTextMaxBytes(textMaxBytes);
+function buildRequestSnapshot(info = {}) {
   return {
-    systemPrompt: truncateText(info.systemPrompt || '', messageBudget),
-    messages: Array.isArray(info.messages)
-      ? boundSnapshotValue(info.messages, messageBudget, 'messages')
-      : [],
+    systemPrompt: String(info.systemPrompt || ''),
+    messages: Array.isArray(info.messages) ? cloneJsonValue(info.messages) : [],
     rawRequest: info.rawRequest ?? null,
   };
 }
@@ -812,167 +647,12 @@ function expandTrace(trace) {
   return { loops, turns: Array.from(turnsById.values()) };
 }
 
-function debugDetailTextSentinel(value, maxBytes, path, originalBytes = jsonByteLength(value)) {
-  const text = value == null ? '' : String(value);
-  const budget = Math.max(2, Math.floor(Number(maxBytes) || 0));
-  if (originalBytes <= budget) return text;
-  const marker = `\n... [wire truncated ${path}; original ${originalBytes} bytes]`;
-  const rawBytes = Math.max(1, Buffer.byteLength(text, 'utf8'));
-  const expansion = Math.max(1, originalBytes / rawBytes);
-  const markerBytes = jsonByteLength(marker) - 2;
-  let previewBytes = Math.max(0, Math.floor((budget - markerBytes - 2) / expansion));
-  let projected = `${truncateUtf8Text(text, previewBytes).value}${marker}`;
-  let projectedBytes = jsonByteLength(projected);
-  if (projectedBytes > budget && previewBytes > 0) {
-    previewBytes = Math.max(0, Math.floor(previewBytes * (budget / projectedBytes)) - 8);
-    projected = `${truncateUtf8Text(text, previewBytes).value}${marker}`;
-    projectedBytes = jsonByteLength(projected);
-  }
-  if (projectedBytes <= budget) return projected;
-  if (jsonByteLength(marker) <= budget) return marker;
-  return '';
-}
-
-function debugDetailJsonSentinel(value, maxBytes, path, originalBytes = jsonByteLength(value)) {
-  if (value == null) return value;
-  const budget = Math.max(0, Math.floor(Number(maxBytes) || 0));
-  if (originalBytes <= budget) return value;
-  const base = {
-    __truncated: true,
-    reason: 'debug_detail_wire_budget',
-    path,
-    originalBytes,
-    maxBytes: budget,
-  };
-  const baseBytes = jsonByteLength(base);
-  if (baseBytes > budget) return budget >= 4 ? null : '';
-  let preview = '';
-  try {
-    const encoded = JSON.stringify(value);
-    preview = debugDetailTextSentinel(
-      encoded,
-      Math.max(2, budget - baseBytes - 16),
-      path,
-      jsonByteLength(encoded),
-    );
-  } catch { /* metadata-only sentinel below */ }
-  const projected = preview ? { ...base, preview } : base;
-  return jsonByteLength(projected) <= budget ? projected : base;
-}
-
-function allocateDebugCandidateBudgets(candidates, totalBytes) {
-  const sorted = [...candidates].sort((a, b) => a.originalBytes - b.originalBytes || a.path.localeCompare(b.path));
-  let remainingBytes = Math.max(0, Math.floor(totalBytes));
-  let remainingCount = sorted.length;
-  for (let index = 0; index < sorted.length; index += 1) {
-    const candidate = sorted[index];
-    const fairShare = remainingCount > 0 ? Math.floor(remainingBytes / remainingCount) : 0;
-    if (candidate.originalBytes <= fairShare) {
-      candidate.budget = candidate.originalBytes;
-      remainingBytes -= candidate.budget;
-      remainingCount -= 1;
-      continue;
-    }
-    for (let tail = index; tail < sorted.length; tail += 1) {
-      const count = sorted.length - tail;
-      const budget = count > 0 ? Math.floor(remainingBytes / count) : 0;
-      sorted[tail].budget = budget;
-      remainingBytes -= budget;
-    }
-    break;
-  }
-}
-
-export function projectDebugDetailForWire(detail, maxBytes = DEBUG_DETAIL_WIRE_MAX_BYTES) {
-  // `fetchTurnDebug()` hands us a freshly expanded response object; mutate that
-  // disposable projection rather than cloning tens or hundreds of cumulative
-  // request snapshots. Canonical file records and the request cache are separate.
-  const wire = detail && typeof detail === 'object'
+export function projectDebugDetailForWire(detail) {
+  // Backward-compatible export: debug detail is diagnostic source data and must
+  // remain lossless. The transport splits large JSON into bounded wire frames.
+  return detail && typeof detail === 'object'
     ? detail
     : { loops: [], turns: [], dreamEvents: [] };
-  const payloadBudget = Math.max(0, maxBytes - 2048);
-  const candidates = [];
-  const addCandidate = (container, field, path) => {
-    if (!container || container[field] == null) return;
-    const value = container[field];
-    candidates.push({
-      container,
-      field,
-      path,
-      value,
-      originalBytes: jsonByteLength(value),
-      budget: 0,
-    });
-    // Measure the non-candidate envelope exactly once without serializing every
-    // cumulative request again after each replacement.
-    container[field] = null;
-  };
-
-  const loopFields = ['rawRequest', 'rawResponse', 'messages', 'requestBase', 'requestDelta', 'toolCalls', 'response', 'systemPrompt'];
-  for (const [loopIndex, loop] of (Array.isArray(wire.loops) ? wire.loops : []).entries()) {
-    if (!loop || typeof loop !== 'object') continue;
-    for (const field of loopFields) addCandidate(loop, field, `loops[${loopIndex}].${field}`);
-  }
-  for (const [turnIndex, turn] of (Array.isArray(wire.turns) ? wire.turns : []).entries()) {
-    if (!turn || typeof turn !== 'object') continue;
-    for (const field of ['userPrompt', 'memoryLoaded', 'memoryLoadedMeta', 'memoryAdjust']) {
-      addCandidate(turn, field, `turns[${turnIndex}].${field}`);
-    }
-    for (const [toolIndex, tool] of (Array.isArray(turn.tools) ? turn.tools : []).entries()) {
-      if (!tool || typeof tool !== 'object') continue;
-      addCandidate(tool, 'toolInput', `turns[${turnIndex}].tools[${toolIndex}].toolInput`);
-      addCandidate(tool, 'toolOutput', `turns[${turnIndex}].tools[${toolIndex}].toolOutput`);
-    }
-  }
-  for (const [eventIndex] of (Array.isArray(wire.dreamEvents) ? wire.dreamEvents : []).entries()) {
-    addCandidate(wire.dreamEvents, eventIndex, `dreamEvents[${eventIndex}]`);
-  }
-
-  const skeletonBytes = jsonByteLength(wire);
-  const candidateBytes = candidates.reduce((sum, candidate) => sum + candidate.originalBytes, 0);
-  const originalBytes = skeletonBytes - (4 * candidates.length) + candidateBytes;
-  if (originalBytes <= payloadBudget) {
-    for (const candidate of candidates) candidate.container[candidate.field] = candidate.value;
-    return wire;
-  }
-  if (candidates.length === 0 || skeletonBytes > payloadBudget) {
-    throw new Error(`Debug detail metadata exceeds the ${maxBytes}-byte wire budget`);
-  }
-
-  // Each candidate currently occupies JSON `null` (4 bytes) in the skeleton.
-  // Water-fill the exact value budget: small fields stay complete, while large
-  // cumulative requests and tool outputs receive fair, independently bounded
-  // previews. This is O(total input bytes + candidates log candidates), with
-  // one final whole-envelope serialization rather than one per candidate.
-  const valueBudget = payloadBudget - skeletonBytes + (4 * candidates.length);
-  allocateDebugCandidateBudgets(candidates, valueBudget);
-  let truncatedFields = 0;
-  for (const candidate of candidates) {
-    if (candidate.originalBytes <= candidate.budget) {
-      candidate.container[candidate.field] = candidate.value;
-      continue;
-    }
-    const fieldBudget = candidate.budget;
-    candidate.container[candidate.field] = typeof candidate.value === 'string'
-      ? debugDetailTextSentinel(candidate.value, fieldBudget, candidate.path, candidate.originalBytes)
-      : debugDetailJsonSentinel(candidate.value, fieldBudget, candidate.path, candidate.originalBytes);
-    truncatedFields += 1;
-  }
-
-  wire.projection = {
-    truncated: true,
-    reason: 'debug_detail_wire_budget',
-    maxBytes,
-    truncatedFields,
-  };
-  const projectedBytesBase = jsonByteLength(wire);
-  let projectedBytes = projectedBytesBase + Buffer.byteLength(`,\"projectedBytes\":${projectedBytesBase}`, 'utf8');
-  projectedBytes = projectedBytesBase + Buffer.byteLength(`,\"projectedBytes\":${projectedBytes}`, 'utf8');
-  wire.projection.projectedBytes = projectedBytes;
-  if (projectedBytes > maxBytes) {
-    throw new Error(`Debug detail projection still exceeds the ${maxBytes}-byte wire budget`);
-  }
-  return wire;
 }
 
 function traceToLegacyRows(trace) {
@@ -1192,8 +872,6 @@ export class DebugTrace {
    * @type {Promise<void>}
    */
   #flushChain = Promise.resolve();
-  /** @type {number} */
-  #textMaxBytes = DEFAULT_TRACE_TEXT_MAX_BYTES;
   /** @type {boolean} */
   #acceptingWrites = true;
 
@@ -1205,17 +883,16 @@ export class DebugTrace {
     const rootDir = fileTraceRoot(tracePath);
     if (!rootDir) throw new Error('DebugTrace requires a storage path');
     this.#rootDir = rootDir;
-    this.#textMaxBytes = normalizeTextMaxBytes(options?.textMaxBytes);
+    // `textMaxBytes` remains an accepted constructor option for compatibility,
+    // but debug source data is intentionally lossless.
+    void options?.textMaxBytes;
     // Best-effort, fire-and-forget: atomicWriteText re-ensures the request
     // subdir before every write, so a missed mkdir here is harmless.
     ensureDir(rootDir).catch(() => {});
   }
 
-  refreshConfig(config = {}) {
-    const nextValue = config && typeof config === 'object'
-      ? config.traceTextMaxBytes
-      : config;
-    this.#textMaxBytes = normalizeTextMaxBytes(nextValue, this.#textMaxBytes);
+  refreshConfig(_config = {}) {
+    // Compatibility no-op: debug trace content is no longer byte-truncated.
   }
 
   startTurn({ traceId, messageId = null, mode = null, turnNumber = null, sessionId = null, vpId = null, threadId = null, userPrompt = null, memoryLoaded = null, memoryLoadedMeta = null } = {}) {
@@ -1259,7 +936,7 @@ export class DebugTrace {
       rawRequest: Object.prototype.hasOwnProperty.call(info, 'rawRequest')
         ? info.rawRequest
         : (trace.baseRequest?.rawRequest ?? null),
-    }, this.#textMaxBytes);
+    });
     const previousSnapshot = trace._lastSnapshot || this.#reconstructLastSnapshot(trace);
     if (!trace.baseRequest) {
       trace.baseRequest = {
@@ -1275,7 +952,7 @@ export class DebugTrace {
       loopNumber,
       startedAt: trace.openedAt || Date.now(),
       model: info.model || null,
-      response: truncateText(info.responseText || '', this.#textMaxBytes),
+      response: String(info.responseText || ''),
       toolCalls: cloneJsonValue(Array.isArray(info.toolCalls) ? info.toolCalls : []),
       usage: normalizeUsage(info.usage || {}, {
         inputTokens: info.inputTokens || 0,
@@ -1288,8 +965,8 @@ export class DebugTrace {
       stopReason: info.stopReason || null,
       at: Date.now(),
       rawResponse: typeof info.rawResponse === 'string'
-        ? truncateText(info.rawResponse, Math.min(this.#textMaxBytes, MAX_RAW_RESPONSE_BYTES))
-        : safeJsonValue(info.rawResponse, Math.min(this.#textMaxBytes, MAX_RAW_RESPONSE_BYTES)),
+        ? info.rawResponse
+        : cloneJsonValue(info.rawResponse),
       // Raw request is canonical base-plus-delta data. Persisting the full
       // snapshot on every loop made a 512 KiB request consume N × 512 KiB for
       // an N-loop trace and kept the same duplication in the hydrated cache.
@@ -1327,8 +1004,8 @@ export class DebugTrace {
       loopNumber: ctx.loopNumber || 0,
       toolName: toolName || '?',
       toolCallId,
-      toolInput: truncateText(toolInput == null ? null : String(toolInput), MAX_TOOL_INPUT),
-      toolOutput: truncateText(toolOutput == null ? null : String(toolOutput), this.#textMaxBytes),
+      toolInput: toolInput == null ? null : String(toolInput),
+      toolOutput: toolOutput == null ? null : String(toolOutput),
       durationMs: Number(durationMs || 0),
       isError: !!isError,
       suppressed: !!suppressed,
@@ -1350,7 +1027,7 @@ export class DebugTrace {
       id,
       traceId: traceId || String(eventType || 'event'),
       eventType: eventType || 'event',
-      eventData: safeJsonValue(eventData),
+      eventData: cloneJsonValue(eventData),
       createdAt: Date.now(),
     });
     if (this.#events.length > MAX_DREAM_EVENTS) {
@@ -1433,7 +1110,7 @@ export class DebugTrace {
     const dreamEvents = this.#readDreamEvents({ sessionId: requestedSessionId, dreamLimit });
     if (!trace) return { loops: [], turns: [], dreamEvents, detailTurnId: requestedTurnId };
     const expanded = expandTrace(trace);
-    return projectDebugDetailForWire({ ...expanded, dreamEvents, detailTurnId: requestedTurnId });
+    return { ...expanded, dreamEvents, detailTurnId: requestedTurnId };
   }
 
   async fetchRecentDebugHistory({ limit = MAX_HISTORY_LIMIT, dreamLimit = 5, sessionId = null, threadId = null, indexOnly = false, detailTurnId = null, search = '' } = {}) {
@@ -1643,7 +1320,7 @@ export class DebugTrace {
       sessionId: normalizedSessionId,
       vpId: vpId || null,
       threadId: threadId || null,
-      userPrompt: truncateText(userPrompt || '', this.#textMaxBytes),
+      userPrompt: String(userPrompt || ''),
       memoryLoaded: Array.isArray(memoryLoaded) ? cloneJsonValue(memoryLoaded) : null,
       memoryLoadedMeta: memoryLoadedMeta && typeof memoryLoadedMeta === 'object'
         ? cloneJsonValue(memoryLoadedMeta)

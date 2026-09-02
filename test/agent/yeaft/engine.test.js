@@ -2830,7 +2830,7 @@ describe('Engine', () => {
   });
 
   describe('perf trace', () => {
-    it('bounds provider raw request and response previews through Engine capture', async () => {
+    it('keeps provider raw request and response complete despite the legacy telemetry budget', async () => {
       const limit = 64 * 1024;
       const mixedPayload = `${'😀'.repeat(8_000)}${'x'.repeat(320 * 1024)}`;
       const adapter = {
@@ -2857,11 +2857,9 @@ describe('Engine', () => {
       for await (const event of engine.query({ prompt: 'capture raw exchange' })) events.push(event);
 
       const loop = events.find(event => event.type === 'loop');
-      for (const exchange of [loop.rawRequest, loop.rawResponse]) {
-        expect(exchange).toMatchObject({ __truncated: true, maxBytes: limit });
-        expect(exchange.preview.isWellFormed()).toBe(true);
-        expect(Buffer.byteLength(exchange.preview, 'utf8')).toBeLessThanOrEqual(limit);
-      }
+      expect(loop.rawRequest).toEqual({ body: mixedPayload });
+      expect(loop.rawResponse).toEqual({ status: 200, body: mixedPayload });
+      expect(loop.rawRequest.body.isWellFormed()).toBe(true);
     });
 
     it('records LLM request lifecycle events when an inbound perf trace id is present', async () => {
@@ -8152,7 +8150,7 @@ describe('Engine', () => {
       const rawResponse = {
         status: 200,
         headers: { 'content-type': 'application/json' },
-        body: 'x'.repeat(420_000),
+        body: '火😀'.repeat(20_000),
         format: 'openai-responses',
       };
 
@@ -8217,9 +8215,8 @@ describe('Engine', () => {
           .map(event => event.record);
 
         expect(storedLoops).toHaveLength(100);
-        expect(storedLoops.every(loop => loop.rawResponse?.__truncated === true)).toBe(true);
-        expect(storedLoops.every(loop => loop.rawResponse?.maxBytes === 64 * 1024)).toBe(true);
-        expect(lstatSync(eventFile).size).toBeLessThan(8 * 1024 * 1024);
+        expect(storedLoops.every(loop => loop.rawResponse?.body === rawResponse.body)).toBe(true);
+        expect(storedLoops.every(loop => loop.rawResponse?.body.endsWith('火😀'))).toBe(true);
 
         const reopened = new DebugTrace(traceRoot);
         const reopenedStats = await reopened.stats();
@@ -8237,7 +8234,10 @@ describe('Engine', () => {
         });
         expect(detail.loops).toHaveLength(100);
         expect(detail.loops.at(-1)?.loopNumber).toBe(100);
-        expect(Buffer.byteLength(JSON.stringify(detail), 'utf8')).toBeLessThan(6 * 1024 * 1024);
+        expect(detail.loops.every(loop => loop.rawResponse?.body === rawResponse.body)).toBe(true);
+        // The obsolete trace text budget still bounds ordinary snapshots above,
+        // but cannot truncate provider raw exchange persistence or detail reads.
+        expect(detail.loops[0].rawResponse.body).toBe(rawResponse.body);
 
         const oversizedDetail = {
           loops: Array.from({ length: 4 }, (_, index) => ({
@@ -8252,15 +8252,11 @@ describe('Engine', () => {
           detailTurnId: 'oversized-turn',
         };
         const projectedDetail = projectDebugDetailForWire(oversizedDetail);
-        expect(Buffer.byteLength(JSON.stringify(projectedDetail), 'utf8')).toBeLessThan(6 * 1024 * 1024);
-        expect(projectedDetail.projection).toMatchObject({
-          truncated: true,
-          reason: 'debug_detail_wire_budget',
-          maxBytes: 6 * 1024 * 1024,
-        });
-        expect(projectedDetail.loops.some(loop => (
-          loop.rawResponse?.__truncated === true
-          && loop.rawResponse?.reason === 'debug_detail_wire_budget'
+        expect(projectedDetail).toBe(oversizedDetail);
+        expect(projectedDetail).not.toHaveProperty('projection');
+        expect(projectedDetail.loops.every(loop => (
+          loop.response.length === 3 * 1024 * 1024
+          && loop.rawResponse.body.length === 3 * 1024 * 1024
         ))).toBe(true);
 
         for (const toolCount of [24, 100]) {
@@ -8277,10 +8273,10 @@ describe('Engine', () => {
             dreamEvents: [],
           };
           const projectedTools = projectDebugDetailForWire(toolDetail);
-          expect(Buffer.byteLength(JSON.stringify(projectedTools), 'utf8')).toBeLessThan(6 * 1024 * 1024);
+          expect(projectedTools).toBe(toolDetail);
           expect(projectedTools.turns[0].tools).toHaveLength(toolCount);
           expect(projectedTools.turns[0].tools.every(tool => (
-            typeof tool.toolOutput === 'string' && tool.toolOutput.includes('wire truncated')
+            tool.toolOutput.length === 256 * 1024
           ))).toBe(true);
         }
 
@@ -8295,18 +8291,12 @@ describe('Engine', () => {
           turns: [{ turnId: 'cumulative-turn' }],
           dreamEvents: [],
         };
-        const projectionStartedAt = performance.now();
         const projectedCumulative = projectDebugDetailForWire(cumulativeDetail);
-        const projectionElapsedMs = performance.now() - projectionStartedAt;
-        expect(Buffer.byteLength(JSON.stringify(projectedCumulative), 'utf8')).toBeLessThan(6 * 1024 * 1024);
-        expect(projectedCumulative.projection.truncatedFields).toBe(50);
-        // The old implementation re-stringified the entire 100 MiB payload for
-        // every loop and independently took over 13 seconds for this shape.
-        // Leave ample CI headroom while fencing it below the browser's 10s timer.
-        expect(projectionElapsedMs).toBeLessThan(5_000);
-        // The wire projection is derived after persistence; canonical event
-        // records retain their normal per-field storage bounds.
-        expect(storedLoops.every(loop => loop.rawResponse?.maxBytes === 64 * 1024)).toBe(true);
+        expect(projectedCumulative).toBe(cumulativeDetail);
+        expect(projectedCumulative.loops.every(loop => loop.rawRequest.body === cumulativeRequest.body)).toBe(true);
+        // Wire chunking is derived after persistence; canonical event records
+        // retain the complete provider response.
+        expect(storedLoops.every(loop => loop.rawResponse?.body === rawResponse.body)).toBe(true);
 
         // Aggregate queries must not pin every full request payload in memory.
         // After stats(), detail still comes from disk rather than a process-life
@@ -8567,7 +8557,8 @@ describe('Engine', () => {
             sessionId: 's-snapshot-budget',
             turnId: 'snapshot-budget-turn',
           });
-          expect(Buffer.byteLength(JSON.stringify(snapshotDetail.loops[0]?.messages || []), 'utf8')).toBeLessThanOrEqual(256 * 1024);
+          expect(snapshotDetail.loops[0]?.messages).toEqual(largeMessages);
+          expect(snapshotDetail.loops[0]?.messages.at(-1)?.content).toBe(largeMessages.at(-1).content);
           await snapshotReader.close();
         } finally {
           rmSync(snapshotTraceRoot, { recursive: true, force: true });
