@@ -158,7 +158,7 @@ export default {
                   'tree-selected': selectedPaths.has(entry.path),
                   'drag-over': dragState.dropTarget === entry.path && entry.type === 'directory'
                 }"
-                :style="{ paddingLeft: (8 + entry.depth * 16) + 'px' }"
+                :style="{ paddingLeft: (6 + entry.depth * 10) + 'px' }"
                 @click="onTreeItemClick(entry, $event)"
                 @contextmenu.prevent="showContextMenu($event, entry)"
                 :draggable="!isMobile"
@@ -299,21 +299,25 @@ export default {
           </template>
           <!-- Office 文件预览 -->
           <div v-else-if="activeFile.fileType === 'office'" class="file-preview-container">
-            <div v-if="activeFile.previewLoading" class="preview-loading">
-              <span class="spinner-mini"></span> {{ $t('files.loadingPreview') }}
-            </div>
-            <iframe v-else-if="activeFile.previewUrl" :src="activeFile.previewUrl" class="file-preview-iframe" allowfullscreen></iframe>
-            <div v-else-if="activeFile.localPreviewReady" ref="officePreviewContainer" class="office-local-preview"></div>
-            <div v-else-if="activeFile.previewError" class="preview-error">{{ activeFile.previewError }}</div>
+            <div v-if="activeFile.previewError" class="preview-error">{{ activeFile.previewError }}</div>
+            <template v-else>
+              <div v-if="activeFile.previewLoading" class="preview-loading">
+                <span class="spinner-mini"></span> {{ $t('files.loadingPreview') }}
+              </div>
+              <iframe v-if="activeFile.previewUrl && !activeFile.previewLoading" :src="activeFile.previewUrl" class="file-preview-iframe" allowfullscreen></iframe>
+              <div v-if="activeFile.localPreviewReady" v-show="!activeFile.previewLoading" ref="officePreviewContainer" class="office-local-preview"></div>
+            </template>
           </div>
           <!-- PDF 预览 -->
           <div v-else-if="activeFile.fileType === 'pdf'" class="file-preview-container">
-            <div v-if="!activeFile.blobUrl" class="preview-loading"><span class="spinner-mini"></span> {{ $t('files.loadingPreview') }}</div>
+            <div v-if="activeFile.previewError" class="preview-error">{{ activeFile.previewError }}</div>
+            <div v-else-if="activeFile.previewLoading || !activeFile.blobUrl" class="preview-loading"><span class="spinner-mini"></span> {{ $t('files.loadingPreview') }}</div>
             <iframe v-else :src="activeFile.blobUrl" class="file-preview-iframe"></iframe>
           </div>
           <!-- 图片预览 -->
           <div v-else-if="activeFile.fileType === 'image'" class="file-preview-container">
-            <div v-if="!activeFile.blobUrl" class="preview-loading"><span class="spinner-mini"></span> {{ $t('files.loadingPreview') }}</div>
+            <div v-if="activeFile.previewError" class="preview-error">{{ activeFile.previewError }}</div>
+            <div v-else-if="activeFile.previewLoading || !activeFile.blobUrl" class="preview-loading"><span class="spinner-mini"></span> {{ $t('files.loadingPreview') }}</div>
             <img v-else :src="activeFile.blobUrl" class="file-preview-image" />
           </div>
         </template>
@@ -655,7 +659,7 @@ export default {
       tree, fp, qo, ops,
       mdPreviewMode: preview.mdPreviewMode,
       renderOfficeLocal: preview.renderOfficeLocal,
-      editorContainer, debugStatus: editor.debugStatus,
+      editorContainer, debugStatus: editor.debugStatus, t,
       routeKey: props.routeKey,
       workspaceGeneration: props.workspaceGeneration,
     });
@@ -796,6 +800,7 @@ export default {
     });
 
     Vue.onUnmounted(() => {
+      tabs.saveTabsState(store.currentConversation);
       window.removeEventListener('workbench-message', ws.handleWorkbenchMessage);
       window.removeEventListener('workbench-open-file-in-active-view', ws.handleOpenFile);
       window.removeEventListener('conversation-deleted', tabs.handleConversationDeleted);

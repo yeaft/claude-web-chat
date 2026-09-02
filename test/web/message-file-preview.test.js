@@ -111,8 +111,10 @@ describe('Workbench capability launcher', () => {
     document.body.innerHTML = '';
   });
 
-  it('opens on a four-capability launcher instead of persistent tabs', () => {
+  it('opens Files by default and keeps the four-capability launcher available', async () => {
     const wrapper = mountWorkbench();
+    expect(wrapper.get('.files-tab-stub').isVisible()).toBe(true);
+    await wrapper.get('.workbench-view-close').trigger('click');
 
     const cards = wrapper.findAll('.workbench-capability-card');
     expect(cards.map(card => card.attributes('data-workbench-capability')))
@@ -123,12 +125,13 @@ describe('Workbench capability launcher', () => {
     expect(wrapper.get('[data-workbench-capability="terminal"] .workbench-capability-status').text()).toBe('workbench.available');
     expect(wrapper.get('[data-workbench-capability="browser"] .workbench-capability-status').text()).toBe('workbench.unavailable');
     expect(wrapper.get('[data-workbench-capability="browser"]').attributes('disabled')).toBeUndefined();
-    expect(capabilityMounts).toEqual([]);
+    expect(capabilityMounts.map(entry => entry.name)).toEqual(['files']);
     wrapper.unmount();
   });
 
   it('lazily opens one route-scoped capability and restores keyboard focus on close', async () => {
     const wrapper = mountWorkbench();
+    await wrapper.get('.workbench-view-close').trigger('click');
     const terminalCard = wrapper.get('[data-workbench-capability="terminal"]');
     terminalCard.element.focus();
 
@@ -144,7 +147,7 @@ describe('Workbench capability launcher', () => {
         '/workspace/a',
       ),
     });
-    expect(capabilityMounts.map(entry => entry.name)).toEqual(['terminal']);
+    expect(capabilityMounts.map(entry => entry.name)).toEqual(['files', 'terminal']);
     expect(wrapper.get('.workbench-header-title').text()).toBe('workbench.terminal');
     expect(wrapper.find('.workbench-launcher').exists()).toBe(false);
     expect(document.activeElement).toBe(wrapper.get('.workbench-view-close').element);
@@ -160,8 +163,9 @@ describe('Workbench capability launcher', () => {
     wrapper.unmount();
   });
 
-  it('resets and isolates activated capabilities across same-Agent Session routes', async () => {
+  it('restores and isolates active capabilities across same-Agent Session routes', async () => {
     const wrapper = mountWorkbench();
+    await wrapper.get('.workbench-view-close').trigger('click');
     await wrapper.get('[data-workbench-capability="terminal"]').trigger('click');
     await Vue.nextTick();
     expect(wrapper.get('.terminal-tab-stub').attributes('data-route-key')).toBe('yeaft:agent-1:session-a');
@@ -173,9 +177,10 @@ describe('Workbench capability launcher', () => {
     };
     workbenchStore.effectiveWorkDir = '/workspace/b';
     await Vue.nextTick();
-    expect(wrapper.get('.workbench-launcher').isVisible()).toBe(true);
+    expect(wrapper.get('.files-tab-stub').attributes('data-route-key')).toBe('yeaft:agent-1:session-b');
     expect(wrapper.find('.terminal-tab-stub').exists()).toBe(false);
 
+    await wrapper.get('.workbench-view-close').trigger('click');
     await wrapper.get('[data-workbench-capability="git"]').trigger('click');
     await Vue.nextTick();
     expect(wrapper.get('.git-tab-stub').attributes()).toMatchObject({
@@ -187,10 +192,18 @@ describe('Workbench capability launcher', () => {
         '/workspace/b',
       ),
     });
-    expect(capabilityMounts.map(entry => `${entry.name}:${entry.routeKey}`)).toEqual([
-      'terminal:yeaft:agent-1:session-a',
-      'git:yeaft:agent-1:session-b',
-    ]);
+    const mountedCapabilities = capabilityMounts.map(entry => `${entry.name}:${entry.routeKey}`);
+    expect(mountedCapabilities).toContain('files:yeaft:agent-1:session-a');
+    expect(mountedCapabilities).toContain('terminal:yeaft:agent-1:session-a');
+    expect(mountedCapabilities).toContain('files:yeaft:agent-1:session-b');
+    expect(mountedCapabilities).toContain('git:yeaft:agent-1:session-b');
+
+    workbenchStore.activeSessionRoute = {
+      runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-a',
+    };
+    workbenchStore.effectiveWorkDir = '/workspace/a';
+    await Vue.nextTick();
+    expect(wrapper.get('.terminal-tab-stub').attributes('data-route-key')).toBe('yeaft:agent-1:session-a');
     wrapper.unmount();
   });
 
@@ -219,6 +232,7 @@ describe('Workbench capability launcher', () => {
 
   it('keeps Browser discoverable and distinguishes setup-required from unsupported', async () => {
     const unsupported = mountWorkbench();
+    await unsupported.get('.workbench-view-close').trigger('click');
     await unsupported.get('[data-workbench-capability="browser"]').trigger('click');
     expect(unsupported.get('.workbench-browser-view').text()).toContain('workbench.browserUnavailable');
     expect(unsupported.find('video').exists()).toBe(false);
@@ -230,6 +244,7 @@ describe('Workbench capability launcher', () => {
     workbenchStore.browserRuntimeSetupProtocolSupported = true;
     workbenchStore.capabilities = ['terminal', 'file_editor', 'workbench_session_routes', 'browser_runtime_setup'];
     const setup = mountWorkbench();
+    await setup.get('.workbench-view-close').trigger('click');
     expect(setup.get('[data-workbench-capability="browser"] .workbench-capability-status').text())
       .toBe('workbench.enableRequired');
     await setup.get('[data-workbench-capability="browser"]').trigger('click');
@@ -239,7 +254,7 @@ describe('Workbench capability launcher', () => {
     setup.unmount();
   });
 
-  it('routes a message file-open event directly to Files and resets on reopen', async () => {
+  it('routes a message file-open event directly to Files and preserves it on reopen', async () => {
     const wrapper = mountWorkbench();
 
     window.dispatchEvent(new CustomEvent('open-file-in-explorer', { detail: {
@@ -255,7 +270,7 @@ describe('Workbench capability launcher', () => {
     await Vue.nextTick();
     workbenchStore.workbenchExpanded = true;
     await Vue.nextTick();
-    expect(wrapper.get('.workbench-launcher').isVisible()).toBe(true);
+    expect(wrapper.get('.files-tab-stub').isVisible()).toBe(true);
     wrapper.unmount();
   });
 
@@ -264,6 +279,7 @@ describe('Workbench capability launcher', () => {
     workbenchStore.workbenchRouteProtocolSupported = false;
     const wrapper = mountWorkbench();
 
+    await wrapper.get('.workbench-view-close').trigger('click');
     await wrapper.get('[data-workbench-capability="git"]').trigger('click');
     expect(wrapper.get('.workbench-capability-empty').text()).toContain('workbench.capabilityUnavailable');
     expect(wrapper.find('.git-tab-stub').exists()).toBe(false);
@@ -425,7 +441,7 @@ describe('message file preview', () => {
     wrapper.unmount();
   });
 
-  it('wires the right panel to the complete Files experience with a collapsed tree by default', () => {
+  it('wires the right panel to the complete Files experience with a visible compact tree by default', () => {
     const filesTab = readWeb('components/FilesTab.js');
     const workbench = readWeb('components/WorkbenchPanel.js');
     const browserPanel = readWeb('components/BrowserPanel.js');
@@ -463,7 +479,10 @@ describe('message file preview', () => {
     expect(browserPanel).toContain("code === 'browser_ice_servers_missing'");
     expect(browserPanel).toContain("t('workbench.browserIceConnectionFailed')");
     expect(capabilityHost).toContain("files: 'FilesTab'");
-    expect(capabilityHost).toContain(':tree-initially-visible="activeCapability === \'files\' ? false : undefined"');
+    expect(capabilityHost).not.toContain('tree-initially-visible');
+    expect(filesTab).toContain("paddingLeft: (6 + entry.depth * 10) + 'px'");
+    expect(workbench).toContain("const next = saved === undefined ? 'files' : saved");
+    expect(workbench).toContain('capabilityState.set(previousContextKey, activeCapability.value)');
     expect(workbench).toContain('class="workbench-header-action workbench-maximize-btn"');
     expect(workbench).toContain(':aria-label="store.workbenchMaximized ? $t(\'workbench.restore\') : $t(\'workbench.maximize\')"');
     expect(workbench).toContain('d="M7 14H5v5h5v-2H7v-3z');

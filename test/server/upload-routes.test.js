@@ -115,7 +115,14 @@ describe('upload routes', () => {
       'X-Content-Type-Options': 'nosniff',
       'Cache-Control': 'no-store',
     });
+    expect(headers['Content-Disposition']).toBe('inline; filename="page.html"');
     expect(res.send).toHaveBeenCalledWith(Buffer.from('<script>alert(1)</script>'));
+
+    routes.get('/api/preview/:fileId')({
+      params: { fileId: 'preview-1' },
+      query: { token: 'secret', download: '1' },
+    }, res);
+    expect(headers['Content-Disposition']).toBe('attachment; filename="page.html"');
     previewFiles.delete('preview-1');
   });
 

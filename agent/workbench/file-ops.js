@@ -6,6 +6,8 @@ import ctx from '../context.js';
 import { resolveAndValidatePath, BINARY_EXTENSIONS } from './utils.js';
 import { sendWorkbenchResult } from './request-routing.js';
 
+export const MAX_WORKBENCH_PREVIEW_BYTES = 20 * 1024 * 1024;
+
 export async function handleReadFile(msg) {
   const { conversationId, filePath, requestId, _requestUserId, _requestClientId } = msg;
   console.log('[Agent] handleReadFile received:', { filePath, conversationId, workDir: msg.workDir });
@@ -18,7 +20,18 @@ export async function handleReadFile(msg) {
     const mimeType = BINARY_EXTENSIONS[ext];
 
     if (mimeType) {
-      // Binary file: read as Buffer, send base64
+      const fileStat = await stat(resolved);
+      if (!msg.download && fileStat.size > MAX_WORKBENCH_PREVIEW_BYTES) {
+        const error = new Error(`File is too large to preview (${(fileStat.size / 1024 / 1024).toFixed(1)} MB). The preview limit is 20 MB.`);
+        error.code = 'FILE_PREVIEW_TOO_LARGE';
+        error.details = {
+          sizeBytes: fileStat.size,
+          limitBytes: MAX_WORKBENCH_PREVIEW_BYTES,
+        };
+        throw error;
+      }
+      // Binary file: read as Buffer, send base64. Downloads bypass only the
+      // rendering limit; the WebSocket transport still enforces its own cap.
       const buffer = await readFile(resolved);
       console.log('[Agent] Sending binary file_content:', { filePath: resolved, size: buffer.length, mimeType, conversationId });
       sendWorkbenchResult(ctx, msg, {
@@ -79,7 +92,9 @@ export async function handleReadFile(msg) {
       filePath,
       requestedFilePath: filePath,
       content: '',
-      error: e.message
+      error: e.message,
+      errorCode: e.code || null,
+      errorDetails: e.details || null
     });
   }
 }

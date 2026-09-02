@@ -11,7 +11,7 @@ export default {
   components: { WorkbenchCapabilityHost, BrowserPanel },
   template: `
     <div ref="panelRoot" class="workbench-panel" :class="{ expanded: store.workbenchExpanded, maximized: store.workbenchMaximized }" :style="panelStyle">
-      <div class="workbench-content" v-if="store.workbenchExpanded">
+      <div class="workbench-content" v-show="store.workbenchExpanded">
         <header class="workbench-header">
           <button
             v-if="activeCapability"
@@ -192,6 +192,7 @@ export default {
 
     const activeCapability = Vue.ref(null);
     const activatedCapabilities = Vue.reactive(new Set());
+    const capabilityState = new Map();
     const lastCapabilityTrigger = Vue.ref(null);
     const activeCapabilityDefinition = Vue.computed(() => (
       capabilityCards.value.find(capability => capability.id === activeCapability.value) || null
@@ -210,8 +211,26 @@ export default {
         : null;
     });
 
-    const capabilityActivationKey = capabilityId => `${activeRouteKey.value}\u0000${capabilityId}`;
+    const capabilityActivationKey = capabilityId => `${workbenchContextKey.value}\u0000${capabilityId}`;
     const isCapabilityActivated = capabilityId => activatedCapabilities.has(capabilityActivationKey(capabilityId));
+    const rememberCapability = () => {
+      if (!workbenchContextKey.value) return;
+      capabilityState.set(workbenchContextKey.value, activeCapability.value);
+    };
+    const restoreCapability = () => {
+      const saved = capabilityState.get(workbenchContextKey.value);
+      const next = saved === undefined ? 'files' : saved;
+      if (!next) {
+        activeCapability.value = null;
+        return;
+      }
+      if (!capabilityCards.value.some(capability => capability.id === next)) {
+        activeCapability.value = null;
+        return;
+      }
+      activatedCapabilities.add(capabilityActivationKey(next));
+      activeCapability.value = next;
+    };
 
     const focusCapabilityClose = () => {
       Vue.nextTick(() => capabilityCloseButton.value?.focus());
@@ -226,6 +245,7 @@ export default {
       lastCapabilityTrigger.value = capabilityId;
       activatedCapabilities.add(capabilityActivationKey(capabilityId));
       activeCapability.value = capabilityId;
+      rememberCapability();
       if (focus) focusCapabilityClose();
       return true;
     };
@@ -236,6 +256,7 @@ export default {
         : options?.restoreFocus !== false;
       const capabilityId = activeCapability.value || lastCapabilityTrigger.value;
       activeCapability.value = null;
+      rememberCapability();
       if (!restoreFocus || !capabilityId) return;
       Vue.nextTick(() => {
         panelRoot.value
@@ -245,24 +266,16 @@ export default {
     };
 
     Vue.watch(
-      () => store.workbenchExpanded,
-      (expanded, wasExpanded) => {
-        if (expanded && !wasExpanded) closeCapability({ restoreFocus: false });
-      },
-      { flush: 'sync' },
-    );
-
-    Vue.watch(
       workbenchContextKey,
       (contextKey, previousContextKey) => {
         if (contextKey === previousContextKey) return;
+        if (previousContextKey) capabilityState.set(previousContextKey, activeCapability.value);
         const focusWasInsideWorkbench = !!panelRoot.value?.contains(document.activeElement);
-        closeCapability({ restoreFocus: false });
-        activatedCapabilities.clear();
         lastCapabilityTrigger.value = null;
-        if (focusWasInsideWorkbench) Vue.nextTick(() => launcherTitle.value?.focus());
+        restoreCapability();
+        if (focusWasInsideWorkbench) focusCapabilityClose();
       },
-      { flush: 'sync' },
+      { flush: 'sync', immediate: true },
     );
 
     const panelWidth = Vue.ref(0);

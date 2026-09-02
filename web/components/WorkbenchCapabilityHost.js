@@ -22,7 +22,6 @@ export default {
         v-if="activeComponent"
         :key="activeCapability"
         v-bind="routeProps"
-        :tree-initially-visible="activeCapability === 'files' ? false : undefined"
       />
     </KeepAlive>
   `,

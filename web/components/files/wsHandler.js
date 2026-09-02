@@ -19,7 +19,7 @@ export function createWsHandler({
   // File operations
   ops,
   // Preview
-  mdPreviewMode, renderOfficeLocal, editorContainer, debugStatus,
+  mdPreviewMode, renderOfficeLocal, editorContainer, debugStatus, t = key => key,
   routeKey = '',
   workspaceGeneration = '',
 }) {
@@ -58,33 +58,24 @@ export function createWsHandler({
       }
       case 'file_content': {
         const nFilePath = normalizePath(msg.requestedFilePath || msg.filePath);
-        const responseTab = openFiles.value.find(f => f.path === nFilePath
-          && (!f.agentId || !msg.agentId || f.agentId === msg.agentId)
-          && (!f.conversationId || !msg.conversationId || f.conversationId === msg.conversationId));
-        if (!responseTab || (responseTab.requestId && msg.requestId && msg.requestId !== responseTab.requestId)) return;
-        fileLoading.value = false;
-        if (msg.error) {
-          debugStatus.value = `Error: ${msg.error}`;
-          ops.clearPendingDownload();
-          responseTab.previewLoading = false;
-          responseTab.previewError = msg.error;
-          return;
-        }
-
-        // Handle pending download
-        if (ops.getPendingDownload() && normalizePath(ops.getPendingDownload()) === nFilePath) {
-          ops.clearPendingDownload();
+        const downloadPath = ops.takePendingDownload(msg.requestId);
+        if (downloadPath) {
+          if (msg.error) {
+            ops.showFileOpFeedback?.(false, msg.error);
+            return;
+          }
           try {
+            const downloadName = normalizePath(downloadPath).split('/').pop() || 'download';
             if (msg.binary) {
-              const dlUrl = `${location.protocol}//${location.host}/api/preview/${msg.fileId}?token=${msg.previewToken}`;
+              const dlUrl = `${location.protocol}//${location.host}/api/preview/${msg.fileId}?token=${msg.previewToken}&download=1`;
               const a = document.createElement('a');
-              a.href = dlUrl; a.download = nFilePath.split('/').pop() || 'download';
+              a.href = dlUrl; a.download = downloadName;
               document.body.appendChild(a); a.click(); document.body.removeChild(a);
             } else {
               const blob = new Blob([msg.content || ''], { type: 'application/octet-stream' });
               const url = URL.createObjectURL(blob);
               const a = document.createElement('a');
-              a.href = url; a.download = nFilePath.split('/').pop() || 'download';
+              a.href = url; a.download = downloadName;
               document.body.appendChild(a); a.click(); document.body.removeChild(a);
               URL.revokeObjectURL(url);
             }
@@ -92,27 +83,69 @@ export function createWsHandler({
           return;
         }
 
+        const responseTab = openFiles.value.find(f => f.path === nFilePath
+          && (!f.agentId || !msg.agentId || f.agentId === msg.agentId)
+          && (!f.conversationId || !msg.conversationId || f.conversationId === msg.conversationId));
+        if (!responseTab || (responseTab.requestId && msg.requestId && msg.requestId !== responseTab.requestId)) return;
+        fileLoading.value = false;
+        if (msg.error) {
+          const previewError = msg.errorCode === 'FILE_PREVIEW_TOO_LARGE'
+            ? t('files.previewTooLarge', {
+                size: ((msg.errorDetails?.sizeBytes || 0) / 1024 / 1024).toFixed(1),
+                limit: ((msg.errorDetails?.limitBytes || 20 * 1024 * 1024) / 1024 / 1024).toFixed(0),
+              })
+            : msg.error;
+          debugStatus.value = `Error: ${previewError}`;
+          responseTab.previewLoading = false;
+          responseTab.previewError = previewError;
+          return;
+        }
+
         const tabIndex = openFiles.value.indexOf(responseTab);
         if (tabIndex >= 0) {
           const file = responseTab;
           if (msg.binary) {
-            file.previewLoading = false;
             const previewBaseUrl = `${location.protocol}//${location.host}/api/preview/${msg.fileId}?token=${msg.previewToken}`;
             const ft = file.fileType || getFileType(file.name);
             file.fileType = ft;
             if (ft === 'pdf' || ft === 'image') {
-              fetch(previewBaseUrl).then(r => r.blob()).then(blob => { file.blobUrl = URL.createObjectURL(blob); })
-                .catch(e => { file.previewError = e.message; });
+              fetch(previewBaseUrl)
+                .then(r => {
+                  if (!r.ok) throw new Error(`Preview request failed (${r.status})`);
+                  return r.blob();
+                })
+                .then(blob => { file.blobUrl = URL.createObjectURL(blob); })
+                .catch(e => { file.previewError = e.message; })
+                .finally(() => { file.previewLoading = false; });
             } else if (ft === 'office') {
               const mode = localStorage.getItem('officePreviewMode') || 'local';
               if (mode === 'online') {
                 file.previewUrl = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(previewBaseUrl);
+                file.previewLoading = false;
               } else {
-                fetch(previewBaseUrl).then(r => r.arrayBuffer()).then(buf => {
-                  file._arrayBuffer = buf; file.localPreviewReady = true;
-                  if (tabIndex === activeFileIndex.value) Vue.nextTick(() => renderOfficeLocal(file));
-                }).catch(e => { file.previewError = e.message; });
+                fetch(previewBaseUrl)
+                  .then(r => {
+                    if (!r.ok) throw new Error(`Preview request failed (${r.status})`);
+                    return r.arrayBuffer();
+                  })
+                  .then(buf => {
+                    file._arrayBuffer = buf;
+                    file.localPreviewReady = true;
+                    if (tabIndex === activeFileIndex.value) {
+                      Vue.nextTick(() => {
+                        if (tabIndex === activeFileIndex.value) renderOfficeLocal(file);
+                        else file.previewLoading = false;
+                      });
+                    } else {
+                      file.previewLoading = false;
+                    }
+                  }).catch(e => {
+                    file.previewError = e.message;
+                    file.previewLoading = false;
+                  });
               }
+            } else {
+              file.previewLoading = false;
             }
             saveTabsState(store.currentConversation);
             return;
