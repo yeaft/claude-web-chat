@@ -55,36 +55,38 @@ export default {
         <div class="agent-dropdown-list">
           <div v-for="agent in onlineAgents" :key="agent.id" class="agent-dropdown-item">
             <span class="status-dot" :class="{ online: agent.online, restarting: restartingAgents[agent.id], upgrading: upgradingAgents[agent.id] }"></span>
-            <span class="agent-dropdown-name">{{ agent.name }}</span>
-            <span class="agent-dropdown-meta">
-              <span class="agent-dropdown-status" v-if="restartingAgents[agent.id]">{{ tr('chat.agent.restarting', 'Restarting…') }}</span>
-              <span class="agent-dropdown-status" v-else-if="upgradingAgents[agent.id]">{{ tr('chat.agent.upgrading', 'Upgrading…') }}</span>
-              <span class="agent-dropdown-version" v-else-if="agent.version">v{{ agent.version }}</span>
+            <span class="agent-dropdown-name" :title="agent.name">{{ agent.name }}</span>
+            <span class="agent-dropdown-trailing">
+              <span class="agent-dropdown-meta">
+                <span class="agent-dropdown-status" v-if="restartingAgents[agent.id]">{{ tr('chat.agent.restarting', 'Restarting…') }}</span>
+                <span class="agent-dropdown-status" v-else-if="upgradingAgents[agent.id]">{{ tr('chat.agent.upgrading', 'Upgrading…') }}</span>
+                <span class="agent-dropdown-version" v-else-if="agent.version">v{{ agent.version }}</span>
+              </span>
+              <span v-if="showAgentActions" class="agent-dropdown-actions">
+                <button
+                  type="button"
+                  class="agent-dropdown-action-btn agent-dropdown-upgrade-btn"
+                  @click.stop="$emit('upgrade-agent', agent.id)"
+                  :disabled="!agent.online || restartingAgents[agent.id] || upgradingAgents[agent.id]"
+                  :title="tr('chat.agent.upgrade', 'Upgrade')"
+                  :aria-label="tr('chat.agent.upgrade', 'Upgrade')"
+                >
+                  <span v-if="upgradingAgents[agent.id]" class="spinner-mini"></span>
+                  <svg v-else viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z"/></svg>
+                </button>
+                <button
+                  type="button"
+                  class="agent-dropdown-action-btn agent-dropdown-restart-btn"
+                  @click.stop="$emit('restart-agent', agent.id)"
+                  :disabled="!agent.online || restartingAgents[agent.id] || upgradingAgents[agent.id]"
+                  :title="tr('chat.agent.restart', 'Restart')"
+                  :aria-label="tr('chat.agent.restart', 'Restart')"
+                >
+                  <span v-if="restartingAgents[agent.id]" class="spinner-mini"></span>
+                  <svg v-else viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+                </button>
+              </span>
             </span>
-            <template v-if="showAgentActions">
-              <button
-                type="button"
-                class="agent-dropdown-action-btn agent-dropdown-upgrade-btn"
-                @click.stop="$emit('upgrade-agent', agent.id)"
-                :disabled="!agent.online || restartingAgents[agent.id] || upgradingAgents[agent.id]"
-                :title="tr('chat.agent.upgrade', 'Upgrade')"
-                :aria-label="tr('chat.agent.upgrade', 'Upgrade')"
-              >
-                <span v-if="upgradingAgents[agent.id]" class="spinner-mini"></span>
-                <svg v-else viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z"/></svg>
-              </button>
-              <button
-                type="button"
-                class="agent-dropdown-action-btn agent-dropdown-restart-btn"
-                @click.stop="$emit('restart-agent', agent.id)"
-                :disabled="!agent.online || restartingAgents[agent.id] || upgradingAgents[agent.id]"
-                :title="tr('chat.agent.restart', 'Restart')"
-                :aria-label="tr('chat.agent.restart', 'Restart')"
-              >
-                <span v-if="restartingAgents[agent.id]" class="spinner-mini"></span>
-                <svg v-else viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
-              </button>
-            </template>
           </div>
           <div v-if="onlineAgents.length === 0" class="agent-dropdown-empty">{{ tr('chat.agent.none', 'No agents online') }}</div>
         </div>
