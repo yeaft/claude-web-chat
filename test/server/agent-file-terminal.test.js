@@ -1480,6 +1480,59 @@ describe('Agent file terminal forwarding', () => {
     globalThis.window = previousWindow;
   });
 
+  it.each(['resolves', 'rejects'])('keeps the active Office preview authoritative when a stale render %s', async outcome => {
+    globalThis.Vue = Vue;
+    const previousWindow = globalThis.window;
+    const pendingRenders = [];
+    globalThis.window = {
+      docx: {
+        renderAsync: vi.fn((buffer, container) => new Promise((resolve, reject) => {
+          pendingRenders.push({ buffer, container, resolve, reject });
+        })),
+      },
+    };
+    const fileA = {
+      name: 'a.docx', _arrayBuffer: new ArrayBuffer(8),
+      previewLoading: false, previewError: null,
+    };
+    const fileB = {
+      name: 'b.docx', _arrayBuffer: new ArrayBuffer(16),
+      previewLoading: false, previewError: null,
+    };
+    const activeFile = Vue.ref(fileA);
+    const preview = createFilePreview(activeFile, {
+      editorContainer: Vue.ref(null),
+      createEditor: vi.fn(),
+      t: key => key,
+    });
+    const liveContainer = {
+      innerHTML: '',
+      ownerDocument: { createElement: () => ({ innerHTML: '' }) },
+    };
+    preview.officePreviewContainer.value = liveContainer;
+
+    const renderA = preview.renderOfficeLocal(fileA);
+    activeFile.value = fileB;
+    const renderB = preview.renderOfficeLocal(fileB);
+    expect(pendingRenders).toHaveLength(2);
+
+    pendingRenders[1].container.innerHTML = 'preview B';
+    pendingRenders[1].resolve();
+    await expect(renderB).resolves.toBe(true);
+    expect(liveContainer.innerHTML).toBe('preview B');
+    expect(fileB.previewLoading).toBe(false);
+    expect(fileB.previewError).toBeNull();
+
+    pendingRenders[0].container.innerHTML = 'preview A';
+    if (outcome === 'rejects') pendingRenders[0].reject(new Error('stale A failed'));
+    else pendingRenders[0].resolve();
+    await expect(renderA).resolves.toBe(false);
+    expect(liveContainer.innerHTML).toBe('preview B');
+    expect(fileB.previewLoading).toBe(false);
+    expect(fileB.previewError).toBeNull();
+    globalThis.window = previousWindow;
+  });
+
   it('consumes a correlated download response without requiring an open file tab', () => {
     globalThis.Vue = Vue;
     globalThis.location = { protocol: 'https:', host: 'yeaft.test' };
