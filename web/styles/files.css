@@ -822,9 +822,19 @@
   flex-shrink: 0;
 }
 
-.file-tab:hover {
+.file-tab:hover,
+.file-tab:focus-visible {
   background: var(--sidebar-hover);
   color: var(--text-primary);
+}
+
+.file-tab:focus-visible,
+.file-tabs-list-btn:focus-visible,
+.file-open-tab-select:focus-visible,
+.file-open-tab-close:focus-visible,
+.files-tab .ctx-menu-item:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
 }
 
 .file-tab.active {
@@ -856,6 +866,7 @@
 }
 
 .file-tab:hover .file-tab-close,
+.file-tab:focus-within .file-tab-close,
 .file-tab.active .file-tab-close {
   opacity: 1;
 }

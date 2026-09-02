@@ -734,13 +734,22 @@ describe('Agent file terminal forwarding', () => {
 
     expect(component).toContain('class="file-tabs-scroll"');
     expect(component).toContain('class="file-tabs-list-btn"');
+    expect(component).toContain('class="file-tabs-scroll" role="tablist"');
+    expect(component).toContain('role="tab"');
+    expect(component).toContain(':aria-selected="index === activeFileIndex"');
+    expect(component).toContain(':tabindex="index === activeFileIndex ? 0 : -1"');
+    expect(component).toContain('@keydown="handleFileTabKeydown($event, index)"');
     expect(component).toContain('@contextmenu.prevent="showFileTabContextMenu($event, index)"');
+    expect(component).toContain('@keydown="handleMenuKeydown"');
+    expect(component).toContain("event.key === 'ContextMenu'");
+    expect(component).toContain("event.key === 'Escape'");
     expect(component).toContain("runTabMenuAction('left')");
     expect(component).toContain("runTabMenuAction('right')");
     expect(component).toContain("runTabMenuAction('others')");
     expect(component).toContain("runTabMenuAction('all')");
     expect(css).toMatch(/\.file-tabs-scroll\s*\{[^}]*overflow-x:\s*auto;/s);
     expect(css).toMatch(/\.file-tabs-actions\s*\{[^}]*flex-shrink:\s*0;/s);
+    expect(css).toMatch(/\.file-tab:focus-visible[\s\S]*outline:\s*2px solid var\(--accent-blue\);/);
   });
 
   it('routes an open event with its frozen Agent and conversation identity', () => {

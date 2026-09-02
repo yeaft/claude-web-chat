@@ -149,8 +149,9 @@ test.describe('Workbench', () => {
       }
     }, { agentId: mockAgent.agentId, routeKey });
 
-    const tabs = panel.locator('.file-tab');
+    const tabs = panel.getByRole('tab');
     await expect(tabs).toHaveCount(12);
+    await expect(panel.getByRole('tablist')).toBeVisible();
     const listButton = panel.locator('.file-tabs-list-btn');
     await expect(listButton).toBeVisible();
     expect(await listButton.evaluate(element => {
@@ -159,26 +160,57 @@ test.describe('Workbench', () => {
       return rect.right <= panelRect.right && rect.left >= panelRect.left;
     })).toBe(true);
 
-    await listButton.click();
+    await listButton.focus();
+    await listButton.press('ArrowDown');
     const openTabsMenu = panel.locator('.file-open-tabs-menu');
     await expect(openTabsMenu).toBeVisible();
     await expect(openTabsMenu.locator('.file-open-tab-label')).toHaveCount(12);
-    await openTabsMenu.locator('.file-open-tab-select').nth(3).click();
-    await expect(tabs.nth(3)).toHaveClass(/active/);
+    await expect(openTabsMenu.getByRole('menuitem').first()).toBeFocused();
+    await openTabsMenu.getByRole('menuitem').first().press('End');
+    await expect(openTabsMenu.getByRole('menuitem').last()).toBeFocused();
+    await openTabsMenu.getByRole('menuitem').last().press('Escape');
+    await expect(openTabsMenu).toHaveCount(0);
+    await expect(listButton).toBeFocused();
 
-    await listButton.click();
-    await openTabsMenu.getByRole('menuitem', { name: 'Close a-very-long-open-file-name-11.md' }).click();
-    await expect(tabs).toHaveCount(11);
+    await listButton.press('ArrowUp');
+    await expect(openTabsMenu.getByRole('menuitem').last()).toBeFocused();
+    await openTabsMenu.getByRole('menuitem').last().press('Home');
+    await expect(openTabsMenu.getByRole('menuitem').first()).toBeFocused();
+    await openTabsMenu.getByRole('menuitem').first().press('Enter');
+    await expect(tabs.nth(0)).toHaveClass(/active/);
+    await expect(listButton).toBeFocused();
 
-    await tabs.nth(4).click({ button: 'right' });
+    await listButton.press('Enter');
+    await expect(openTabsMenu.getByRole('menuitem').first()).toBeFocused();
+    await openTabsMenu.getByRole('menuitem').first().press('Tab');
+    await expect(openTabsMenu).toHaveCount(0);
+    await expect(panel.locator('.zoom-btn').first()).toBeFocused();
+
+    await tabs.nth(0).focus();
+    await tabs.nth(0).press('ArrowRight');
+    await expect(tabs.nth(1)).toBeFocused();
+    await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true');
+    await tabs.nth(1).press('End');
+    await expect(tabs.nth(11)).toBeFocused();
+    await tabs.nth(11).press('Home');
+    await expect(tabs.nth(0)).toBeFocused();
+
+    await tabs.nth(4).focus();
+    await tabs.nth(4).press('Shift+F10');
     const contextMenu = panel.locator('.ctx-menu:visible');
+    await expect(contextMenu.getByRole('menuitem', { name: 'Close', exact: true })).toBeFocused();
     await expect(contextMenu.getByRole('menuitem', { name: 'Close to the Left' })).toBeEnabled();
     await expect(contextMenu.getByRole('menuitem', { name: 'Close to the Right' })).toBeEnabled();
-    await contextMenu.getByRole('menuitem', { name: 'Close to the Right' }).click();
+    await contextMenu.getByRole('menuitem', { name: 'Close', exact: true }).press('End');
+    await expect(contextMenu.getByRole('menuitem', { name: 'Close All' })).toBeFocused();
+    await contextMenu.getByRole('menuitem', { name: 'Close All' }).press('ArrowUp');
+    await expect(contextMenu.getByRole('menuitem', { name: 'Close to the Right' })).toBeFocused();
+    await contextMenu.getByRole('menuitem', { name: 'Close to the Right' }).press('Enter');
     await expect(tabs).toHaveCount(5);
+    await expect(tabs.nth(4)).toBeFocused();
 
-    await tabs.nth(2).click({ button: 'right' });
-    await panel.locator('.ctx-menu:visible').getByRole('menuitem', { name: 'Close Others' }).click();
+    await tabs.nth(2).press('ContextMenu');
+    await panel.locator('.ctx-menu:visible').getByRole('menuitem', { name: 'Close Others' }).press('Enter');
     await expect(tabs).toHaveCount(1);
   });
 
