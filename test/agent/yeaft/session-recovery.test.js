@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { describe, expect, it, afterEach } from 'vitest';
 import { openSession } from '../../../agent/yeaft/sessions/session-store.js';
 import { repairSessionStore } from '../../../agent/yeaft/sessions/recovery.js';
-import { snapshotSessions } from '../../../agent/yeaft/sessions/session-crud.js';
+import { createSessionFromSpec, scanWorkdirSessions, snapshotSessions } from '../../../agent/yeaft/sessions/session-crud.js';
 
 const roots = [];
 
@@ -24,6 +24,25 @@ afterEach(() => {
 });
 
 describe('Session disk recovery', () => {
+  it('lists Agent-owned Sessions by workDir without depending on sidebar state', () => {
+    const root = tempRoot();
+    const workDir = join(root, 'workspace');
+    mkdirSync(workDir, { recursive: true });
+    const matching = createSessionFromSpec(root, {
+      name: 'Matching', workDir, roster: [],
+    }, { libDir: join(root, 'empty-vps') });
+    createSessionFromSpec(root, {
+      name: 'Other', workDir: join(root, 'other-workspace'), roster: [],
+    }, { libDir: join(root, 'empty-vps') });
+
+    const rows = scanWorkdirSessions(workDir, root);
+
+    expect(rows).toEqual([
+      expect.objectContaining({ id: matching.id, workDir }),
+    ]);
+    expect(rows[0]).not.toHaveProperty('legacyImport');
+  });
+
   it('rebuilds missing metadata from markdown-only session dirs without creating audit transcripts', () => {
     const root = tempRoot();
     const sessionId = 'session_orphan_ABC12345';

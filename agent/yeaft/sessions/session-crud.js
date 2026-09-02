@@ -290,49 +290,49 @@ export function migrateRegisteredWorkDirSessions(yeaftDir) {
 }
 
 /**
- * Scan the `.yeaft/sessions/` directory under `workDir` and return every
- * session meta we can read. Read-only: never touches the registry.
+ * List every Session owned by `yeaftDir` whose normalized workDir matches.
+ * Workdir-local `.yeaft/sessions` is also read as a legacy import fallback;
+ * those rows are marked `legacyImport` and never replace a current row with
+ * the same Session id. The normal Session snapshot may repair its own manifest;
+ * this query never writes the legacy workdir registry.
  *
- * Each returned record carries `workDir` (the normalized path we scanned).
- * This utility deliberately does NOT decorate `alreadyRegistered` — that
- * cross-references the central workdir registry, which is a separate
- * concern owned by the handler / caller (see
- * `handleYeaftScanWorkdirSessions`). Keeping the utility layer-pure makes
- * it usable from contexts that don't have / don't care about the registry
- * (e.g. CLI tools, future per-workdir snapshots).
- *
- * Returns `[]` for missing dir / empty dir / unreadable dir — never throws.
- * Sort is `createdAt` descending (most-recent first) because the restore
- * UI typically cares about "the session I made yesterday".
- *
- * @param {string} workDir — the working directory to scan.
+ * @param {string} workDir working directory to match
+ * @param {string|null} yeaftDir Agent-owned data root; omit for legacy scans
  * @returns {Array<object>}
  */
-export function scanWorkdirSessions(workDir) {
+export function scanWorkdirSessions(workDir, yeaftDir = null) {
   const normalized = normalizeWorkDir(workDir);
   if (!normalized) return [];
+
+  // Session storage is Agent-owned. The workDir-local `.yeaft/sessions`
+  // location below is only a legacy import source; querying a folder must
+  // start from the Agent manifest so sidebar UI metadata cannot hide an
+  // otherwise valid Session from the create/resume picker.
+  const currentSessions = yeaftDir
+    ? snapshotSessions(yeaftDir).filter(meta => normalizeWorkDir(meta.workDir) === normalized)
+    : [];
+  const seen = new Set(currentSessions.map(meta => meta.id));
   const groupYeaftDir = yeaftDirForWorkDir(normalized);
   const root = sessionsRoot(groupYeaftDir);
-  if (!existsSync(root)) return [];
-  const out = [];
-  let entries;
+  const legacySessions = [];
+  let entries = [];
   try {
-    entries = readdirSync(root);
-  } catch {
-    return [];
-  }
+    if (existsSync(root)) entries = readdirSync(root);
+  } catch { /* treat an unreadable legacy root as empty */ }
   for (const name of entries) {
-    if (name.startsWith('.')) continue; // skip .archived-* and dotfiles
+    if (name.startsWith('.') || seen.has(name)) continue;
     const dir = join(root, name);
     try { if (!statSync(dir).isDirectory()) continue; } catch { continue; }
     const meta = loadSessionMeta(dir);
-    if (!meta) continue;
-    out.push({
+    if (!meta || seen.has(meta.id)) continue;
+    legacySessions.push({
       ...meta,
       workDir: normalized,
+      legacyImport: true,
     });
   }
-  return out.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  return [...currentSessions, ...legacySessions]
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
 }
 
 /**
