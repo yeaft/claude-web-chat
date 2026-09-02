@@ -46,7 +46,7 @@ describe('Agent settings surface', () => {
     expect(sidebarCss).not.toMatch(/\.agent-dropdown-trigger\s*\{[^}]*\bfont\s*:/s);
     expect(sidebarCss).toMatch(/\.agent-dropdown-trigger\s*\{[^}]*font-family:\s*inherit;/s);
     expect(sidebarCss).toMatch(/\.agent-dropdown-item\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*8px minmax\(0, 1fr\) 50px 56px;[^}]*column-gap:\s*8px;/s);
-    expect(sidebarCss).toMatch(/\.agent-dropdown-name\s*\{[^}]*min-width:\s*0;[^}]*font-size:\s*12px;[^}]*font-weight:\s*400;/s);
+    expect(sidebarCss).toMatch(/\.agent-dropdown-name\s*\{[^}]*min-width:\s*0;[^}]*font-size:\s*14px;[^}]*font-weight:\s*400;/s);
     expect(sidebarCss).toMatch(/\.agent-dropdown-meta\s*\{[^}]*display:\s*block;[^}]*min-width:\s*0;[^}]*text-align:\s*left;/s);
     expect(sidebarCss).toMatch(/\.agent-dropdown-settings-option\s*\{[^}]*padding:\s*7px 10px 7px 26px;/s);
     expect(sidebarCss).toMatch(/\.agent-dropdown-actions\s*\{[^}]*justify-self:\s*end;[^}]*gap:\s*0;/s);
@@ -69,6 +69,8 @@ describe('Agent settings surface', () => {
     await wrapper.get('.agent-dropdown-trigger').trigger('click');
     const upgrade = wrapper.get('.agent-dropdown-upgrade-btn');
     const restart = wrapper.get('.agent-dropdown-restart-btn');
+    expect(upgrade.get('svg').attributes()).toMatchObject({ width: '14', height: '14' });
+    expect(restart.get('svg').attributes()).toMatchObject({ width: '14', height: '14' });
     expect(upgrade.attributes('disabled')).toBeUndefined();
     expect(restart.attributes('disabled')).toBeUndefined();
     await upgrade.trigger('click');
