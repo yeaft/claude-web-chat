@@ -183,9 +183,10 @@
 }
 
 .agent-dropdown-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) 50px 56px;
   align-items: center;
-  gap: 8px;
+  column-gap: 8px;
   min-height: 48px;
   padding: 8px 10px;
   border-radius: 10px;
@@ -203,16 +204,9 @@
   animation: pulse 1.5s ease-in-out infinite;
 }
 
-.agent-dropdown-identity {
-  display: flex;
-  align-items: baseline;
-  min-width: 0;
-  gap: 4px;
-}
-
 .agent-dropdown-name {
   min-width: 0;
-  font-size: 16px;
+  font-size: 12px;
   font-weight: 400;
   color: var(--text-primary);
   overflow: hidden;
@@ -220,24 +214,16 @@
   white-space: nowrap;
 }
 
-.agent-dropdown-trailing {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  flex: 1 1 auto;
-  gap: 4px;
-}
-
 .agent-dropdown-meta {
-  flex: 0 0 auto;
+  display: block;
   min-width: 0;
-  text-align: right;
+  text-align: left;
 }
 
 .agent-dropdown-version {
   display: block;
   white-space: nowrap;
-  font-size: 10px;
+  font-size: 9px;
   color: var(--text-muted);
   font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
   font-variant-numeric: tabular-nums;
@@ -253,16 +239,16 @@
 .agent-dropdown-actions {
   display: inline-flex;
   align-items: center;
-  flex: 0 0 auto;
-  gap: 2px;
+  justify-self: end;
+  gap: 0;
 }
 
 .agent-dropdown-action-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   border: none;
   border-radius: 8px;
