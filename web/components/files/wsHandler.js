@@ -105,7 +105,6 @@ export function createWsHandler({
         if (tabIndex >= 0) {
           const file = responseTab;
           if (msg.binary) {
-            file.previewLoading = false;
             const previewBaseUrl = `${location.protocol}//${location.host}/api/preview/${msg.fileId}?token=${msg.previewToken}`;
             const ft = file.fileType || getFileType(file.name);
             file.fileType = ft;
@@ -116,11 +115,13 @@ export function createWsHandler({
                   return r.blob();
                 })
                 .then(blob => { file.blobUrl = URL.createObjectURL(blob); })
-                .catch(e => { file.previewError = e.message; });
+                .catch(e => { file.previewError = e.message; })
+                .finally(() => { file.previewLoading = false; });
             } else if (ft === 'office') {
               const mode = localStorage.getItem('officePreviewMode') || 'local';
               if (mode === 'online') {
                 file.previewUrl = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(previewBaseUrl);
+                file.previewLoading = false;
               } else {
                 fetch(previewBaseUrl)
                   .then(r => {
@@ -128,10 +129,23 @@ export function createWsHandler({
                     return r.arrayBuffer();
                   })
                   .then(buf => {
-                    file._arrayBuffer = buf; file.localPreviewReady = true;
-                    if (tabIndex === activeFileIndex.value) Vue.nextTick(() => renderOfficeLocal(file));
-                  }).catch(e => { file.previewError = e.message; });
+                    file._arrayBuffer = buf;
+                    file.localPreviewReady = true;
+                    if (tabIndex === activeFileIndex.value) {
+                      Vue.nextTick(() => {
+                        if (tabIndex === activeFileIndex.value) renderOfficeLocal(file);
+                        else file.previewLoading = false;
+                      });
+                    } else {
+                      file.previewLoading = false;
+                    }
+                  }).catch(e => {
+                    file.previewError = e.message;
+                    file.previewLoading = false;
+                  });
               }
+            } else {
+              file.previewLoading = false;
             }
             saveTabsState(store.currentConversation);
             return;

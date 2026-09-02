@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import * as Vue from 'vue';
 import { createWsHandler } from '../../web/components/files/wsHandler.js';
 import { createFileTabs } from '../../web/components/files/fileTabs.js';
+import { createFilePreview } from '../../web/components/files/filePreview.js';
 import ctx from '../../agent/context.js';
 import { CONFIG } from '../../server/config.js';
 import { userDb, yeaftSessionDb } from '../../server/database.js';
@@ -1380,6 +1381,103 @@ describe('Agent file terminal forwarding', () => {
     expect(wrongOwnerTab.previewLoading).toBe(true);
     fetchSpy.mockRestore();
     createObjectUrl.mockRestore();
+  });
+
+  it('keeps a local Office preview loading until its fetch and render complete', async () => {
+    globalThis.Vue = Vue;
+    globalThis.location = { protocol: 'https:', host: 'yeaft.test' };
+    const previousLocalStorage = globalThis.localStorage;
+    globalThis.localStorage = { getItem: vi.fn(() => 'local') };
+    let resolveBuffer;
+    const buffer = new ArrayBuffer(8);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      arrayBuffer: () => new Promise(resolve => { resolveBuffer = resolve; }),
+    });
+    const officeTab = {
+      path: 'docs/report.docx',
+      name: 'report.docx',
+      fileType: 'office',
+      agentId: 'agent-1',
+      conversationId: 'session-1',
+      requestId: 'office-request',
+      previewLoading: true,
+      previewError: null,
+      localPreviewReady: false,
+    };
+    const renderOfficeLocal = vi.fn(async file => { file.previewLoading = false; return true; });
+    const openFiles = Vue.ref([officeTab]);
+    const handle = createWsHandler({
+      store: { currentConversation: 'session-1', currentAgent: 'agent-1' },
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/workspace',
+      openFiles,
+      activeFileIndex: Vue.ref(0),
+      activeFile: Vue.computed(() => officeTab),
+      fileLoading: Vue.ref(true),
+      fileSaving: Vue.ref(false),
+      saveTabsState: vi.fn(),
+      createEditor: vi.fn(),
+      openFileInTab: vi.fn(),
+      tree: { handleDirectoryListing: vi.fn() },
+      setTreeVisible: vi.fn(),
+      fp: { handleFolderPickerListing: vi.fn() },
+      qo: {},
+      ops: { takePendingDownload: () => null },
+      mdPreviewMode: Vue.ref(false),
+      renderOfficeLocal,
+      editorContainer: Vue.ref(null),
+      debugStatus: Vue.ref(''),
+    }).handleWorkbenchMessage;
+
+    handle(new CustomEvent('workbench-message', { detail: {
+      type: 'file_content',
+      agentId: 'agent-1',
+      conversationId: 'session-1',
+      requestId: 'office-request',
+      requestedFilePath: 'docs/report.docx',
+      binary: true,
+      fileId: 'office-preview',
+      previewToken: 'secret',
+    } }));
+
+    await vi.waitFor(() => expect(resolveBuffer).toBeTypeOf('function'));
+    expect(officeTab.previewLoading).toBe(true);
+    expect(renderOfficeLocal).not.toHaveBeenCalled();
+    resolveBuffer(buffer);
+    await vi.waitFor(() => expect(renderOfficeLocal).toHaveBeenCalledWith(officeTab));
+    expect(officeTab.localPreviewReady).toBe(true);
+    expect(officeTab.previewLoading).toBe(false);
+    fetchSpy.mockRestore();
+    globalThis.localStorage = previousLocalStorage;
+  });
+
+  it('ends Office preview loading and exposes renderer rejection', async () => {
+    globalThis.Vue = Vue;
+    const previousWindow = globalThis.window;
+    globalThis.window = {
+      docx: { renderAsync: vi.fn().mockRejectedValue(new Error('DOCX render failed')) },
+    };
+    const file = {
+      name: 'report.docx',
+      _arrayBuffer: new ArrayBuffer(8),
+      localPreviewReady: true,
+      previewLoading: true,
+      previewError: null,
+    };
+    const container = { innerHTML: '' };
+    const activeFile = Vue.ref(file);
+    const preview = createFilePreview(activeFile, {
+      editorContainer: Vue.ref(null),
+      createEditor: vi.fn(),
+      t: key => key,
+    });
+    preview.officePreviewContainer.value = container;
+
+    await expect(preview.renderOfficeLocal(file)).resolves.toBe(false);
+    expect(file.previewError).toBe('DOCX render failed');
+    expect(file.previewLoading).toBe(false);
+    globalThis.window = previousWindow;
   });
 
   it('consumes a correlated download response without requiring an open file tab', () => {

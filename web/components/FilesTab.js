@@ -299,12 +299,14 @@ export default {
           </template>
           <!-- Office 文件预览 -->
           <div v-else-if="activeFile.fileType === 'office'" class="file-preview-container">
-            <div v-if="activeFile.previewLoading" class="preview-loading">
-              <span class="spinner-mini"></span> {{ $t('files.loadingPreview') }}
-            </div>
-            <iframe v-else-if="activeFile.previewUrl" :src="activeFile.previewUrl" class="file-preview-iframe" allowfullscreen></iframe>
-            <div v-else-if="activeFile.localPreviewReady" ref="officePreviewContainer" class="office-local-preview"></div>
-            <div v-else-if="activeFile.previewError" class="preview-error">{{ activeFile.previewError }}</div>
+            <div v-if="activeFile.previewError" class="preview-error">{{ activeFile.previewError }}</div>
+            <template v-else>
+              <div v-if="activeFile.previewLoading" class="preview-loading">
+                <span class="spinner-mini"></span> {{ $t('files.loadingPreview') }}
+              </div>
+              <iframe v-if="activeFile.previewUrl && !activeFile.previewLoading" :src="activeFile.previewUrl" class="file-preview-iframe" allowfullscreen></iframe>
+              <div v-if="activeFile.localPreviewReady" v-show="!activeFile.previewLoading" ref="officePreviewContainer" class="office-local-preview"></div>
+            </template>
           </div>
           <!-- PDF 预览 -->
           <div v-else-if="activeFile.fileType === 'pdf'" class="file-preview-container">

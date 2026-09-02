@@ -44,21 +44,22 @@ export function createFilePreview(activeFile, { editorContainer, createEditor, t
     });
   }
 
-  const renderOfficeLocal = (file) => {
+  const renderOfficeLocal = async (file) => {
     const container = officePreviewContainer.value;
-    if (!container || !file._arrayBuffer) return;
+    if (!container || !file._arrayBuffer) return false;
+    file.previewLoading = true;
     container.innerHTML = '';
     const ext = ('.' + file.name.split('.').pop()).toLowerCase();
 
-    if (ext === '.docx' && window.docx) {
-      window.docx.renderAsync(file._arrayBuffer, container, null, {
-        className: 'docx-preview-content',
-        inWrapper: true,
-        ignoreWidth: false,
-        ignoreHeight: true
-      }).catch(e => { file.previewError = e.message; });
-    } else if (ext === '.xlsx' || ext === '.xls') {
-      try {
+    try {
+      if (ext === '.docx' && window.docx) {
+        await window.docx.renderAsync(file._arrayBuffer, container, null, {
+          className: 'docx-preview-content',
+          inWrapper: true,
+          ignoreWidth: false,
+          ignoreHeight: true
+        });
+      } else if (ext === '.xlsx' || ext === '.xls') {
         const wb = XLSX.read(file._arrayBuffer, { type: 'array' });
         const sheetName = wb.SheetNames[0];
         const html = XLSX.utils.sheet_to_html(wb.Sheets[sheetName], { editable: false });
@@ -75,9 +76,15 @@ export function createFilePreview(activeFile, { editorContainer, createEditor, t
             btn.classList.add('active');
           });
         });
-      } catch (e) { file.previewError = e.message; }
-    } else if (ext === '.pptx' || ext === '.ppt') {
-      container.innerHTML = '<div class="preview-unsupported">' + (t ? t('files.pptxNotSupported') : 'PowerPoint preview not supported') + '</div>';
+      } else if (ext === '.pptx' || ext === '.ppt') {
+        container.innerHTML = '<div class="preview-unsupported">' + (t ? t('files.pptxNotSupported') : 'PowerPoint preview not supported') + '</div>';
+      }
+      return true;
+    } catch (e) {
+      file.previewError = e.message;
+      return false;
+    } finally {
+      file.previewLoading = false;
     }
   };
 
