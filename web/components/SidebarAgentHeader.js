@@ -55,12 +55,14 @@ export default {
         <div class="agent-dropdown-list">
           <div v-for="agent in onlineAgents" :key="agent.id" class="agent-dropdown-item">
             <span class="status-dot" :class="{ online: agent.online, restarting: restartingAgents[agent.id], upgrading: upgradingAgents[agent.id] }"></span>
-            <span class="agent-dropdown-name" :title="agent.name">{{ agent.name }}</span>
             <span class="agent-dropdown-trailing">
-              <span class="agent-dropdown-meta">
-                <span class="agent-dropdown-status" v-if="restartingAgents[agent.id]">{{ tr('chat.agent.restarting', 'Restarting…') }}</span>
-                <span class="agent-dropdown-status" v-else-if="upgradingAgents[agent.id]">{{ tr('chat.agent.upgrading', 'Upgrading…') }}</span>
-                <span class="agent-dropdown-version" v-else-if="agent.version">v{{ agent.version }}</span>
+              <span class="agent-dropdown-identity">
+                <span class="agent-dropdown-name" :title="agent.name">{{ agent.name }}</span>
+                <span class="agent-dropdown-meta">
+                  <span class="agent-dropdown-status" v-if="restartingAgents[agent.id]">{{ tr('chat.agent.restarting', 'Restarting…') }}</span>
+                  <span class="agent-dropdown-status" v-else-if="upgradingAgents[agent.id]">{{ tr('chat.agent.upgrading', 'Upgrading…') }}</span>
+                  <span class="agent-dropdown-version" v-else-if="agent.version">v{{ agent.version }}</span>
+                </span>
               </span>
               <span v-if="showAgentActions" class="agent-dropdown-actions">
                 <button
