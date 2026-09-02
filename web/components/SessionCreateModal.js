@@ -32,7 +32,6 @@ import VpAvatar from './VpAvatar.js';
 import ModernSelect from './ModernSelect.js';
 import { getLastPathSegment, formatResumeDate } from '../utils/path-segments.js';
 import { buildVpDomainSections } from '../utils/vp-domains.js';
-import { yeaftSessionIdentityKey } from '../stores/helpers/yeaft-session-identity.js';
 import { folderPickerData, folderPickerMethods } from './mixins/folder-picker-mixin.js';
 
 const OMNI_VP_ID = 'omni';
@@ -249,27 +248,8 @@ export default {
           </div>
         </div>
 
-        <!-- Content area: hidden Sessions, folders, or existing Sessions for the chosen workDir -->
+        <!-- Content area: folders or existing Sessions for the chosen workDir -->
         <div class="resume-modal-content">
-          <div v-if="hiddenSessions.length > 0" class="resume-panel">
-            <div class="resume-panel-header">
-              <span>{{ $t('sidebar.sessions.hidden') }}</span>
-            </div>
-            <div class="resume-panel-list">
-              <div
-                v-for="session in hiddenSessions"
-                :key="session.catalogKey"
-                class="resume-list-item session-item-compact"
-                :class="{ 'is-busy': restoringHiddenKey === session.catalogKey, 'is-disabled': restoringHiddenKey && restoringHiddenKey !== session.catalogKey }"
-                :aria-disabled="restoringHiddenKey && restoringHiddenKey !== session.catalogKey ? 'true' : undefined"
-                @click="restoreHiddenSession(session)"
-              >
-                <div class="item-name">{{ session.title }}</div>
-                <div class="item-time">{{ session.workDir || session.agentName || session.routeRef.agentId }}</div>
-              </div>
-            </div>
-          </div>
-
           <!-- Folder aggregation (workDir empty) -->
           <div class="resume-panel" v-if="!form.workDir">
             <div class="resume-panel-header">
@@ -291,16 +271,9 @@ export default {
             </div>
           </div>
 
-          <!-- Sessions for the chosen workDir — ONE list, sourced from a
-               disk scan of the chosen workDir's .yeaft/sessions/ folder.
-               Each row is tagged with inSidebar so the click handler can
-               branch:
-                 - inSidebar=true  -> resumeExisting (just pin + fire history)
-                 - inSidebar=false -> onRestoreClick (register first, then pin)
-               Pre-fix we showed TWO duplicate panels (the sidebar-filtered
-               list AND the disk-minus-sidebar list) which confused users
-               into thinking they were different things. The user's directive
-               (2026-06-09): "此目录下所有 yeaft session，用户可以选择恢复". -->
+          <!-- Sessions for the chosen workDir — ONE list. Current rows come
+               from the Agent-owned manifest regardless of sidebar visibility;
+               only explicitly marked workDir-local legacy rows need import. -->
           <div class="resume-panel" v-else>
             <div class="resume-panel-header">
               <div class="resume-panel-header-left">
@@ -412,7 +385,6 @@ export default {
       },
       busy: false,
       submitError: '',
-      restoringHiddenKey: null,
       // Folder picker state — extracted to a shared mixin (originally
       // so SessionRestoreModal could reuse it; that modal has been
       // folded back in, but the mixin shape is preserved for future
@@ -430,12 +402,9 @@ export default {
       vpRosterPlacement: 'down',
       vpRosterAvailableHeight: null,
       // Disk-scanned session list for the currently chosen workDir.
-      // `scannedSessions` is the raw list the agent returns from
-      // scan_workdir; the `sessionsInDir` computed annotates each row
-      // with `inSidebar` (sourced from sessionsStore.sessionList, the
-      // literal source the sidebar reads from) so the stale-flag bug
-      // from the old standalone modal ("已在 sidebar 中" on items that
-      // aren't) is physically impossible.
+      // `scannedSessions` is the raw Agent response for the selected folder.
+      // Current manifest rows remain here even when sidebar UI metadata hides
+      // them; only legacy workDir-local rows carry `legacyImport`.
       //
       // We intentionally do NOT track `scannedWorkDir` / `scannedAgentId`
       // separately — the workdir/agent watchers below clear `scannedSessions`
@@ -535,10 +504,6 @@ export default {
     allSessions() {
       return this.sessionsStore?.sessionList || [];
     },
-    hiddenSessions() {
-      return (this.chat?.hiddenSessionCatalog || [])
-        .filter(row => row?.routeRef?.agentId && row?.routeRef?.sessionId);
-    },
     // Sessions owned by the agent the user picked IN THIS MODAL
     // (form.agentId) — NOT the globally-active agent (chat.currentAgent /
     // the top-left agent list). The folder list and the on-disk session
@@ -581,16 +546,10 @@ export default {
       const list = Array.isArray(this.scannedSessions) ? this.scannedSessions : [];
       return list
         .filter(s => s && s.id)
-        .map((session) => {
-          const agentId = session.agentId || selectedAgentId;
-          const sessionKey = yeaftSessionIdentityKey(agentId, session.id);
-          const inSidebar = !!(sessionKey && this.sessionsStore?.sessions?.[sessionKey]);
-          return {
-            ...session,
-            ...(agentId ? { agentId } : {}),
-            inSidebar,
-          };
-        });
+        .map(session => ({
+          ...session,
+          ...(session.agentId || selectedAgentId ? { agentId: session.agentId || selectedAgentId } : {}),
+        }));
     },
     chatFolderRows() {
       return (this.chat?.folders || []).map(folder => ({
@@ -876,27 +835,6 @@ export default {
     retryVpSnapshot() {
       this.subscribeVpsFor(this.form.agentId, { force: true });
     },
-    async restoreHiddenSession(session) {
-      if (!session?.catalogKey || this.restoringHiddenKey) return;
-      const chat = this.chat;
-      if (!chat || typeof chat.restoreCatalogSession !== 'function') return;
-      this.restoringHiddenKey = session.catalogKey;
-      try {
-        const restored = chat.restoreCatalogSession(session);
-        if (!restored) return;
-        const { runtimeProvider, agentId, sessionId } = session.routeRef;
-        if (runtimeProvider === 'yeaft') {
-          chat.enterYeaft?.(agentId, { deferBootstrap: true });
-          chat.setActiveSessionFilter?.(sessionId, { agentId, force: true });
-        } else {
-          if (chat.currentView === 'yeaft') chat.leaveYeaft?.();
-          chat.selectConversation?.(sessionId, agentId);
-        }
-        this.$emit('close');
-      } finally {
-        this.restoringHiddenKey = null;
-      }
-    },
     loadProviderSessions() {
       if (this.isYeaftProvider) return this.loadRestoreCandidates();
       const workDir = (this.form.workDir || '').trim();
@@ -906,10 +844,8 @@ export default {
     /**
      * fix-session-restore-modal-unify: scan the workdir for on-disk
      * yeaft sessions. Folded in from the old standalone
-     * SessionRestoreModal. The result lands in `scannedSessions`; the
-     * `sessionsInDir` computed annotates each row with `inSidebar`
-     * (sourced from sessionsStore.sessionList) before rendering, so a
-     * stale "alreadyRegistered" flag from the agent never reaches the UI.
+     * SessionRestoreModal. Current Sessions come from the Agent manifest;
+     * workDir-local rows are explicitly marked as legacy imports.
      *
      * Single-inflight guard: the agentId and workDir watchers both call
      * this method, and a user typing into the workdir input can trigger
@@ -1076,13 +1012,8 @@ export default {
     },
     selectFolder(path) { this.form.workDir = path; },
     /**
-     * Single-list dispatch: branches on `inSidebar` so the unified panel
-     * works for both already-registered sessions (resume only) and
-     * disk-only ones (restore = register + resume).
-     *
-     * `inSidebar` is computed by `sessionsInDir` from sessionsStore.sessionList
-     * (the literal source the sidebar reads from) — not the agent's stale
-     * `alreadyRegistered` flag — so the branch decision is always correct.
+     * Current manifest Sessions resume directly, even when hidden from the
+     * sidebar. Only workDir-local legacy rows require the import operation.
      */
     selectSession(session) {
       if (!session || !session.id) return;
@@ -1094,10 +1025,10 @@ export default {
         this.$emit('close');
         return;
       }
-      if (session.inSidebar) {
-        this.resumeExisting(session);
-      } else {
+      if (session.legacyImport) {
         this.onRestoreClick(session);
+      } else {
+        this.resumeExisting(session);
       }
     },
     chatProviderOptions() {

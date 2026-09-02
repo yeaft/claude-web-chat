@@ -5311,7 +5311,7 @@ describe('message flow regressions', () => {
 
     exactSessionsStore.applySnapshot([], 'agent-b');
     await Vue.nextTick();
-    expect(exactModal.vm.sessionsInDir[0].inSidebar).toBe(false);
+    expect(exactModal.vm.sessionsInDir[0].inSidebar).toBeUndefined();
     exactSessionsStore.applySnapshot([{ id: 'grp_default', name: 'B default', workDir: '/repo-b' }], 'agent-b');
     exactSessionsStore.setActive('grp_default', 'agent-a');
     exactChatStore.currentAgent = 'agent-a';
@@ -5420,25 +5420,22 @@ describe('message flow regressions', () => {
       sortRank: null,
     });
     await Vue.nextTick();
-    expect(exactModal.vm.hiddenSessions).toEqual([
-      expect.objectContaining({ catalogKey: hiddenRow.catalogKey }),
-    ]);
+    expect(exactModal.vm.hiddenSessions).toBeUndefined();
+    expect(exactModal.text()).not.toContain('sidebar.sessions.hidden');
 
+    // Hiding only changes the sidebar catalog. The folder result remains a
+    // directly openable current Session and must not send restore/unhide writes.
+    exactModal.vm.scannedSessions = [{
+      id: 'grp_default', name: 'B default', agentId: 'agent-b', workDir: '/repo-b',
+    }];
+    exactSessionsStore.applySnapshot([], 'agent-b');
     exactChatStore.sendWsMessage.mockClear();
-    await exactModal.vm.restoreHiddenSession(exactModal.vm.hiddenSessions[0]);
-    expect(exactChatStore.sessionCatalog).toEqual([
-      expect.objectContaining({ catalogKey: hiddenRow.catalogKey, hidden: false }),
+    exactModal.vm.selectSession(exactModal.vm.sessionsInDir[0]);
+    expect(exactChatStore.sendWsMessage.mock.calls.map(call => call[0].type)).not.toContain('yeaft_restore_session');
+    expect(exactChatStore.sendWsMessage.mock.calls.map(call => call[0].type)).not.toContain('set_session_ui_metadata');
+    expect(exactChatStore.hiddenSessionCatalog).toEqual([
+      expect.objectContaining({ catalogKey: hiddenRow.catalogKey, hidden: true }),
     ]);
-    expect(exactChatStore.hiddenSessionCatalog).toEqual([]);
-    const unhideRequest = exactChatStore.sendWsMessage.mock.calls.find(call => (
-      call[0].type === 'set_session_ui_metadata'
-    ))?.[0];
-    expect(unhideRequest).toEqual(expect.objectContaining({
-      catalogKey: hiddenRow.catalogKey,
-      routeRef: hiddenRow.routeRef,
-      hidden: false,
-    }));
-    expect(exactChatStore.sendWsMessage.mock.calls.map(call => call[0].type)).not.toContain('yeaft_archive_session');
 
     exactChatStore.sendWsMessage.mockClear();
     exactChatStore.sendYeaftSessionMessage({ groupId: 'grp_default', text: 'route only to B' });

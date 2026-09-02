@@ -3595,13 +3595,13 @@ export function handleYeaftScanWorkdirSessions(msg) {
     const workDir = String(msg && msg.workDir || '').trim();
     if (!workDir) throw new SessionCrudError('invalid_workdir', null, 'workDir required');
     const yeaftDir = ctx.CONFIG?.yeaftDir;
-    // scanWorkdirSessions is now a compatibility no-op because Session data is
-    // user-level only. Keep the decoration shape stable for older clients.
-    const sessions = scanWorkdirSessions(workDir);
+    // Current rows come from the Agent manifest; workDir-local rows remain a
+    // legacy import fallback. Keep the decoration shape stable for old clients.
+    const sessions = scanWorkdirSessions(workDir, yeaftDir);
     const registry = readWorkDirRegistry(yeaftDir);
     const decorated = sessions.map(s => ({
       ...s,
-      alreadyRegistered: Object.prototype.hasOwnProperty.call(registry, s.id),
+      alreadyRegistered: !s.legacyImport || Object.prototype.hasOwnProperty.call(registry, s.id),
     }));
     sendSessionCrudResult({ op: 'scan_workdir', requestId, ok: true, sessions: decorated });
   } catch (err) {
