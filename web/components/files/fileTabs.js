@@ -160,7 +160,7 @@ export function createFileTabs(store, {
     });
   };
 
-  const closeFileTabs = async (indices) => {
+  const closeFileTabs = async (indices, { canCommit = () => true } = {}) => {
     const requested = [...new Set(indices)]
       .filter(index => Number.isInteger(index) && index >= 0 && index < openFiles.value.length)
       .sort((a, b) => a - b);
@@ -174,6 +174,7 @@ export function createFileTabs(store, {
         : t('files.unsavedBatchConfirm', { count: dirtyFiles.length });
       if (!await confirmDialog(message, { destructive: true })) return false;
     }
+    if (!canCommit()) return false;
 
     const closing = new Set(requested);
     const previousActiveIndex = activeFileIndex.value;
@@ -229,7 +230,7 @@ export function createFileTabs(store, {
   const closeTabsToLeft = index => closeFileTabs(openFiles.value.map((_, tabIndex) => tabIndex).filter(tabIndex => tabIndex < index));
   const closeTabsToRight = index => closeFileTabs(openFiles.value.map((_, tabIndex) => tabIndex).filter(tabIndex => tabIndex > index));
   const closeOtherTabs = index => closeFileTabs(openFiles.value.map((_, tabIndex) => tabIndex).filter(tabIndex => tabIndex !== index));
-  const closeAllTabs = () => closeFileTabs(openFiles.value.map((_, index) => index));
+  const closeAllTabs = options => closeFileTabs(openFiles.value.map((_, index) => index), options);
 
   function saveFile() {
     const file = activeFile.value;

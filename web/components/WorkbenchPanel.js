@@ -513,10 +513,12 @@ export default {
     const handleOpenFile = (event) => {
       if (!hasExplorer.value || !activeRouteKey.value) return;
       const eventDetail = { ...(event.detail || {}) };
-      const eventRouteKey = eventDetail.workbenchRoute
-        ? workbenchRouteKey(eventDetail.workbenchRoute)
-        : activeRouteKey.value;
-      if (eventRouteKey !== activeRouteKey.value) return;
+      const eventRouteKey = eventDetail.workbenchRouteKey
+        || (eventDetail.workbenchRoute ? workbenchRouteKey(eventDetail.workbenchRoute) : '');
+      const eventWorkspaceGeneration = eventDetail.workspaceGeneration || '';
+      if (!eventRouteKey || !eventWorkspaceGeneration
+        || eventRouteKey !== activeRouteKey.value
+        || eventWorkspaceGeneration !== activeWorkspaceGeneration.value) return;
       const initiatingContextKey = workbenchContextKey.value;
       const targetRouteProps = { ...routeProps.value };
       if (!openCapability('files')) return;

@@ -678,6 +678,57 @@ describe('Agent file terminal forwarding', () => {
     expect(cleanupUndoHistory).toHaveBeenCalledTimes(3);
   });
 
+  it('aborts a confirmed dirty batch before mutation when its commit fence expires', async () => {
+    globalThis.Vue = Vue;
+    const sendWsMessage = vi.fn();
+    const cleanupUndoHistory = vi.fn();
+    const tabs = createFileTabs({
+      currentAgent: 'agent-a',
+      currentConversation: 'conversation-a',
+      sendWsMessage,
+    }, {
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/workspace/a',
+      editorContainer: Vue.ref(null),
+      createEditor: vi.fn(),
+      destroyEditor: vi.fn(),
+      clearFindMarkers: vi.fn(),
+      saveCurrentUndoHistory: vi.fn(),
+      saveAllUndoHistory: vi.fn(),
+      cleanupUndoHistory,
+      deleteConversationHistory: vi.fn(),
+      debugStatus: Vue.ref(''),
+      mdPreviewMode: Vue.ref(false),
+      renderOfficeLocal: vi.fn(),
+      performFind: vi.fn(),
+      findBarVisible: Vue.ref(false),
+      findQuery: Vue.ref(''),
+      t: value => value,
+    });
+    tabs.openFileInTab('dirty.md', 'dirty.md', {
+      agentId: 'agent-a', conversationId: 'conversation-a', workDir: '/workspace/a',
+    });
+    tabs.activeFile.value.content = 'dirty';
+    tabs.activeFile.value.isDirty = true;
+    sendWsMessage.mockClear();
+    let current = true;
+
+    const closing = tabs.closeAllTabs({ canCommit: () => current });
+    expect(useDialogState().open).toBe(true);
+    current = false;
+    resolveDialog(true);
+
+    await expect(closing).resolves.toBe(false);
+    expect(tabs.openFiles.value.map(file => file.name)).toEqual(['dirty.md']);
+    expect(cleanupUndoHistory).not.toHaveBeenCalled();
+    await new Promise(resolve => setTimeout(resolve, 550));
+    expect(sendWsMessage).toHaveBeenCalledWith({
+      type: 'update_file_tabs',
+      openFiles: [{ path: 'dirty.md' }],
+      activeIndex: 0,
+    });
+  });
+
   it('confirms dirty batch closes atomically', async () => {
     globalThis.Vue = Vue;
     const cleanupUndoHistory = vi.fn();

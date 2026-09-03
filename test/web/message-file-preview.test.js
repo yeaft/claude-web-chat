@@ -436,6 +436,8 @@ describe('Workbench capability launcher', () => {
     window.dispatchEvent(new CustomEvent('open-file-in-explorer', { detail: {
       filePath: 'README.md',
       workbenchRoute: workbenchStore.activeSessionRoute,
+      workbenchRouteKey: 'yeaft:agent-1:session-a',
+      workspaceGeneration: workbenchWorkspaceGeneration('yeaft:agent-1:session-a', '/workspace/a'),
     } }));
     await Vue.nextTick();
     expect(wrapper.get('.files-tab-stub').isVisible()).toBe(true);
@@ -468,6 +470,8 @@ describe('Workbench capability launcher', () => {
     window.dispatchEvent(new CustomEvent('open-file-in-explorer', { detail: {
       filePath: 'README.md',
       workbenchRoute: routeA,
+      workbenchRouteKey: 'yeaft:agent-1:session-a',
+      workspaceGeneration: workbenchWorkspaceGeneration('yeaft:agent-1:session-a', '/workspace/a'),
     } }));
     workbenchStore.activeSessionRoute = {
       runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-b',

@@ -472,6 +472,7 @@ export default {
     const store = createRouteBoundWorkbenchStore(Pinia.useChatStore(), props);
     const t = Vue.inject('t');
     const capabilityActive = Vue.ref(true);
+    let disposed = false;
     const treeVisible = Vue.ref(props.treeInitiallyVisible);
 
     // --- Shared utilities ---
@@ -790,8 +791,13 @@ export default {
     };
     const handleCloseFilesCapability = async event => {
       if (!isCurrentFileItemEvent(event) || typeof event.detail.resolve !== 'function') return;
+      const routeKey = event.detail.routeKey;
+      const workspaceGeneration = event.detail.workspaceGeneration;
+      const canCommit = () => !disposed
+        && props.routeKey === routeKey
+        && props.workspaceGeneration === workspaceGeneration;
       event.detail.resolve(
-        tabs.openFiles.value.length === 0 ? true : await tabs.closeAllTabs(),
+        tabs.openFiles.value.length === 0 ? canCommit() : await tabs.closeAllTabs({ canCommit }),
       );
     };
     Vue.watch(
@@ -832,6 +838,7 @@ export default {
     });
 
     Vue.onUnmounted(() => {
+      disposed = true;
       tabs.saveTabsState(store.currentConversation);
       window.removeEventListener('workbench-message', ws.handleWorkbenchMessage);
       window.removeEventListener('workbench-open-file-in-active-view', ws.handleOpenFile);

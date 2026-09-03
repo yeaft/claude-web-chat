@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi, beforeEach, beforeAll } from 'vitest';
 import { nextTick, reactive } from 'vue';
+import { workbenchWorkspaceGeneration } from '../../../web/utils/workbench-route.js';
 
 // chat.js reads `Pinia.defineStore` at import time, so install a minimal
 // store factory before importing the real store definition. We only need
@@ -30,6 +31,11 @@ let store;
 beforeEach(() => {
   store = useChatStore();
   store.currentAgent = 'agent-1';
+  store.activeSessionRoute = {
+    runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-1',
+  };
+  store.effectiveWorkDir = '/workspace/a';
+  store.yeaftConversationId = 'session-1-conversation';
   sessionsStore = {
     activeSessionKey: 'agent-1\u001fsession-1',
     sessions: {
@@ -144,7 +150,39 @@ describe('YeaftDebugPanel store actions', () => {
     expect(store.yeaftDebugTurnOrder).not.toContain('turn-abc');
     expect(store.yeaftDebugLoops).toEqual([{ turnId: 'other' }]);
     expect(dispatched).toHaveLength(1);
-    expect(dispatched[0]).toMatchObject({ filePath: 'docs/readme.md', line: 12 });
+    expect(dispatched[0]).toMatchObject({
+      filePath: 'docs/readme.md',
+      line: 12,
+      workDir: '/workspace/a',
+      workbenchRouteKey: 'yeaft:agent-1:session-1',
+      workspaceGeneration: workbenchWorkspaceGeneration('yeaft:agent-1:session-1', '/workspace/a'),
+    });
+  });
+
+  it('drops a deferred file open when its frozen Session workspace drifts', async () => {
+    store.currentConversation = 'session-1';
+    store.workbenchRouteProtocolSupported = true;
+    store.hasCapability = vi.fn(() => true);
+    store.workbenchExpanded = false;
+    store.effectiveWorkDir = '/workspace/a';
+    const dispatched = [];
+    const listener = event => dispatched.push(event.detail);
+    window.addEventListener('open-file-in-explorer', listener);
+
+    expect(store.openFileInExplorer('docs/stale.md')).toBe(true);
+    sessionsStore.activeSessionKey = 'agent-1\u001fsession-2';
+    sessionsStore.sessions['agent-1\u001fsession-2'] = {
+      id: 'session-2', agentId: 'agent-1', workDir: '/workspace/b',
+    };
+    store.activeSessionRoute = {
+      runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-2',
+    };
+    store.currentConversation = 'session-2';
+    store.effectiveWorkDir = '/workspace/b';
+    await nextTick();
+
+    window.removeEventListener('open-file-in-explorer', listener);
+    expect(dispatched).toEqual([]);
   });
 
   it('uses the Session owner rather than a stale page-level Agent pointer', () => {

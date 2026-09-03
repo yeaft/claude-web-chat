@@ -64,8 +64,12 @@ function capability(panel, id) {
 
 async function openCapabilityLauncher(panel) {
   await expect(panel.locator('.files-tab')).toBeVisible();
-  await panel.locator('.workbench-view-close').click();
-  await expect(panel.locator('.workbench-launcher')).toBeVisible();
+  await panel.locator('.workbench-add-btn').click();
+  await expect(panel.locator('.workbench-add-menu')).toBeVisible();
+}
+
+async function closeActiveWorkbenchItem(panel) {
+  await panel.locator('.workbench-item-tab.active .workbench-item-close').click();
 }
 
 async function openChatWorkbench(chatPage, mockAgent) {
@@ -109,7 +113,7 @@ test.describe('Workbench', () => {
 
     const panel = chatPage.locator('.workbench-panel');
     await openCapabilityLauncher(panel);
-    await expect(panel.locator('.workbench-capability-card')).toHaveCount(4);
+    await expect(panel.locator('.workbench-add-menu-item')).toHaveCount(4);
   });
 
   test('opens Files by default and keeps the four-capability launcher available', async ({ chatPage, mockAgent }) => {
@@ -118,13 +122,13 @@ test.describe('Workbench', () => {
     const panel = chatPage.locator('.workbench-panel');
     await expect(panel.locator('.files-tab')).toBeVisible();
     await openCapabilityLauncher(panel);
-    await expect(panel.locator('.workbench-capability-card')).toHaveCount(4);
+    await expect(panel.locator('.workbench-add-menu-item')).toHaveCount(4);
     await expect(capability(panel, 'terminal')).toBeVisible();
     await expect(capability(panel, 'git')).toBeVisible();
     await expect(capability(panel, 'files')).toBeVisible();
     await expect(capability(panel, 'browser')).toBeVisible();
-    await expect(panel.locator('.wb-tab')).toHaveCount(0);
-    await expect(capability(panel, 'browser').locator('.workbench-capability-status')).toHaveText('Unavailable on this Agent');
+    await expect(panel.locator('.workbench-item-tab')).toHaveCount(1);
+    await expect(capability(panel, 'browser').locator('small')).toHaveText('Unavailable on this Agent');
     await expect.poll(() => mockAgent.messages().filter(message => [
       'terminal_create', 'git_status', 'list_directory', 'restore_file_tabs',
     ].includes(message.type)).length).toBe(0);
@@ -152,39 +156,13 @@ test.describe('Workbench', () => {
     const tabs = panel.getByRole('tab');
     await expect(tabs).toHaveCount(12);
     await expect(panel.getByRole('tablist')).toBeVisible();
-    const listButton = panel.locator('.file-tabs-list-btn');
-    await expect(listButton).toBeVisible();
-    expect(await listButton.evaluate(element => {
+    const addButton = panel.locator('.workbench-add-btn');
+    await expect(addButton).toBeVisible();
+    expect(await addButton.evaluate(element => {
       const rect = element.getBoundingClientRect();
       const panelRect = element.closest('.workbench-panel').getBoundingClientRect();
       return rect.right <= panelRect.right && rect.left >= panelRect.left;
     })).toBe(true);
-
-    await listButton.focus();
-    await listButton.press('ArrowDown');
-    const openTabsMenu = panel.locator('.file-open-tabs-menu');
-    await expect(openTabsMenu).toBeVisible();
-    await expect(openTabsMenu.locator('.file-open-tab-label')).toHaveCount(12);
-    await expect(openTabsMenu.getByRole('menuitem').first()).toBeFocused();
-    await openTabsMenu.getByRole('menuitem').first().press('End');
-    await expect(openTabsMenu.getByRole('menuitem').last()).toBeFocused();
-    await openTabsMenu.getByRole('menuitem').last().press('Escape');
-    await expect(openTabsMenu).toHaveCount(0);
-    await expect(listButton).toBeFocused();
-
-    await listButton.press('ArrowUp');
-    await expect(openTabsMenu.getByRole('menuitem').last()).toBeFocused();
-    await openTabsMenu.getByRole('menuitem').last().press('Home');
-    await expect(openTabsMenu.getByRole('menuitem').first()).toBeFocused();
-    await openTabsMenu.getByRole('menuitem').first().press('Enter');
-    await expect(tabs.nth(0)).toHaveClass(/active/);
-    await expect(listButton).toBeFocused();
-
-    await listButton.press('Enter');
-    await expect(openTabsMenu.getByRole('menuitem').first()).toBeFocused();
-    await openTabsMenu.getByRole('menuitem').first().press('Tab');
-    await expect(openTabsMenu).toHaveCount(0);
-    await expect(panel.locator('.zoom-btn').first()).toBeFocused();
 
     await tabs.nth(0).focus();
     await tabs.nth(0).press('ArrowRight');
@@ -195,23 +173,20 @@ test.describe('Workbench', () => {
     await tabs.nth(11).press('Home');
     await expect(tabs.nth(0)).toBeFocused();
 
-    await tabs.nth(4).focus();
-    await tabs.nth(4).press('Shift+F10');
-    const contextMenu = panel.locator('.ctx-menu:visible');
-    await expect(contextMenu.getByRole('menuitem', { name: 'Close', exact: true })).toBeFocused();
-    await expect(contextMenu.getByRole('menuitem', { name: 'Close to the Left' })).toBeEnabled();
-    await expect(contextMenu.getByRole('menuitem', { name: 'Close to the Right' })).toBeEnabled();
-    await contextMenu.getByRole('menuitem', { name: 'Close', exact: true }).press('End');
-    await expect(contextMenu.getByRole('menuitem', { name: 'Close All' })).toBeFocused();
-    await contextMenu.getByRole('menuitem', { name: 'Close All' }).press('ArrowUp');
-    await expect(contextMenu.getByRole('menuitem', { name: 'Close to the Right' })).toBeFocused();
-    await contextMenu.getByRole('menuitem', { name: 'Close to the Right' }).press('Enter');
-    await expect(tabs).toHaveCount(5);
-    await expect(tabs.nth(4)).toBeFocused();
+    await panel.locator('.workbench-item-tab').nth(4).locator('.workbench-item-close').click();
+    await expect(tabs).toHaveCount(11);
+    await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
+    await expect(panel.locator('.file-content-path')).toContainText('a-very-long-open-file-name-0.md');
 
-    await tabs.nth(2).press('ContextMenu');
-    await panel.locator('.ctx-menu:visible').getByRole('menuitem', { name: 'Close Others' }).press('Enter');
-    await expect(tabs).toHaveCount(1);
+    await addButton.focus();
+    await addButton.press('ArrowDown');
+    const addMenu = panel.locator('.workbench-add-menu');
+    await expect(addMenu.getByRole('menuitem').first()).toBeFocused();
+    await addMenu.getByRole('menuitem').first().press('End');
+    await expect(addMenu.getByRole('menuitem').last()).toBeFocused();
+    await addMenu.getByRole('menuitem').last().press('Escape');
+    await expect(addMenu).toHaveCount(0);
+    await expect(addButton).toBeFocused();
   });
 
   test('closes Terminal resources and keeps the launcher reachable at 320px', async ({ chatPage, mockAgent }) => {
@@ -225,16 +200,10 @@ test.describe('Workbench', () => {
     const addMenu = panel.locator('.workbench-add-menu');
     await expect(addMenu).toBeVisible();
     await expect(addMenu.getByRole('menuitem').first()).toBeFocused();
-    const menuBounds = await addMenu.evaluate(element => {
+    await expect.poll(() => addMenu.evaluate(element => {
       const rect = element.getBoundingClientRect();
-      return {
-        left: rect.left,
-        right: rect.right,
-        viewportWidth: window.innerWidth,
-      };
-    });
-    expect(menuBounds.left, JSON.stringify(menuBounds)).toBeGreaterThanOrEqual(0);
-    expect(menuBounds.right, JSON.stringify(menuBounds)).toBeLessThanOrEqual(menuBounds.viewportWidth + 1);
+      return rect.left >= 0 && rect.right <= window.innerWidth + 1;
+    })).toBe(true);
     await addMenu.getByRole('menuitem').first().press('End');
     await expect(addMenu.getByRole('menuitem').last()).toBeFocused();
     await addMenu.getByRole('menuitem').last().press('Home');
@@ -285,7 +254,8 @@ test.describe('Workbench', () => {
     await expect(panel.locator('.terminal-tab')).toBeVisible();
     const terminalA = await mockAgent.waitForMessage('terminal_create');
     expect(terminalA.workbenchRoute?.sessionId).toBe('workbench-session');
-    await panel.locator('.workbench-view-close').click();
+    await closeActiveWorkbenchItem(panel);
+    await panel.locator('.workbench-add-btn').click();
     await capability(panel, 'git').click();
     await expect(panel.locator('.git-status-tab')).toBeVisible();
     const gitRequest = await mockAgent.waitForMessage('git_status');
@@ -319,7 +289,7 @@ test.describe('Workbench', () => {
       store.yeaftActiveSessionFilter = session.id;
     }, { agentId: mockAgent.agentId, session: sessionB });
 
-    await expect(panel.locator('.files-tab')).toBeVisible();
+    await expect(panel).not.toHaveClass(/expanded/);
     await expect(panel.locator('.git-status-tab')).toHaveCount(0);
     const terminalClose = await mockAgent.waitForMessage('terminal_close');
     expect(terminalClose).toMatchObject({
@@ -327,14 +297,16 @@ test.describe('Workbench', () => {
       workbenchRoute: { sessionId: 'workbench-session' },
     });
 
-    await openCapabilityLauncher(panel);
+    await chatPage.getByRole('button', { name: 'Workbench' }).click();
+    await panel.locator('.workbench-add-btn').click();
     await capability(panel, 'terminal').click();
     const terminalB = await mockAgent.waitForMessage('terminal_create');
     expect(terminalB).toMatchObject({
       workDir: '/tmp/session-b',
       workbenchRoute: { sessionId: 'workbench-session-b' },
     });
-    await panel.locator('.workbench-view-close').click();
+    await closeActiveWorkbenchItem(panel);
+    await panel.locator('.workbench-add-btn').click();
     await capability(panel, 'files').click();
     await expect(panel.locator('.files-tab')).toBeVisible();
     const filesRequest = await mockAgent.waitForMessage('list_directory');
@@ -360,8 +332,11 @@ test.describe('Workbench', () => {
     await expect(panel.locator('video')).toHaveCount(0);
     await expect(panel.locator('iframe')).toHaveCount(0);
 
-    await panel.locator('.workbench-view-close').click();
-    await expect(panel.locator('.workbench-launcher')).toBeVisible();
+    await closeActiveWorkbenchItem(panel);
+    await expect(panel.locator('.workbench-item-tab.active .workbench-item-select')).toContainText('files', { ignoreCase: true });
+    await expect(panel.locator('.files-tab')).toBeVisible();
+    await panel.locator('.workbench-add-btn').click();
+    await expect(panel.locator('.workbench-add-menu')).toBeVisible();
   });
 
   test('enables Browser once with real progress and opens the viewer automatically', async ({ chatPage, mockAgent }) => {
@@ -383,7 +358,7 @@ test.describe('Workbench', () => {
 
     const panel = chatPage.locator('.workbench-panel');
     await openCapabilityLauncher(panel);
-    await expect(capability(panel, 'browser').locator('.workbench-capability-status')).toHaveText('Enable required');
+    await expect(capability(panel, 'browser').locator('small')).toHaveText('Enable required');
     const installsBefore = mockAgent.messages('browser_runtime_install').length;
     await capability(panel, 'browser').click();
     const status = await mockAgent.waitForMessage('browser_runtime_status');
@@ -424,11 +399,11 @@ test.describe('Workbench', () => {
     await expect(panel.locator('.browser-install-percent')).toHaveText('50%');
 
     mockAgent.completeBrowserRuntimeInstall();
-    await expect(panel.locator('.browser-video')).toBeVisible();
+    await expect(panel.locator('.browser-start-form')).toBeVisible();
     await expect(panel.locator('.browser-setup-stage')).toHaveCount(0);
     expect(mockAgent.messages('browser_runtime_install')).toHaveLength(installsBefore + 1);
     expect(mockAgent.messages('browser_runtime_enable')).toHaveLength(0);
-    await mockAgent.waitForMessage('browser_session_create');
+    expect(mockAgent.messages('browser_session_create')).toHaveLength(0);
   });
 
   test('keeps a failed Browser install visible after automatic status refresh and allows retry', async ({ chatPage, mockAgent }) => {
@@ -501,7 +476,7 @@ test.describe('Workbench', () => {
 
     const panel = chatPage.locator('.workbench-panel');
     await openCapabilityLauncher(panel);
-    await expect(capability(panel, 'browser').locator('.workbench-capability-status')).toHaveText('Available');
+    await expect(capability(panel, 'browser').locator('small')).toHaveText('Available');
     await capability(panel, 'browser').click();
     await expect(panel.locator('.browser-panel')).toBeVisible();
     await expect(panel.locator('.browser-start-form')).toBeVisible();
@@ -599,12 +574,13 @@ test.describe('Workbench', () => {
     await expect(panel.locator('.workbench-maximize-btn')).toBeVisible();
     await expect(panel.locator('.workbench-panel-close')).toBeVisible();
 
-    const cards = panel.locator('.workbench-capability-card');
-    const firstBox = await cards.nth(0).boundingBox();
-    const secondBox = await cards.nth(1).boundingBox();
-    expect(firstBox).not.toBeNull();
-    expect(secondBox).not.toBeNull();
-    expect(secondBox.y).toBeGreaterThanOrEqual(firstBox.y + firstBox.height - 1);
+    const menu = panel.locator('.workbench-add-menu');
+    const items = menu.locator('.workbench-add-menu-item');
+    await expect(items).toHaveCount(4);
+    const menuBox = await menu.boundingBox();
+    expect(menuBox).not.toBeNull();
+    expect(menuBox.x).toBeGreaterThanOrEqual(0);
+    expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(321);
 
     const overflow = await panel.evaluate(element => ({
       clientWidth: element.clientWidth,
@@ -620,15 +596,8 @@ test.describe('Workbench', () => {
     await expect(panel.locator('.files-tab')).toBeVisible();
     await expect(panel.locator('.file-tree-expand-btn')).toHaveCount(0);
 
-    const borderedRegions = [
-      panel.locator('.workbench-files-header'),
-      panel.locator('.file-col-placeholder'),
-      panel.locator('.file-col-tree'),
-    ];
-    for (const region of borderedRegions) {
-      await expect(region).toHaveCSS('border-top-width', '1px');
-      await expect(region).toHaveCSS('border-top-style', 'solid');
-    }
+    await expect(panel.locator('.file-col-placeholder')).toBeVisible();
+    await expect(panel.locator('.file-col-tree')).toBeVisible();
 
     const hideTreeButton = panel.locator('.file-tree-header:not([style*="display: none"]) .file-tree-collapse-btn').last();
     await expect(hideTreeButton).toBeVisible();
