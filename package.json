@@ -38,7 +38,8 @@
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
     "docs:screenshots": "node scripts/capture-doc-screenshots.mjs",
-    "docs:screenshots:verify-failures": "node scripts/verify-doc-screenshot-failures.mjs"
+    "docs:screenshots:verify-failures": "node scripts/verify-doc-screenshot-failures.mjs",
+    "showcase:build": "node artifacts/showcase/capture-workbench.cjs && node artifacts/showcase/generate-showcase-pptx.cjs"
   },
   "devDependencies": {
     "@dicebear/collection": "^9.4.2",
@@ -49,6 +50,8 @@
     "cross-env": "^7.0.3",
     "esbuild": "^0.28.1",
     "happy-dom": "^20.9.0",
+    "jszip": "3.10.1",
+    "pptxgenjs": "4.0.1",
     "supertest": "^7.2.2",
     "vitepress": "2.0.0-alpha.6",
     "vitest": "^4.1.10",

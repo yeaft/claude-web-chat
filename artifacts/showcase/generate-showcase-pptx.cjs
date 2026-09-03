@@ -1,4 +1,6 @@
-const pptxgen = require('/tmp/yeaft-pptx-tools/node_modules/pptxgenjs');
+const pptxgen = require('pptxgenjs');
+const JSZip = require('jszip');
+const fs = require('fs/promises');
 const path = require('path');
 
 const outDir = __dirname;
@@ -268,4 +270,31 @@ function footer(s, text) {
   footer(s, 'Work Center is a Preview capability.');
 }
 
-pptx.writeFile({ fileName: path.join(outDir, 'yeaft-editorial-minimal.pptx') });
+async function buildDeliverables() {
+  const deckPath = path.join(outDir, 'yeaft-editorial-minimal.pptx');
+  const packagePath = path.join(outDir, 'yeaft-editorial-minimal-package.zip');
+  await pptx.writeFile({ fileName: deckPath });
+
+  const archive = new JSZip();
+  const packageFiles = [
+    deckPath,
+    img.home,
+    img.conversation,
+    img.roster,
+    img.workbenchFiles,
+    img.workbenchTerminal,
+    img.workStructure,
+  ];
+  for (const file of packageFiles) {
+    const entryName = file === deckPath
+      ? path.basename(file)
+      : path.join('assets', path.basename(file));
+    archive.file(entryName, await fs.readFile(file));
+  }
+  await fs.writeFile(packagePath, await archive.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
+}
+
+buildDeliverables().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
