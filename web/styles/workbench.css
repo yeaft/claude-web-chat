@@ -492,6 +492,15 @@
   flex-direction: column;
 }
 
+.workbench-capability-host {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
 .workbench-capability-empty h2 {
   margin: 0;
   color: var(--text-primary);
@@ -875,15 +884,16 @@
 .terminal-toolbar button {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   border: none;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 13px;
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
 
 .terminal-toolbar button:hover {

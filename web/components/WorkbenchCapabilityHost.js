@@ -17,7 +17,7 @@ export default {
     routeProps: { type: Object, required: true },
   },
   template: `
-    <div class="workbench-capability-host">
+    <div class="workbench-capability-host" :class="activeCapability ? 'capability-' + activeCapability : ''">
       <component
         v-for="capability in mountedCapabilities"
         :is="capability.component"
