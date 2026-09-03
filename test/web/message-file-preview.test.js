@@ -700,7 +700,7 @@ describe('message file preview', () => {
     expect(workbenchCss).toMatch(/\.workbench-add-menu\s*\{[^}]*left:\s*0;[^}]*width:\s*min\(190px, calc\(100vw - 16px\)\);/s);
     expect(workbenchCss).toMatch(/@media \(max-width: 768px\)[\s\S]*\.workbench-add-menu\s*\{[^}]*right:\s*auto;/);
     expect(workbench).toContain('window.innerWidth - menuWidth - margin');
-    expect(workbench).toContain('declaredLeft + targetLeft - currentLeft');
+    expect(workbench).toContain('viewportLeft - launcherRect.left');
     expect(filesTab).toContain('startWidth - (clientX - startX)');
     expect(workbench).toContain('<WorkbenchCapabilityHost');
     expect(browserPanel).toContain("['installing', 'probing'].includes(status.state)");

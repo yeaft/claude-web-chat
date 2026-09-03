@@ -1,8 +1,22 @@
 import { test as base } from '@playwright/test';
 import { spawn } from 'child_process';
+import { createServer } from 'node:net';
 import { MockAgent } from './mock-agent.js';
 
 const PROJECT_ROOT = process.env.E2E_PROJECT_ROOT || process.cwd();
+
+async function getAvailablePort() {
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : null;
+  await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  if (!port) throw new Error('Failed to allocate E2E server port');
+  return port;
+}
 
 class TestServer {
   constructor(port) {
@@ -67,21 +81,35 @@ class TestServer {
   }
 
   async stop() {
-    if (this.process) {
-      this.process.kill('SIGTERM');
-      await new Promise(resolve => this.process.on('exit', resolve));
-      this.process = null;
+    if (!this.process) return;
+    const process = this.process;
+    this.process = null;
+    if (process.exitCode !== null || process.signalCode !== null) return;
+    let exitResolve;
+    const exitPromise = new Promise(resolve => { exitResolve = resolve; });
+    process.once('exit', exitResolve);
+    process.kill('SIGTERM');
+    const exited = await Promise.race([
+      exitPromise.then(() => true),
+      new Promise(resolve => setTimeout(() => resolve(false), 5000)),
+    ]);
+    if (!exited && process.exitCode === null && process.signalCode === null) {
+      process.kill('SIGKILL');
+      await exitPromise;
     }
   }
 }
 
 export const test = base.extend({
   testServer: [async ({}, use) => {
-    const port = 3400 + Math.floor(Math.random() * 100);
+    const port = await getAvailablePort();
     const server = new TestServer(port);
     await server.start();
-    await use(server);
-    await server.stop();
+    try {
+      await use(server);
+    } finally {
+      await server.stop();
+    }
   }, { scope: 'worker' }],
 
   serverUrl: async ({ testServer }, use) => {
@@ -91,8 +119,11 @@ export const test = base.extend({
   mockAgent: [async ({ serverUrl }, use) => {
     const agent = new MockAgent(serverUrl);
     await agent.connect();
-    await use(agent);
-    await agent.disconnect();
+    try {
+      await use(agent);
+    } finally {
+      await agent.disconnect();
+    }
   }, { scope: 'test' }],
 
   chatPage: async ({ page, serverUrl, mockAgent }, use) => {

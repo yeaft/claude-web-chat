@@ -297,13 +297,12 @@ export default {
       await Vue.nextTick();
       const triggerRect = launcherTrigger.value?.getBoundingClientRect();
       const menu = launcherMenu.value;
-      if (!triggerRect || !menu) return;
+      const launcherRect = launcherRoot.value?.getBoundingClientRect();
+      if (!triggerRect || !menu || !launcherRect) return;
       const margin = 8;
-      const menuWidth = menu.getBoundingClientRect().width;
-      const targetLeft = Math.max(margin, Math.min(triggerRect.left, window.innerWidth - menuWidth - margin));
-      const currentLeft = menu.getBoundingClientRect().left;
-      const declaredLeft = Number.parseFloat(menu.style.left) || 0;
-      menu.style.left = `${declaredLeft + targetLeft - currentLeft}px`;
+      const menuWidth = Math.min(menu.getBoundingClientRect().width, window.innerWidth - margin * 2);
+      const viewportLeft = Math.max(margin, Math.min(triggerRect.left, window.innerWidth - menuWidth - margin));
+      menu.style.left = `${viewportLeft - launcherRect.left}px`;
       menu.style.top = '40px';
     };
     const openLauncher = (focusIndex = 0) => {

@@ -64,7 +64,10 @@ function capability(panel, id) {
 
 async function openCapabilityLauncher(panel) {
   await expect(panel.locator('.files-tab')).toBeVisible();
-  await panel.locator('.workbench-add-btn').click();
+  const addButton = panel.locator('.workbench-add-btn');
+  await expect(addButton).toHaveAttribute('aria-expanded', 'false');
+  await addButton.click();
+  await expect(addButton).toHaveAttribute('aria-expanded', 'true');
   await expect(panel.locator('.workbench-add-menu')).toBeVisible();
 }
 

@@ -121,6 +121,7 @@
   }
   .workbench-add-menu {
     right: auto;
+    max-width: calc(100vw - 16px);
   }
   .main-content.workbench-active {
     flex: 1;

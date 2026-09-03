@@ -8,7 +8,58 @@ import { createQuickOpen } from './files/quickOpen.js';
 import { createFolderPicker } from './files/folderPicker.js';
 import { createFileTabs } from './files/fileTabs.js';
 import { createWsHandler } from './files/wsHandler.js';
-import { createRouteBoundWorkbenchStore } from '../utils/workbench-route.js';
+import {
+  createRouteBoundWorkbenchStore,
+  workbenchRouteKey,
+  workbenchWorkspaceGeneration,
+} from '../utils/workbench-route.js';
+
+export function createFileCloseEventHandlers({ liveStore, props, tabs, isDisposed }) {
+  const isCurrentEvent = event => (
+    event.detail?.routeKey === props.routeKey
+    && event.detail?.workspaceGeneration === props.workspaceGeneration
+  );
+  const isMountedWorkspaceCurrent = (routeKey, workspaceGeneration) => {
+    const liveRouteKey = workbenchRouteKey(liveStore.activeSessionRoute);
+    const liveWorkspaceGeneration = workbenchWorkspaceGeneration(liveRouteKey, liveStore.effectiveWorkDir);
+    return !isDisposed()
+      && props.routeKey === routeKey
+      && props.workspaceGeneration === workspaceGeneration
+      && liveRouteKey === routeKey
+      && liveWorkspaceGeneration === workspaceGeneration;
+  };
+  const handleSelectFileItem = event => {
+    if (!isCurrentEvent(event)) return;
+    const index = tabs.openFiles.value.findIndex(file => file.path === event.detail.path);
+    if (index >= 0) tabs.switchToTab(index);
+  };
+  const handleCloseFileItem = async event => {
+    if (!isCurrentEvent(event)) return;
+    const routeKey = event.detail.routeKey;
+    const workspaceGeneration = event.detail.workspaceGeneration;
+    const requestedRevision = tabs.tabRevision.value;
+    const target = tabs.openFiles.value.find(file => file.path === event.detail.path);
+    if (!target) return;
+    const canCommit = () => isMountedWorkspaceCurrent(routeKey, workspaceGeneration)
+      && tabs.tabRevision.value === requestedRevision
+      && tabs.openFiles.value.includes(target);
+    const index = tabs.openFiles.value.indexOf(target);
+    if (index >= 0) await tabs.closeFileTab(index, { canCommit });
+  };
+  const handleCloseFilesCapability = async event => {
+    if (!isCurrentEvent(event) || typeof event.detail.resolve !== 'function') return;
+    const routeKey = event.detail.routeKey;
+    const workspaceGeneration = event.detail.workspaceGeneration;
+    const requestedRevision = tabs.tabRevision.value;
+    const canCommit = () => isMountedWorkspaceCurrent(routeKey, workspaceGeneration)
+      && tabs.tabRevision.value === requestedRevision;
+    const closed = tabs.openFiles.value.length === 0
+      ? canCommit()
+      : await tabs.closeAllTabs({ canCommit });
+    event.detail.resolve(closed && canCommit() && tabs.openFiles.value.length === 0);
+  };
+  return { isCurrentEvent, handleSelectFileItem, handleCloseFileItem, handleCloseFilesCapability };
+}
 
 export default {
   name: 'FilesTab',
@@ -469,7 +520,8 @@ export default {
     </div>
   `,
   setup(props) {
-    const store = createRouteBoundWorkbenchStore(Pinia.useChatStore(), props);
+    const liveStore = Pinia.useChatStore();
+    const store = createRouteBoundWorkbenchStore(liveStore, props);
     const t = Vue.inject('t');
     const capabilityActive = Vue.ref(true);
     let disposed = false;
@@ -638,6 +690,7 @@ export default {
       saveTabsState: tabs.saveTabsState,
       createEditor: editor.createEditor,
       openFileInTab: tabs.openFileInTab,
+      bumpTabRevision: tabs.bumpTabRevision,
       tree, fp, qo, ops,
       mdPreviewMode: preview.mdPreviewMode,
       renderOfficeLocal: preview.renderOfficeLocal,
@@ -659,6 +712,7 @@ export default {
       tabs.saveTabsState(store.currentConversation);
       editor.destroyEditor();
       tree.clearTreeNodes();
+      if (tabs.openFiles.value.length > 0) tabs.bumpTabRevision();
       tabs.openFiles.value = [];
       tabs.activeFileIndex.value = -1;
       tabs.fileLoading.value = false;
@@ -775,31 +829,16 @@ export default {
         },
       }));
     };
-    const isCurrentFileItemEvent = event => (
-      event.detail?.routeKey === props.routeKey
-      && event.detail?.workspaceGeneration === props.workspaceGeneration
-    );
-    const handleSelectFileItem = event => {
-      if (!isCurrentFileItemEvent(event)) return;
-      const index = tabs.openFiles.value.findIndex(file => file.path === event.detail.path);
-      if (index >= 0) tabs.switchToTab(index);
-    };
-    const handleCloseFileItem = async event => {
-      if (!isCurrentFileItemEvent(event)) return;
-      const index = tabs.openFiles.value.findIndex(file => file.path === event.detail.path);
-      if (index >= 0) await tabs.closeFileTab(index);
-    };
-    const handleCloseFilesCapability = async event => {
-      if (!isCurrentFileItemEvent(event) || typeof event.detail.resolve !== 'function') return;
-      const routeKey = event.detail.routeKey;
-      const workspaceGeneration = event.detail.workspaceGeneration;
-      const canCommit = () => !disposed
-        && props.routeKey === routeKey
-        && props.workspaceGeneration === workspaceGeneration;
-      event.detail.resolve(
-        tabs.openFiles.value.length === 0 ? canCommit() : await tabs.closeAllTabs({ canCommit }),
-      );
-    };
+    const {
+      handleSelectFileItem,
+      handleCloseFileItem,
+      handleCloseFilesCapability,
+    } = createFileCloseEventHandlers({
+      liveStore,
+      props,
+      tabs,
+      isDisposed: () => disposed,
+    });
     Vue.watch(
       [tabs.openFiles, tabs.activeFileIndex],
       publishFileItems,

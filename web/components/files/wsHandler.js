@@ -9,7 +9,7 @@ export function createWsHandler({
   store, normalizePath, getEffectiveWorkDir,
   // File tabs
   openFiles, activeFileIndex, activeFile, fileLoading, fileSaving,
-  saveTabsState, createEditor, openFileInTab,
+  saveTabsState, createEditor, openFileInTab, bumpTabRevision = () => {},
   // Tree
   tree, setTreeVisible,
   // Folder picker
@@ -198,6 +198,7 @@ export function createWsHandler({
         if (msg.openFiles?.length > 0 && openFiles.value.length === 0) {
           const pendingRestoreIndex = msg.activeIndex || 0;
           const totalFiles = msg.openFiles.length;
+          bumpTabRevision();
           for (const file of msg.openFiles) {
             const nPath = normalizePath(file.path);
             const name = nPath.split('/').pop();
