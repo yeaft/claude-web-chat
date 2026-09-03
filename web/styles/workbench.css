@@ -177,17 +177,15 @@
   align-self: stretch;
   flex: 1;
   min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
+  overflow: hidden;
 }
 
 .workbench-tabs {
   display: flex;
   align-items: stretch;
-  width: max-content;
-  min-width: min-content;
+  min-width: 0;
   height: 100%;
+  overflow: hidden;
 }
 
 .workbench-item-tab {
@@ -261,42 +259,27 @@
 }
 
 .workbench-add-wrap {
-  position: sticky;
-  right: 0;
-  z-index: 2;
-  flex-shrink: 0;
-  background: var(--bg-workbench);
+  align-self: center;
+  flex: 0 0 32px;
+  height: 32px;
 }
 
 .workbench-add-menu {
   position: fixed;
   top: 0;
   left: 0;
-  z-index: 30;
+  z-index: 120;
   width: min(190px, calc(100vw - 16px));
-  padding: 4px;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-main);
 }
 
 .workbench-add-menu-item {
   width: 100%;
-  padding: 8px 10px;
   border: none;
-  border-radius: 5px;
   background: transparent;
-  color: var(--text-primary);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
   justify-content: space-between;
   gap: 16px;
   text-align: left;
-}
-
-.workbench-add-menu-item:hover {
-  background: var(--sidebar-hover);
+  font: inherit;
 }
 
 .workbench-add-menu-item small {
@@ -319,6 +302,29 @@
   max-width: min(360px, calc(100vw - 16px));
   max-height: min(420px, calc(100vh - 16px));
   overflow-y: auto;
+}
+
+.workbench-content .ctx-menu-item {
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+}
+
+.workbench-content .ctx-menu-item:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
+}
+
+.workbench-content .ctx-menu-item:disabled {
+  cursor: not-allowed;
+  color: var(--text-muted);
+  opacity: 0.55;
+}
+
+.workbench-content .ctx-menu-item:disabled:hover {
+  background: transparent;
 }
 
 .workbench-menu-item {

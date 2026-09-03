@@ -128,6 +128,7 @@ describe('Workbench capability launcher', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     document.body.innerHTML = '';
   });
 
@@ -442,7 +443,27 @@ describe('Workbench capability launcher', () => {
     wrapper.unmount();
   });
 
-  it('selects any open item from the overflow menu and restores tab context actions', async () => {
+  it('keeps the active tab visible and lists only hidden items in the overflow menu', async () => {
+    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+      let width = 0;
+      if (this.classList.contains('workbench-tab-rail')) width = 270;
+      else if (this.classList.contains('workbench-item-tab')) width = 100;
+      else if (this.classList.contains('workbench-add-wrap')) width = 32;
+      else if (this.classList.contains('workbench-open-items-btn')) width = 32;
+      if (!width) return originalGetBoundingClientRect.call(this);
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        right: width,
+        bottom: 32,
+        left: 0,
+        width,
+        height: 32,
+        toJSON: () => ({}),
+      };
+    });
     const wrapper = mountWorkbench();
     await openWorkbenchCapability(wrapper, 'files');
     await openWorkbenchCapability(wrapper, 'terminal');
@@ -460,12 +481,66 @@ describe('Workbench capability launcher', () => {
         { path: 'src/main.js', name: 'main.js', isDirty: true },
       ],
     } }));
+    window.dispatchEvent(new Event('resize'));
+    await Vue.nextTick();
+    await Vue.nextTick();
     await Vue.nextTick();
 
-    await wrapper.get('.workbench-open-items-btn').trigger('click');
-    expect(wrapper.findAll('.workbench-open-items-menu .ctx-menu-item')).toHaveLength(4);
-    await wrapper.findAll('.workbench-open-items-menu .ctx-menu-item')[3].trigger('click');
-    expect(wrapper.get('.git-tab-stub').isVisible()).toBe(true);
+    expect(wrapper.findAll('.workbench-item-tab').map(tab => tab.text()))
+      .toEqual(['README.md×', 'workbench.git×']);
+    const overflowTrigger = wrapper.get('.workbench-open-items-btn');
+    await overflowTrigger.trigger('click');
+    await Vue.nextTick();
+    let hiddenItems = wrapper.findAll('.workbench-open-items-menu .ctx-menu-item');
+    expect(hiddenItems.map(item => item.text()))
+      .toEqual(['● main.jssrc/main.js', 'workbench.terminal']);
+    expect(document.activeElement).toBe(hiddenItems[0].element);
+    await hiddenItems[0].trigger('keydown', { key: 'Escape' });
+    await Vue.nextTick();
+    expect(document.activeElement).toBe(overflowTrigger.element);
+
+    await overflowTrigger.trigger('keydown', { key: 'ArrowDown' });
+    await Vue.nextTick();
+    hiddenItems = wrapper.findAll('.workbench-open-items-menu .ctx-menu-item');
+    expect(document.activeElement).toBe(hiddenItems[0].element);
+    await hiddenItems[0].trigger('keydown', { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(hiddenItems[1].element);
+    await hiddenItems[1].trigger('keydown', { key: 'Home' });
+    expect(document.activeElement).toBe(hiddenItems[0].element);
+    await hiddenItems[0].trigger('keydown', { key: 'End' });
+    expect(document.activeElement).toBe(hiddenItems[1].element);
+    await hiddenItems[1].trigger('keydown', { key: 'Escape' });
+    await Vue.nextTick();
+    expect(wrapper.find('.workbench-open-items-menu').exists()).toBe(false);
+    expect(document.activeElement).toBe(overflowTrigger.element);
+
+    await overflowTrigger.trigger('keydown', { key: 'ArrowDown' });
+    await Vue.nextTick();
+    hiddenItems = wrapper.findAll('.workbench-open-items-menu .ctx-menu-item');
+    await hiddenItems[0].trigger('keydown', { key: 'Tab' });
+    await Vue.nextTick();
+    expect(wrapper.find('.workbench-open-items-menu').exists()).toBe(false);
+    expect(document.activeElement).toBe(wrapper.get('.workbench-maximize-btn').element);
+
+    overflowTrigger.element.focus();
+    await overflowTrigger.trigger('keydown', { key: 'ArrowDown' });
+    await Vue.nextTick();
+    hiddenItems = wrapper.findAll('.workbench-open-items-menu .ctx-menu-item');
+    await hiddenItems[0].trigger('keydown', { key: 'Tab', shiftKey: true });
+    await Vue.nextTick();
+    expect(wrapper.find('.workbench-open-items-menu').exists()).toBe(false);
+    expect(document.activeElement).toBe(overflowTrigger.element);
+
+    await overflowTrigger.trigger('keydown', { key: 'ArrowUp' });
+    await Vue.nextTick();
+    hiddenItems = wrapper.findAll('.workbench-open-items-menu .ctx-menu-item');
+    expect(document.activeElement).toBe(hiddenItems[1].element);
+    await hiddenItems[1].trigger('click');
+    await Vue.nextTick();
+    await Vue.nextTick();
+    expect(wrapper.get('.terminal-tab-stub').isVisible()).toBe(true);
+    expect(wrapper.findAll('.workbench-item-tab').map(tab => tab.text()))
+      .toEqual(['README.md×', 'workbench.terminal×']);
 
     const terminalTab = wrapper.findAll('.workbench-item-tab')
       .find(tab => tab.text().includes('workbench.terminal'));
@@ -487,10 +562,11 @@ describe('Workbench capability launcher', () => {
     expect(closeFiles.mock.calls[0][0].detail.paths).toEqual(['README.md', 'src/main.js']);
     expect(wrapper.findAll('.workbench-item-tab').map(tab => tab.text()))
       .toEqual(['workbench.terminal×']);
-    expect(wrapper.get('.terminal-tab-stub').isVisible()).toBe(true);
+    expect(wrapper.find('.workbench-open-items-btn').exists()).toBe(false);
 
     window.removeEventListener('workbench-close-file-items', closeFiles);
     wrapper.unmount();
+    rectSpy.mockRestore();
   });
 
   it('routes a message file-open event directly to Files and preserves it on reopen', async () => {
@@ -763,19 +839,23 @@ describe('message file preview', () => {
     expect(workbench).toContain('class="workbench-item-tab"');
     expect(workbench).not.toContain('workbench-header-title');
     expect(workbenchCss).not.toContain('.workbench-files-header');
-    expect(workbenchCss).toMatch(/\.workbench-tab-rail\s*\{[^}]*flex:\s*1;[^}]*overflow-x:\s*auto;/s);
-    expect(workbenchCss).toMatch(/\.workbench-tabs\s*\{[^}]*width:\s*max-content;[^}]*min-width:\s*min-content;/s);
-    expect(workbenchCss).toMatch(/\.workbench-add-wrap\s*\{[^}]*position:\s*sticky;[^}]*right:\s*0;/s);
+    expect(workbenchCss).toMatch(/\.workbench-tab-rail\s*\{[^}]*flex:\s*1;[^}]*overflow:\s*hidden;/s);
+    expect(workbenchCss).toMatch(/\.workbench-tabs\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;/s);
+    expect(workbenchCss).toMatch(/\.workbench-add-wrap\s*\{[^}]*align-self:\s*center;[^}]*flex:\s*0 0 32px;/s);
+    expect(workbenchCss).not.toMatch(/\.workbench-add-wrap\s*\{[^}]*position:\s*sticky;/s);
     expect(workbenchCss).toMatch(/\.workbench-add-menu\s*\{[^}]*position:\s*fixed;[^}]*left:\s*0;[^}]*width:\s*min\(190px, calc\(100vw - 16px\)\);/s);
     expect(workbenchCss).toMatch(/@media \(max-width: 768px\)[\s\S]*\.workbench-add-menu\s*\{[^}]*right:\s*auto;/);
     expect(workbench).toContain('window.innerWidth - menuWidth - margin');
     expect(workbench).toContain('menu.style.left = `${viewportLeft}px`');
-    expect(workbench).toContain("querySelector('.workbench-item-tab.active')");
-    expect(workbench).toContain("scrollIntoView?.({ block: 'nearest', inline: 'nearest' })");
+    expect(workbench).toContain('v-for="item in visibleWorkbenchItems"');
+    expect(workbench).toContain('v-for="item in hiddenWorkbenchItems"');
+    expect(workbench).toContain('const updateTabOverflow = () =>');
+    expect(workbench).not.toContain('scrollIntoView?.');
     expect(workbench).toContain("new CustomEvent('workbench-panel-resize'");
     expect(filesTab).toContain('startWidth - (clientX - startX)');
     expect(filesCss).toMatch(/\.file-two-col\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
-    expect(filesCss).toMatch(/\.file-tree-content\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*scroll;[^}]*scrollbar-gutter:\s*stable;/s);
+    expect(filesCss).toMatch(/\.file-tree-content\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*scroll;[^}]*scrollbar-gutter:\s*stable;[^}]*scrollbar-color:\s*var\(--border-color\) transparent;/s);
+    expect(filesCss).toMatch(/\.file-tree-content::-webkit-scrollbar-thumb\s*\{[^}]*background:\s*var\(--border-color\);/s);
     expect(filesCss).toMatch(/\.file-col-content\s*\{[^}]*overflow:\s*hidden;[^}]*min-height:\s*0;/s);
     expect(filesCss).toMatch(/\.file-editor-container \.CodeMirror-scroll\s*\{[^}]*overflow:\s*scroll !important;[^}]*scrollbar-gutter:\s*stable;/s);
     expect(workbench).toContain('<WorkbenchCapabilityHost');
