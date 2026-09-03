@@ -60,6 +60,7 @@ import {
 import { createPerfTraceId, recordPerfTrace, measureNextPaint } from './helpers/perfTrace.js';
 import { normalizeSessionMessageQuote } from '../utils/session-message-quote.js';
 import { markTurnResponseKinds } from '../utils/turn-response.js';
+import { workbenchRouteKey } from '../utils/workbench-route.js';
 import {
   yeaftHistoryIdentityKey,
   yeaftHistoryResultIdentity,
@@ -694,10 +695,10 @@ export const useChatStore = defineStore('chat', {
     pendingAgentSelection: null, // { agentId, requestId }; fences stale agent_selected replies
     // 临时保存恢复会话时的标题
     _pendingSessionTitle: null,
-    // Workbench 面板是否展开（替代 backgroundPanelExpanded）
+    // Workbench visibility is scoped to the exact Agent + Session route.
     workbenchExpanded: false,
-    // Workbench 面板是否最大化（隐藏 conversation）
     workbenchMaximized: false,
+    workbenchPanelStateByRoute: {},
     // 桌面侧栏折叠与移动端抽屉开关由 Chat / Yeaft Session 共用。
     sidebarCollapsed: false,
     sessionSidebarOpen: false,
@@ -3260,6 +3261,7 @@ export const useChatStore = defineStore('chat', {
       if (!targetAgentId) return;
       this.workbenchExpanded = false;
       this.workbenchMaximized = false;
+      this.rememberWorkbenchPanelState();
       const requestId = `dbgpanel_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
       // Turn-scoped entries flip to loading until the detail response arrives.
       const status = turnId ? 'loading' : 'idle';
@@ -6927,6 +6929,7 @@ export const useChatStore = defineStore('chat', {
       if (this.activeRightPanel) {
         this.workbenchExpanded = false;
         this.workbenchMaximized = false;
+        this.rememberWorkbenchPanelState();
       }
     },
     getPaneRightPanel(paneId) {
@@ -8257,16 +8260,39 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
+    rememberWorkbenchPanelState(route = this.activeSessionRoute) {
+      const routeKey = typeof route === 'string' ? route : workbenchRouteKey(route);
+      if (!routeKey) return false;
+      this.workbenchPanelStateByRoute = {
+        ...this.workbenchPanelStateByRoute,
+        [routeKey]: {
+          expanded: !!this.workbenchExpanded,
+          maximized: !!this.workbenchExpanded && !!this.workbenchMaximized,
+        },
+      };
+      return true;
+    },
+
+    restoreWorkbenchPanelState(route = this.activeSessionRoute) {
+      const routeKey = workbenchRouteKey(route);
+      const saved = routeKey ? this.workbenchPanelStateByRoute[routeKey] : null;
+      this.workbenchExpanded = !!saved?.expanded;
+      this.workbenchMaximized = !!saved?.expanded && !!saved?.maximized;
+      return !!saved;
+    },
+
     openWorkbench() {
       this.workbenchExpanded = true;
       this.activeRightPanel = null;
       this.closeYeaftDebugPanel();
+      this.rememberWorkbenchPanelState();
     },
 
     toggleWorkbench() {
       if (this.workbenchExpanded) {
         this.workbenchExpanded = false;
         this.workbenchMaximized = false;
+        this.rememberWorkbenchPanelState();
         return;
       }
       this.openWorkbench();
@@ -8286,6 +8312,7 @@ export const useChatStore = defineStore('chat', {
 
     toggleWorkbenchMaximized() {
       this.workbenchMaximized = !this.workbenchMaximized;
+      this.rememberWorkbenchPanelState();
     },
 
     renameChatSession(convId, title, agentId = null) {
@@ -8373,6 +8400,7 @@ export const useChatStore = defineStore('chat', {
       const wasExpanded = this.workbenchExpanded;
       this.openWorkbench();
       this.workbenchMaximized = false;
+      this.rememberWorkbenchPanelState();
       const dispatchOpen = () => window.dispatchEvent(new CustomEvent('open-file-in-explorer', {
         detail: {
           filePath: path,
@@ -8411,6 +8439,8 @@ export const useChatStore = defineStore('chat', {
       this.processingConversations = {};
       this.executionStatusMap = {};
       this.workbenchExpanded = false;
+      this.workbenchMaximized = false;
+      this.workbenchPanelStateByRoute = {};
       this.subagents = {};
       this.activeSubagentId = null;
       this.activeRightPanel = null;

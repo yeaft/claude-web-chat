@@ -67,11 +67,7 @@ export default {
         </div>
         <!-- VS Code 风格 Header: 正常模式 -->
         <div class="file-tree-header vscode-header" v-else>
-          <div class="vscode-folder-row" @click="toggleRootExpand">
-            <span class="tree-arrow root-arrow" v-if="treeRootPath">
-              <svg v-if="rootExpanded" viewBox="0 0 16 16" width="10" height="10"><path fill="currentColor" d="M3.5 5.5L8 10l4.5-4.5z"/></svg>
-              <svg v-else viewBox="0 0 16 16" width="10" height="10"><path fill="currentColor" d="M5.5 3.5L10 8l-4.5 4.5z"/></svg>
-            </span>
+          <div class="vscode-folder-row">
             <span class="vscode-folder-name" :title="treeRootPath || $t('files.notLoaded')">{{ rootFolderName }}</span>
             <div class="vscode-folder-actions" v-if="treeRootPath" @click.stop>
               <button class="vscode-action-btn" @click="showNewFileDialog('file')" :title="$t('files.newFile')">
@@ -266,7 +262,7 @@ export default {
           </div>
           <!-- Markdown 渲染预览 -->
           <div v-if="isActiveMarkdown && mdPreviewMode" class="file-preview-container md-preview-container" ref="mdPreviewRef">
-            <div class="markdown-body md-file-preview" v-html="mdRenderedHtml"></div>
+            <div class="markdown-body md-file-preview" :style="{ fontSize: fontSize + 'px' }" v-html="mdRenderedHtml"></div>
           </div>
           <!-- 搜索/替换栏 + CodeMirror 编辑器 -->
           <template v-if="!isActiveMarkdown || !mdPreviewMode">
@@ -1028,8 +1024,7 @@ export default {
       treePath: tree.treePath, treeRootPath: tree.treeRootPath,
       treeNodes: tree.treeNodes, flattenedTree: tree.flattenedTree,
       editingTreePath: tree.editingTreePath, treePathInputRef: tree.treePathInputRef,
-      rootFolderName: tree.rootFolderName, rootExpanded: tree.rootExpanded,
-      toggleRootExpand: tree.toggleRootExpand, collapseAll: tree.collapseAll,
+      rootFolderName: tree.rootFolderName, collapseAll: tree.collapseAll,
       startTreePathEdit: tree.startTreePathEdit,
       confirmTreePath: tree.confirmTreePath, cancelTreePathEdit: tree.cancelTreePathEdit,
       treePanelWidth, isTreeResizing, startTreeResize,
