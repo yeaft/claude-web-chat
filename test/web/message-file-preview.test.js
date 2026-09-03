@@ -488,10 +488,54 @@ describe('Workbench capability launcher', () => {
 
     expect(wrapper.findAll('.workbench-item-tab').map(tab => tab.text()))
       .toEqual(['README.md×', 'workbench.git×']);
-    await wrapper.get('.workbench-open-items-btn').trigger('click');
-    expect(wrapper.findAll('.workbench-open-items-menu .ctx-menu-item').map(item => item.text()))
+    const overflowTrigger = wrapper.get('.workbench-open-items-btn');
+    await overflowTrigger.trigger('click');
+    await Vue.nextTick();
+    let hiddenItems = wrapper.findAll('.workbench-open-items-menu .ctx-menu-item');
+    expect(hiddenItems.map(item => item.text()))
       .toEqual(['● main.jssrc/main.js', 'workbench.terminal']);
-    await wrapper.findAll('.workbench-open-items-menu .ctx-menu-item')[1].trigger('click');
+    expect(document.activeElement).toBe(hiddenItems[0].element);
+    await hiddenItems[0].trigger('keydown', { key: 'Escape' });
+    await Vue.nextTick();
+    expect(document.activeElement).toBe(overflowTrigger.element);
+
+    await overflowTrigger.trigger('keydown', { key: 'ArrowDown' });
+    await Vue.nextTick();
+    hiddenItems = wrapper.findAll('.workbench-open-items-menu .ctx-menu-item');
+    expect(document.activeElement).toBe(hiddenItems[0].element);
+    await hiddenItems[0].trigger('keydown', { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(hiddenItems[1].element);
+    await hiddenItems[1].trigger('keydown', { key: 'Home' });
+    expect(document.activeElement).toBe(hiddenItems[0].element);
+    await hiddenItems[0].trigger('keydown', { key: 'End' });
+    expect(document.activeElement).toBe(hiddenItems[1].element);
+    await hiddenItems[1].trigger('keydown', { key: 'Escape' });
+    await Vue.nextTick();
+    expect(wrapper.find('.workbench-open-items-menu').exists()).toBe(false);
+    expect(document.activeElement).toBe(overflowTrigger.element);
+
+    await overflowTrigger.trigger('keydown', { key: 'ArrowDown' });
+    await Vue.nextTick();
+    hiddenItems = wrapper.findAll('.workbench-open-items-menu .ctx-menu-item');
+    await hiddenItems[0].trigger('keydown', { key: 'Tab' });
+    await Vue.nextTick();
+    expect(wrapper.find('.workbench-open-items-menu').exists()).toBe(false);
+    expect(document.activeElement).toBe(wrapper.get('.workbench-maximize-btn').element);
+
+    overflowTrigger.element.focus();
+    await overflowTrigger.trigger('keydown', { key: 'ArrowDown' });
+    await Vue.nextTick();
+    hiddenItems = wrapper.findAll('.workbench-open-items-menu .ctx-menu-item');
+    await hiddenItems[0].trigger('keydown', { key: 'Tab', shiftKey: true });
+    await Vue.nextTick();
+    expect(wrapper.find('.workbench-open-items-menu').exists()).toBe(false);
+    expect(document.activeElement).toBe(overflowTrigger.element);
+
+    await overflowTrigger.trigger('keydown', { key: 'ArrowUp' });
+    await Vue.nextTick();
+    hiddenItems = wrapper.findAll('.workbench-open-items-menu .ctx-menu-item');
+    expect(document.activeElement).toBe(hiddenItems[1].element);
+    await hiddenItems[1].trigger('click');
     await Vue.nextTick();
     await Vue.nextTick();
     expect(wrapper.get('.terminal-tab-stub').isVisible()).toBe(true);

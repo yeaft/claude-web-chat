@@ -86,6 +86,7 @@ export default {
             :aria-expanded="openItemsMenu.visible"
             aria-haspopup="menu"
             @click.stop="toggleOpenItemsMenu"
+            @keydown="handleOpenItemsButtonKeydown"
           >
             <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M4 6l4 4 4-4z"/></svg>
           </button>
@@ -196,6 +197,7 @@ export default {
             class="ctx-menu-item workbench-menu-item"
             role="menuitem"
             @click="selectItemFromMenu(item)"
+            @keydown="handleOpenItemsMenuKeydown"
           >
             <span class="workbench-menu-item-label"><span v-if="item.dirty" aria-hidden="true">● </span>{{ item.label }}</span>
             <span class="workbench-menu-item-path">{{ item.title || '' }}</span>
@@ -548,16 +550,66 @@ export default {
       openItemsMenu.visible = false;
       tabContextMenu.visible = false;
     };
-    const toggleOpenItemsMenu = async () => {
-      if (openItemsMenu.visible) {
-        openItemsMenu.visible = false;
-        return;
-      }
+    const openItemsMenuItems = () => (
+      [...(openItemsMenuElement.value?.querySelectorAll('.ctx-menu-item:not(:disabled)') || [])]
+    );
+    const focusOpenItemsMenuItem = (index = 0) => Vue.nextTick(() => {
+      const items = openItemsMenuItems();
+      if (!items.length) return;
+      const boundedIndex = Math.max(0, Math.min(index, items.length - 1));
+      items[boundedIndex]?.focus();
+    });
+    const openOpenItemsMenu = async (focusIndex = 0) => {
       tabContextMenu.visible = false;
       openItemsMenu.visible = true;
       await Vue.nextTick();
       const rect = openItemsTrigger.value?.getBoundingClientRect();
       if (rect) Object.assign(openItemsMenu, positionFixedMenu(openItemsMenuElement.value, rect));
+      focusOpenItemsMenuItem(focusIndex);
+    };
+    const closeOpenItemsMenu = (restoreFocus = false) => {
+      openItemsMenu.visible = false;
+      if (restoreFocus) Vue.nextTick(() => openItemsTrigger.value?.focus());
+    };
+    const toggleOpenItemsMenu = () => {
+      if (openItemsMenu.visible) closeOpenItemsMenu();
+      else openOpenItemsMenu();
+    };
+    const handleOpenItemsButtonKeydown = event => {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        openOpenItemsMenu(0);
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        openOpenItemsMenu(hiddenWorkbenchItems.value.length - 1);
+      } else if (event.key === 'Escape' && openItemsMenu.visible) {
+        event.preventDefault();
+        closeOpenItemsMenu(true);
+      }
+    };
+    const handleOpenItemsMenuKeydown = event => {
+      const items = openItemsMenuItems();
+      const currentIndex = items.indexOf(document.activeElement);
+      let nextIndex = currentIndex;
+      if (event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length;
+      else if (event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length;
+      else if (event.key === 'Home') nextIndex = 0;
+      else if (event.key === 'End') nextIndex = items.length - 1;
+      else if (event.key === 'Escape') {
+        event.preventDefault();
+        closeOpenItemsMenu(true);
+        return;
+      } else if (event.key === 'Tab') {
+        event.preventDefault();
+        const nextTarget = event.shiftKey
+          ? openItemsTrigger.value
+          : panelRoot.value?.querySelector('.workbench-maximize-btn:not(:disabled)');
+        closeOpenItemsMenu();
+        Vue.nextTick(() => nextTarget?.focus());
+        return;
+      } else return;
+      event.preventDefault();
+      items[nextIndex]?.focus();
     };
     const selectItemFromMenu = item => {
       selectWorkbenchItem(item);
@@ -916,6 +968,8 @@ export default {
       selectWorkbenchItem,
       selectItemFromMenu,
       toggleOpenItemsMenu,
+      handleOpenItemsButtonKeydown,
+      handleOpenItemsMenuKeydown,
       showTabContextMenu,
       runTabContextAction,
       handleWorkbenchTabKeydown,

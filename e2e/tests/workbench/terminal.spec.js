@@ -183,10 +183,43 @@ test.describe('Workbench', () => {
     })).toBe(true);
 
     await overflowButton.click();
-    const hiddenItems = panel.locator('.workbench-open-items-menu .ctx-menu-item');
+    const hiddenMenu = panel.locator('.workbench-open-items-menu');
+    const hiddenItems = hiddenMenu.getByRole('menuitem');
     await expect.poll(async () => await tabs.count() + await hiddenItems.count()).toBe(12);
+    await expect(hiddenItems.first()).toBeFocused();
+    await hiddenItems.first().press('Escape');
+    await expect(hiddenMenu).toHaveCount(0);
+    await expect(overflowButton).toBeFocused();
+
+    await overflowButton.press('ArrowDown');
+    await expect(hiddenItems.first()).toBeFocused();
+    await hiddenItems.first().press('ArrowUp');
+    await expect(hiddenItems.last()).toBeFocused();
+    await hiddenItems.last().press('Home');
+    await expect(hiddenItems.first()).toBeFocused();
+    await hiddenItems.first().press('End');
+    await expect(hiddenItems.last()).toBeFocused();
+    await hiddenItems.last().press('Escape');
+    await expect(hiddenMenu).toHaveCount(0);
+    await expect(overflowButton).toBeFocused();
+
+    await overflowButton.press('ArrowDown');
+    await expect(hiddenItems.first()).toBeFocused();
+    await hiddenItems.first().press('Tab');
+    await expect(hiddenMenu).toHaveCount(0);
+    await expect(panel.locator('.workbench-maximize-btn')).toBeFocused();
+
+    await overflowButton.focus();
+    await overflowButton.press('ArrowUp');
+    await expect(hiddenItems.last()).toBeFocused();
+    await hiddenItems.last().press('Shift+Tab');
+    await expect(hiddenMenu).toHaveCount(0);
+    await expect(overflowButton).toBeFocused();
+
+    await overflowButton.press('ArrowUp');
+    await expect(hiddenItems.last()).toBeFocused();
     const hiddenLabel = (await hiddenItems.last().locator('.workbench-menu-item-label').textContent()).trim();
-    await hiddenItems.last().click();
+    await hiddenItems.last().press('Enter');
     await expect(panel.locator('.workbench-item-tab.active .workbench-item-label')).toHaveText(hiddenLabel.replace(/^●\s*/, ''));
 
     await panel.locator('.workbench-item-tab.active .workbench-item-close').click();
