@@ -18,6 +18,24 @@ async function getAvailablePort() {
   return port;
 }
 
+export async function useTestServer(server, use) {
+  try {
+    await server.start();
+    await use(server);
+  } finally {
+    await server.stop();
+  }
+}
+
+export async function useMockAgent(agent, use) {
+  try {
+    await agent.connect();
+    await use(agent);
+  } finally {
+    await agent.disconnect();
+  }
+}
+
 class TestServer {
   constructor(port) {
     this.port = port;
@@ -104,12 +122,7 @@ export const test = base.extend({
   testServer: [async ({}, use) => {
     const port = await getAvailablePort();
     const server = new TestServer(port);
-    await server.start();
-    try {
-      await use(server);
-    } finally {
-      await server.stop();
-    }
+    await useTestServer(server, use);
   }, { scope: 'worker' }],
 
   serverUrl: async ({ testServer }, use) => {
@@ -118,12 +131,7 @@ export const test = base.extend({
 
   mockAgent: [async ({ serverUrl }, use) => {
     const agent = new MockAgent(serverUrl);
-    await agent.connect();
-    try {
-      await use(agent);
-    } finally {
-      await agent.disconnect();
-    }
+    await useMockAgent(agent, use);
   }, { scope: 'test' }],
 
   chatPage: async ({ page, serverUrl, mockAgent }, use) => {
