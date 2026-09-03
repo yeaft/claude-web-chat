@@ -16,10 +16,11 @@ export default {
           <div class="workbench-tab-rail" ref="tabRail">
             <div class="workbench-tabs" role="tablist" ref="tabList" :aria-label="$t('workbench.openItems')">
             <div
-              v-for="item in workbenchItems"
+              v-for="item in visibleWorkbenchItems"
               :key="item.id"
               class="workbench-item-tab"
               :class="{ active: item.id === activeWorkbenchItemId }"
+              :data-workbench-item-id="item.id"
               @contextmenu.prevent="showTabContextMenu($event, item)"
             >
               <button
@@ -57,13 +58,13 @@ export default {
               >
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
               </button>
-              <div v-if="launcherOpen" ref="launcherMenu" class="workbench-add-menu" role="menu">
+              <div v-if="launcherOpen" ref="launcherMenu" class="ctx-menu workbench-add-menu" role="menu">
                 <button
                   v-for="capability in capabilityCards"
                   :key="capability.id"
                   type="button"
                   role="menuitem"
-                  class="workbench-add-menu-item"
+                  class="ctx-menu-item workbench-add-menu-item"
                   :data-workbench-capability="capability.id"
                   @click="openCapability(capability.id)"
                   @keydown="handleLauncherMenuKeydown"
@@ -76,7 +77,7 @@ export default {
           </div>
           </div>
           <button
-            v-if="workbenchItems.length"
+            v-if="hiddenWorkbenchItems.length"
             ref="openItemsTrigger"
             type="button"
             class="workbench-header-action workbench-open-items-btn"
@@ -189,11 +190,10 @@ export default {
           @click.stop
         >
           <button
-            v-for="item in workbenchItems"
+            v-for="item in hiddenWorkbenchItems"
             :key="item.id"
             type="button"
             class="ctx-menu-item workbench-menu-item"
-            :class="{ active: item.id === activeWorkbenchItemId }"
             role="menuitem"
             @click="selectItemFromMenu(item)"
           >
@@ -237,6 +237,9 @@ export default {
     const tabContextMenuElement = Vue.ref(null);
     const openItemsMenu = Vue.reactive({ visible: false, x: 0, y: 0 });
     const tabContextMenu = Vue.reactive({ visible: false, x: 0, y: 0, itemId: '', index: -1 });
+    const hiddenWorkbenchItemIds = Vue.ref([]);
+    const measuredTabWidths = new Map();
+    let tabOverflowUpdatePending = false;
     const t = (key, params) => Vue.getCurrentInstance()?.proxy?.$t?.(key, params) || key;
 
     const activeRoute = Vue.computed(() => store.activeSessionRoute || null);
@@ -367,6 +370,17 @@ export default {
       activeCapability.value === 'files' && activeFilePath.value
         ? fileItemId(activeFilePath.value)
         : activeCapability.value
+    ));
+    const hiddenWorkbenchItemIdSet = Vue.computed(() => new Set(hiddenWorkbenchItemIds.value));
+    const visibleWorkbenchItems = Vue.computed(() => (
+      workbenchItems.value.filter(item => (
+        item.id === activeWorkbenchItemId.value || !hiddenWorkbenchItemIdSet.value.has(item.id)
+      ))
+    ));
+    const hiddenWorkbenchItems = Vue.computed(() => (
+      workbenchItems.value.filter(item => (
+        item.id !== activeWorkbenchItemId.value && hiddenWorkbenchItemIdSet.value.has(item.id)
+      ))
     ));
     const rememberCapability = () => {
       if (!workbenchContextKey.value) return;
@@ -600,8 +614,10 @@ export default {
         if (!await closeCapability(item.capabilityId)) break;
       }
     };
-    const focusWorkbenchItem = index => Vue.nextTick(() => {
-      panelRoot.value?.querySelectorAll('.workbench-item-select')[index]?.focus();
+    const focusWorkbenchItem = itemId => Vue.nextTick(() => {
+      const tab = [...(tabList.value?.querySelectorAll('.workbench-item-tab') || [])]
+        .find(candidate => candidate.dataset.workbenchItemId === itemId);
+      tab?.querySelector('.workbench-item-select')?.focus();
     });
     const handleWorkbenchTabKeydown = (event, item) => {
       const items = workbenchItems.value;
@@ -616,7 +632,7 @@ export default {
       const nextItem = items[nextIndex];
       if (!nextItem) return;
       selectWorkbenchItem(nextItem);
-      focusWorkbenchItem(nextIndex);
+      focusWorkbenchItem(nextItem.id);
     };
 
     Vue.watch(
@@ -648,6 +664,80 @@ export default {
       if (width > 0) panelWidth.value = width;
     };
 
+    const updateTabOverflow = () => {
+      const railWidth = Math.floor(
+        tabRail.value?.clientWidth || tabRail.value?.getBoundingClientRect?.().width || 0,
+      );
+      if (railWidth <= 0) return;
+
+      const currentIds = new Set(workbenchItems.value.map(item => item.id));
+      for (const itemId of measuredTabWidths.keys()) {
+        if (!currentIds.has(itemId)) measuredTabWidths.delete(itemId);
+      }
+      for (const tab of tabList.value?.querySelectorAll('.workbench-item-tab') || []) {
+        const width = Math.ceil(tab.getBoundingClientRect?.().width || tab.offsetWidth || 0);
+        if (tab.dataset.workbenchItemId && width > 0) {
+          measuredTabWidths.set(tab.dataset.workbenchItemId, width);
+        }
+      }
+
+      const launcherWidth = Math.ceil(
+        launcherRoot.value?.getBoundingClientRect?.().width || launcherRoot.value?.offsetWidth || 32,
+      );
+      const itemWidth = item => measuredTabWidths.get(item.id) || 96;
+      const overflowTriggerExtent = Math.ceil(
+        openItemsTrigger.value?.getBoundingClientRect?.().width
+          || openItemsTrigger.value?.offsetWidth
+          || 32,
+      ) + 6;
+      const expandedRailWidth = railWidth + (openItemsTrigger.value ? overflowTriggerExtent : 0);
+      const allTabsWidth = workbenchItems.value.reduce((total, item) => total + itemWidth(item), 0);
+      if (allTabsWidth + launcherWidth <= expandedRailWidth) {
+        hiddenWorkbenchItemIds.value = [];
+        openItemsMenu.visible = false;
+        return;
+      }
+
+      const availableWidth = Math.max(
+        0,
+        expandedRailWidth - launcherWidth - overflowTriggerExtent,
+      );
+      const activeId = activeWorkbenchItemId.value;
+      const visibleIds = new Set();
+      let remainingWidth = availableWidth;
+      const activeItem = workbenchItems.value.find(item => item.id === activeId);
+      if (activeItem) {
+        visibleIds.add(activeItem.id);
+        remainingWidth -= itemWidth(activeItem);
+      }
+      for (const item of workbenchItems.value) {
+        if (visibleIds.has(item.id)) continue;
+        const width = itemWidth(item);
+        if (width <= remainingWidth) {
+          visibleIds.add(item.id);
+          remainingWidth -= width;
+        }
+      }
+
+      const nextHiddenIds = workbenchItems.value
+        .filter(item => !visibleIds.has(item.id))
+        .map(item => item.id);
+      if (nextHiddenIds.length === hiddenWorkbenchItemIds.value.length
+        && nextHiddenIds.every((itemId, index) => itemId === hiddenWorkbenchItemIds.value[index])) return;
+      hiddenWorkbenchItemIds.value = nextHiddenIds;
+      if (nextHiddenIds.length === 0) openItemsMenu.visible = false;
+      Vue.nextTick(scheduleTabOverflowUpdate);
+    };
+
+    const scheduleTabOverflowUpdate = () => {
+      if (tabOverflowUpdatePending) return;
+      tabOverflowUpdatePending = true;
+      Vue.nextTick(() => {
+        tabOverflowUpdatePending = false;
+        updateTabOverflow();
+      });
+    };
+
     const notifyWorkbenchResize = () => {
       window.dispatchEvent(new CustomEvent('workbench-panel-resize', {
         detail: { width: panelWidth.value },
@@ -655,8 +745,9 @@ export default {
     };
 
     const keepActiveItemVisible = () => {
-      const activeTab = tabList.value?.querySelector('.workbench-item-tab.active');
-      activeTab?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+      hiddenWorkbenchItemIds.value = hiddenWorkbenchItemIds.value
+        .filter(itemId => itemId !== activeWorkbenchItemId.value);
+      scheduleTabOverflowUpdate();
     };
 
     const panelStyle = Vue.computed(() => {
@@ -762,16 +853,19 @@ export default {
       if (typeof ResizeObserver !== 'undefined' && panelRoot.value) {
         panelResizeObserver = new ResizeObserver(() => {
           syncPanelWidth();
+          scheduleTabOverflowUpdate();
           notifyWorkbenchResize();
         });
         panelResizeObserver.observe(panelRoot.value);
       } else {
         syncPanelWidth();
       }
+      window.addEventListener('resize', scheduleTabOverflowUpdate);
+      scheduleTabOverflowUpdate();
     });
 
     Vue.watch(
-      () => [activeWorkbenchItemId.value, workbenchItems.length],
+      [activeWorkbenchItemId, workbenchItems],
       () => Vue.nextTick(keepActiveItemVisible),
       { flush: 'post' },
     );
@@ -780,6 +874,7 @@ export default {
       window.removeEventListener('open-file-in-explorer', handleOpenFile);
       window.removeEventListener('workbench-file-items-changed', handleFileItemsChanged);
       document.removeEventListener('click', handleDocumentClick);
+      window.removeEventListener('resize', scheduleTabOverflowUpdate);
       panelResizeObserver?.disconnect();
       panelResizeObserver = null;
     });
@@ -806,6 +901,8 @@ export default {
       openCapabilities,
       activeWorkbenchItemId,
       workbenchItems,
+      visibleWorkbenchItems,
+      hiddenWorkbenchItems,
       capabilityCards,
       routeProps,
       activeRouteKey,

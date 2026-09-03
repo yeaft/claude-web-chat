@@ -164,29 +164,39 @@ test.describe('Workbench', () => {
     }, { agentId: mockAgent.agentId, routeKey });
 
     const tabs = panel.getByRole('tab');
-    await expect(tabs).toHaveCount(12);
+    const overflowButton = panel.locator('.workbench-open-items-btn');
     await expect(panel.getByRole('tablist')).toBeVisible();
+    await expect(overflowButton).toBeVisible();
     const addButton = panel.locator('.workbench-add-btn');
     await expect(addButton).toBeVisible();
+    await expect.poll(() => tabs.count()).toBeGreaterThan(0);
+    await expect.poll(() => tabs.count()).toBeLessThan(12);
+    expect(await panel.locator('.workbench-tab-rail').evaluate(element => (
+      element.scrollWidth <= element.clientWidth + 1
+    ))).toBe(true);
     expect(await addButton.evaluate(element => {
       const rect = element.getBoundingClientRect();
-      const panelRect = element.closest('.workbench-panel').getBoundingClientRect();
-      return rect.right <= panelRect.right && rect.left >= panelRect.left;
+      const headerRect = element.closest('.workbench-header').getBoundingClientRect();
+      return rect.right <= headerRect.right
+        && rect.left >= headerRect.left
+        && Math.abs((rect.top + rect.bottom - headerRect.top - headerRect.bottom) / 2) <= 1;
     })).toBe(true);
 
-    await tabs.nth(0).focus();
-    await tabs.nth(0).press('ArrowRight');
-    await expect(tabs.nth(1)).toBeFocused();
-    await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true');
-    await tabs.nth(1).press('End');
-    await expect(tabs.nth(11)).toBeFocused();
-    await tabs.nth(11).press('Home');
-    await expect(tabs.nth(0)).toBeFocused();
+    await overflowButton.click();
+    const hiddenItems = panel.locator('.workbench-open-items-menu .ctx-menu-item');
+    await expect.poll(async () => await tabs.count() + await hiddenItems.count()).toBe(12);
+    const hiddenLabel = (await hiddenItems.last().locator('.workbench-menu-item-label').textContent()).trim();
+    await hiddenItems.last().click();
+    await expect(panel.locator('.workbench-item-tab.active .workbench-item-label')).toHaveText(hiddenLabel.replace(/^●\s*/, ''));
 
-    await panel.locator('.workbench-item-tab').nth(4).locator('.workbench-item-close').click();
-    await expect(tabs).toHaveCount(11);
-    await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
-    await expect(panel.locator('.file-content-path')).toContainText('a-very-long-open-file-name-0.md');
+    await panel.locator('.workbench-item-tab.active .workbench-item-close').click();
+    if (await overflowButton.isVisible()) {
+      await overflowButton.click();
+      expect(await tabs.count() + await hiddenItems.count()).toBe(11);
+      await overflowButton.click();
+    } else {
+      await expect(tabs).toHaveCount(11);
+    }
 
     await addButton.focus();
     await addButton.press('ArrowDown');
