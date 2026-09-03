@@ -69,6 +69,34 @@ describe('YeaftDebugPanel store actions', () => {
     });
   });
 
+  it('restores Workbench visibility independently for each Agent Session route', () => {
+    const sessionOne = { runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-1' };
+    const sessionTwo = { runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-2' };
+
+    store.restoreWorkbenchPanelState(sessionOne);
+    expect(store.workbenchExpanded).toBe(false);
+    expect(store.workbenchMaximized).toBe(false);
+
+    store.workbenchExpanded = true;
+    store.workbenchMaximized = true;
+    expect(store.rememberWorkbenchPanelState(sessionOne)).toBe(true);
+
+    store.restoreWorkbenchPanelState(sessionTwo);
+    expect(store.workbenchExpanded).toBe(false);
+    expect(store.workbenchMaximized).toBe(false);
+
+    store.workbenchExpanded = true;
+    store.workbenchMaximized = false;
+    expect(store.rememberWorkbenchPanelState(sessionTwo)).toBe(true);
+
+    store.restoreWorkbenchPanelState(sessionOne);
+    expect(store.workbenchExpanded).toBe(true);
+    expect(store.workbenchMaximized).toBe(true);
+    store.restoreWorkbenchPanelState(sessionTwo);
+    expect(store.workbenchExpanded).toBe(true);
+    expect(store.workbenchMaximized).toBe(false);
+  });
+
   it('closes debug when Workbench opens', () => {
     store.yeaftDebugPanel = {
       open: true,

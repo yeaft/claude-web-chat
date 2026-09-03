@@ -269,11 +269,15 @@ export default {
       workbenchContextKey,
       (contextKey, previousContextKey) => {
         if (contextKey === previousContextKey) return;
-        if (previousContextKey) capabilityState.set(previousContextKey, activeCapability.value);
+        if (previousContextKey) {
+          capabilityState.set(previousContextKey, activeCapability.value);
+          store.rememberWorkbenchPanelState(previousContextKey.split('\u0000', 1)[0]);
+        }
         const focusWasInsideWorkbench = !!panelRoot.value?.contains(document.activeElement);
         lastCapabilityTrigger.value = null;
+        store.restoreWorkbenchPanelState(activeRoute.value);
         restoreCapability();
-        if (focusWasInsideWorkbench) focusCapabilityClose();
+        if (focusWasInsideWorkbench && store.workbenchExpanded) focusCapabilityClose();
       },
       { flush: 'sync', immediate: true },
     );

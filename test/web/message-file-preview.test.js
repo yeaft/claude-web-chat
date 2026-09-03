@@ -55,6 +55,8 @@ const workbenchStore = Vue.reactive({
   },
   toggleWorkbench: vi.fn(),
   toggleWorkbenchMaximized: vi.fn(),
+  rememberWorkbenchPanelState: vi.fn(),
+  restoreWorkbenchPanelState: vi.fn(),
 });
 
 globalThis.Vue = Vue;
@@ -103,6 +105,8 @@ describe('Workbench capability launcher', () => {
     capabilityMounts.length = 0;
     workbenchStore.toggleWorkbench.mockClear();
     workbenchStore.toggleWorkbenchMaximized.mockClear();
+    workbenchStore.rememberWorkbenchPanelState.mockClear();
+    workbenchStore.restoreWorkbenchPanelState.mockClear();
     globalThis.Pinia.useChatStore = () => workbenchStore;
     window.Pinia = globalThis.Pinia;
   });
@@ -177,6 +181,10 @@ describe('Workbench capability launcher', () => {
     };
     workbenchStore.effectiveWorkDir = '/workspace/b';
     await Vue.nextTick();
+    expect(workbenchStore.rememberWorkbenchPanelState).toHaveBeenCalledWith('yeaft:agent-1:session-a');
+    expect(workbenchStore.restoreWorkbenchPanelState).toHaveBeenCalledWith({
+      runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-b',
+    });
     expect(wrapper.get('.files-tab-stub').attributes('data-route-key')).toBe('yeaft:agent-1:session-b');
     expect(wrapper.find('.terminal-tab-stub').exists()).toBe(false);
 
@@ -443,6 +451,7 @@ describe('message file preview', () => {
 
   it('wires the right panel to the complete Files experience with a visible compact tree by default', () => {
     const filesTab = readWeb('components/FilesTab.js');
+    const fileTree = readWeb('components/files/fileTree.js');
     const workbench = readWeb('components/WorkbenchPanel.js');
     const browserPanel = readWeb('components/BrowserPanel.js');
     const capabilityHost = readWeb('components/WorkbenchCapabilityHost.js');
@@ -485,6 +494,11 @@ describe('message file preview', () => {
     expect(capabilityHost).toContain("files: 'FilesTab'");
     expect(capabilityHost).not.toContain('tree-initially-visible');
     expect(filesTab).toContain("paddingLeft: (6 + entry.depth * 10) + 'px'");
+    expect(filesTab).toContain("class=\"markdown-body md-file-preview\" :style=\"{ fontSize: fontSize + 'px' }\"");
+    expect(filesTab).not.toContain('@click="toggleRootExpand"');
+    expect(filesTab).not.toContain('rootExpanded: tree.rootExpanded');
+    expect(fileTree).not.toContain('rootExpanded');
+    expect(fileTree).not.toContain('toggleRootExpand');
     expect(workbench).toContain("const next = saved === undefined ? 'files' : saved");
     expect(workbench).toContain('capabilityState.set(previousContextKey, activeCapability.value)');
     expect(workbench).toContain('class="workbench-header-action workbench-maximize-btn"');
