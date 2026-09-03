@@ -651,9 +651,15 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  border: 1px solid var(--border-color);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+}
+
+.file-col-content,
+.file-col-placeholder {
+  border: 1px solid var(--border-color);
 }
 
 .file-col-content {
