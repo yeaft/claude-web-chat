@@ -137,6 +137,10 @@ const { handleMessage } = await import('../../web/stores/helpers/messageHandler.
 const { createInitialConversationViewState } = await import('../../web/stores/helpers/yeaft-view.js');
 const { createFileOperations } = await import('../../web/components/files/fileOperations.js');
 const { createGitOperations } = await import('../../web/components/git/gitOperations.js');
+const { createFileTabs } = await import('../../web/components/files/fileTabs.js');
+const { createFileCloseEventHandlers } = await import('../../web/components/FilesTab.js');
+const dialogModule = await import('../../web/utils/dialog.js');
+const { workbenchWorkspaceGeneration } = await import('../../web/utils/workbench-route.js');
 
 import {
   buildYeaftMessageTurnSpans,
@@ -154,6 +158,152 @@ function makeStore() {
     yeaftSessionHistoryState: {},
   };
 }
+
+function createFileTabsHarness() {
+  globalThis.Vue = Vue;
+  const store = {
+    currentAgent: 'agent-1',
+    currentConversation: 'conversation-1',
+    clientId: 'client-1',
+    sendWsMessage: vi.fn(),
+  };
+  const cleanupUndoHistory = vi.fn();
+  const tabs = createFileTabs(store, {
+    normalizePath: path => path,
+    getEffectiveWorkDir: () => '/workspace',
+    editorContainer: Vue.ref(null),
+    createEditor: vi.fn(),
+    destroyEditor: vi.fn(),
+    clearFindMarkers: vi.fn(),
+    saveCurrentUndoHistory: vi.fn(),
+    saveAllUndoHistory: vi.fn(),
+    cleanupUndoHistory,
+    deleteConversationHistory: vi.fn(),
+    debugStatus: Vue.ref(''),
+    mdPreviewMode: Vue.ref(false),
+    renderOfficeLocal: vi.fn(),
+    performFind: vi.fn(),
+    findBarVisible: Vue.ref(false),
+    findQuery: Vue.ref(''),
+    t: (key, params) => `${key}:${params?.name || params?.count || ''}`,
+  });
+  const open = (path, dirty = false) => {
+    tabs.openFileInTab(path, path.split('/').pop(), {
+      agentId: 'agent-1',
+      conversationId: 'conversation-1',
+      workDir: '/workspace',
+    });
+    const file = tabs.openFiles.value.at(-1);
+    file.isDirty = dirty;
+    return file;
+  };
+  return { store, tabs, cleanupUndoHistory, open };
+}
+
+function currentWorkspace() {
+  return {
+    routeKey: 'yeaft:agent-1:session-1',
+    workspaceGeneration: 'yeaft:agent-1:session-1@generation-1',
+  };
+}
+
+function fileCloseHandlers(harness, { disposed = () => false, liveStore } = {}) {
+  const workspace = currentWorkspace();
+  const store = liveStore || {
+    activeSessionRoute: { runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-1' },
+    effectiveWorkDir: '/workspace',
+  };
+  // The generation helper is deterministic; use its real value in the fixture.
+  workspace.workspaceGeneration = workbenchWorkspaceGeneration(workspace.routeKey, store.effectiveWorkDir);
+  return {
+    workspace,
+    handlers: createFileCloseEventHandlers({
+      liveStore: store,
+      props: workspace,
+      tabs: harness.tabs,
+      isDisposed: disposed,
+    }),
+  };
+}
+
+describe('file tab async close fences', () => {
+  it('aborts capability close when a tab is added during confirmation', async () => {
+    const harness = createFileTabsHarness();
+    harness.open('/workspace/a.txt', true);
+    const { workspace, handlers } = fileCloseHandlers(harness);
+    let resolved;
+    const close = handlers.handleCloseFilesCapability({
+      detail: { ...workspace, resolve: value => { resolved = value; } },
+    });
+    harness.open('/workspace/b.txt');
+    dialogModule.resolveDialog(true);
+    await close;
+
+    expect(resolved).toBe(false);
+    expect(harness.tabs.openFiles.value.map(file => file.path)).toEqual([
+      '/workspace/a.txt', '/workspace/b.txt',
+    ]);
+    expect(harness.cleanupUndoHistory).not.toHaveBeenCalled();
+  });
+
+  it('uses stable file identity and rejects queued dirty closes after index drift', async () => {
+    const harness = createFileTabsHarness();
+    harness.open('/workspace/a.txt', true);
+    harness.open('/workspace/b.txt', true);
+    harness.open('/workspace/c.txt');
+    const first = harness.tabs.closeFileTab(0);
+    const second = harness.tabs.closeFileTab(1);
+
+    dialogModule.resolveDialog(true);
+    await first;
+    await Vue.nextTick();
+    dialogModule.resolveDialog(true);
+    await second;
+
+    expect(harness.tabs.openFiles.value.map(file => file.path)).toEqual([
+      '/workspace/b.txt', '/workspace/c.txt',
+    ]);
+    expect(harness.cleanupUndoHistory).toHaveBeenCalledTimes(1);
+    expect(harness.cleanupUndoHistory).toHaveBeenCalledWith('conversation-1', '/workspace/a.txt');
+  });
+
+  it('rejects capability close after FilesTab disposal', async () => {
+    const harness = createFileTabsHarness();
+    harness.open('/workspace/a.txt', true);
+    let disposed = false;
+    const { workspace, handlers } = fileCloseHandlers(harness, { disposed: () => disposed });
+    let resolved;
+    const close = handlers.handleCloseFilesCapability({
+      detail: { ...workspace, resolve: value => { resolved = value; } },
+    });
+    disposed = true;
+    dialogModule.resolveDialog(true);
+    await close;
+
+    expect(resolved).toBe(false);
+    expect(harness.tabs.openFiles.value).toHaveLength(1);
+  });
+
+  it.each([
+    ['route', liveStore => { liveStore.activeSessionRoute.sessionId = 'session-2'; }],
+    ['workspace generation', liveStore => { liveStore.effectiveWorkDir = '/other-workspace'; }],
+  ])('rejects single-tab dirty close after %s drift', async (_label, drift) => {
+    const harness = createFileTabsHarness();
+    harness.open('/workspace/a.txt', true);
+    const liveStore = {
+      activeSessionRoute: { runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-1' },
+      effectiveWorkDir: '/workspace',
+    };
+    const { workspace, handlers } = fileCloseHandlers(harness, { liveStore });
+    const close = handlers.handleCloseFileItem({ detail: { ...workspace, path: '/workspace/a.txt' } });
+    drift(liveStore);
+    dialogModule.resolveDialog(true);
+    await close;
+
+    expect(harness.tabs.openFiles.value).toHaveLength(1);
+    expect(harness.cleanupUndoHistory).not.toHaveBeenCalled();
+  });
+});
 
 describe('app dialog contracts', () => {
   it('queues requests FIFO and resolves each request exactly once', async () => {

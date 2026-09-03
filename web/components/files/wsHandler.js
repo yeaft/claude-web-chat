@@ -9,7 +9,7 @@ export function createWsHandler({
   store, normalizePath, getEffectiveWorkDir,
   // File tabs
   openFiles, activeFileIndex, activeFile, fileLoading, fileSaving,
-  saveTabsState, createEditor, openFileInTab,
+  saveTabsState, createEditor, openFileInTab, bumpTabRevision = () => {},
   // Tree
   tree, setTreeVisible,
   // Folder picker
@@ -198,6 +198,7 @@ export function createWsHandler({
         if (msg.openFiles?.length > 0 && openFiles.value.length === 0) {
           const pendingRestoreIndex = msg.activeIndex || 0;
           const totalFiles = msg.openFiles.length;
+          bumpTabRevision();
           for (const file of msg.openFiles) {
             const nPath = normalizePath(file.path);
             const name = nPath.split('/').pop();
@@ -230,11 +231,14 @@ export function createWsHandler({
       conversationId = store.currentConversation,
       workDir = getEffectiveWorkDir(),
       workbenchRouteKey = routeKey,
+      workspaceGeneration: eventWorkspaceGeneration = workspaceGeneration,
       hideTree = false,
       line = null,
     } = event.detail || {};
     const nPath = normalizePath(path);
-    if (!nPath || !agentId || !conversationId || (routeKey && workbenchRouteKey !== routeKey)) return;
+    if (!nPath || !agentId || !conversationId
+      || (routeKey && workbenchRouteKey !== routeKey)
+      || (workspaceGeneration && eventWorkspaceGeneration !== workspaceGeneration)) return;
     if (hideTree && typeof setTreeVisible === 'function') setTreeVisible(false);
     if (Number.isFinite(line) && line > 0) pendingRevealLines.set(nPath, line);
     openFileInTab(nPath, nPath.split('/').pop(), { agentId, conversationId, workDir });

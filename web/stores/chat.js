@@ -60,7 +60,10 @@ import {
 import { createPerfTraceId, recordPerfTrace, measureNextPaint } from './helpers/perfTrace.js';
 import { normalizeSessionMessageQuote } from '../utils/session-message-quote.js';
 import { markTurnResponseKinds } from '../utils/turn-response.js';
-import { workbenchRouteKey } from '../utils/workbench-route.js';
+import {
+  workbenchRouteKey,
+  workbenchWorkspaceGeneration,
+} from '../utils/workbench-route.js';
 import {
   yeaftHistoryIdentityKey,
   yeaftHistoryResultIdentity,
@@ -8384,7 +8387,15 @@ export const useChatStore = defineStore('chat', {
     },
 
     openFileInExplorer(filePath, { hideTree = false, line = null } = {}) {
-      const route = this.activeSessionRoute;
+      const activeRoute = this.activeSessionRoute;
+      const route = activeRoute ? {
+        runtimeProvider: activeRoute.runtimeProvider,
+        agentId: activeRoute.agentId,
+        sessionId: activeRoute.sessionId,
+      } : null;
+      const routeKey = workbenchRouteKey(route);
+      const workDir = this.effectiveWorkDir || '';
+      const workspaceGeneration = workbenchWorkspaceGeneration(routeKey, workDir);
       const agentId = route?.agentId || this.currentAgent || null;
       const conversationId = route?.runtimeProvider === 'yeaft'
         ? resolveYeaftConversationIdForSession(this, route.sessionId, agentId)
@@ -8401,21 +8412,26 @@ export const useChatStore = defineStore('chat', {
       this.openWorkbench();
       this.workbenchMaximized = false;
       this.rememberWorkbenchPanelState();
-      const dispatchOpen = () => window.dispatchEvent(new CustomEvent('open-file-in-explorer', {
-        detail: {
-          filePath: path,
-          agentId,
-          conversationId,
-          workDir: this.effectiveWorkDir || '',
-          workbenchRoute: route ? {
-            runtimeProvider: route.runtimeProvider,
-            agentId: route.agentId,
-            sessionId: route.sessionId,
-          } : null,
-          hideTree: !!hideTree,
-          line: Number.isFinite(line) && line > 0 ? line : null,
-        }
-      }));
+      const dispatchOpen = () => {
+        const currentRouteKey = workbenchRouteKey(this.activeSessionRoute);
+        const currentWorkDir = this.effectiveWorkDir || '';
+        if (currentRouteKey !== routeKey
+          || currentWorkDir !== workDir
+          || workbenchWorkspaceGeneration(currentRouteKey, currentWorkDir) !== workspaceGeneration) return;
+        window.dispatchEvent(new CustomEvent('open-file-in-explorer', {
+          detail: {
+            filePath: path,
+            agentId,
+            conversationId,
+            workDir,
+            workbenchRoute: route,
+            workbenchRouteKey: routeKey,
+            workspaceGeneration,
+            hideTree: !!hideTree,
+            line: Number.isFinite(line) && line > 0 ? line : null,
+          }
+        }));
+      };
       if (wasExpanded) dispatchOpen();
       else Vue.nextTick(dispatchOpen);
       return true;

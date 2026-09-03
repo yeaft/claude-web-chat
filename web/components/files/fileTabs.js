@@ -18,6 +18,8 @@ export function createFileTabs(store, {
   const activeFileIndex = Vue.ref(-1);
   const fileLoading = Vue.ref(false);
   const fileSaving = Vue.ref(false);
+  const tabRevision = Vue.ref(0);
+  const bumpTabRevision = () => { tabRevision.value += 1; };
 
   const activeFile = Vue.computed(() => {
     if (activeFileIndex.value >= 0 && activeFileIndex.value < openFiles.value.length) {
@@ -60,6 +62,7 @@ export function createFileTabs(store, {
   const restoreTabsState = (convId) => {
     destroyEditor();
     if (!convId || !fileTabsMap[convId]) {
+      if (openFiles.value.length > 0) bumpTabRevision();
       openFiles.value = [];
       activeFileIndex.value = -1;
       return;
@@ -74,6 +77,7 @@ export function createFileTabs(store, {
       blobUrl: null, previewUrl: null, previewLoading: false,
       localPreviewReady: false, previewError: null
     }));
+    bumpTabRevision();
     activeFileIndex.value = saved.activeIndex;
     Vue.nextTick(() => {
       const file = activeFile.value;
@@ -115,6 +119,7 @@ export function createFileTabs(store, {
       blobUrl: null, previewUrl: null,
       previewLoading: fileType !== 'text', localPreviewReady: false, previewError: null
     });
+    bumpTabRevision();
     activeFileIndex.value = openFiles.value.length - 1;
     fileLoading.value = true;
     if (fileType === 'text') destroyEditor();
@@ -160,13 +165,14 @@ export function createFileTabs(store, {
     });
   };
 
-  const closeFileTabs = async (indices) => {
+  const closeFileTabs = async (indices, { canCommit = () => true } = {}) => {
     const requested = [...new Set(indices)]
       .filter(index => Number.isInteger(index) && index >= 0 && index < openFiles.value.length)
       .sort((a, b) => a - b);
     if (requested.length === 0) return false;
 
     const filesToClose = requested.map(index => openFiles.value[index]);
+    const requestedRevision = tabRevision.value;
     const dirtyFiles = filesToClose.filter(file => file?.isDirty);
     if (dirtyFiles.length > 0) {
       const message = dirtyFiles.length === 1
@@ -174,36 +180,29 @@ export function createFileTabs(store, {
         : t('files.unsavedBatchConfirm', { count: dirtyFiles.length });
       if (!await confirmDialog(message, { destructive: true })) return false;
     }
+    if (tabRevision.value !== requestedRevision || !canCommit()) return false;
+    if (filesToClose.some(file => !openFiles.value.includes(file))) return false;
 
-    const closing = new Set(requested);
-    const previousActiveIndex = activeFileIndex.value;
     const previousActiveFile = activeFile.value;
     let nextActiveFile = previousActiveFile;
-    if (closing.has(previousActiveIndex)) {
-      nextActiveFile = null;
-      for (let index = previousActiveIndex + 1; index < openFiles.value.length; index++) {
-        if (!closing.has(index)) {
-          nextActiveFile = openFiles.value[index];
-          break;
-        }
-      }
-      if (!nextActiveFile) {
-        for (let index = previousActiveIndex - 1; index >= 0; index--) {
-          if (!closing.has(index)) {
-            nextActiveFile = openFiles.value[index];
-            break;
-          }
-        }
-      }
+    if (filesToClose.includes(previousActiveFile)) {
+      const previousActiveIndex = openFiles.value.indexOf(previousActiveFile);
+      nextActiveFile = openFiles.value.slice(previousActiveIndex + 1)
+        .find(file => !filesToClose.includes(file))
+        || openFiles.value.slice(0, previousActiveIndex).reverse()
+          .find(file => !filesToClose.includes(file))
+        || null;
     }
 
     for (const file of filesToClose) {
       cleanupUndoHistory(file.conversationId || store.currentConversation, file.path);
       if (file.blobUrl) URL.revokeObjectURL(file.blobUrl);
     }
-    for (let position = requested.length - 1; position >= 0; position--) {
-      openFiles.value.splice(requested[position], 1);
+    for (const file of filesToClose) {
+      const currentIndex = openFiles.value.indexOf(file);
+      if (currentIndex >= 0) openFiles.value.splice(currentIndex, 1);
     }
+    bumpTabRevision();
 
     if (openFiles.value.length === 0) {
       activeFileIndex.value = -1;
@@ -225,11 +224,11 @@ export function createFileTabs(store, {
     return true;
   };
 
-  const closeFileTab = index => closeFileTabs([index]);
-  const closeTabsToLeft = index => closeFileTabs(openFiles.value.map((_, tabIndex) => tabIndex).filter(tabIndex => tabIndex < index));
-  const closeTabsToRight = index => closeFileTabs(openFiles.value.map((_, tabIndex) => tabIndex).filter(tabIndex => tabIndex > index));
-  const closeOtherTabs = index => closeFileTabs(openFiles.value.map((_, tabIndex) => tabIndex).filter(tabIndex => tabIndex !== index));
-  const closeAllTabs = () => closeFileTabs(openFiles.value.map((_, index) => index));
+  const closeFileTab = (index, options) => closeFileTabs([index], options);
+  const closeTabsToLeft = (index, options) => closeFileTabs(openFiles.value.map((_, tabIndex) => tabIndex).filter(tabIndex => tabIndex < index), options);
+  const closeTabsToRight = (index, options) => closeFileTabs(openFiles.value.map((_, tabIndex) => tabIndex).filter(tabIndex => tabIndex > index), options);
+  const closeOtherTabs = (index, options) => closeFileTabs(openFiles.value.map((_, tabIndex) => tabIndex).filter(tabIndex => tabIndex !== index), options);
+  const closeAllTabs = options => closeFileTabs(openFiles.value.map((_, index) => index), options);
 
   function saveFile() {
     const file = activeFile.value;
@@ -260,7 +259,7 @@ export function createFileTabs(store, {
 
   return {
     fileTabsMap, openFiles, activeFileIndex, activeFile,
-    fileLoading, fileSaving,
+    fileLoading, fileSaving, tabRevision, bumpTabRevision,
     saveTabsState, restoreTabsState, openFileInTab,
     switchToTab, closeFileTab, closeFileTabs,
     closeTabsToLeft, closeTabsToRight, closeOtherTabs, closeAllTabs,

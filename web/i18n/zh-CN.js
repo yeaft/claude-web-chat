@@ -1113,6 +1113,10 @@ export default {
 
   // ============ Workbench Panel ============
   'workbench.title': 'Workbench',
+  'workbench.openItems': '已打开的 Workbench 项目',
+  'workbench.addItem': '添加 Workbench 项目',
+  'workbench.addItemHint': '使用 + 打开文件、终端、Git 或浏览器。',
+  'workbench.closeItem': '关闭 {name}',
   'workbench.chooseCapability': '选择能力',
   'workbench.chooseCapabilityHint': '每次进入一项能力；关闭后返回此页面。',
   'workbench.terminal': '终端',
@@ -1212,7 +1216,6 @@ export default {
   'files.notLoaded': '未加载',
   'files.newFile': '新建文件',
   'files.newFolder': '新建文件夹',
-  'files.collapseAll': '折叠所有',
   'files.openFolder': '打开文件夹',
   'files.showTree': '显示文件夹',
   'files.hideTree': '隐藏文件夹',

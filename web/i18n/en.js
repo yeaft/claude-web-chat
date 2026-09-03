@@ -1115,6 +1115,10 @@ export default {
 
   // ============ Workbench Panel ============
   'workbench.title': 'Workbench',
+  'workbench.openItems': 'Open Workbench items',
+  'workbench.addItem': 'Add Workbench item',
+  'workbench.addItemHint': 'Use + to open Files, Terminal, Git, or Browser.',
+  'workbench.closeItem': 'Close {name}',
   'workbench.chooseCapability': 'Choose a capability',
   'workbench.chooseCapabilityHint': 'Open one tool at a time. Close it to return to this page.',
   'workbench.terminal': 'Terminal',
@@ -1214,7 +1218,6 @@ export default {
   'files.notLoaded': 'Not loaded',
   'files.newFile': 'New File',
   'files.newFolder': 'New Folder',
-  'files.collapseAll': 'Collapse All',
   'files.openFolder': 'Open Folder',
   'files.showTree': 'Show folders',
   'files.hideTree': 'Hide folders',

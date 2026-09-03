@@ -678,6 +678,57 @@ describe('Agent file terminal forwarding', () => {
     expect(cleanupUndoHistory).toHaveBeenCalledTimes(3);
   });
 
+  it('aborts a confirmed dirty batch before mutation when its commit fence expires', async () => {
+    globalThis.Vue = Vue;
+    const sendWsMessage = vi.fn();
+    const cleanupUndoHistory = vi.fn();
+    const tabs = createFileTabs({
+      currentAgent: 'agent-a',
+      currentConversation: 'conversation-a',
+      sendWsMessage,
+    }, {
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/workspace/a',
+      editorContainer: Vue.ref(null),
+      createEditor: vi.fn(),
+      destroyEditor: vi.fn(),
+      clearFindMarkers: vi.fn(),
+      saveCurrentUndoHistory: vi.fn(),
+      saveAllUndoHistory: vi.fn(),
+      cleanupUndoHistory,
+      deleteConversationHistory: vi.fn(),
+      debugStatus: Vue.ref(''),
+      mdPreviewMode: Vue.ref(false),
+      renderOfficeLocal: vi.fn(),
+      performFind: vi.fn(),
+      findBarVisible: Vue.ref(false),
+      findQuery: Vue.ref(''),
+      t: value => value,
+    });
+    tabs.openFileInTab('dirty.md', 'dirty.md', {
+      agentId: 'agent-a', conversationId: 'conversation-a', workDir: '/workspace/a',
+    });
+    tabs.activeFile.value.content = 'dirty';
+    tabs.activeFile.value.isDirty = true;
+    sendWsMessage.mockClear();
+    let current = true;
+
+    const closing = tabs.closeAllTabs({ canCommit: () => current });
+    expect(useDialogState().open).toBe(true);
+    current = false;
+    resolveDialog(true);
+
+    await expect(closing).resolves.toBe(false);
+    expect(tabs.openFiles.value.map(file => file.name)).toEqual(['dirty.md']);
+    expect(cleanupUndoHistory).not.toHaveBeenCalled();
+    await new Promise(resolve => setTimeout(resolve, 550));
+    expect(sendWsMessage).toHaveBeenCalledWith({
+      type: 'update_file_tabs',
+      openFiles: [{ path: 'dirty.md' }],
+      activeIndex: 0,
+    });
+  });
+
   it('confirms dirty batch closes atomically', async () => {
     globalThis.Vue = Vue;
     const cleanupUndoHistory = vi.fn();
@@ -728,28 +779,24 @@ describe('Agent file terminal forwarding', () => {
     expect(tabs.activeFileIndex.value).toBe(-1);
   });
 
-  it('renders a fixed open-files control and tab context actions', () => {
-    const component = readFileSync(new URL('../../web/components/FilesTab.js', import.meta.url), 'utf8');
+  it('projects file items into the Workbench tabs without duplicate Files tab controls', () => {
+    const filesComponent = readFileSync(new URL('../../web/components/FilesTab.js', import.meta.url), 'utf8');
+    const workbenchComponent = readFileSync(new URL('../../web/components/WorkbenchPanel.js', import.meta.url), 'utf8');
     const css = readFileSync(new URL('../../web/styles/files.css', import.meta.url), 'utf8');
 
-    expect(component).toContain('class="file-tabs-scroll"');
-    expect(component).toContain('class="file-tabs-list-btn"');
-    expect(component).toContain('class="file-tabs-scroll" role="tablist"');
-    expect(component).toContain('role="tab"');
-    expect(component).toContain(':aria-selected="index === activeFileIndex"');
-    expect(component).toContain(':tabindex="index === activeFileIndex ? 0 : -1"');
-    expect(component).toContain('@keydown="handleFileTabKeydown($event, index)"');
-    expect(component).toContain('@contextmenu.prevent="showFileTabContextMenu($event, index)"');
-    expect(component).toContain('@keydown="handleMenuKeydown"');
-    expect(component).toContain("event.key === 'ContextMenu'");
-    expect(component).toContain("event.key === 'Escape'");
-    expect(component).toContain("runTabMenuAction('left')");
-    expect(component).toContain("runTabMenuAction('right')");
-    expect(component).toContain("runTabMenuAction('others')");
-    expect(component).toContain("runTabMenuAction('all')");
-    expect(css).toMatch(/\.file-tabs-scroll\s*\{[^}]*overflow-x:\s*auto;/s);
-    expect(css).toMatch(/\.file-tabs-actions\s*\{[^}]*flex-shrink:\s*0;/s);
-    expect(css).toMatch(/\.file-tab:focus-visible[\s\S]*outline:\s*2px solid var\(--accent-blue\);/);
+    expect(filesComponent).toContain("new CustomEvent('workbench-file-items-changed'");
+    expect(filesComponent).toContain("window.addEventListener('workbench-select-file-item'");
+    expect(filesComponent).toContain("window.addEventListener('workbench-close-file-item'");
+    expect(workbenchComponent).toContain('class="workbench-tabs" role="tablist"');
+    expect(workbenchComponent).toContain('role="tab"');
+    expect(workbenchComponent).toContain(':aria-selected="item.id === activeWorkbenchItemId"');
+    expect(workbenchComponent).toContain(':tabindex="item.id === activeWorkbenchItemId ? 0 : -1"');
+    expect(workbenchComponent).toContain('@keydown="handleWorkbenchTabKeydown($event, item)"');
+    expect(filesComponent).not.toContain('class="file-tabs-scroll"');
+    expect(filesComponent).not.toContain('showFileTabContextMenu');
+    expect(filesComponent).not.toContain('collapseAll');
+    expect(css).not.toContain('.file-tabs-scroll');
+    expect(css).not.toContain('.file-tab-context-menu');
   });
 
   it('routes an open event with its frozen Agent and conversation identity', () => {
@@ -790,6 +837,46 @@ describe('Agent file terminal forwarding', () => {
       conversationId: 'yeaft-agent-a',
       workDir: '/agent-a/project',
     });
+  });
+
+  it('rejects open events from a stale workspace generation', () => {
+    globalThis.Vue = Vue;
+    const openFileInTab = vi.fn();
+    const handler = createWsHandler({
+      store: { currentConversation: 'conversation-a', currentAgent: 'agent-a' },
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/workspace/current',
+      openFiles: Vue.ref([]),
+      activeFileIndex: Vue.ref(-1),
+      activeFile: Vue.ref(null),
+      fileLoading: Vue.ref(false),
+      fileSaving: Vue.ref(false),
+      saveTabsState: vi.fn(),
+      createEditor: vi.fn(),
+      openFileInTab,
+      tree: { handleDirectoryListing: vi.fn() },
+      setTreeVisible: vi.fn(),
+      fp: { handleFolderPickerListing: vi.fn() },
+      qo: {},
+      ops: { takePendingDownload: () => null },
+      mdPreviewMode: Vue.ref(false),
+      renderOfficeLocal: vi.fn(),
+      editorContainer: Vue.ref(null),
+      debugStatus: Vue.ref(''),
+      routeKey: 'yeaft:agent-a:session-a',
+      workspaceGeneration: 'current-generation',
+    }).handleOpenFile;
+
+    handler(new CustomEvent('workbench-open-file-in-active-view', { detail: {
+      filePath: 'docs/stale.md',
+      agentId: 'agent-a',
+      conversationId: 'conversation-a',
+      workDir: '/workspace/stale',
+      workbenchRouteKey: 'yeaft:agent-a:session-a',
+      workspaceGeneration: 'stale-generation',
+    } }));
+
+    expect(openFileInTab).not.toHaveBeenCalled();
   });
 
   it('keeps writes bound to the tab owner after the active route drifts', () => {
