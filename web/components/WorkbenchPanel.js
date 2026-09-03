@@ -13,8 +13,8 @@ export default {
     <div ref="panelRoot" class="workbench-panel" :class="{ expanded: store.workbenchExpanded, maximized: store.workbenchMaximized }" :style="panelStyle">
       <div class="workbench-content" v-show="store.workbenchExpanded">
         <header class="workbench-header">
-          <div class="workbench-tab-rail">
-            <div class="workbench-tabs" role="tablist" :aria-label="$t('workbench.openItems')">
+          <div class="workbench-tab-rail" ref="tabRail">
+            <div class="workbench-tabs" role="tablist" ref="tabList" :aria-label="$t('workbench.openItems')">
             <div
               v-for="item in workbenchItems"
               :key="item.id"
@@ -226,6 +226,8 @@ export default {
   setup() {
     const store = Pinia.useChatStore();
     const panelRoot = Vue.ref(null);
+    const tabRail = Vue.ref(null);
+    const tabList = Vue.ref(null);
     const launcherRoot = Vue.ref(null);
     const launcherOpen = Vue.ref(false);
     const launcherTrigger = Vue.ref(null);
@@ -639,6 +641,23 @@ export default {
     const panelWidth = Vue.ref(0);
     const isResizing = Vue.ref(false);
     const hasCustomWidth = Vue.ref(false);
+    let panelResizeObserver = null;
+
+    const syncPanelWidth = () => {
+      const width = Math.round(panelRoot.value?.getBoundingClientRect?.().width || 0);
+      if (width > 0) panelWidth.value = width;
+    };
+
+    const notifyWorkbenchResize = () => {
+      window.dispatchEvent(new CustomEvent('workbench-panel-resize', {
+        detail: { width: panelWidth.value },
+      }));
+    };
+
+    const keepActiveItemVisible = () => {
+      const activeTab = tabList.value?.querySelector('.workbench-item-tab.active');
+      activeTab?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    };
 
     const panelStyle = Vue.computed(() => {
       if (!store.workbenchExpanded) return {};
@@ -672,10 +691,12 @@ export default {
         const delta = startX - clientX;
         const maxWidth = Math.max(900, window.innerWidth - 100);
         panelWidth.value = Math.max(280, Math.min(maxWidth, startWidth + delta));
+        notifyWorkbenchResize();
       };
 
       const onEnd = () => {
         isResizing.value = false;
+        notifyWorkbenchResize();
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
         document.removeEventListener('mousemove', onMove);
@@ -738,17 +759,36 @@ export default {
       window.addEventListener('open-file-in-explorer', handleOpenFile);
       window.addEventListener('workbench-file-items-changed', handleFileItemsChanged);
       document.addEventListener('click', handleDocumentClick);
+      if (typeof ResizeObserver !== 'undefined' && panelRoot.value) {
+        panelResizeObserver = new ResizeObserver(() => {
+          syncPanelWidth();
+          notifyWorkbenchResize();
+        });
+        panelResizeObserver.observe(panelRoot.value);
+      } else {
+        syncPanelWidth();
+      }
     });
+
+    Vue.watch(
+      () => [activeWorkbenchItemId.value, workbenchItems.length],
+      () => Vue.nextTick(keepActiveItemVisible),
+      { flush: 'post' },
+    );
 
     Vue.onUnmounted(() => {
       window.removeEventListener('open-file-in-explorer', handleOpenFile);
       window.removeEventListener('workbench-file-items-changed', handleFileItemsChanged);
       document.removeEventListener('click', handleDocumentClick);
+      panelResizeObserver?.disconnect();
+      panelResizeObserver = null;
     });
 
     return {
       store,
       panelRoot,
+      tabRail,
+      tabList,
       launcherRoot,
       launcherTrigger,
       launcherMenu,

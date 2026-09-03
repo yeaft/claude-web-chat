@@ -15,19 +15,16 @@ export default {
     workspaceGeneration: { type: String, required: true },
   },
   template: `
-    <div class="terminal-tab">
+    <div ref="terminalRoot" class="terminal-tab">
       <div class="terminal-toolbar">
-        <button class="wb-btn" @click="splitPane('horizontal')" :disabled="!hasActivePane" :title="$t('terminal.splitH')">
-          <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 3h8v18H3V3zm10 0h8v18h-8V3z"/></svg>
-          <span>Split ─</span>
+        <button class="wb-btn" @click="splitPane('horizontal')" :disabled="!hasActivePane" :title="$t('terminal.splitH')" :aria-label="$t('terminal.splitH')">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M3 3h8v18H3V3zm10 0h8v18h-8V3z"/></svg>
         </button>
-        <button class="wb-btn" @click="splitPane('vertical')" :disabled="!hasActivePane" :title="$t('terminal.splitV')">
-          <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 3h18v8H3V3zm0 10h18v8H3v-8z"/></svg>
-          <span>Split │</span>
+        <button class="wb-btn" @click="splitPane('vertical')" :disabled="!hasActivePane" :title="$t('terminal.splitV')" :aria-label="$t('terminal.splitV')">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M3 3h18v8H3V3zm0 10h18v8H3v-8z"/></svg>
         </button>
-        <button class="wb-btn" @click="closeActivePane" :disabled="!hasActivePane" :title="$t('terminal.close')">
-          <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-          <span>Close</span>
+        <button class="wb-btn" @click="closeActivePane" :disabled="!hasActivePane" :title="$t('terminal.close')" :aria-label="$t('terminal.close')">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
         </button>
         <span class="terminal-status-text" v-if="terminalError">{{ terminalError }}</span>
       </div>
@@ -58,8 +55,10 @@ export default {
     const activePanes = Vue.reactive({});
 
     const terminalError = Vue.ref('');
+    const terminalRoot = Vue.ref(null);
     const mountRefs = {};
     let xtermLoaded = false;
+    let terminalResizeObserver = null;
 
     const currentTree = Vue.computed(() => {
       const convId = store.currentConversation;
@@ -467,8 +466,13 @@ export default {
     Vue.onMounted(() => {
       window.addEventListener('workbench-message', handleWorkbenchMessage);
       window.addEventListener('resize', handleResize);
+      window.addEventListener('workbench-panel-resize', handleResize);
       window.addEventListener('terminal-fit-all', handleFitAll);
       window.addEventListener('conversation-deleted', handleConversationDeleted);
+      if (typeof ResizeObserver !== 'undefined' && terminalRoot.value) {
+        terminalResizeObserver = new ResizeObserver(handleResize);
+        terminalResizeObserver.observe(terminalRoot.value);
+      }
     });
 
     Vue.onActivated(() => {
@@ -486,8 +490,11 @@ export default {
     Vue.onUnmounted(() => {
       window.removeEventListener('workbench-message', handleWorkbenchMessage);
       window.removeEventListener('resize', handleResize);
+      window.removeEventListener('workbench-panel-resize', handleResize);
       window.removeEventListener('terminal-fit-all', handleFitAll);
       window.removeEventListener('conversation-deleted', handleConversationDeleted);
+      terminalResizeObserver?.disconnect();
+      terminalResizeObserver = null;
       clearTimeout(resizeTimer);
       for (const tid of Object.keys(terminals)) {
         store.sendWsMessage({
@@ -563,6 +570,7 @@ export default {
 
     return {
       store,
+      terminalRoot,
       terminals,
       currentTree,
       currentActivePane,
