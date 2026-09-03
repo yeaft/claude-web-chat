@@ -12,7 +12,7 @@ export default {
   template: `
     <div ref="panelRoot" class="workbench-panel" :class="{ expanded: store.workbenchExpanded, maximized: store.workbenchMaximized }" :style="panelStyle">
       <div class="workbench-content" v-show="store.workbenchExpanded">
-        <header class="workbench-header">
+        <header class="workbench-header" :class="{ 'workbench-files-header': activeCapability === 'files' }">
           <button
             v-if="activeCapability"
             ref="capabilityCloseButton"

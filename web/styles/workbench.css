@@ -168,6 +168,10 @@
   flex-shrink: 0;
 }
 
+.workbench-files-header {
+  border: 1px solid var(--border-color);
+}
+
 .workbench-header-copy {
   min-width: 0;
   display: flex;

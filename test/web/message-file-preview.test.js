@@ -460,6 +460,7 @@ describe('message file preview', () => {
     expect(filesTab).toContain('class="file-tree-collapsed-rail"');
     expect(filesTab).not.toContain('class="file-tree-toggle"');
     const filesCss = readWeb('styles/files.css');
+    const workbenchCss = readWeb('styles/workbench.css');
     const mobileCss = filesCss.slice(filesCss.indexOf('@media (max-width: 768px)'));
     expect(mobileCss).toMatch(/\.file-tree-collapsed-rail\s*\{[^}]*display:\s*none;/s);
     expect(mobileCss).toMatch(/\.file-two-col\.tree-collapsed \.file-col-tree\s*\{[^}]*display:\s*flex;/s);
@@ -468,9 +469,12 @@ describe('message file preview', () => {
     expect(wsHandler).toContain('normalizePath(msg.requestedFilePath || msg.filePath)');
     expect(readWeb('../agent/workbench/file-ops.js')).toContain('requestedFilePath: filePath');
     expect(filesCss).toMatch(/\.file-tree-collapsed-rail\s*\{[^}]*order:\s*4;[^}]*border-left:/s);
-    expect(filesCss).toMatch(/\.file-col-tree\s*\{[^}]*order:\s*3;/s);
+    expect(filesCss).toMatch(/\.file-col-tree\s*\{[^}]*order:\s*3;[^}]*border:\s*1px solid var\(--border-color\);/s);
+    expect(filesCss).toMatch(/\.file-col-content,\s*\.file-col-placeholder\s*\{[^}]*border:\s*1px solid var\(--border-color\);/s);
     expect(filesCss).toMatch(/\.file-col-content\s*\{[^}]*order:\s*1;/s);
     expect(filesCss).toMatch(/\.file-tree-splitter\s*\{[^}]*order:\s*2;/s);
+    expect(workbench).toContain("'workbench-files-header': activeCapability === 'files'");
+    expect(workbenchCss).toMatch(/\.workbench-files-header\s*\{[^}]*border:\s*1px solid var\(--border-color\);/s);
     expect(filesTab).toContain('startWidth - (clientX - startX)');
     expect(workbench).toContain('<WorkbenchCapabilityHost');
     expect(browserPanel).toContain("['installing', 'probing'].includes(status.state)");

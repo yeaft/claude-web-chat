@@ -595,6 +595,16 @@ test.describe('Workbench', () => {
     await expect(panel.locator('.files-tab')).toBeVisible();
     await expect(panel.locator('.file-tree-expand-btn')).toHaveCount(0);
 
+    const borderedRegions = [
+      panel.locator('.workbench-files-header'),
+      panel.locator('.file-col-placeholder'),
+      panel.locator('.file-col-tree'),
+    ];
+    for (const region of borderedRegions) {
+      await expect(region).toHaveCSS('border-top-width', '1px');
+      await expect(region).toHaveCSS('border-top-style', 'solid');
+    }
+
     const hideTreeButton = panel.locator('.file-tree-header:not([style*="display: none"]) .file-tree-collapse-btn').last();
     await expect(hideTreeButton).toBeVisible();
     await expect(hideTreeButton.locator('path')).toHaveAttribute(
