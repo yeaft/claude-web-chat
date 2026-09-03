@@ -13,10 +13,11 @@ export default {
   components: { TerminalTab, GitStatusTab, FilesTab },
   props: {
     activeCapability: { type: String, default: null },
+    retainedCapabilities: { type: Array, default: () => [] },
     routeProps: { type: Object, required: true },
   },
   template: `
-    <KeepAlive :max="3">
+    <KeepAlive :max="3" :include="retainedComponentNames">
       <component
         :is="activeComponent"
         v-if="activeComponent"
@@ -27,6 +28,9 @@ export default {
   `,
   setup(props) {
     const activeComponent = Vue.computed(() => TOOL_COMPONENTS[props.activeCapability] || null);
-    return { activeComponent };
+    const retainedComponentNames = Vue.computed(() => (
+      props.retainedCapabilities.map(capability => TOOL_COMPONENTS[capability]?.name).filter(Boolean)
+    ));
+    return { activeComponent, retainedComponentNames };
   },
 };

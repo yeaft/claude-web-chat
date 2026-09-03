@@ -764,6 +764,7 @@ export default {
       window.dispatchEvent(new CustomEvent('workbench-file-items-changed', {
         detail: {
           routeKey: props.routeKey,
+          workspaceGeneration: props.workspaceGeneration,
           files: tabs.openFiles.value.map(file => ({
             path: file.path,
             name: file.name,
@@ -773,15 +774,25 @@ export default {
         },
       }));
     };
+    const isCurrentFileItemEvent = event => (
+      event.detail?.routeKey === props.routeKey
+      && event.detail?.workspaceGeneration === props.workspaceGeneration
+    );
     const handleSelectFileItem = event => {
-      if (event.detail?.routeKey !== props.routeKey) return;
+      if (!isCurrentFileItemEvent(event)) return;
       const index = tabs.openFiles.value.findIndex(file => file.path === event.detail.path);
       if (index >= 0) tabs.switchToTab(index);
     };
     const handleCloseFileItem = async event => {
-      if (event.detail?.routeKey !== props.routeKey) return;
+      if (!isCurrentFileItemEvent(event)) return;
       const index = tabs.openFiles.value.findIndex(file => file.path === event.detail.path);
       if (index >= 0) await tabs.closeFileTab(index);
+    };
+    const handleCloseFilesCapability = async event => {
+      if (!isCurrentFileItemEvent(event) || typeof event.detail.resolve !== 'function') return;
+      event.detail.resolve(
+        tabs.openFiles.value.length === 0 ? true : await tabs.closeAllTabs(),
+      );
     };
     Vue.watch(
       [tabs.openFiles, tabs.activeFileIndex],
@@ -795,6 +806,7 @@ export default {
       window.addEventListener('workbench-open-file-in-active-view', ws.handleOpenFile);
       window.addEventListener('workbench-select-file-item', handleSelectFileItem);
       window.addEventListener('workbench-close-file-item', handleCloseFileItem);
+      window.addEventListener('workbench-close-files-capability', handleCloseFilesCapability);
       window.addEventListener('conversation-deleted', tabs.handleConversationDeleted);
       window.addEventListener('keydown', handleGlobalKeydown);
       document.addEventListener('click', handleDocumentClick);
@@ -825,6 +837,7 @@ export default {
       window.removeEventListener('workbench-open-file-in-active-view', ws.handleOpenFile);
       window.removeEventListener('workbench-select-file-item', handleSelectFileItem);
       window.removeEventListener('workbench-close-file-item', handleCloseFileItem);
+      window.removeEventListener('workbench-close-files-capability', handleCloseFilesCapability);
       window.removeEventListener('conversation-deleted', tabs.handleConversationDeleted);
       window.removeEventListener('keydown', handleGlobalKeydown);
       document.removeEventListener('click', handleDocumentClick);

@@ -214,18 +214,42 @@ test.describe('Workbench', () => {
     await expect(tabs).toHaveCount(1);
   });
 
-  test('opens Terminal and closes it back to the launcher', async ({ chatPage, mockAgent }) => {
+  test('closes Terminal resources and keeps the launcher reachable at 320px', async ({ chatPage, mockAgent }) => {
+    await chatPage.setViewportSize({ width: 320, height: 640 });
     await openYeaftWorkbench(chatPage, mockAgent);
 
     const panel = chatPage.locator('.workbench-panel');
-    await openCapabilityLauncher(panel);
-    const terminalCard = capability(panel, 'terminal');
-    await terminalCard.focus();
-    await terminalCard.press('Enter');
+    const addButton = panel.locator('.workbench-add-btn');
+    await addButton.focus();
+    await addButton.press('ArrowDown');
+    const addMenu = panel.locator('.workbench-add-menu');
+    await expect(addMenu).toBeVisible();
+    await expect(addMenu.getByRole('menuitem').first()).toBeFocused();
+    const menuBounds = await addMenu.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      return {
+        left: rect.left,
+        right: rect.right,
+        viewportWidth: window.innerWidth,
+      };
+    });
+    expect(menuBounds.left, JSON.stringify(menuBounds)).toBeGreaterThanOrEqual(0);
+    expect(menuBounds.right, JSON.stringify(menuBounds)).toBeLessThanOrEqual(menuBounds.viewportWidth + 1);
+    await addMenu.getByRole('menuitem').first().press('End');
+    await expect(addMenu.getByRole('menuitem').last()).toBeFocused();
+    await addMenu.getByRole('menuitem').last().press('Home');
+    await expect(addMenu.getByRole('menuitem').first()).toBeFocused();
+    await addMenu.getByRole('menuitem').first().press('Escape');
+    await expect(addMenu).toHaveCount(0);
+    await expect(addButton).toBeFocused();
+
+    await addButton.press('ArrowUp');
+    await expect(addMenu.getByRole('menuitem').last()).toBeFocused();
+    await addMenu.getByRole('menuitem').last().press('ArrowDown');
+    await expect(addMenu.getByRole('menuitem').first()).toBeFocused();
+    await addMenu.getByRole('menuitem').first().press('Enter');
     await expect(panel.locator('.terminal-tab')).toBeVisible();
-    await expect(panel.locator('.workbench-header-title')).toHaveText('Terminal');
-    await expect(panel.locator('.workbench-launcher')).toHaveCount(0);
-    await expect(panel.locator('.workbench-view-close')).toBeFocused();
+    await expect(panel.locator('.workbench-item-tab.active .workbench-item-select')).toContainText('terminal', { ignoreCase: true });
 
     const terminalRequest = await mockAgent.waitForMessage('terminal_create');
     expect(terminalRequest).toMatchObject({
@@ -240,15 +264,16 @@ test.describe('Workbench', () => {
     expect(terminalRequest.workbenchRouteKey).toBe(`yeaft:${encodeURIComponent(mockAgent.agentId)}:workbench-session`);
     expect(terminalRequest.conversationId).toBe(`_workbench:${terminalRequest.workbenchRouteKey}`);
 
-    await panel.locator('.workbench-view-close').press('Enter');
-    await expect(panel.locator('.workbench-launcher')).toBeVisible();
-    await expect(panel.locator('.workbench-header-title')).toHaveText('Workbench');
-    await expect(capability(panel, 'terminal')).toBeFocused();
+    await panel.locator('.workbench-item-tab.active .workbench-item-close').click();
+    await expect(panel.locator('.workbench-item-tab.active .workbench-item-select')).toContainText('files', { ignoreCase: true });
+    const terminalClose = await mockAgent.waitForMessage('terminal_close');
+    expect(terminalClose).toMatchObject({ terminalId: terminalRequest.terminalId });
 
     const createCount = mockAgent.messages('terminal_create').length;
+    await panel.locator('.workbench-add-btn').click();
     await capability(panel, 'terminal').press('Enter');
     await expect(panel.locator('.terminal-tab')).toBeVisible();
-    await expect.poll(() => mockAgent.messages('terminal_create').length).toBe(createCount);
+    await expect.poll(() => mockAgent.messages('terminal_create').length).toBe(createCount + 1);
   });
 
   test('restores route state when switching same-Agent Sessions and scopes Git and Files requests', async ({ chatPage, mockAgent }) => {

@@ -119,6 +119,9 @@
     width: 100% !important;
     max-width: none;
   }
+  .workbench-add-menu {
+    right: auto;
+  }
   .main-content.workbench-active {
     flex: 1;
     min-width: 0;
@@ -172,6 +175,7 @@
 .workbench-tabs {
   display: flex;
   align-self: stretch;
+  flex: 1;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: thin;
@@ -257,7 +261,7 @@
   top: calc(100% + 4px);
   left: 0;
   z-index: 30;
-  min-width: 190px;
+  width: min(190px, calc(100vw - 16px));
   padding: 4px;
   border: 1px solid var(--border-color);
   border-radius: 8px;

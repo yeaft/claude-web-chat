@@ -48,13 +48,15 @@ export default {
               class="workbench-header-action workbench-add-btn"
               :aria-label="$t('workbench.addItem')"
               :title="$t('workbench.addItem')"
+              ref="launcherTrigger"
               :aria-expanded="launcherOpen"
               aria-haspopup="menu"
-              @click.stop="launcherOpen = !launcherOpen"
+              @click.stop="toggleLauncher"
+              @keydown="handleLauncherButtonKeydown"
             >
               <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
             </button>
-            <div v-if="launcherOpen" class="workbench-add-menu" role="menu">
+            <div v-if="launcherOpen" ref="launcherMenu" class="workbench-add-menu" role="menu">
               <button
                 v-for="capability in capabilityCards"
                 :key="capability.id"
@@ -63,6 +65,7 @@ export default {
                 class="workbench-add-menu-item"
                 :data-workbench-capability="capability.id"
                 @click="openCapability(capability.id)"
+                @keydown="handleLauncherMenuKeydown"
               >
                 <span>{{ $t(capability.titleKey) }}</span>
                 <small>{{ $t(capability.statusKey) }}</small>
@@ -99,6 +102,7 @@ export default {
           <WorkbenchCapabilityHost
             :key="workbenchContextKey"
             :active-capability="activeToolCapability"
+            :retained-capabilities="openCapabilities"
             :route-props="routeProps"
           />
 
@@ -137,6 +141,8 @@ export default {
     const panelRoot = Vue.ref(null);
     const launcherRoot = Vue.ref(null);
     const launcherOpen = Vue.ref(false);
+    const launcherTrigger = Vue.ref(null);
+    const launcherMenu = Vue.ref(null);
     const t = (key, params) => Vue.getCurrentInstance()?.proxy?.$t?.(key, params) || key;
 
     const activeRoute = Vue.computed(() => store.activeSessionRoute || null);
@@ -280,37 +286,119 @@ export default {
       activeCapability.value = next;
     };
 
+    const launcherItems = () => (
+      [...(launcherMenu.value?.querySelectorAll('.workbench-add-menu-item') || [])]
+    );
+    const focusLauncherItem = (index = 0) => Vue.nextTick(() => {
+      const items = launcherItems();
+      items[Math.max(0, Math.min(index, items.length - 1))]?.focus();
+    });
+    const updateLauncherMenuPosition = async () => {
+      await Vue.nextTick();
+      const triggerRect = launcherTrigger.value?.getBoundingClientRect();
+      const menu = launcherMenu.value;
+      if (!triggerRect || !menu) return;
+      const margin = 8;
+      const menuWidth = menu.getBoundingClientRect().width;
+      const targetLeft = Math.max(margin, Math.min(triggerRect.left, window.innerWidth - menuWidth - margin));
+      const currentLeft = menu.getBoundingClientRect().left;
+      const declaredLeft = Number.parseFloat(menu.style.left) || 0;
+      menu.style.left = `${declaredLeft + targetLeft - currentLeft}px`;
+      menu.style.top = '40px';
+    };
+    const openLauncher = (focusIndex = 0) => {
+      launcherOpen.value = true;
+      updateLauncherMenuPosition();
+      focusLauncherItem(focusIndex);
+    };
+    const closeLauncher = (restoreFocus = false) => {
+      launcherOpen.value = false;
+      if (restoreFocus) Vue.nextTick(() => launcherTrigger.value?.focus());
+    };
+    const toggleLauncher = () => {
+      if (launcherOpen.value) closeLauncher();
+      else openLauncher();
+    };
+    const handleLauncherButtonKeydown = event => {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        openLauncher(0);
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        openLauncher(capabilityCards.value.length - 1);
+      } else if (event.key === 'Escape' && launcherOpen.value) {
+        event.preventDefault();
+        closeLauncher(true);
+      }
+    };
+    const handleLauncherMenuKeydown = event => {
+      const items = launcherItems();
+      const currentIndex = items.indexOf(document.activeElement);
+      let nextIndex = currentIndex;
+      if (event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length;
+      else if (event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length;
+      else if (event.key === 'Home') nextIndex = 0;
+      else if (event.key === 'End') nextIndex = items.length - 1;
+      else if (event.key === 'Escape') {
+        event.preventDefault();
+        closeLauncher(true);
+        return;
+      } else if (event.key === 'Tab') {
+        closeLauncher();
+        return;
+      } else return;
+      event.preventDefault();
+      items[nextIndex]?.focus();
+    };
+
     const openCapability = capabilityId => {
       if (!capabilityCards.value.some(capability => capability.id === capabilityId)) return false;
       if (['terminal', 'git', 'files'].includes(capabilityId) && !activeRouteKey.value) return false;
       ensureOpenCapability(capabilityId);
       activatedCapabilities.add(capabilityActivationKey(capabilityId));
       activeCapability.value = capabilityId;
-      launcherOpen.value = false;
+      closeLauncher();
       rememberCapability();
       return true;
     };
 
-    const closeCapability = capabilityId => {
+    const confirmFilesCapabilityClose = () => new Promise(resolve => {
+      window.dispatchEvent(new CustomEvent('workbench-close-files-capability', {
+        detail: {
+          routeKey: activeRouteKey.value,
+          workspaceGeneration: activeWorkspaceGeneration.value,
+          resolve,
+        },
+      }));
+    });
+    const closeCapability = async capabilityId => {
       const target = capabilityId || activeCapability.value;
       const index = openCapabilities.indexOf(target);
-      if (index < 0) return;
+      if (index < 0) return false;
+      if (target === 'files' && hasExplorer.value && isCapabilityActivated(target)
+        && !await confirmFilesCapabilityClose()) return false;
+      if (activeCapability.value === target) {
+        activeCapability.value = openCapabilities[index + 1] || openCapabilities[index - 1] || null;
+      }
       openCapabilities.splice(index, 1);
+      activatedCapabilities.delete(capabilityActivationKey(target));
       if (target === 'files') {
         openFileItems.value = [];
         activeFilePath.value = '';
       }
-      if (activeCapability.value === target) {
-        activeCapability.value = openCapabilities[Math.min(index, openCapabilities.length - 1)] || null;
-      }
       rememberCapability();
+      return true;
     };
 
     const selectWorkbenchItem = item => {
       openCapability(item.capabilityId);
       if (item.path) {
         window.dispatchEvent(new CustomEvent('workbench-select-file-item', {
-          detail: { routeKey: activeRouteKey.value, path: item.path },
+          detail: {
+            routeKey: activeRouteKey.value,
+            workspaceGeneration: activeWorkspaceGeneration.value,
+            path: item.path,
+          },
         }));
       }
     };
@@ -318,7 +406,11 @@ export default {
     const closeWorkbenchItem = item => {
       if (item.path) {
         window.dispatchEvent(new CustomEvent('workbench-close-file-item', {
-          detail: { routeKey: activeRouteKey.value, path: item.path },
+          detail: {
+            routeKey: activeRouteKey.value,
+            workspaceGeneration: activeWorkspaceGeneration.value,
+            path: item.path,
+          },
         }));
         return;
       }
@@ -435,13 +527,16 @@ export default {
     };
 
     const handleFileItemsChanged = event => {
-      if (event.detail?.routeKey !== activeRouteKey.value) return;
+      if (event.detail?.routeKey !== activeRouteKey.value
+        || event.detail?.workspaceGeneration !== activeWorkspaceGeneration.value) return;
       openFileItems.value = Array.isArray(event.detail.files) ? event.detail.files : [];
       activeFilePath.value = event.detail.activePath || '';
       if (openFileItems.value.length > 0) ensureOpenCapability('files');
     };
     const handleDocumentClick = event => {
-      if (launcherOpen.value && !launcherRoot.value?.contains(event.target)) launcherOpen.value = false;
+      if (launcherOpen.value
+        && !launcherRoot.value?.contains(event.target)
+        && !launcherMenu.value?.contains(event.target)) closeLauncher();
     };
 
     Vue.onMounted(() => {
@@ -460,11 +555,14 @@ export default {
       store,
       panelRoot,
       launcherRoot,
+      launcherTrigger,
+      launcherMenu,
       launcherOpen,
       activeCapability,
       activeCapabilityTitleKey,
       activeCapabilityUnavailable,
       activeToolCapability,
+      openCapabilities,
       activeWorkbenchItemId,
       workbenchItems,
       capabilityCards,
@@ -472,6 +570,9 @@ export default {
       workbenchContextKey,
       openCapability,
       closeCapability,
+      toggleLauncher,
+      handleLauncherButtonKeydown,
+      handleLauncherMenuKeydown,
       closeWorkbenchItem,
       selectWorkbenchItem,
       handleWorkbenchTabKeydown,
