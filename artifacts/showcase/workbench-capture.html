@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yeaft Workbench Capture</title>
+<link rel="stylesheet" href="../../web/styles/variables.css">
+<link rel="stylesheet" href="../../web/styles/workbench.css">
+<link rel="stylesheet" href="../../web/styles/files.css">
+<style>
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-main);font-family:Inter,Aptos,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--text-primary)}
+.capture{width:1440px;height:900px;background:var(--bg-workbench);display:flex;flex-direction:column;border:1px solid var(--border-color)}
+.workbench-tabs{border-bottom:1px solid var(--border-color);background:var(--bg-workbench)}
+.wb-tab{pointer-events:none}.wb-tab.active{background:var(--session-active)}
+.workbench-tab-content{height:851px}.files-tab{height:100%;display:flex}.file-col-tree{width:330px;flex:0 0 330px;border-right:1px solid var(--border-color);display:flex;flex-direction:column;background:var(--bg-workbench)}
+.file-tree-header{height:38px;display:flex;align-items:center;padding:0 12px;border-bottom:1px solid var(--border-light)}
+.vscode-folder-row{display:flex;align-items:center;width:100%;gap:7px}.vscode-folder-name{font-size:12px;font-weight:650;letter-spacing:.08em}.tree-action{margin-left:auto;color:var(--text-muted);font-size:12px}.file-search-row{padding:8px}.file-search-input{height:30px}.file-tree-content{padding:5px 0}.tree-item{height:28px;display:flex;align-items:center;gap:7px;padding-right:10px;font-size:13px}.tree-item.active{background:var(--session-active)}
+.tree-arrow{width:12px;color:var(--text-muted)}.tree-icon{width:15px;text-align:center;color:var(--text-secondary)}.tree-name{white-space:nowrap}.tree-size{margin-left:auto;color:var(--text-muted);font-size:10px}.file-col-content{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg-main)}
+.file-tabs-bar{height:38px;border-bottom:1px solid var(--border-color);display:flex;align-items:stretch;background:var(--bg-workbench)}.file-tab{display:flex;align-items:center;gap:9px;padding:0 14px;border-right:1px solid var(--border-color);font-size:12px}.file-tab.active{background:var(--bg-main)}.file-path{margin-left:auto;padding-right:15px;display:flex;align-items:center;color:var(--text-muted);font-size:11px}
+.editor{flex:1;display:grid;grid-template-columns:52px 1fr;padding:18px 0;font:13px/1.62 "SFMono-Regular",Consolas,monospace;overflow:hidden}.nums{color:var(--text-muted);text-align:right;padding-right:14px;user-select:none}.code{white-space:pre;color:var(--text-primary)}.kw{color:var(--syntax-keyword)}.str{color:var(--syntax-string)}.fn{color:var(--syntax-title)}.cm{color:var(--syntax-comment)}
+.terminal-tab{height:100%;display:flex;flex-direction:column;background:var(--bg-workbench)}.terminal-toolbar{height:43px;padding:7px 10px;display:flex;gap:6px;border-bottom:1px solid var(--border-color)}.terminal-instances{flex:1}.terminal-pane{height:100%;background:var(--bg-main)}.terminal-title{height:30px;padding:7px 14px;border-bottom:1px solid var(--border-light);font:11px "SFMono-Regular",Consolas,monospace;color:var(--text-muted)}.terminal-screen{padding:22px 26px;font:14px/1.75 "SFMono-Regular",Consolas,monospace;color:#383a42;white-space:pre-wrap}.prompt{color:#245a8d;font-weight:600}.command{color:#2c2c2c}.ok{color:#2a7a3f}.muted{color:#7a7a7a}.cursor{display:inline-block;width:8px;height:17px;background:#526fff;vertical-align:-3px}
+.capture-note{margin-left:auto;color:var(--text-muted);font-size:11px;padding-right:8px}
+</style>
+</head>
+<body>
+<section id="files" class="capture">
+  <div class="workbench-tabs">
+    <button class="wb-tab"><span>▣</span> Terminal</button><button class="wb-tab"><span>⑂</span> Git</button><button class="wb-tab active"><span>▰</span> Files</button>
+    <span class="capture-note">yeaft-web-code-agent · staged demo</span>
+  </div>
+  <div class="workbench-tab-content">
+    <div class="files-tab file-two-col">
+      <aside class="file-col-tree">
+        <div class="file-tree-header vscode-header"><div class="vscode-folder-row"><span class="tree-arrow">▾</span><span class="vscode-folder-name">YEAFT-WEB-CODE-AGENT</span><span class="tree-action">＋　↻</span></div></div>
+        <div class="file-search-row"><div class="file-search-input">Search files... (Ctrl+P)</div></div>
+        <div class="file-tree-content file-tree-list">
+          <div class="tree-item tree-dir" style="padding-left:10px"><span class="tree-arrow">▾</span><span class="tree-icon">▰</span><span class="tree-name">agent</span></div>
+          <div class="tree-item tree-dir" style="padding-left:28px"><span class="tree-arrow">▾</span><span class="tree-icon">▰</span><span class="tree-name">yeaft</span></div>
+          <div class="tree-item tree-file active" style="padding-left:46px"><span class="tree-arrow"></span><span class="tree-icon">JS</span><span class="tree-name">engine.js</span><span class="tree-size">94 KB</span></div>
+          <div class="tree-item tree-file" style="padding-left:46px"><span class="tree-arrow"></span><span class="tree-icon">JS</span><span class="tree-name">session.js</span><span class="tree-size">31 KB</span></div>
+          <div class="tree-item tree-dir" style="padding-left:46px"><span class="tree-arrow">›</span><span class="tree-icon">▰</span><span class="tree-name">conversation</span></div>
+          <div class="tree-item tree-dir" style="padding-left:46px"><span class="tree-arrow">›</span><span class="tree-icon">▰</span><span class="tree-name">llm</span></div>
+          <div class="tree-item tree-dir" style="padding-left:46px"><span class="tree-arrow">›</span><span class="tree-icon">▰</span><span class="tree-name">tools</span></div>
+          <div class="tree-item tree-dir" style="padding-left:10px"><span class="tree-arrow">›</span><span class="tree-icon">▰</span><span class="tree-name">server</span></div>
+          <div class="tree-item tree-dir" style="padding-left:10px"><span class="tree-arrow">›</span><span class="tree-icon">▰</span><span class="tree-name">web</span></div>
+          <div class="tree-item tree-dir" style="padding-left:10px"><span class="tree-arrow">›</span><span class="tree-icon">▰</span><span class="tree-name">test</span></div>
+          <div class="tree-item tree-file" style="padding-left:10px"><span class="tree-arrow"></span><span class="tree-icon">#</span><span class="tree-name">AGENTS.md</span><span class="tree-size">18 KB</span></div>
+          <div class="tree-item tree-file" style="padding-left:10px"><span class="tree-arrow"></span><span class="tree-icon">{ }</span><span class="tree-name">package.json</span><span class="tree-size">7 KB</span></div>
+        </div>
+      </aside>
+      <main class="file-col-content">
+        <div class="file-tabs-bar"><div class="file-tab active"><span>JS</span><strong>engine.js</strong><span>×</span></div><div class="file-path">agent / yeaft / engine.js</div></div>
+        <div class="editor"><div class="nums">1<br>2<br>3<br>4<br>5<br>6<br>7<br>8<br>9<br>10<br>11<br>12<br>13<br>14<br>15<br>16<br>17<br>18<br>19<br>20<br>21<br>22</div><div class="code"><span class="kw">import</span> { EventEmitter } <span class="kw">from</span> <span class="str">'node:events'</span>;
+<span class="kw">import</span> { compactHistory } <span class="kw">from</span> <span class="str">'./compact/index.js'</span>;
+<span class="kw">import</span> { projectVisibleHistory } <span class="kw">from</span> <span class="str">'./conversation/projection.js'</span>;
+
+<span class="cm">// Every query ends at one explicit terminal boundary.</span>
+<span class="kw">export class</span> <span class="fn">Engine</span> <span class="kw">extends</span> EventEmitter {
+  <span class="kw">async</span> <span class="fn">query</span>(input, options = {}) {
+    <span class="kw">const</span> turn = <span class="kw">await</span> <span class="kw">this</span>.createTurn(input, options);
+
+    <span class="kw">try</span> {
+      <span class="kw">const</span> context = <span class="kw">await</span> <span class="kw">this</span>.buildContext(turn);
+      <span class="kw">const</span> result = <span class="kw">await</span> <span class="kw">this</span>.runLoop(context);
+      <span class="kw">await</span> <span class="kw">this</span>.persistVisibleResult(result);
+      <span class="kw">return</span> result;
+    } <span class="kw">catch</span> (error) {
+      <span class="kw">return await</span> <span class="kw">this</span>.handleFailure(error, turn);
+    } <span class="kw">finally</span> {
+      <span class="kw">this</span>.emit(<span class="str">'turn_end'</span>, { terminal: <span class="kw">true</span> });
+    }
+  }
+}</div></div>
+      </main>
+    </div>
+  </div>
+</section>
+<section id="terminal" class="capture" style="display:none">
+  <div class="workbench-tabs">
+    <button class="wb-tab active"><span>▣</span> Terminal</button><button class="wb-tab"><span>⑂</span> Git</button><button class="wb-tab"><span>▰</span> Files</button>
+    <span class="capture-note">yeaft-web-code-agent · staged demo</span>
+  </div>
+  <div class="workbench-tab-content terminal-tab">
+    <div class="terminal-toolbar"><button class="wb-btn">▥ <span>Split ─</span></button><button class="wb-btn">▤ <span>Split │</span></button><button class="wb-btn">× <span>Close</span></button></div>
+    <div class="terminal-instances"><div class="terminal-pane active"><div class="terminal-title">zsh · /home/azureuser/projects/yeaft-web-code-agent</div><div class="terminal-screen"><span class="prompt">yeaft-web-code-agent %</span> <span class="command">npm run test:focus -- test/agent/yeaft/engine.test.js</span>
+
+<span class="muted"> RUN  v4.1.10 /home/azureuser/projects/yeaft-web-code-agent</span>
+
+ <span class="ok">✓</span> test/agent/yeaft/engine.test.js (77 tests) 31295ms
+
+<span class="ok"> Test Files  1 passed (1)</span>
+<span class="ok">      Tests  77 passed (77)</span>
+<span class="muted">   Duration  35.14s</span>
+
+<span class="prompt">yeaft-web-code-agent %</span> <span class="command">git diff --check</span>
+<span class="prompt">yeaft-web-code-agent %</span> <span class="cursor"></span></div></div></div>
+  </div>
+</section>
+<script>const mode=new URLSearchParams(location.search).get('mode')||'files';document.getElementById('files').style.display=mode==='files'?'flex':'none';document.getElementById('terminal').style.display=mode==='terminal'?'flex':'none';</script>
+</body></html>
