@@ -18,14 +18,6 @@ export function createFileTree(store, { getEffectiveWorkDir, normalizePath, sele
     return (parts[parts.length - 1] || treeRootPath.value).toUpperCase();
   });
 
-  const collapseAll = () => {
-    for (const key of Object.keys(treeNodes)) {
-      if (treeNodes[key]) {
-        treeNodes[key].expanded = false;
-      }
-    }
-  };
-
   const startTreePathEdit = () => {
     editingTreePath.value = true;
     Vue.nextTick(() => treePathInputRef.value?.focus());
@@ -202,7 +194,7 @@ export function createFileTree(store, { getEffectiveWorkDir, normalizePath, sele
   return {
     treePath, treeRootPath, treeNodes, flattenedTree,
     editingTreePath, treePathInputRef, rootFolderName,
-    collapseAll, startTreePathEdit, confirmTreePath, cancelTreePathEdit,
+    startTreePathEdit, confirmTreePath, cancelTreePathEdit,
     loadTreeDirectory, loadRootDirectory, toggleDirectory, onTreeItemClick,
     handleDirectoryListing, clearTreeNodes, initFileBrowser, refresh
   };

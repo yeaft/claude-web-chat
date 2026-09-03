@@ -728,28 +728,24 @@ describe('Agent file terminal forwarding', () => {
     expect(tabs.activeFileIndex.value).toBe(-1);
   });
 
-  it('renders a fixed open-files control and tab context actions', () => {
-    const component = readFileSync(new URL('../../web/components/FilesTab.js', import.meta.url), 'utf8');
+  it('projects file items into the Workbench tabs without duplicate Files tab controls', () => {
+    const filesComponent = readFileSync(new URL('../../web/components/FilesTab.js', import.meta.url), 'utf8');
+    const workbenchComponent = readFileSync(new URL('../../web/components/WorkbenchPanel.js', import.meta.url), 'utf8');
     const css = readFileSync(new URL('../../web/styles/files.css', import.meta.url), 'utf8');
 
-    expect(component).toContain('class="file-tabs-scroll"');
-    expect(component).toContain('class="file-tabs-list-btn"');
-    expect(component).toContain('class="file-tabs-scroll" role="tablist"');
-    expect(component).toContain('role="tab"');
-    expect(component).toContain(':aria-selected="index === activeFileIndex"');
-    expect(component).toContain(':tabindex="index === activeFileIndex ? 0 : -1"');
-    expect(component).toContain('@keydown="handleFileTabKeydown($event, index)"');
-    expect(component).toContain('@contextmenu.prevent="showFileTabContextMenu($event, index)"');
-    expect(component).toContain('@keydown="handleMenuKeydown"');
-    expect(component).toContain("event.key === 'ContextMenu'");
-    expect(component).toContain("event.key === 'Escape'");
-    expect(component).toContain("runTabMenuAction('left')");
-    expect(component).toContain("runTabMenuAction('right')");
-    expect(component).toContain("runTabMenuAction('others')");
-    expect(component).toContain("runTabMenuAction('all')");
-    expect(css).toMatch(/\.file-tabs-scroll\s*\{[^}]*overflow-x:\s*auto;/s);
-    expect(css).toMatch(/\.file-tabs-actions\s*\{[^}]*flex-shrink:\s*0;/s);
-    expect(css).toMatch(/\.file-tab:focus-visible[\s\S]*outline:\s*2px solid var\(--accent-blue\);/);
+    expect(filesComponent).toContain("new CustomEvent('workbench-file-items-changed'");
+    expect(filesComponent).toContain("window.addEventListener('workbench-select-file-item'");
+    expect(filesComponent).toContain("window.addEventListener('workbench-close-file-item'");
+    expect(workbenchComponent).toContain('class="workbench-tabs" role="tablist"');
+    expect(workbenchComponent).toContain('role="tab"');
+    expect(workbenchComponent).toContain(':aria-selected="item.id === activeWorkbenchItemId"');
+    expect(workbenchComponent).toContain(':tabindex="item.id === activeWorkbenchItemId ? 0 : -1"');
+    expect(workbenchComponent).toContain('@keydown="handleWorkbenchTabKeydown($event, item)"');
+    expect(filesComponent).not.toContain('class="file-tabs-scroll"');
+    expect(filesComponent).not.toContain('showFileTabContextMenu');
+    expect(filesComponent).not.toContain('collapseAll');
+    expect(css).not.toContain('.file-tabs-scroll');
+    expect(css).not.toContain('.file-tab-context-menu');
   });
 
   it('routes an open event with its frozen Agent and conversation identity', () => {

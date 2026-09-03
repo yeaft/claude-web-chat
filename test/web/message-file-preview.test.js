@@ -115,32 +115,29 @@ describe('Workbench capability launcher', () => {
     document.body.innerHTML = '';
   });
 
-  it('opens Files by default and keeps the four-capability launcher available', async () => {
+  it('opens Files by default and exposes all Workbench abilities from the add menu', async () => {
     const wrapper = mountWorkbench();
     expect(wrapper.get('.files-tab-stub').isVisible()).toBe(true);
-    await wrapper.get('.workbench-view-close').trigger('click');
+    expect(wrapper.findAll('.workbench-item-tab').map(tab => tab.text())).toEqual(['workbench.files×']);
+    expect(wrapper.find('.workbench-header-title').exists()).toBe(false);
 
-    const cards = wrapper.findAll('.workbench-capability-card');
-    expect(cards.map(card => card.attributes('data-workbench-capability')))
+    await wrapper.get('.workbench-add-btn').trigger('click');
+    const items = wrapper.findAll('.workbench-add-menu-item');
+    expect(items.map(item => item.attributes('data-workbench-capability')))
       .toEqual(['terminal', 'git', 'files', 'browser']);
-    expect(wrapper.find('.workbench-tabs').exists()).toBe(false);
-    expect(wrapper.find('.wb-tab').exists()).toBe(false);
-    expect(wrapper.get('.workbench-header-title').text()).toBe('workbench.title');
-    expect(wrapper.get('[data-workbench-capability="terminal"] .workbench-capability-status').text()).toBe('workbench.available');
-    expect(wrapper.get('[data-workbench-capability="browser"] .workbench-capability-status').text()).toBe('workbench.unavailable');
+    expect(wrapper.get('[data-workbench-capability="terminal"] small').text()).toBe('workbench.available');
+    expect(wrapper.get('[data-workbench-capability="browser"] small').text()).toBe('workbench.unavailable');
     expect(wrapper.get('[data-workbench-capability="browser"]').attributes('disabled')).toBeUndefined();
     expect(capabilityMounts.map(entry => entry.name)).toEqual(['files']);
     wrapper.unmount();
   });
 
-  it('lazily opens one route-scoped capability and restores keyboard focus on close', async () => {
+  it('lazily opens route-scoped abilities and switches or closes them as peer tabs', async () => {
     const wrapper = mountWorkbench();
-    await wrapper.get('.workbench-view-close').trigger('click');
-    const terminalCard = wrapper.get('[data-workbench-capability="terminal"]');
-    terminalCard.element.focus();
-
-    await terminalCard.trigger('click');
+    await wrapper.get('.workbench-add-btn').trigger('click');
+    await wrapper.get('[data-workbench-capability="terminal"]').trigger('click');
     await Vue.nextTick();
+
     expect(wrapper.get('.terminal-tab-stub').isVisible()).toBe(true);
     expect(wrapper.get('.terminal-tab-stub').attributes()).toMatchObject({
       'data-route-key': 'yeaft:agent-1:session-a',
@@ -152,15 +149,17 @@ describe('Workbench capability launcher', () => {
       ),
     });
     expect(capabilityMounts.map(entry => entry.name)).toEqual(['files', 'terminal']);
-    expect(wrapper.get('.workbench-header-title').text()).toBe('workbench.terminal');
-    expect(wrapper.find('.workbench-launcher').exists()).toBe(false);
-    expect(document.activeElement).toBe(wrapper.get('.workbench-view-close').element);
+    expect(wrapper.findAll('.workbench-item-tab').map(tab => tab.text()))
+      .toEqual(['workbench.files×', 'workbench.terminal×']);
 
-    await wrapper.get('.workbench-view-close').trigger('click');
+    await wrapper.findAll('.workbench-item-select')[0].trigger('click');
+    expect(wrapper.get('.files-tab-stub').isVisible()).toBe(true);
+    await wrapper.findAll('.workbench-item-select')[0].trigger('keydown', { key: 'ArrowRight' });
     await Vue.nextTick();
-    expect(wrapper.get('.workbench-launcher').isVisible()).toBe(true);
-    expect(wrapper.get('.workbench-header-title').text()).toBe('workbench.title');
-    expect(document.activeElement).toBe(wrapper.get('[data-workbench-capability="terminal"]').element);
+    expect(wrapper.get('.terminal-tab-stub').isVisible()).toBe(true);
+    expect(document.activeElement).toBe(wrapper.findAll('.workbench-item-select')[1].element);
+    await wrapper.findAll('.workbench-item-close')[1].trigger('click');
+    expect(wrapper.findAll('.workbench-item-tab').map(tab => tab.text())).toEqual(['workbench.files×']);
 
     await wrapper.get('.workbench-panel-close').trigger('click');
     expect(workbenchStore.toggleWorkbench).toHaveBeenCalledTimes(1);
@@ -169,7 +168,7 @@ describe('Workbench capability launcher', () => {
 
   it('restores and isolates active capabilities across same-Agent Session routes', async () => {
     const wrapper = mountWorkbench();
-    await wrapper.get('.workbench-view-close').trigger('click');
+    await wrapper.get('.workbench-add-btn').trigger('click');
     await wrapper.get('[data-workbench-capability="terminal"]').trigger('click');
     await Vue.nextTick();
     expect(wrapper.get('.terminal-tab-stub').attributes('data-route-key')).toBe('yeaft:agent-1:session-a');
@@ -188,7 +187,7 @@ describe('Workbench capability launcher', () => {
     expect(wrapper.get('.files-tab-stub').attributes('data-route-key')).toBe('yeaft:agent-1:session-b');
     expect(wrapper.find('.terminal-tab-stub').exists()).toBe(false);
 
-    await wrapper.get('.workbench-view-close').trigger('click');
+    await wrapper.get('.workbench-add-btn').trigger('click');
     await wrapper.get('[data-workbench-capability="git"]').trigger('click');
     await Vue.nextTick();
     expect(wrapper.get('.git-tab-stub').attributes()).toMatchObject({
@@ -240,7 +239,7 @@ describe('Workbench capability launcher', () => {
 
   it('keeps Browser discoverable and distinguishes setup-required from unsupported', async () => {
     const unsupported = mountWorkbench();
-    await unsupported.get('.workbench-view-close').trigger('click');
+    await unsupported.get('.workbench-add-btn').trigger('click');
     await unsupported.get('[data-workbench-capability="browser"]').trigger('click');
     expect(unsupported.get('.workbench-browser-view').text()).toContain('workbench.browserUnavailable');
     expect(unsupported.find('video').exists()).toBe(false);
@@ -252,14 +251,59 @@ describe('Workbench capability launcher', () => {
     workbenchStore.browserRuntimeSetupProtocolSupported = true;
     workbenchStore.capabilities = ['terminal', 'file_editor', 'workbench_session_routes', 'browser_runtime_setup'];
     const setup = mountWorkbench();
-    await setup.get('.workbench-view-close').trigger('click');
-    expect(setup.get('[data-workbench-capability="browser"] .workbench-capability-status').text())
+    await setup.get('.workbench-add-btn').trigger('click');
+    expect(setup.get('[data-workbench-capability="browser"] small').text())
       .toBe('workbench.enableRequired');
     await setup.get('[data-workbench-capability="browser"]').trigger('click');
     expect(setup.find('.workbench-browser-view').exists()).toBe(false);
     expect(setup.get('.browser-panel-stub').attributes('data-route-key'))
       .toBe('yeaft:agent-1:session-a');
     setup.unmount();
+  });
+
+  it('maps route-scoped open files into the Workbench tabs and delegates file selection or close', async () => {
+    const wrapper = mountWorkbench();
+    const selectHandler = vi.fn();
+    const closeHandler = vi.fn();
+    window.addEventListener('workbench-select-file-item', selectHandler);
+    window.addEventListener('workbench-close-file-item', closeHandler);
+
+    window.dispatchEvent(new CustomEvent('workbench-file-items-changed', { detail: {
+      routeKey: 'yeaft:agent-1:session-a',
+      activePath: 'README.md',
+      files: [
+        { path: 'README.md', name: 'README.md', isDirty: false },
+        { path: 'src/main.js', name: 'main.js', isDirty: true },
+      ],
+    } }));
+    await Vue.nextTick();
+    expect(wrapper.findAll('.workbench-item-tab').map(tab => tab.text()))
+      .toEqual(['README.md×', '●main.js×']);
+    expect(wrapper.findAll('.workbench-item-tab')[0].classes()).toContain('active');
+
+    await wrapper.findAll('.workbench-item-select')[1].trigger('click');
+    expect(selectHandler).toHaveBeenCalledTimes(1);
+    expect(selectHandler.mock.calls[0][0].detail).toEqual({
+      routeKey: 'yeaft:agent-1:session-a', path: 'src/main.js',
+    });
+    await wrapper.findAll('.workbench-item-close')[1].trigger('click');
+    expect(closeHandler).toHaveBeenCalledTimes(1);
+    expect(closeHandler.mock.calls[0][0].detail).toEqual({
+      routeKey: 'yeaft:agent-1:session-a', path: 'src/main.js',
+    });
+
+    window.dispatchEvent(new CustomEvent('workbench-file-items-changed', { detail: {
+      routeKey: 'yeaft:agent-1:session-b',
+      activePath: 'ignored.md',
+      files: [{ path: 'ignored.md', name: 'ignored.md', isDirty: false }],
+    } }));
+    await Vue.nextTick();
+    expect(wrapper.findAll('.workbench-item-tab').map(tab => tab.text()))
+      .toEqual(['README.md×', '●main.js×']);
+
+    window.removeEventListener('workbench-select-file-item', selectHandler);
+    window.removeEventListener('workbench-close-file-item', closeHandler);
+    wrapper.unmount();
   });
 
   it('routes a message file-open event directly to Files and preserves it on reopen', async () => {
@@ -272,7 +316,6 @@ describe('Workbench capability launcher', () => {
     await Vue.nextTick();
     expect(wrapper.get('.files-tab-stub').isVisible()).toBe(true);
     expect(wrapper.get('.files-tab-stub').attributes('data-route-key')).toBe('yeaft:agent-1:session-a');
-    expect(wrapper.get('.workbench-header-title').text()).toBe('workbench.files');
 
     workbenchStore.workbenchExpanded = false;
     await Vue.nextTick();
@@ -287,7 +330,7 @@ describe('Workbench capability launcher', () => {
     workbenchStore.workbenchRouteProtocolSupported = false;
     const wrapper = mountWorkbench();
 
-    await wrapper.get('.workbench-view-close').trigger('click');
+    await wrapper.get('.workbench-add-btn').trigger('click');
     await wrapper.get('[data-workbench-capability="git"]').trigger('click');
     expect(wrapper.get('.workbench-capability-empty').text()).toContain('workbench.capabilityUnavailable');
     expect(wrapper.find('.git-tab-stub').exists()).toBe(false);
@@ -478,12 +521,20 @@ describe('message file preview', () => {
     expect(wsHandler).toContain('normalizePath(msg.requestedFilePath || msg.filePath)');
     expect(readWeb('../agent/workbench/file-ops.js')).toContain('requestedFilePath: filePath');
     expect(filesCss).toMatch(/\.file-tree-collapsed-rail\s*\{[^}]*order:\s*4;[^}]*border-left:/s);
-    expect(filesCss).toMatch(/\.file-col-tree\s*\{[^}]*order:\s*3;[^}]*border:\s*1px solid var\(--border-color\);/s);
-    expect(filesCss).toMatch(/\.file-col-content,\s*\.file-col-placeholder\s*\{[^}]*border:\s*1px solid var\(--border-color\);/s);
+    expect(filesCss).toMatch(/\.file-col-tree\s*\{[^}]*order:\s*3;/s);
+    expect(filesCss).not.toMatch(/\.file-col-tree\s*\{[^}]*border:\s*1px solid var\(--border-color\);/s);
+    expect(filesCss).not.toMatch(/\.file-col-content,\s*\.file-col-placeholder\s*\{[^}]*border:/s);
     expect(filesCss).toMatch(/\.file-col-content\s*\{[^}]*order:\s*1;/s);
-    expect(filesCss).toMatch(/\.file-tree-splitter\s*\{[^}]*order:\s*2;/s);
-    expect(workbench).toContain("'workbench-files-header': activeCapability === 'files'");
-    expect(workbenchCss).toMatch(/\.workbench-files-header\s*\{[^}]*border:\s*1px solid var\(--border-color\);/s);
+    expect(filesCss).toMatch(/\.file-tree-splitter\s*\{[^}]*order:\s*2;[^}]*border-right:\s*1px solid var\(--border-color\);/s);
+    expect(filesTab).toContain('class="file-content-header"');
+    expect(filesTab).toContain('class="file-content-folder"');
+    expect(filesTab).toContain('class="file-content-actions"');
+    expect(filesTab).not.toContain('class="file-tabs-bar"');
+    expect(filesTab).not.toContain('@click="collapseAll"');
+    expect(workbench).toContain('class="workbench-tabs"');
+    expect(workbench).toContain('class="workbench-item-tab"');
+    expect(workbench).not.toContain('workbench-header-title');
+    expect(workbenchCss).not.toContain('.workbench-files-header');
     expect(filesTab).toContain('startWidth - (clientX - startX)');
     expect(workbench).toContain('<WorkbenchCapabilityHost');
     expect(browserPanel).toContain("['installing', 'probing'].includes(status.state)");
@@ -499,8 +550,9 @@ describe('message file preview', () => {
     expect(filesTab).not.toContain('rootExpanded: tree.rootExpanded');
     expect(fileTree).not.toContain('rootExpanded');
     expect(fileTree).not.toContain('toggleRootExpand');
-    expect(workbench).toContain("const next = saved === undefined ? 'files' : saved");
-    expect(workbench).toContain('capabilityState.set(previousContextKey, activeCapability.value)');
+    expect(workbench).toContain("...(saved?.openCapabilities || ['files'])");
+    expect(workbench).toContain('activeCapability: activeCapability.value');
+    expect(workbench).toContain('openCapabilities: [...openCapabilities]');
     expect(workbench).toContain('class="workbench-header-action workbench-maximize-btn"');
     expect(workbench).toContain(':aria-label="store.workbenchMaximized ? $t(\'workbench.restore\') : $t(\'workbench.maximize\')"');
     expect(workbench).toContain('d="M7 14H5v5h5v-2H7v-3z');
