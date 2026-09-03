@@ -17,20 +17,22 @@ export default {
     routeProps: { type: Object, required: true },
   },
   template: `
-    <KeepAlive :max="3" :include="retainedComponentNames">
+    <div class="workbench-capability-host">
       <component
-        :is="activeComponent"
-        v-if="activeComponent"
-        :key="activeCapability"
+        v-for="capability in mountedCapabilities"
+        :is="capability.component"
+        :key="capability.id"
+        v-show="activeCapability === capability.id"
         v-bind="routeProps"
       />
-    </KeepAlive>
+    </div>
   `,
   setup(props) {
-    const activeComponent = Vue.computed(() => TOOL_COMPONENTS[props.activeCapability] || null);
-    const retainedComponentNames = Vue.computed(() => (
-      props.retainedCapabilities.map(capability => TOOL_COMPONENTS[capability]).filter(Boolean)
+    const mountedCapabilities = Vue.computed(() => (
+      props.retainedCapabilities
+        .map(id => ({ id, component: TOOL_COMPONENTS[id] }))
+        .filter(capability => capability.component)
     ));
-    return { activeComponent, retainedComponentNames };
+    return { mountedCapabilities };
   },
 };

@@ -59,16 +59,20 @@ async function openYeaftWorkbench(chatPage, mockAgent) {
 }
 
 function capability(panel, id) {
-  return panel.locator(`[data-workbench-capability="${id}"]`);
+  return panel.locator(`.workbench-add-menu-item[data-workbench-capability="${id}"]`);
 }
 
 async function openCapabilityLauncher(panel) {
-  await expect(panel.locator('.files-tab')).toBeVisible();
   const addButton = panel.locator('.workbench-add-btn');
   await expect(addButton).toHaveAttribute('aria-expanded', 'false');
   await addButton.click();
   await expect(addButton).toHaveAttribute('aria-expanded', 'true');
   await expect(panel.locator('.workbench-add-menu')).toBeVisible();
+}
+
+async function openCapability(panel, id) {
+  await openCapabilityLauncher(panel);
+  await capability(panel, id).click();
 }
 
 async function closeActiveWorkbenchItem(panel) {
@@ -119,18 +123,19 @@ test.describe('Workbench', () => {
     await expect(panel.locator('.workbench-add-menu-item')).toHaveCount(4);
   });
 
-  test('opens Files by default and keeps the four-capability launcher available', async ({ chatPage, mockAgent }) => {
+  test('starts on the four-capability chooser without opening a tool', async ({ chatPage, mockAgent }) => {
     await openYeaftWorkbench(chatPage, mockAgent);
 
     const panel = chatPage.locator('.workbench-panel');
-    await expect(panel.locator('.files-tab')).toBeVisible();
+    await expect(panel.locator('.workbench-launcher')).toBeVisible();
+    await expect(panel.locator('.workbench-capability-card')).toHaveCount(4);
+    await expect(panel.locator('.workbench-item-tab')).toHaveCount(0);
     await openCapabilityLauncher(panel);
     await expect(panel.locator('.workbench-add-menu-item')).toHaveCount(4);
     await expect(capability(panel, 'terminal')).toBeVisible();
     await expect(capability(panel, 'git')).toBeVisible();
     await expect(capability(panel, 'files')).toBeVisible();
     await expect(capability(panel, 'browser')).toBeVisible();
-    await expect(panel.locator('.workbench-item-tab')).toHaveCount(1);
     await expect(capability(panel, 'browser').locator('small')).toHaveText('Unavailable on this Agent');
     await expect.poll(() => mockAgent.messages().filter(message => [
       'terminal_create', 'git_status', 'list_directory', 'restore_file_tabs',
@@ -141,6 +146,8 @@ test.describe('Workbench', () => {
     await openYeaftWorkbench(chatPage, mockAgent);
 
     const panel = chatPage.locator('.workbench-panel');
+    await openCapability(panel, 'files');
+    await expect(panel.locator('.files-tab')).toBeVisible();
     const routeKey = `yeaft:${encodeURIComponent(mockAgent.agentId)}:workbench-session`;
     await chatPage.evaluate(({ agentId, routeKey }) => {
       for (let index = 0; index < 12; index++) {
@@ -237,7 +244,7 @@ test.describe('Workbench', () => {
     expect(terminalRequest.conversationId).toBe(`_workbench:${terminalRequest.workbenchRouteKey}`);
 
     await panel.locator('.workbench-item-tab.active .workbench-item-close').click();
-    await expect(panel.locator('.workbench-item-tab.active .workbench-item-select')).toContainText('files', { ignoreCase: true });
+    await expect(panel.locator('.workbench-launcher')).toBeVisible();
     const terminalClose = await mockAgent.waitForMessage('terminal_close');
     expect(terminalClose).toMatchObject({ terminalId: terminalRequest.terminalId });
 
@@ -248,69 +255,56 @@ test.describe('Workbench', () => {
     await expect.poll(() => mockAgent.messages('terminal_create').length).toBe(createCount + 1);
   });
 
-  test('restores route state when switching same-Agent Sessions and scopes Git and Files requests', async ({ chatPage, mockAgent }) => {
+  test('keeps route terminals alive when switching same-Agent Sessions and scopes Git and Files requests', async ({ chatPage, mockAgent }) => {
     await openYeaftWorkbench(chatPage, mockAgent);
 
     const panel = chatPage.locator('.workbench-panel');
-    await openCapabilityLauncher(panel);
-    await capability(panel, 'terminal').click();
+    await openCapability(panel, 'terminal');
     await expect(panel.locator('.terminal-tab')).toBeVisible();
     const terminalA = await mockAgent.waitForMessage('terminal_create');
     expect(terminalA.workbenchRoute?.sessionId).toBe('workbench-session');
-    await closeActiveWorkbenchItem(panel);
-    await panel.locator('.workbench-add-btn').click();
-    await capability(panel, 'git').click();
+
+    await openCapability(panel, 'git');
     await expect(panel.locator('.git-status-tab')).toBeVisible();
     const gitRequest = await mockAgent.waitForMessage('git_status');
     expect(gitRequest).toMatchObject({
       workDir: '/tmp/test',
       workbenchRoute: { runtimeProvider: 'yeaft', sessionId: 'workbench-session' },
     });
+    await panel.getByRole('tab', { name: /terminal/i }).click();
 
-    const sessionB = {
-      id: 'workbench-session-b',
-      name: 'Workbench session B',
-      roster: ['omni'],
-      defaultVpId: 'omni',
-      workDir: '/tmp/session-b',
+    const sessionA = {
+      id: 'workbench-session', name: 'Workbench session', roster: ['omni'], defaultVpId: 'omni', workDir: '/tmp/test',
     };
-    mockAgent.send({
-      type: 'session_list_updated',
-      sessions: [{
-        id: 'workbench-session', name: 'Workbench session', roster: ['omni'], defaultVpId: 'omni', workDir: '/tmp/test',
-      }, sessionB],
-    });
-    await chatPage.evaluate(({ agentId, session }) => {
+    const sessionB = {
+      id: 'workbench-session-b', name: 'Workbench session B', roster: ['omni'], defaultVpId: 'omni', workDir: '/tmp/session-b',
+    };
+    mockAgent.send({ type: 'session_list_updated', sessions: [sessionA, sessionB] });
+    await chatPage.evaluate(({ agentId, sessions, activeId }) => {
       const store = window.Pinia.useChatStore();
       const sessionsStore = window.Pinia.useSessionsStore();
-      sessionsStore.applySnapshot([
-        { id: 'workbench-session', name: 'Workbench session', roster: ['omni'], defaultVpId: 'omni', workDir: '/tmp/test' },
-        session,
-      ], agentId);
-      sessionsStore.setActive(session.id, agentId);
-      store.yeaftSessionAgentById = { ...store.yeaftSessionAgentById, [session.id]: agentId };
-      store.yeaftActiveSessionFilter = session.id;
-    }, { agentId: mockAgent.agentId, session: sessionB });
+      sessionsStore.applySnapshot(sessions, agentId);
+      sessionsStore.setActive(activeId, agentId);
+      store.yeaftSessionAgentById = {
+        ...store.yeaftSessionAgentById,
+        ...Object.fromEntries(sessions.map(session => [session.id, agentId])),
+      };
+      store.yeaftActiveSessionFilter = activeId;
+    }, { agentId: mockAgent.agentId, sessions: [sessionA, sessionB], activeId: sessionB.id });
 
     await expect(panel).not.toHaveClass(/expanded/);
-    await expect(panel.locator('.git-status-tab')).toHaveCount(0);
-    const terminalClose = await mockAgent.waitForMessage('terminal_close');
-    expect(terminalClose).toMatchObject({
-      terminalId: terminalA.terminalId,
-      workbenchRoute: { sessionId: 'workbench-session' },
-    });
+    await expect(panel.locator('.terminal-tab')).toHaveCount(0);
+    await expect.poll(() => mockAgent.messages('terminal_close')
+      .filter(message => message.terminalId === terminalA.terminalId).length).toBe(0);
 
     await chatPage.getByRole('button', { name: 'Workbench' }).click();
-    await panel.locator('.workbench-add-btn').click();
-    await capability(panel, 'terminal').click();
+    await openCapability(panel, 'terminal');
     const terminalB = await mockAgent.waitForMessage('terminal_create');
     expect(terminalB).toMatchObject({
       workDir: '/tmp/session-b',
       workbenchRoute: { sessionId: 'workbench-session-b' },
     });
-    await closeActiveWorkbenchItem(panel);
-    await panel.locator('.workbench-add-btn').click();
-    await capability(panel, 'files').click();
+    await openCapability(panel, 'files');
     await expect(panel.locator('.files-tab')).toBeVisible();
     const filesRequest = await mockAgent.waitForMessage('list_directory');
     expect(filesRequest).toMatchObject({
@@ -322,6 +316,19 @@ test.describe('Workbench', () => {
       },
     });
     expect(filesRequest.workbenchRouteKey).toBe(`yeaft:${encodeURIComponent(mockAgent.agentId)}:workbench-session-b`);
+
+    await chatPage.evaluate(({ agentId, activeId }) => {
+      const store = window.Pinia.useChatStore();
+      const sessionsStore = window.Pinia.useSessionsStore();
+      sessionsStore.setActive(activeId, agentId);
+      store.yeaftActiveSessionFilter = activeId;
+    }, { agentId: mockAgent.agentId, activeId: sessionA.id });
+    await expect(panel).toHaveClass(/expanded/);
+    await expect(panel.locator('.terminal-tab')).toBeVisible();
+    await expect(panel.getByRole('tab', { name: /terminal/i })).toHaveAttribute('aria-selected', 'true');
+    await expect.poll(() => mockAgent.messages('terminal_create').length).toBe(2);
+    await expect.poll(() => mockAgent.messages('terminal_close')
+      .filter(message => [terminalA.terminalId, terminalB.terminalId].includes(message.terminalId)).length).toBe(0);
   });
 
   test('keeps Browser discoverable without exposing a fake viewer when the Agent capability is absent', async ({ chatPage, mockAgent }) => {
@@ -336,8 +343,7 @@ test.describe('Workbench', () => {
     await expect(panel.locator('iframe')).toHaveCount(0);
 
     await closeActiveWorkbenchItem(panel);
-    await expect(panel.locator('.workbench-item-tab.active .workbench-item-select')).toContainText('files', { ignoreCase: true });
-    await expect(panel.locator('.files-tab')).toBeVisible();
+    await expect(panel.locator('.workbench-launcher')).toBeVisible();
     await panel.locator('.workbench-add-btn').click();
     await expect(panel.locator('.workbench-add-menu')).toBeVisible();
   });
@@ -545,7 +551,7 @@ test.describe('Workbench', () => {
         localStorage.setItem('theme', value);
       }, theme);
 
-      await expect(panel.locator('.files-tab')).toBeVisible();
+      await expect(panel.locator('.workbench-launcher')).toBeVisible();
       await maximizeButton.click();
       await expect(panel).toHaveClass(/maximized/);
       await expect(maximizeButton).toHaveAttribute('aria-label', 'Restore panel');
@@ -596,6 +602,7 @@ test.describe('Workbench', () => {
     await openYeaftWorkbench(chatPage, mockAgent);
 
     const panel = chatPage.locator('.workbench-panel');
+    await openCapability(panel, 'files');
     await expect(panel.locator('.files-tab')).toBeVisible();
     await expect(panel.locator('.file-tree-expand-btn')).toHaveCount(0);
 

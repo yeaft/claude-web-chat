@@ -94,6 +94,12 @@ function mountWorkbench() {
   });
 }
 
+async function openWorkbenchCapability(wrapper, capabilityId) {
+  await wrapper.get('.workbench-add-btn').trigger('click');
+  await wrapper.get(`.workbench-add-menu-item[data-workbench-capability="${capabilityId}"]`).trigger('click');
+  await Vue.nextTick();
+}
+
 describe('Workbench capability launcher', () => {
   beforeEach(() => {
     workbenchStore.workbenchExpanded = true;
@@ -125,11 +131,14 @@ describe('Workbench capability launcher', () => {
     document.body.innerHTML = '';
   });
 
-  it('opens Files by default and exposes all Workbench abilities from the add menu', async () => {
+  it('starts on the four-item chooser and keeps the add button beside opened tabs', async () => {
     const wrapper = mountWorkbench();
-    expect(wrapper.get('.files-tab-stub').isVisible()).toBe(true);
-    expect(wrapper.findAll('.workbench-item-tab').map(tab => tab.text())).toEqual(['workbench.files×']);
+    expect(wrapper.findAll('.workbench-item-tab')).toHaveLength(0);
+    expect(wrapper.get('.workbench-launcher').isVisible()).toBe(true);
+    expect(wrapper.findAll('.workbench-capability-card').map(item => item.attributes('data-workbench-capability')))
+      .toEqual(['terminal', 'git', 'files', 'browser']);
     expect(wrapper.find('.workbench-header-title').exists()).toBe(false);
+    expect(wrapper.get('.workbench-add-wrap').element.previousElementSibling).toBeNull();
 
     await wrapper.get('.workbench-add-btn').trigger('click');
     const items = wrapper.findAll('.workbench-add-menu-item');
@@ -138,15 +147,21 @@ describe('Workbench capability launcher', () => {
     expect(wrapper.get('[data-workbench-capability="terminal"] small').text()).toBe('workbench.available');
     expect(wrapper.get('[data-workbench-capability="browser"] small').text()).toBe('workbench.unavailable');
     expect(wrapper.get('[data-workbench-capability="browser"]').attributes('disabled')).toBeUndefined();
+
+    await wrapper.get('[data-workbench-capability="files"]').trigger('click');
+    await Vue.nextTick();
+    expect(wrapper.get('.files-tab-stub').isVisible()).toBe(true);
+    expect(wrapper.findAll('.workbench-item-tab').map(tab => tab.text())).toEqual(['workbench.files×']);
+    expect(wrapper.get('.workbench-add-wrap').element.previousElementSibling)
+      .toBe(wrapper.get('.workbench-item-tab').element);
     expect(capabilityMounts.map(entry => entry.name)).toEqual(['files']);
     wrapper.unmount();
   });
 
   it('lazily opens route-scoped abilities and switches or closes them as peer tabs', async () => {
     const wrapper = mountWorkbench();
-    await wrapper.get('.workbench-add-btn').trigger('click');
-    await wrapper.get('[data-workbench-capability="terminal"]').trigger('click');
-    await Vue.nextTick();
+    await openWorkbenchCapability(wrapper, 'files');
+    await openWorkbenchCapability(wrapper, 'terminal');
 
     expect(wrapper.get('.terminal-tab-stub').isVisible()).toBe(true);
     expect(wrapper.get('.terminal-tab-stub').attributes()).toMatchObject({
@@ -193,6 +208,7 @@ describe('Workbench capability launcher', () => {
     };
     window.addEventListener('workbench-close-files-capability', rejectClose);
     const wrapper = mountWorkbench();
+    await openWorkbenchCapability(wrapper, 'files');
 
     await wrapper.get('.workbench-item-close').trigger('click');
     await Vue.nextTick();
@@ -220,6 +236,7 @@ describe('Workbench capability launcher', () => {
     const handleClose = event => { resolveClose = event.detail.resolve; };
     window.addEventListener('workbench-close-files-capability', handleClose);
     const wrapper = mountWorkbench();
+    await openWorkbenchCapability(wrapper, 'files');
 
     await wrapper.get('.workbench-item-close').trigger('click');
     expect(resolveClose).toBeTypeOf('function');
@@ -229,6 +246,7 @@ describe('Workbench capability launcher', () => {
     };
     workbenchStore.effectiveWorkDir = '/workspace/b';
     await Vue.nextTick();
+    await openWorkbenchCapability(wrapper, 'files');
     resolveClose(true);
     await Vue.nextTick();
 
@@ -267,12 +285,11 @@ describe('Workbench capability launcher', () => {
     wrapper.unmount();
   });
 
-  it('restores and isolates active capabilities across same-Agent Session routes', async () => {
+  it('retains each Session terminal instance while restoring isolated active tabs', async () => {
     const wrapper = mountWorkbench();
-    await wrapper.get('.workbench-add-btn').trigger('click');
-    await wrapper.get('[data-workbench-capability="terminal"]').trigger('click');
-    await Vue.nextTick();
+    await openWorkbenchCapability(wrapper, 'terminal');
     expect(wrapper.get('.terminal-tab-stub').attributes('data-route-key')).toBe('yeaft:agent-1:session-a');
+    expect(capabilityMounts.filter(entry => entry.name === 'terminal')).toHaveLength(1);
 
     workbenchStore.activeSessionRoute = {
       runtimeProvider: 'yeaft',
@@ -285,12 +302,11 @@ describe('Workbench capability launcher', () => {
     expect(workbenchStore.restoreWorkbenchPanelState).toHaveBeenCalledWith({
       runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-b',
     });
-    expect(wrapper.get('.files-tab-stub').attributes('data-route-key')).toBe('yeaft:agent-1:session-b');
     expect(wrapper.find('.terminal-tab-stub').exists()).toBe(false);
+    expect(wrapper.get('.workbench-launcher').isVisible()).toBe(true);
+    expect(capabilityUnmounts.filter(entry => entry.name === 'terminal')).toHaveLength(0);
 
-    await wrapper.get('.workbench-add-btn').trigger('click');
-    await wrapper.get('[data-workbench-capability="git"]').trigger('click');
-    await Vue.nextTick();
+    await openWorkbenchCapability(wrapper, 'git');
     expect(wrapper.get('.git-tab-stub').attributes()).toMatchObject({
       'data-route-key': 'yeaft:agent-1:session-b',
       'data-session-id': 'session-b',
@@ -300,11 +316,6 @@ describe('Workbench capability launcher', () => {
         '/workspace/b',
       ),
     });
-    const mountedCapabilities = capabilityMounts.map(entry => `${entry.name}:${entry.routeKey}`);
-    expect(mountedCapabilities).toContain('files:yeaft:agent-1:session-a');
-    expect(mountedCapabilities).toContain('terminal:yeaft:agent-1:session-a');
-    expect(mountedCapabilities).toContain('files:yeaft:agent-1:session-b');
-    expect(mountedCapabilities).toContain('git:yeaft:agent-1:session-b');
 
     workbenchStore.activeSessionRoute = {
       runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-a',
@@ -312,6 +323,9 @@ describe('Workbench capability launcher', () => {
     workbenchStore.effectiveWorkDir = '/workspace/a';
     await Vue.nextTick();
     expect(wrapper.get('.terminal-tab-stub').attributes('data-route-key')).toBe('yeaft:agent-1:session-a');
+    expect(capabilityMounts.filter(entry => entry.name === 'terminal')).toHaveLength(1);
+    expect(capabilityUnmounts.filter(entry => entry.name === 'terminal')).toHaveLength(0);
+    expect(wrapper.find('.git-tab-stub').exists()).toBe(false);
     wrapper.unmount();
   });
 
@@ -364,6 +378,7 @@ describe('Workbench capability launcher', () => {
 
   it('maps route-scoped open files into the Workbench tabs and delegates file selection or close', async () => {
     const wrapper = mountWorkbench();
+    await openWorkbenchCapability(wrapper, 'files');
     const selectHandler = vi.fn();
     const closeHandler = vi.fn();
     window.addEventListener('workbench-select-file-item', selectHandler);
@@ -427,6 +442,57 @@ describe('Workbench capability launcher', () => {
     wrapper.unmount();
   });
 
+  it('selects any open item from the overflow menu and restores tab context actions', async () => {
+    const wrapper = mountWorkbench();
+    await openWorkbenchCapability(wrapper, 'files');
+    await openWorkbenchCapability(wrapper, 'terminal');
+    await openWorkbenchCapability(wrapper, 'git');
+    const currentGeneration = workbenchWorkspaceGeneration(
+      'yeaft:agent-1:session-a',
+      '/workspace/a',
+    );
+    window.dispatchEvent(new CustomEvent('workbench-file-items-changed', { detail: {
+      routeKey: 'yeaft:agent-1:session-a',
+      workspaceGeneration: currentGeneration,
+      activePath: 'README.md',
+      files: [
+        { path: 'README.md', name: 'README.md', isDirty: false },
+        { path: 'src/main.js', name: 'main.js', isDirty: true },
+      ],
+    } }));
+    await Vue.nextTick();
+
+    await wrapper.get('.workbench-open-items-btn').trigger('click');
+    expect(wrapper.findAll('.workbench-open-items-menu .ctx-menu-item')).toHaveLength(4);
+    await wrapper.findAll('.workbench-open-items-menu .ctx-menu-item')[3].trigger('click');
+    expect(wrapper.get('.git-tab-stub').isVisible()).toBe(true);
+
+    const terminalTab = wrapper.findAll('.workbench-item-tab')
+      .find(tab => tab.text().includes('workbench.terminal'));
+    await terminalTab.trigger('contextmenu', { clientX: 80, clientY: 40 });
+    const actions = wrapper.findAll('.workbench-tab-context-menu .ctx-menu-item');
+    expect(actions.map(action => action.text())).toEqual([
+      'files.closeTabAction',
+      'files.closeOtherTabs',
+      'files.closeTabsToLeft',
+      'files.closeTabsToRight',
+      'files.closeAllTabs',
+    ]);
+
+    const closeFiles = vi.fn(event => event.detail.resolve(true));
+    window.addEventListener('workbench-close-file-items', closeFiles);
+    await actions[1].trigger('click');
+    await Vue.nextTick();
+    expect(closeFiles).toHaveBeenCalledTimes(1);
+    expect(closeFiles.mock.calls[0][0].detail.paths).toEqual(['README.md', 'src/main.js']);
+    expect(wrapper.findAll('.workbench-item-tab').map(tab => tab.text()))
+      .toEqual(['workbench.terminal×']);
+    expect(wrapper.get('.terminal-tab-stub').isVisible()).toBe(true);
+
+    window.removeEventListener('workbench-close-file-items', closeFiles);
+    wrapper.unmount();
+  });
+
   it('routes a message file-open event directly to Files and preserves it on reopen', async () => {
     const forwarded = [];
     const handleForwarded = event => forwarded.push(event.detail);
@@ -480,7 +546,8 @@ describe('Workbench capability launcher', () => {
     await Vue.nextTick();
 
     expect(forwarded).toEqual([]);
-    expect(wrapper.get('.files-tab-stub').attributes('data-route-key')).toBe('yeaft:agent-1:session-b');
+    expect(wrapper.find('.files-tab-stub').exists()).toBe(false);
+    expect(wrapper.get('.workbench-launcher').isVisible()).toBe(true);
 
     window.removeEventListener('workbench-open-file-in-active-view', handleForwarded);
     wrapper.unmount();
@@ -696,11 +763,13 @@ describe('message file preview', () => {
     expect(workbench).toContain('class="workbench-item-tab"');
     expect(workbench).not.toContain('workbench-header-title');
     expect(workbenchCss).not.toContain('.workbench-files-header');
-    expect(workbenchCss).toMatch(/\.workbench-tabs\s*\{[^}]*flex:\s*1;/s);
-    expect(workbenchCss).toMatch(/\.workbench-add-menu\s*\{[^}]*left:\s*0;[^}]*width:\s*min\(190px, calc\(100vw - 16px\)\);/s);
+    expect(workbenchCss).toMatch(/\.workbench-tab-rail\s*\{[^}]*flex:\s*1;[^}]*overflow-x:\s*auto;/s);
+    expect(workbenchCss).toMatch(/\.workbench-tabs\s*\{[^}]*width:\s*max-content;[^}]*min-width:\s*min-content;/s);
+    expect(workbenchCss).toMatch(/\.workbench-add-wrap\s*\{[^}]*position:\s*sticky;[^}]*right:\s*0;/s);
+    expect(workbenchCss).toMatch(/\.workbench-add-menu\s*\{[^}]*position:\s*fixed;[^}]*left:\s*0;[^}]*width:\s*min\(190px, calc\(100vw - 16px\)\);/s);
     expect(workbenchCss).toMatch(/@media \(max-width: 768px\)[\s\S]*\.workbench-add-menu\s*\{[^}]*right:\s*auto;/);
     expect(workbench).toContain('window.innerWidth - menuWidth - margin');
-    expect(workbench).toContain('viewportLeft - launcherRect.left');
+    expect(workbench).toContain('menu.style.left = `${viewportLeft}px`');
     expect(filesTab).toContain('startWidth - (clientX - startX)');
     expect(workbench).toContain('<WorkbenchCapabilityHost');
     expect(browserPanel).toContain("['installing', 'probing'].includes(status.state)");
@@ -709,8 +778,8 @@ describe('message file preview', () => {
     expect(browserPanel).toContain("code === 'browser_ice_servers_missing'");
     expect(browserPanel).toContain("t('workbench.browserIceConnectionFailed')");
     expect(capabilityHost).toContain("files: 'FilesTab'");
-    expect(capabilityHost).toContain(':include="retainedComponentNames"');
-    expect(capabilityHost).toContain('TOOL_COMPONENTS[capability]).filter(Boolean)');
+    expect(capabilityHost).toContain('v-for="capability in mountedCapabilities"');
+    expect(capabilityHost).toContain('v-show="activeCapability === capability.id"');
     expect(capabilityHost).not.toContain('tree-initially-visible');
     expect(filesTab).toContain("paddingLeft: (6 + entry.depth * 10) + 'px'");
     expect(filesTab).toContain("class=\"markdown-body md-file-preview\" :style=\"{ fontSize: fontSize + 'px' }\"");
@@ -718,7 +787,7 @@ describe('message file preview', () => {
     expect(filesTab).not.toContain('rootExpanded: tree.rootExpanded');
     expect(fileTree).not.toContain('rootExpanded');
     expect(fileTree).not.toContain('toggleRootExpand');
-    expect(workbench).toContain("...(saved?.openCapabilities || ['files'])");
+    expect(workbench).toContain('...(saved?.openCapabilities || [])');
     expect(workbench).toContain('activeCapability: activeCapability.value');
     expect(workbench).toContain('openCapabilities: [...openCapabilities]');
     expect(workbench).toContain('class="workbench-header-action workbench-maximize-btn"');

@@ -1120,7 +1120,7 @@ export default {
   'workbench.addItemHint': 'Use + to open Files, Terminal, Git, or Browser.',
   'workbench.closeItem': 'Close {name}',
   'workbench.chooseCapability': 'Choose a capability',
-  'workbench.chooseCapabilityHint': 'Open one tool at a time. Close it to return to this page.',
+  'workbench.chooseCapabilityHint': 'Choose a tool to start. Open tools stay available as tabs.',
   'workbench.terminal': 'Terminal',
   'workbench.terminalDescription': 'Run commands and manage terminal panes in the current working directory.',
   'workbench.git': 'Git',
