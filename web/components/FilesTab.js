@@ -58,7 +58,27 @@ export function createFileCloseEventHandlers({ liveStore, props, tabs, isDispose
       : await tabs.closeAllTabs({ canCommit });
     event.detail.resolve(closed && canCommit() && tabs.openFiles.value.length === 0);
   };
-  return { isCurrentEvent, handleSelectFileItem, handleCloseFileItem, handleCloseFilesCapability };
+  const handleCloseFileItems = async event => {
+    if (!isCurrentEvent(event) || typeof event.detail.resolve !== 'function') return;
+    const routeKey = event.detail.routeKey;
+    const workspaceGeneration = event.detail.workspaceGeneration;
+    const requestedRevision = tabs.tabRevision.value;
+    const requestedPaths = new Set(Array.isArray(event.detail.paths) ? event.detail.paths : []);
+    const targets = tabs.openFiles.value.filter(file => requestedPaths.has(file.path));
+    const canCommit = () => isMountedWorkspaceCurrent(routeKey, workspaceGeneration)
+      && tabs.tabRevision.value === requestedRevision
+      && targets.every(file => tabs.openFiles.value.includes(file));
+    const indices = targets.map(file => tabs.openFiles.value.indexOf(file)).filter(index => index >= 0);
+    const closed = indices.length === 0 ? canCommit() : await tabs.closeFileTabs(indices, { canCommit });
+    event.detail.resolve(closed && canCommit());
+  };
+  return {
+    isCurrentEvent,
+    handleSelectFileItem,
+    handleCloseFileItem,
+    handleCloseFileItems,
+    handleCloseFilesCapability,
+  };
 }
 
 export default {
@@ -832,6 +852,7 @@ export default {
     const {
       handleSelectFileItem,
       handleCloseFileItem,
+      handleCloseFileItems,
       handleCloseFilesCapability,
     } = createFileCloseEventHandlers({
       liveStore,
@@ -851,6 +872,7 @@ export default {
       window.addEventListener('workbench-open-file-in-active-view', ws.handleOpenFile);
       window.addEventListener('workbench-select-file-item', handleSelectFileItem);
       window.addEventListener('workbench-close-file-item', handleCloseFileItem);
+      window.addEventListener('workbench-close-file-items', handleCloseFileItems);
       window.addEventListener('workbench-close-files-capability', handleCloseFilesCapability);
       window.addEventListener('conversation-deleted', tabs.handleConversationDeleted);
       window.addEventListener('keydown', handleGlobalKeydown);
@@ -883,6 +905,7 @@ export default {
       window.removeEventListener('workbench-open-file-in-active-view', ws.handleOpenFile);
       window.removeEventListener('workbench-select-file-item', handleSelectFileItem);
       window.removeEventListener('workbench-close-file-item', handleCloseFileItem);
+      window.removeEventListener('workbench-close-file-items', handleCloseFileItems);
       window.removeEventListener('workbench-close-files-capability', handleCloseFilesCapability);
       window.removeEventListener('conversation-deleted', tabs.handleConversationDeleted);
       window.removeEventListener('keydown', handleGlobalKeydown);

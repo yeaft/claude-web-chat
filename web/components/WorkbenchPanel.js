@@ -13,12 +13,14 @@ export default {
     <div ref="panelRoot" class="workbench-panel" :class="{ expanded: store.workbenchExpanded, maximized: store.workbenchMaximized }" :style="panelStyle">
       <div class="workbench-content" v-show="store.workbenchExpanded">
         <header class="workbench-header">
-          <div class="workbench-tabs" role="tablist" :aria-label="$t('workbench.openItems')">
+          <div class="workbench-tab-rail">
+            <div class="workbench-tabs" role="tablist" :aria-label="$t('workbench.openItems')">
             <div
               v-for="item in workbenchItems"
               :key="item.id"
               class="workbench-item-tab"
               :class="{ active: item.id === activeWorkbenchItemId }"
+              @contextmenu.prevent="showTabContextMenu($event, item)"
             >
               <button
                 type="button"
@@ -41,38 +43,51 @@ export default {
                 @click="closeWorkbenchItem(item)"
               >×</button>
             </div>
-          </div>
-          <div ref="launcherRoot" class="workbench-add-wrap">
-            <button
-              type="button"
-              class="workbench-header-action workbench-add-btn"
-              :aria-label="$t('workbench.addItem')"
-              :title="$t('workbench.addItem')"
-              ref="launcherTrigger"
-              :aria-expanded="launcherOpen"
-              aria-haspopup="menu"
-              @click.stop="toggleLauncher"
-              @keydown="handleLauncherButtonKeydown"
-            >
-              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-            </button>
-            <div v-if="launcherOpen" ref="launcherMenu" class="workbench-add-menu" role="menu">
+            <div ref="launcherRoot" class="workbench-add-wrap">
               <button
-                v-for="capability in capabilityCards"
-                :key="capability.id"
                 type="button"
-                role="menuitem"
-                class="workbench-add-menu-item"
-                :data-workbench-capability="capability.id"
-                @click="openCapability(capability.id)"
-                @keydown="handleLauncherMenuKeydown"
+                class="workbench-header-action workbench-add-btn"
+                :aria-label="$t('workbench.addItem')"
+                :title="$t('workbench.addItem')"
+                ref="launcherTrigger"
+                :aria-expanded="launcherOpen"
+                aria-haspopup="menu"
+                @click.stop="toggleLauncher"
+                @keydown="handleLauncherButtonKeydown"
               >
-                <span>{{ $t(capability.titleKey) }}</span>
-                <small>{{ $t(capability.statusKey) }}</small>
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
               </button>
+              <div v-if="launcherOpen" ref="launcherMenu" class="workbench-add-menu" role="menu">
+                <button
+                  v-for="capability in capabilityCards"
+                  :key="capability.id"
+                  type="button"
+                  role="menuitem"
+                  class="workbench-add-menu-item"
+                  :data-workbench-capability="capability.id"
+                  @click="openCapability(capability.id)"
+                  @keydown="handleLauncherMenuKeydown"
+                >
+                  <span>{{ $t(capability.titleKey) }}</span>
+                  <small>{{ $t(capability.statusKey) }}</small>
+                </button>
+              </div>
             </div>
           </div>
-          <div class="workbench-header-spacer"></div>
+          </div>
+          <button
+            v-if="workbenchItems.length"
+            ref="openItemsTrigger"
+            type="button"
+            class="workbench-header-action workbench-open-items-btn"
+            :title="$t('files.showOpenTabs')"
+            :aria-label="$t('files.showOpenTabs')"
+            :aria-expanded="openItemsMenu.visible"
+            aria-haspopup="menu"
+            @click.stop="toggleOpenItemsMenu"
+          >
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M4 6l4 4 4-4z"/></svg>
+          </button>
           <button
             type="button"
             class="workbench-header-action workbench-maximize-btn"
@@ -95,16 +110,49 @@ export default {
         </header>
 
         <div id="workbench-item-panel" class="workbench-view-content workbench-tab-content" role="tabpanel">
-          <section v-if="!activeCapability" class="workbench-empty-state">
-            <p>{{ $t('workbench.addItemHint') }}</p>
+          <section
+            v-if="!activeCapability"
+            class="workbench-launcher"
+            aria-labelledby="workbench-launcher-title"
+          >
+            <div class="workbench-launcher-intro">
+              <h2 id="workbench-launcher-title">{{ $t('workbench.chooseCapability') }}</h2>
+              <p>{{ $t('workbench.chooseCapabilityHint') }}</p>
+            </div>
+            <div class="workbench-capability-grid">
+              <button
+                v-for="capability in capabilityCards"
+                :key="capability.id"
+                type="button"
+                class="workbench-capability-card"
+                :class="{ unavailable: !capability.available }"
+                :data-workbench-capability="capability.id"
+                @click="openCapability(capability.id)"
+              >
+                <span class="workbench-capability-icon" aria-hidden="true">
+                  <svg v-if="capability.id === 'terminal'" viewBox="0 0 24 24"><path fill="currentColor" d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8h16v10zM7 16l4-4-4-4 1.4-1.4L13.8 12l-5.4 5.4L7 16zm6 0h5v-2h-5v2z"/></svg>
+                  <svg v-else-if="capability.id === 'git'" viewBox="0 0 24 24"><path fill="currentColor" d="M21.62 11.11l-8.73-8.73a1.32 1.32 0 00-1.87 0L8.89 4.51l2.35 2.35a1.57 1.57 0 012 2l2.27 2.27a1.57 1.57 0 11-.94.88l-2.12-2.12v5.57a1.57 1.57 0 11-1.29 0V9.72a1.57 1.57 0 01-.85-2.06L8 5.34 2.38 11a1.32 1.32 0 000 1.87l8.73 8.73a1.32 1.32 0 001.87 0l8.64-8.64a1.32 1.32 0 000-1.85z"/></svg>
+                  <svg v-else-if="capability.id === 'files'" viewBox="0 0 24 24"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
+                  <svg v-else viewBox="0 0 24 24"><path fill="currentColor" d="M20 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2zm0 14H4V9h16v9zM4 7V6h16v1H4zm2-1h2v1H6V6z"/></svg>
+                </span>
+                <span class="workbench-capability-copy">
+                  <span class="workbench-capability-name">{{ $t(capability.titleKey) }}</span>
+                  <span class="workbench-capability-description">{{ $t(capability.descriptionKey) }}</span>
+                </span>
+                <span class="workbench-capability-status" :class="{ available: capability.ready }">{{ $t(capability.statusKey) }}</span>
+              </button>
+            </div>
           </section>
 
-          <WorkbenchCapabilityHost
-            :key="workbenchContextKey"
-            :active-capability="activeToolCapability"
-            :retained-capabilities="openCapabilities"
-            :route-props="routeProps"
-          />
+          <KeepAlive :max="8">
+            <WorkbenchCapabilityHost
+              v-if="activeRouteKey"
+              :key="workbenchContextKey"
+              :active-capability="activeToolCapability"
+              :retained-capabilities="routeHostState.openCapabilities"
+              :route-props="routeHostState.routeProps"
+            />
+          </KeepAlive>
 
           <section
             v-if="activeCapability && activeCapability !== 'browser' && activeCapabilityUnavailable"
@@ -131,6 +179,45 @@ export default {
             <button type="button" class="btn-secondary" @click="closeCapability">{{ $t('workbench.backToCapabilities') }}</button>
           </section>
         </div>
+
+        <div
+          v-if="openItemsMenu.visible"
+          ref="openItemsMenuElement"
+          class="ctx-menu workbench-open-items-menu"
+          :style="{ left: openItemsMenu.x + 'px', top: openItemsMenu.y + 'px' }"
+          role="menu"
+          @click.stop
+        >
+          <button
+            v-for="item in workbenchItems"
+            :key="item.id"
+            type="button"
+            class="ctx-menu-item workbench-menu-item"
+            :class="{ active: item.id === activeWorkbenchItemId }"
+            role="menuitem"
+            @click="selectItemFromMenu(item)"
+          >
+            <span class="workbench-menu-item-label"><span v-if="item.dirty" aria-hidden="true">● </span>{{ item.label }}</span>
+            <span class="workbench-menu-item-path">{{ item.title || '' }}</span>
+          </button>
+        </div>
+
+        <div
+          v-if="tabContextMenu.visible"
+          ref="tabContextMenuElement"
+          class="ctx-menu workbench-tab-context-menu"
+          :style="{ left: tabContextMenu.x + 'px', top: tabContextMenu.y + 'px' }"
+          role="menu"
+          @click.stop
+        >
+          <button type="button" class="ctx-menu-item" role="menuitem" @click="runTabContextAction('current')">{{ $t('files.closeTabAction') }}</button>
+          <button type="button" class="ctx-menu-item" role="menuitem" :disabled="workbenchItems.length < 2" @click="runTabContextAction('others')">{{ $t('files.closeOtherTabs') }}</button>
+          <div class="ctx-menu-separator"></div>
+          <button type="button" class="ctx-menu-item" role="menuitem" :disabled="tabContextMenu.index <= 0" @click="runTabContextAction('left')">{{ $t('files.closeTabsToLeft') }}</button>
+          <button type="button" class="ctx-menu-item" role="menuitem" :disabled="tabContextMenu.index >= workbenchItems.length - 1" @click="runTabContextAction('right')">{{ $t('files.closeTabsToRight') }}</button>
+          <div class="ctx-menu-separator"></div>
+          <button type="button" class="ctx-menu-item" role="menuitem" @click="runTabContextAction('all')">{{ $t('files.closeAllTabs') }}</button>
+        </div>
       </div>
 
       <div class="resize-handle" @mousedown="startResize" @touchstart.prevent="startResize" v-if="store.workbenchExpanded"></div>
@@ -143,6 +230,11 @@ export default {
     const launcherOpen = Vue.ref(false);
     const launcherTrigger = Vue.ref(null);
     const launcherMenu = Vue.ref(null);
+    const openItemsTrigger = Vue.ref(null);
+    const openItemsMenuElement = Vue.ref(null);
+    const tabContextMenuElement = Vue.ref(null);
+    const openItemsMenu = Vue.reactive({ visible: false, x: 0, y: 0 });
+    const tabContextMenu = Vue.reactive({ visible: false, x: 0, y: 0, itemId: '', index: -1 });
     const t = (key, params) => Vue.getCurrentInstance()?.proxy?.$t?.(key, params) || key;
 
     const activeRoute = Vue.computed(() => store.activeSessionRoute || null);
@@ -228,6 +320,13 @@ export default {
         ? activeCapability.value
         : null;
     });
+    const routeHostState = Vue.computed(() => ({
+      openCapabilities: openCapabilities.filter(capabilityId => {
+        const definition = capabilityCards.value.find(capability => capability.id === capabilityId);
+        return definition?.available && ['terminal', 'git', 'files'].includes(capabilityId);
+      }),
+      routeProps: { ...routeProps.value },
+    }));
 
     const capabilityActivationKey = capabilityId => `${workbenchContextKey.value}\u0000${capabilityId}`;
     const isCapabilityActivated = capabilityId => activatedCapabilities.has(capabilityActivationKey(capabilityId));
@@ -276,7 +375,7 @@ export default {
     };
     const restoreCapability = () => {
       const saved = capabilityState.get(workbenchContextKey.value);
-      openCapabilities.splice(0, openCapabilities.length, ...(saved?.openCapabilities || ['files']));
+      openCapabilities.splice(0, openCapabilities.length, ...(saved?.openCapabilities || []));
       const next = saved?.activeCapability || openCapabilities[0] || null;
       if (!next || !capabilityCards.value.some(capability => capability.id === next)) {
         activeCapability.value = null;
@@ -297,13 +396,12 @@ export default {
       await Vue.nextTick();
       const triggerRect = launcherTrigger.value?.getBoundingClientRect();
       const menu = launcherMenu.value;
-      const launcherRect = launcherRoot.value?.getBoundingClientRect();
-      if (!triggerRect || !menu || !launcherRect) return;
+      if (!triggerRect || !menu) return;
       const margin = 8;
       const menuWidth = Math.min(menu.getBoundingClientRect().width, window.innerWidth - margin * 2);
       const viewportLeft = Math.max(margin, Math.min(triggerRect.left, window.innerWidth - menuWidth - margin));
-      menu.style.left = `${viewportLeft - launcherRect.left}px`;
-      menu.style.top = '40px';
+      menu.style.left = `${viewportLeft}px`;
+      menu.style.top = `${triggerRect.bottom + 4}px`;
     };
     const openLauncher = (focusIndex = 0) => {
       launcherOpen.value = true;
@@ -366,31 +464,33 @@ export default {
         detail: { routeKey, workspaceGeneration, resolve },
       }));
     });
+    const removeCapability = capabilityId => {
+      const index = openCapabilities.indexOf(capabilityId);
+      if (index < 0) return false;
+      if (activeCapability.value === capabilityId) {
+        activeCapability.value = openCapabilities[index + 1] || openCapabilities[index - 1] || null;
+      }
+      openCapabilities.splice(index, 1);
+      activatedCapabilities.delete(capabilityActivationKey(capabilityId));
+      if (capabilityId === 'files') {
+        openFileItems.value = [];
+        activeFilePath.value = '';
+      }
+      rememberCapability();
+      return true;
+    };
     const closeCapability = async capabilityId => {
       const target = capabilityId || activeCapability.value;
       const initiatingContextKey = workbenchContextKey.value;
-      let index = openCapabilities.indexOf(target);
-      if (index < 0) return false;
+      if (!openCapabilities.includes(target)) return false;
       if (target === 'files' && hasExplorer.value && isCapabilityActivated(target)) {
         const confirmed = await confirmFilesCapabilityClose({
           routeKey: activeRouteKey.value,
           workspaceGeneration: activeWorkspaceGeneration.value,
         });
         if (!confirmed || workbenchContextKey.value !== initiatingContextKey) return false;
-        index = openCapabilities.indexOf(target);
-        if (index < 0) return false;
       }
-      if (activeCapability.value === target) {
-        activeCapability.value = openCapabilities[index + 1] || openCapabilities[index - 1] || null;
-      }
-      openCapabilities.splice(index, 1);
-      activatedCapabilities.delete(capabilityActivationKey(target));
-      if (target === 'files') {
-        openFileItems.value = [];
-        activeFilePath.value = '';
-      }
-      rememberCapability();
-      return true;
+      return removeCapability(target);
     };
 
     const selectWorkbenchItem = item => {
@@ -418,6 +518,85 @@ export default {
         return;
       }
       closeCapability(item.capabilityId);
+    };
+    const positionFixedMenu = (target, triggerRect) => {
+      const margin = 8;
+      const width = target?.offsetWidth || 220;
+      const height = target?.offsetHeight || 200;
+      return {
+        x: Math.max(margin, Math.min(triggerRect.left, window.innerWidth - width - margin)),
+        y: Math.max(margin, Math.min(triggerRect.bottom + 4, window.innerHeight - height - margin)),
+      };
+    };
+    const closeWorkbenchMenus = () => {
+      openItemsMenu.visible = false;
+      tabContextMenu.visible = false;
+    };
+    const toggleOpenItemsMenu = async () => {
+      if (openItemsMenu.visible) {
+        openItemsMenu.visible = false;
+        return;
+      }
+      tabContextMenu.visible = false;
+      openItemsMenu.visible = true;
+      await Vue.nextTick();
+      const rect = openItemsTrigger.value?.getBoundingClientRect();
+      if (rect) Object.assign(openItemsMenu, positionFixedMenu(openItemsMenuElement.value, rect));
+    };
+    const selectItemFromMenu = item => {
+      selectWorkbenchItem(item);
+      closeWorkbenchMenus();
+    };
+    const showTabContextMenu = async (event, item) => {
+      closeLauncher();
+      openItemsMenu.visible = false;
+      const index = workbenchItems.value.findIndex(candidate => candidate.id === item.id);
+      Object.assign(tabContextMenu, {
+        visible: true,
+        x: event.clientX,
+        y: event.clientY,
+        itemId: item.id,
+        index,
+      });
+      await Vue.nextTick();
+      const width = tabContextMenuElement.value?.offsetWidth || 180;
+      const height = tabContextMenuElement.value?.offsetHeight || 220;
+      tabContextMenu.x = Math.max(8, Math.min(event.clientX, window.innerWidth - width - 8));
+      tabContextMenu.y = Math.max(8, Math.min(event.clientY, window.innerHeight - height - 8));
+    };
+    const closeFileItems = paths => new Promise(resolve => {
+      window.dispatchEvent(new CustomEvent('workbench-close-file-items', {
+        detail: {
+          routeKey: activeRouteKey.value,
+          workspaceGeneration: activeWorkspaceGeneration.value,
+          paths,
+          resolve,
+        },
+      }));
+    });
+    const runTabContextAction = async action => {
+      const snapshot = [...workbenchItems.value];
+      const targetIndex = snapshot.findIndex(item => item.id === tabContextMenu.itemId);
+      if (targetIndex < 0) {
+        closeWorkbenchMenus();
+        return;
+      }
+      let targets = [];
+      if (action === 'current') targets = [snapshot[targetIndex]];
+      else if (action === 'others') targets = snapshot.filter((_, index) => index !== targetIndex);
+      else if (action === 'left') targets = snapshot.slice(0, targetIndex);
+      else if (action === 'right') targets = snapshot.slice(targetIndex + 1);
+      else if (action === 'all') targets = snapshot;
+      closeWorkbenchMenus();
+      const filePaths = targets.filter(item => item.path).map(item => item.path);
+      const closesAllFiles = filePaths.length > 0
+        && filePaths.length === openFileItems.value.length
+        && openFileItems.value.every(file => filePaths.includes(file.path));
+      if (filePaths.length && !await closeFileItems(filePaths)) return;
+      if (closesAllFiles) removeCapability('files');
+      for (const item of targets.filter(item => !item.path)) {
+        if (!await closeCapability(item.capabilityId)) break;
+      }
     };
     const focusWorkbenchItem = index => Vue.nextTick(() => {
       panelRoot.value?.querySelectorAll('.workbench-item-select')[index]?.focus();
@@ -547,6 +726,12 @@ export default {
       if (launcherOpen.value
         && !launcherRoot.value?.contains(event.target)
         && !launcherMenu.value?.contains(event.target)) closeLauncher();
+      if (openItemsMenu.visible
+        && !openItemsTrigger.value?.contains(event.target)
+        && !openItemsMenuElement.value?.contains(event.target)) openItemsMenu.visible = false;
+      if (tabContextMenu.visible && !tabContextMenuElement.value?.contains(event.target)) {
+        tabContextMenu.visible = false;
+      }
     };
 
     Vue.onMounted(() => {
@@ -568,15 +753,22 @@ export default {
       launcherTrigger,
       launcherMenu,
       launcherOpen,
+      openItemsTrigger,
+      openItemsMenuElement,
+      openItemsMenu,
+      tabContextMenuElement,
+      tabContextMenu,
       activeCapability,
       activeCapabilityTitleKey,
       activeCapabilityUnavailable,
       activeToolCapability,
+      routeHostState,
       openCapabilities,
       activeWorkbenchItemId,
       workbenchItems,
       capabilityCards,
       routeProps,
+      activeRouteKey,
       workbenchContextKey,
       openCapability,
       closeCapability,
@@ -585,6 +777,10 @@ export default {
       handleLauncherMenuKeydown,
       closeWorkbenchItem,
       selectWorkbenchItem,
+      selectItemFromMenu,
+      toggleOpenItemsMenu,
+      showTabContextMenu,
+      runTabContextAction,
       handleWorkbenchTabKeydown,
       isCapabilityActivated,
       hasTerminal,

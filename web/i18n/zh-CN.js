@@ -1118,7 +1118,7 @@ export default {
   'workbench.addItemHint': '使用 + 打开文件、终端、Git 或浏览器。',
   'workbench.closeItem': '关闭 {name}',
   'workbench.chooseCapability': '选择能力',
-  'workbench.chooseCapabilityHint': '每次进入一项能力；关闭后返回此页面。',
+  'workbench.chooseCapabilityHint': '选择一个工具开始使用；已打开的工具会保留在标签页中。',
   'workbench.terminal': '终端',
   'workbench.terminalDescription': '在当前工作目录运行命令并管理终端分屏。',
   'workbench.git': 'Git',
