@@ -29,7 +29,7 @@ export default {
   setup(props) {
     const activeComponent = Vue.computed(() => TOOL_COMPONENTS[props.activeCapability] || null);
     const retainedComponentNames = Vue.computed(() => (
-      props.retainedCapabilities.map(capability => TOOL_COMPONENTS[capability]?.name).filter(Boolean)
+      props.retainedCapabilities.map(capability => TOOL_COMPONENTS[capability]).filter(Boolean)
     ));
     return { activeComponent, retainedComponentNames };
   },

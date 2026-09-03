@@ -362,21 +362,25 @@ export default {
       return true;
     };
 
-    const confirmFilesCapabilityClose = () => new Promise(resolve => {
+    const confirmFilesCapabilityClose = ({ routeKey, workspaceGeneration }) => new Promise(resolve => {
       window.dispatchEvent(new CustomEvent('workbench-close-files-capability', {
-        detail: {
-          routeKey: activeRouteKey.value,
-          workspaceGeneration: activeWorkspaceGeneration.value,
-          resolve,
-        },
+        detail: { routeKey, workspaceGeneration, resolve },
       }));
     });
     const closeCapability = async capabilityId => {
       const target = capabilityId || activeCapability.value;
-      const index = openCapabilities.indexOf(target);
+      const initiatingContextKey = workbenchContextKey.value;
+      let index = openCapabilities.indexOf(target);
       if (index < 0) return false;
-      if (target === 'files' && hasExplorer.value && isCapabilityActivated(target)
-        && !await confirmFilesCapabilityClose()) return false;
+      if (target === 'files' && hasExplorer.value && isCapabilityActivated(target)) {
+        const confirmed = await confirmFilesCapabilityClose({
+          routeKey: activeRouteKey.value,
+          workspaceGeneration: activeWorkspaceGeneration.value,
+        });
+        if (!confirmed || workbenchContextKey.value !== initiatingContextKey) return false;
+        index = openCapabilities.indexOf(target);
+        if (index < 0) return false;
+      }
       if (activeCapability.value === target) {
         activeCapability.value = openCapabilities[index + 1] || openCapabilities[index - 1] || null;
       }
@@ -508,19 +512,24 @@ export default {
 
     const handleOpenFile = (event) => {
       if (!hasExplorer.value || !activeRouteKey.value) return;
-      const eventRouteKey = event.detail?.workbenchRoute
-        ? workbenchRouteKey(event.detail.workbenchRoute)
+      const eventDetail = { ...(event.detail || {}) };
+      const eventRouteKey = eventDetail.workbenchRoute
+        ? workbenchRouteKey(eventDetail.workbenchRoute)
         : activeRouteKey.value;
       if (eventRouteKey !== activeRouteKey.value) return;
+      const initiatingContextKey = workbenchContextKey.value;
+      const targetRouteProps = { ...routeProps.value };
       if (!openCapability('files')) return;
       Vue.nextTick(() => {
+        if (workbenchContextKey.value !== initiatingContextKey) return;
         window.dispatchEvent(new CustomEvent('workbench-open-file-in-active-view', {
           detail: {
-            ...(event.detail || {}),
-            agentId: routeProps.value.agentId,
-            conversationId: routeProps.value.conversationId,
-            workDir: routeProps.value.workDir,
-            workbenchRouteKey: activeRouteKey.value,
+            ...eventDetail,
+            agentId: targetRouteProps.agentId,
+            conversationId: targetRouteProps.conversationId,
+            workDir: targetRouteProps.workDir,
+            workbenchRouteKey: targetRouteProps.routeKey,
+            workspaceGeneration: targetRouteProps.workspaceGeneration,
           },
         }));
       });

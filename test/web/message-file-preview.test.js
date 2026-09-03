@@ -20,7 +20,14 @@ const capabilityMounts = [];
 const capabilityUnmounts = [];
 
 function capabilityStub(name, className) {
+  const componentName = {
+    terminal: 'TerminalTab',
+    git: 'GitStatusTab',
+    files: 'FilesTab',
+    browser: 'BrowserPanel',
+  }[name];
   return {
+    name: componentName,
     props: {
       routeKey: { type: String, default: '' },
       runtimeProvider: { type: String, default: '' },
@@ -157,9 +164,11 @@ describe('Workbench capability launcher', () => {
 
     await wrapper.findAll('.workbench-item-select')[0].trigger('click');
     expect(wrapper.get('.files-tab-stub').isVisible()).toBe(true);
+    expect(capabilityUnmounts.map(entry => entry.name)).not.toContain('terminal');
     await wrapper.findAll('.workbench-item-select')[0].trigger('keydown', { key: 'ArrowRight' });
     await Vue.nextTick();
     expect(wrapper.get('.terminal-tab-stub').isVisible()).toBe(true);
+    expect(capabilityMounts.map(entry => entry.name).filter(name => name === 'terminal')).toHaveLength(1);
     expect(document.activeElement).toBe(wrapper.findAll('.workbench-item-select')[1].element);
     await wrapper.findAll('.workbench-item-close')[1].trigger('click');
     await Vue.nextTick();
@@ -203,6 +212,30 @@ describe('Workbench capability launcher', () => {
     expect(capabilityUnmounts.map(entry => entry.name)).toContain('files');
 
     window.removeEventListener('workbench-close-files-capability', acceptClose);
+    wrapper.unmount();
+  });
+
+  it('does not close Files in a new workspace after delayed confirmation', async () => {
+    let resolveClose;
+    const handleClose = event => { resolveClose = event.detail.resolve; };
+    window.addEventListener('workbench-close-files-capability', handleClose);
+    const wrapper = mountWorkbench();
+
+    await wrapper.get('.workbench-item-close').trigger('click');
+    expect(resolveClose).toBeTypeOf('function');
+
+    workbenchStore.activeSessionRoute = {
+      runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-b',
+    };
+    workbenchStore.effectiveWorkDir = '/workspace/b';
+    await Vue.nextTick();
+    resolveClose(true);
+    await Vue.nextTick();
+
+    expect(wrapper.findAll('.workbench-item-tab').map(tab => tab.text())).toEqual(['workbench.files×']);
+    expect(wrapper.get('.files-tab-stub').attributes('data-route-key')).toBe('yeaft:agent-1:session-b');
+
+    window.removeEventListener('workbench-close-files-capability', handleClose);
     wrapper.unmount();
   });
 
@@ -395,6 +428,9 @@ describe('Workbench capability launcher', () => {
   });
 
   it('routes a message file-open event directly to Files and preserves it on reopen', async () => {
+    const forwarded = [];
+    const handleForwarded = event => forwarded.push(event.detail);
+    window.addEventListener('workbench-open-file-in-active-view', handleForwarded);
     const wrapper = mountWorkbench();
 
     window.dispatchEvent(new CustomEvent('open-file-in-explorer', { detail: {
@@ -404,12 +440,45 @@ describe('Workbench capability launcher', () => {
     await Vue.nextTick();
     expect(wrapper.get('.files-tab-stub').isVisible()).toBe(true);
     expect(wrapper.get('.files-tab-stub').attributes('data-route-key')).toBe('yeaft:agent-1:session-a');
+    expect(forwarded).toEqual([expect.objectContaining({
+      filePath: 'README.md',
+      agentId: 'agent-1',
+      conversationId: '_workbench:yeaft:agent-1:session-a',
+      workDir: '/workspace/a',
+      workbenchRouteKey: 'yeaft:agent-1:session-a',
+      workspaceGeneration: workbenchWorkspaceGeneration('yeaft:agent-1:session-a', '/workspace/a'),
+    })]);
 
     workbenchStore.workbenchExpanded = false;
     await Vue.nextTick();
     workbenchStore.workbenchExpanded = true;
     await Vue.nextTick();
     expect(wrapper.get('.files-tab-stub').isVisible()).toBe(true);
+    window.removeEventListener('workbench-open-file-in-active-view', handleForwarded);
+    wrapper.unmount();
+  });
+
+  it('drops a scheduled file-open when the active workspace drifts', async () => {
+    const forwarded = [];
+    const handleForwarded = event => forwarded.push(event.detail);
+    window.addEventListener('workbench-open-file-in-active-view', handleForwarded);
+    const wrapper = mountWorkbench();
+    const routeA = { ...workbenchStore.activeSessionRoute };
+
+    window.dispatchEvent(new CustomEvent('open-file-in-explorer', { detail: {
+      filePath: 'README.md',
+      workbenchRoute: routeA,
+    } }));
+    workbenchStore.activeSessionRoute = {
+      runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-b',
+    };
+    workbenchStore.effectiveWorkDir = '/workspace/b';
+    await Vue.nextTick();
+
+    expect(forwarded).toEqual([]);
+    expect(wrapper.get('.files-tab-stub').attributes('data-route-key')).toBe('yeaft:agent-1:session-b');
+
+    window.removeEventListener('workbench-open-file-in-active-view', handleForwarded);
     wrapper.unmount();
   });
 
@@ -637,7 +706,7 @@ describe('message file preview', () => {
     expect(browserPanel).toContain("t('workbench.browserIceConnectionFailed')");
     expect(capabilityHost).toContain("files: 'FilesTab'");
     expect(capabilityHost).toContain(':include="retainedComponentNames"');
-    expect(capabilityHost).toContain('TOOL_COMPONENTS[capability]?.name');
+    expect(capabilityHost).toContain('TOOL_COMPONENTS[capability]).filter(Boolean)');
     expect(capabilityHost).not.toContain('tree-initially-visible');
     expect(filesTab).toContain("paddingLeft: (6 + entry.depth * 10) + 'px'");
     expect(filesTab).toContain("class=\"markdown-body md-file-preview\" :style=\"{ fontSize: fontSize + 'px' }\"");

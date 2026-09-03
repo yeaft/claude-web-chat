@@ -230,11 +230,14 @@ export function createWsHandler({
       conversationId = store.currentConversation,
       workDir = getEffectiveWorkDir(),
       workbenchRouteKey = routeKey,
+      workspaceGeneration: eventWorkspaceGeneration = workspaceGeneration,
       hideTree = false,
       line = null,
     } = event.detail || {};
     const nPath = normalizePath(path);
-    if (!nPath || !agentId || !conversationId || (routeKey && workbenchRouteKey !== routeKey)) return;
+    if (!nPath || !agentId || !conversationId
+      || (routeKey && workbenchRouteKey !== routeKey)
+      || (workspaceGeneration && eventWorkspaceGeneration !== workspaceGeneration)) return;
     if (hideTree && typeof setTreeVisible === 'function') setTreeVisible(false);
     if (Number.isFinite(line) && line > 0) pendingRevealLines.set(nPath, line);
     openFileInTab(nPath, nPath.split('/').pop(), { agentId, conversationId, workDir });

@@ -788,6 +788,46 @@ describe('Agent file terminal forwarding', () => {
     });
   });
 
+  it('rejects open events from a stale workspace generation', () => {
+    globalThis.Vue = Vue;
+    const openFileInTab = vi.fn();
+    const handler = createWsHandler({
+      store: { currentConversation: 'conversation-a', currentAgent: 'agent-a' },
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/workspace/current',
+      openFiles: Vue.ref([]),
+      activeFileIndex: Vue.ref(-1),
+      activeFile: Vue.ref(null),
+      fileLoading: Vue.ref(false),
+      fileSaving: Vue.ref(false),
+      saveTabsState: vi.fn(),
+      createEditor: vi.fn(),
+      openFileInTab,
+      tree: { handleDirectoryListing: vi.fn() },
+      setTreeVisible: vi.fn(),
+      fp: { handleFolderPickerListing: vi.fn() },
+      qo: {},
+      ops: { takePendingDownload: () => null },
+      mdPreviewMode: Vue.ref(false),
+      renderOfficeLocal: vi.fn(),
+      editorContainer: Vue.ref(null),
+      debugStatus: Vue.ref(''),
+      routeKey: 'yeaft:agent-a:session-a',
+      workspaceGeneration: 'current-generation',
+    }).handleOpenFile;
+
+    handler(new CustomEvent('workbench-open-file-in-active-view', { detail: {
+      filePath: 'docs/stale.md',
+      agentId: 'agent-a',
+      conversationId: 'conversation-a',
+      workDir: '/workspace/stale',
+      workbenchRouteKey: 'yeaft:agent-a:session-a',
+      workspaceGeneration: 'stale-generation',
+    } }));
+
+    expect(openFileInTab).not.toHaveBeenCalled();
+  });
+
   it('keeps writes bound to the tab owner after the active route drifts', () => {
     globalThis.Vue = Vue;
     const sent = [];
