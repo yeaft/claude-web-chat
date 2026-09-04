@@ -254,7 +254,7 @@ export default {
       </div>
 
       <!-- 右栏: 文件编辑器（带标签页） -->
-      <div class="file-col-content" v-if="openFiles.length > 0 || fileLoading" @wheel.ctrl.prevent="onWheel">
+      <div class="file-col-content" v-if="openFiles.length > 0" @wheel.ctrl.prevent="onWheel">
         <!-- Mobile back navigation bar -->
         <div class="mobile-file-back-bar" v-if="isMobile">
           <button class="mobile-back-btn" @click="mobileGoBack">
@@ -288,11 +288,14 @@ export default {
             </button>
           </div>
         </div>
-        <div v-if="fileLoading && (activeFileIndex < 0 || !activeFile)" class="git-loading" style="padding:16px">
-          <span class="spinner-mini"></span> {{ $t('files.loadingFile') }}<span v-if="debugStatus" style="margin-left:8px;font-size:10px;color:var(--text-muted)">{{ debugStatus }}</span>
+        <div v-if="activeFile?.loading" class="file-load-state" role="status" aria-live="polite">
+          <span class="spinner-mini" aria-hidden="true"></span>
+          <span>{{ $t('files.loadingFile') }}</span>
+        </div>
+        <div v-else-if="activeFile?.loadError" class="file-load-state file-load-error" role="alert">
+          {{ activeFile.loadError }}
         </div>
         <template v-else-if="activeFile">
-          <div v-if="debugStatus" style="padding:4px 8px;font-size:11px;color:var(--text-muted);background:var(--bg-sidebar);border-bottom:1px solid var(--border-color)">{{ debugStatus }}</div>
           <!-- 文本文件: CodeMirror 编辑器 -->
           <template v-if="!activeFile.fileType || activeFile.fileType === 'text'">
           <!-- Markdown 渲染预览 -->
@@ -374,7 +377,7 @@ export default {
           </div>
         </template>
       </div>
-      <div class="file-col-placeholder" v-if="openFiles.length === 0 && !fileLoading">
+      <div class="file-col-placeholder" v-if="openFiles.length === 0">
         <div class="placeholder-text">{{ $t('files.clickToView') }}</div>
       </div>
 
@@ -656,7 +659,6 @@ export default {
       saveAllUndoHistory: editor.saveAllUndoHistory,
       cleanupUndoHistory: editor.cleanupUndoHistory,
       deleteConversationHistory: editor.deleteConversationHistory,
-      debugStatus: editor.debugStatus,
       mdPreviewMode: preview.mdPreviewMode,
       renderOfficeLocal: preview.renderOfficeLocal,
       performFind: find.performFind,
@@ -705,7 +707,6 @@ export default {
       activeFileIndex: tabs.activeFileIndex,
       setTreeVisible: visible => { treeVisible.value = !!visible; },
       activeFile: tabs.activeFile,
-      fileLoading: tabs.fileLoading,
       fileSaving: tabs.fileSaving,
       saveTabsState: tabs.saveTabsState,
       createEditor: editor.createEditor,
@@ -714,7 +715,7 @@ export default {
       tree, fp, qo, ops,
       mdPreviewMode: preview.mdPreviewMode,
       renderOfficeLocal: preview.renderOfficeLocal,
-      editorContainer, debugStatus: editor.debugStatus, t,
+      editorContainer, t,
       routeKey: props.routeKey,
       workspaceGeneration: props.workspaceGeneration,
     });
@@ -735,7 +736,6 @@ export default {
       if (tabs.openFiles.value.length > 0) tabs.bumpTabRevision();
       tabs.openFiles.value = [];
       tabs.activeFileIndex.value = -1;
-      tabs.fileLoading.value = false;
       if (store.currentAgent) Vue.nextTick(() => tree.initFileBrowser());
     });
 

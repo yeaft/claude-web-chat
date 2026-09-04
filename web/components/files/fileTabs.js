@@ -10,13 +10,12 @@ export function createFileTabs(store, {
   editorContainer, createEditor, destroyEditor,
   clearFindMarkers, saveCurrentUndoHistory, saveAllUndoHistory,
   cleanupUndoHistory, deleteConversationHistory,
-  debugStatus, mdPreviewMode, renderOfficeLocal,
+  mdPreviewMode, renderOfficeLocal,
   performFind, findBarVisible, findQuery, t
 }) {
   const fileTabsMap = Vue.reactive({});
   const openFiles = Vue.ref([]);
   const activeFileIndex = Vue.ref(-1);
-  const fileLoading = Vue.ref(false);
   const fileSaving = Vue.ref(false);
   const tabRevision = Vue.ref(0);
   const bumpTabRevision = () => { tabRevision.value += 1; };
@@ -27,6 +26,7 @@ export function createFileTabs(store, {
     }
     return null;
   });
+  const fileLoading = Vue.computed(() => !!activeFile.value?.loading);
 
   let _syncTabsTimer = null;
   const syncFileTabsToServer = () => {
@@ -75,7 +75,8 @@ export function createFileTabs(store, {
       cmInstance: null,
       fileType: f.fileType || getFileType(f.name || ''),
       blobUrl: null, previewUrl: null, previewLoading: false,
-      localPreviewReady: false, previewError: null
+      localPreviewReady: false, previewError: null,
+      loading: false, loadError: null
     }));
     bumpTabRevision();
     activeFileIndex.value = saved.activeIndex;
@@ -117,15 +118,14 @@ export function createFileTabs(store, {
       content: null, originalContent: null,
       isDirty: false, cmInstance: null, fileType,
       blobUrl: null, previewUrl: null,
-      previewLoading: fileType !== 'text', localPreviewReady: false, previewError: null
+      previewLoading: fileType !== 'text', localPreviewReady: false, previewError: null,
+      loading: true, loadError: null
     });
     bumpTabRevision();
     activeFileIndex.value = openFiles.value.length - 1;
-    fileLoading.value = true;
     if (fileType === 'text') destroyEditor();
     saveTabsState(store.currentConversation);
 
-    debugStatus.value = `Loading: ${fullPath}`;
     const requestId = route.requestId || `file-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const openedFile = openFiles.value[activeFileIndex.value];
     if (openedFile) openedFile.requestId = requestId;

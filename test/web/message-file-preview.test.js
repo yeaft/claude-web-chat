@@ -79,11 +79,11 @@ window.Pinia = globalThis.Pinia;
 const { default: WorkbenchPanel } = await import('../../web/components/WorkbenchPanel.js');
 const { default: ChatHeader } = await import('../../web/components/ChatHeader.js');
 
-function mountWorkbench() {
+function mountWorkbench(t = key => key) {
   return mount(WorkbenchPanel, {
     attachTo: document.body,
     global: {
-      mocks: { $t: key => key },
+      mocks: { $t: t },
       stubs: {
         TerminalTab: capabilityStub('terminal', 'terminal-tab-stub'),
         GitStatusTab: capabilityStub('git', 'git-tab-stub'),
@@ -156,6 +156,20 @@ describe('Workbench capability launcher', () => {
     expect(wrapper.get('.workbench-add-wrap').element.previousElementSibling)
       .toBe(wrapper.get('.workbench-item-tab').element);
     expect(capabilityMounts.map(entry => entry.name)).toEqual(['files']);
+    wrapper.unmount();
+  });
+
+  it('renders translated labels for empty capability tabs after computed updates', async () => {
+    const labels = {
+      'workbench.files': '文件',
+      'workbench.terminal': '终端',
+    };
+    const wrapper = mountWorkbench(key => labels[key] || key);
+
+    await openWorkbenchCapability(wrapper, 'files');
+    await openWorkbenchCapability(wrapper, 'terminal');
+
+    expect(wrapper.findAll('.workbench-item-tab').map(tab => tab.text())).toEqual(['文件×', '终端×']);
     wrapper.unmount();
   });
 
@@ -833,6 +847,9 @@ describe('message file preview', () => {
     expect(filesTab).toContain('class="file-content-header"');
     expect(filesTab).toContain('class="file-content-folder"');
     expect(filesTab).toContain('class="file-content-actions"');
+    expect(filesTab).toContain('v-if="activeFile?.loading" class="file-load-state"');
+    expect(filesTab).toContain('v-else-if="activeFile?.loadError" class="file-load-state file-load-error"');
+    expect(filesTab).not.toContain('{{ debugStatus }}');
     expect(filesTab).not.toContain('class="file-tabs-bar"');
     expect(filesTab).not.toContain('@click="collapseAll"');
     expect(workbench).toContain('class="workbench-tabs"');
