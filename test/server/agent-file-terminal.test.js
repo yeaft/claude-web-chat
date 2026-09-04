@@ -678,6 +678,141 @@ describe('Agent file terminal forwarding', () => {
     expect(cleanupUndoHistory).toHaveBeenCalledTimes(3);
   });
 
+  it('tracks file loading per tab when read responses arrive out of order', () => {
+    globalThis.Vue = Vue;
+    const sent = [];
+    const store = {
+      currentAgent: 'agent-a',
+      currentConversation: 'conversation-a',
+      clientId: 'client-a',
+      sendWsMessage: msg => sent.push(msg),
+    };
+    const mdPreviewMode = Vue.ref(true);
+    const tabs = createFileTabs(store, {
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/workspace',
+      editorContainer: Vue.ref(null),
+      createEditor: vi.fn(),
+      destroyEditor: vi.fn(),
+      clearFindMarkers: vi.fn(),
+      saveCurrentUndoHistory: vi.fn(),
+      saveAllUndoHistory: vi.fn(),
+      cleanupUndoHistory: vi.fn(),
+      deleteConversationHistory: vi.fn(),
+      mdPreviewMode,
+      renderOfficeLocal: vi.fn(),
+      performFind: vi.fn(),
+      findBarVisible: Vue.ref(false),
+      findQuery: Vue.ref(''),
+      t: value => value,
+    });
+    const handle = createWsHandler({
+      store,
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/workspace',
+      openFiles: tabs.openFiles,
+      activeFileIndex: tabs.activeFileIndex,
+      activeFile: tabs.activeFile,
+      fileSaving: tabs.fileSaving,
+      saveTabsState: vi.fn(),
+      createEditor: vi.fn(),
+      openFileInTab: tabs.openFileInTab,
+      tree: { handleDirectoryListing: vi.fn() },
+      setTreeVisible: vi.fn(),
+      fp: { handleFolderPickerListing: vi.fn() },
+      qo: {},
+      ops: { takePendingDownload: () => null },
+      mdPreviewMode,
+      renderOfficeLocal: vi.fn(),
+      editorContainer: Vue.ref(null),
+    }).handleWorkbenchMessage;
+
+    tabs.openFileInTab('first.md', 'first.md');
+    tabs.openFileInTab('second.md', 'second.md');
+    const [firstRequest, secondRequest] = sent.filter(msg => msg.type === 'read_file');
+    expect(tabs.openFiles.value.map(file => file.loading)).toEqual([true, true]);
+    expect(tabs.fileLoading.value).toBe(true);
+
+    handle(new CustomEvent('workbench-message', { detail: {
+      type: 'file_content',
+      agentId: 'agent-a',
+      conversationId: 'conversation-a',
+      requestedFilePath: 'first.md',
+      requestId: firstRequest.requestId,
+      content: '# First',
+    } }));
+    expect(tabs.openFiles.value.map(file => file.loading)).toEqual([false, true]);
+    expect(tabs.fileLoading.value).toBe(true);
+
+    handle(new CustomEvent('workbench-message', { detail: {
+      type: 'file_content',
+      agentId: 'agent-a',
+      conversationId: 'conversation-a',
+      requestedFilePath: 'second.md',
+      requestId: secondRequest.requestId,
+      content: '# Second',
+    } }));
+    expect(tabs.openFiles.value.map(file => file.loading)).toEqual([false, false]);
+    expect(tabs.fileLoading.value).toBe(false);
+  });
+
+  it('correlates restored file tabs with their read requests', () => {
+    globalThis.Vue = Vue;
+    const sent = [];
+    const openFiles = Vue.ref([]);
+    const activeFileIndex = Vue.ref(-1);
+    const store = {
+      currentAgent: 'agent-a',
+      currentConversation: 'conversation-a',
+      clientId: 'client-a',
+      sendWsMessage: msg => sent.push(msg),
+    };
+    const handle = createWsHandler({
+      store,
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/workspace',
+      openFiles,
+      activeFileIndex,
+      activeFile: Vue.computed(() => openFiles.value[activeFileIndex.value] || null),
+      fileSaving: Vue.ref(false),
+      saveTabsState: vi.fn(),
+      createEditor: vi.fn(),
+      openFileInTab: vi.fn(),
+      tree: { handleDirectoryListing: vi.fn() },
+      setTreeVisible: vi.fn(),
+      fp: { handleFolderPickerListing: vi.fn() },
+      qo: {},
+      ops: { takePendingDownload: () => null },
+      mdPreviewMode: Vue.ref(true),
+      renderOfficeLocal: vi.fn(),
+      editorContainer: Vue.ref(null),
+    }).handleWorkbenchMessage;
+
+    handle(new CustomEvent('workbench-message', { detail: {
+      type: 'file_tabs_restored',
+      openFiles: [{ path: 'README.md' }],
+      activeIndex: 0,
+    } }));
+
+    const request = sent.find(msg => msg.type === 'read_file');
+    expect(request).toMatchObject({
+      agentId: 'agent-a',
+      conversationId: 'conversation-a',
+      filePath: 'README.md',
+      workDir: '/workspace',
+      _clientId: 'client-a',
+    });
+    expect(openFiles.value[0]).toMatchObject({
+      path: 'README.md',
+      agentId: 'agent-a',
+      conversationId: 'conversation-a',
+      workDir: '/workspace',
+      requestId: request.requestId,
+      loading: true,
+      loadError: null,
+    });
+  });
+
   it('aborts a confirmed dirty batch before mutation when its commit fence expires', async () => {
     globalThis.Vue = Vue;
     const sendWsMessage = vi.fn();

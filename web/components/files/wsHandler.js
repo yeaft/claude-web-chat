@@ -8,7 +8,7 @@ import { isWorkbenchMessageForRoute, workbenchMessageScope } from '../../utils/w
 export function createWsHandler({
   store, normalizePath, getEffectiveWorkDir,
   // File tabs
-  openFiles, activeFileIndex, activeFile, fileLoading, fileSaving,
+  openFiles, activeFileIndex, activeFile, fileSaving,
   saveTabsState, createEditor, openFileInTab, bumpTabRevision = () => {},
   // Tree
   tree, setTreeVisible,
@@ -19,7 +19,7 @@ export function createWsHandler({
   // File operations
   ops,
   // Preview
-  mdPreviewMode, renderOfficeLocal, editorContainer, debugStatus, t = key => key,
+  mdPreviewMode, renderOfficeLocal, editorContainer, t = key => key,
   routeKey = '',
   workspaceGeneration = '',
 }) {
@@ -87,7 +87,7 @@ export function createWsHandler({
           && (!f.agentId || !msg.agentId || f.agentId === msg.agentId)
           && (!f.conversationId || !msg.conversationId || f.conversationId === msg.conversationId));
         if (!responseTab || (responseTab.requestId && msg.requestId && msg.requestId !== responseTab.requestId)) return;
-        fileLoading.value = false;
+        responseTab.loading = false;
         if (msg.error) {
           const previewError = msg.errorCode === 'FILE_PREVIEW_TOO_LARGE'
             ? t('files.previewTooLarge', {
@@ -95,7 +95,7 @@ export function createWsHandler({
                 limit: ((msg.errorDetails?.limitBytes || 20 * 1024 * 1024) / 1024 / 1024).toFixed(0),
               })
             : msg.error;
-          debugStatus.value = `Error: ${previewError}`;
+          responseTab.loadError = previewError;
           responseTab.previewLoading = false;
           responseTab.previewError = previewError;
           return;
@@ -104,6 +104,7 @@ export function createWsHandler({
         const tabIndex = openFiles.value.indexOf(responseTab);
         if (tabIndex >= 0) {
           const file = responseTab;
+          file.loadError = null;
           if (msg.binary) {
             const previewBaseUrl = `${location.protocol}//${location.host}/api/preview/${msg.fileId}?token=${msg.previewToken}`;
             const ft = file.fileType || getFileType(file.name);
@@ -203,17 +204,26 @@ export function createWsHandler({
             const nPath = normalizePath(file.path);
             const name = nPath.split('/').pop();
             const fileType = getFileType(name);
+            const agentId = store.currentAgent || null;
+            const conversationId = store.currentConversation || '_explorer';
+            const workDir = getEffectiveWorkDir();
+            const requestId = `file-${Date.now()}-${Math.random().toString(36).slice(2)}`;
             openFiles.value.push({
-              path: nPath, name, content: null, originalContent: null,
+              path: nPath, name, agentId, conversationId, workDir, requestId,
+              content: null, originalContent: null,
               isDirty: false, cmInstance: null, fileType,
               blobUrl: null, previewUrl: null,
-              previewLoading: fileType !== 'text', localPreviewReady: false, previewError: null
+              previewLoading: fileType !== 'text', localPreviewReady: false, previewError: null,
+              loading: true, loadError: null
             });
             store.sendWsMessage({
               type: 'read_file',
-              conversationId: store.currentConversation || '_explorer',
-              agentId: store.currentAgent,
-              filePath: file.path
+              conversationId,
+              agentId,
+              requestId,
+              filePath: file.path,
+              workDir,
+              _clientId: store.clientId
             });
           }
           activeFileIndex.value = (pendingRestoreIndex >= 0 && pendingRestoreIndex < totalFiles)

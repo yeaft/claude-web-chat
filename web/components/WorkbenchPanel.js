@@ -242,7 +242,8 @@ export default {
     const hiddenWorkbenchItemIds = Vue.ref([]);
     const measuredTabWidths = new Map();
     let tabOverflowUpdatePending = false;
-    const t = (key, params) => Vue.getCurrentInstance()?.proxy?.$t?.(key, params) || key;
+    const instance = Vue.getCurrentInstance();
+    const t = (key, params) => instance?.proxy?.$t?.(key, params) || key;
 
     const activeRoute = Vue.computed(() => store.activeSessionRoute || null);
     const activeRouteKey = Vue.computed(() => workbenchRouteKey(activeRoute.value));
