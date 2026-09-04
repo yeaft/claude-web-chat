@@ -688,6 +688,11 @@ export default {
       focusWorkbenchItem(nextItem.id);
     };
 
+    const panelWidth = Vue.ref(0);
+    const isResizing = Vue.ref(false);
+    const hasCustomWidth = Vue.ref(false);
+    let panelResizeObserver = null;
+
     Vue.watch(
       workbenchContextKey,
       (contextKey, previousContextKey) => {
@@ -697,20 +702,21 @@ export default {
             activeCapability: activeCapability.value,
             openCapabilities: [...openCapabilities],
           });
-          store.rememberWorkbenchPanelState(previousContextKey.split('\u0000', 1)[0]);
+          store.rememberWorkbenchPanelState(
+            previousContextKey.split('\u0000', 1)[0],
+            hasCustomWidth.value ? panelWidth.value : undefined,
+          );
         }
         store.restoreWorkbenchPanelState(activeRoute.value);
+        const savedWidth = store.workbenchPanelWidthForRoute(activeRoute.value);
+        hasCustomWidth.value = savedWidth !== null;
+        panelWidth.value = savedWidth || 0;
         openFileItems.value = [];
         activeFilePath.value = '';
         restoreCapability();
       },
       { flush: 'sync', immediate: true },
     );
-
-    const panelWidth = Vue.ref(0);
-    const isResizing = Vue.ref(false);
-    const hasCustomWidth = Vue.ref(false);
-    let panelResizeObserver = null;
 
     const syncPanelWidth = () => {
       const width = Math.round(panelRoot.value?.getBoundingClientRect?.().width || 0);
@@ -840,6 +846,7 @@ export default {
 
       const onEnd = () => {
         isResizing.value = false;
+        store.rememberWorkbenchPanelState(activeRoute.value, panelWidth.value);
         notifyWorkbenchResize();
         document.body.style.cursor = '';
         document.body.style.userSelect = '';

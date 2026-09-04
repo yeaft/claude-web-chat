@@ -8263,17 +8263,28 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
-    rememberWorkbenchPanelState(route = this.activeSessionRoute) {
+    rememberWorkbenchPanelState(route = this.activeSessionRoute, panelWidth) {
       const routeKey = typeof route === 'string' ? route : workbenchRouteKey(route);
       if (!routeKey) return false;
+      const previous = this.workbenchPanelStateByRoute[routeKey] || {};
+      const width = Number.isFinite(panelWidth) && panelWidth > 0
+        ? Math.round(panelWidth)
+        : previous.width;
       this.workbenchPanelStateByRoute = {
         ...this.workbenchPanelStateByRoute,
         [routeKey]: {
           expanded: !!this.workbenchExpanded,
           maximized: !!this.workbenchExpanded && !!this.workbenchMaximized,
+          ...(Number.isFinite(width) && width > 0 ? { width } : {}),
         },
       };
       return true;
+    },
+
+    workbenchPanelWidthForRoute(route = this.activeSessionRoute) {
+      const routeKey = typeof route === 'string' ? route : workbenchRouteKey(route);
+      const width = routeKey ? this.workbenchPanelStateByRoute[routeKey]?.width : null;
+      return Number.isFinite(width) && width > 0 ? width : null;
     },
 
     restoreWorkbenchPanelState(route = this.activeSessionRoute) {

@@ -66,6 +66,7 @@ const workbenchStore = Vue.reactive({
   toggleWorkbenchMaximized: vi.fn(),
   rememberWorkbenchPanelState: vi.fn(),
   restoreWorkbenchPanelState: vi.fn(),
+  workbenchPanelWidthForRoute: vi.fn(() => null),
 });
 
 globalThis.Vue = Vue;
@@ -123,6 +124,8 @@ describe('Workbench capability launcher', () => {
     workbenchStore.toggleWorkbenchMaximized.mockClear();
     workbenchStore.rememberWorkbenchPanelState.mockClear();
     workbenchStore.restoreWorkbenchPanelState.mockClear();
+    workbenchStore.workbenchPanelWidthForRoute.mockReset();
+    workbenchStore.workbenchPanelWidthForRoute.mockReturnValue(null);
     globalThis.Pinia.useChatStore = () => workbenchStore;
     window.Pinia = globalThis.Pinia;
   });
@@ -300,6 +303,45 @@ describe('Workbench capability launcher', () => {
     wrapper.unmount();
   });
 
+  it('restores the custom panel width for each Agent Session route', async () => {
+    workbenchStore.workbenchPanelWidthForRoute.mockImplementation(route => ({
+      'yeaft:agent-1:session-a': 640,
+      'yeaft:agent-1:session-b': 480,
+    })[`yeaft:${route.agentId}:${route.sessionId}`] || null);
+
+    const wrapper = mountWorkbench();
+    expect(wrapper.get('.workbench-panel').attributes('style')).toContain('width: 640px');
+
+    workbenchStore.activeSessionRoute = {
+      runtimeProvider: 'yeaft',
+      agentId: 'agent-1',
+      sessionId: 'session-b',
+    };
+    workbenchStore.effectiveWorkDir = '/workspace/b';
+    await Vue.nextTick();
+
+    expect(workbenchStore.rememberWorkbenchPanelState)
+      .toHaveBeenCalledWith('yeaft:agent-1:session-a', 640);
+    expect(wrapper.get('.workbench-panel').attributes('style')).toContain('width: 480px');
+    wrapper.unmount();
+  });
+
+  it('saves the resized width for the active Agent Session route', async () => {
+    workbenchStore.workbenchPanelWidthForRoute.mockReturnValue(500);
+    const wrapper = mountWorkbench();
+
+    await wrapper.get('.resize-handle').trigger('mousedown', { clientX: 700 });
+    document.dispatchEvent(new MouseEvent('mousemove', { clientX: 600 }));
+    document.dispatchEvent(new MouseEvent('mouseup'));
+    await Vue.nextTick();
+
+    expect(workbenchStore.rememberWorkbenchPanelState).toHaveBeenLastCalledWith({
+      runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-a',
+    }, 600);
+    expect(wrapper.get('.workbench-panel').attributes('style')).toContain('width: 600px');
+    wrapper.unmount();
+  });
+
   it('retains each Session terminal instance while restoring isolated active tabs', async () => {
     const wrapper = mountWorkbench();
     await openWorkbenchCapability(wrapper, 'terminal');
@@ -313,7 +355,8 @@ describe('Workbench capability launcher', () => {
     };
     workbenchStore.effectiveWorkDir = '/workspace/b';
     await Vue.nextTick();
-    expect(workbenchStore.rememberWorkbenchPanelState).toHaveBeenCalledWith('yeaft:agent-1:session-a');
+    expect(workbenchStore.rememberWorkbenchPanelState)
+      .toHaveBeenCalledWith('yeaft:agent-1:session-a', undefined);
     expect(workbenchStore.restoreWorkbenchPanelState).toHaveBeenCalledWith({
       runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-b',
     });
