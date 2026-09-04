@@ -5,10 +5,18 @@ import { yeaftSessionDb } from './db/yeaft-session-db.js';
 
 export const WORKBENCH_SESSION_ROUTE_CAPABILITY = 'workbench_session_routes';
 export const WORKBENCH_REQUEST_CORRELATION_CAPABILITY = 'workbench_request_correlation';
+export const WORKBENCH_TERMINAL_CLEANUP_FENCE_CAPABILITY = 'workbench_terminal_cleanup_fence';
+
+function agentHasCapability(agent, capability) {
+  return Array.isArray(agent?.capabilities) && agent.capabilities.includes(capability);
+}
 
 export function agentSupportsWorkbenchRequestCorrelation(agent) {
-  return Array.isArray(agent?.capabilities)
-    && agent.capabilities.includes(WORKBENCH_REQUEST_CORRELATION_CAPABILITY);
+  return agentHasCapability(agent, WORKBENCH_REQUEST_CORRELATION_CAPABILITY);
+}
+
+export function agentSupportsWorkbenchTerminalCleanupFence(agent) {
+  return agentHasCapability(agent, WORKBENCH_TERMINAL_CLEANUP_FENCE_CAPABILITY);
 }
 
 const PROVIDERS = new Set(['yeaft', 'claude-code', 'copilot']);

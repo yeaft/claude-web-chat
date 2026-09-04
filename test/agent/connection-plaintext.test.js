@@ -705,7 +705,13 @@ describe('agent capability advertisement', () => {
 
   it('keeps core capabilities and gates Work Center capabilities behind explicit enablement', () => {
     const source = readFileSync(resolve(process.cwd(), 'agent/index.js'), 'utf8');
-    for (const capability of ['plaintext-ok', 'workbench_session_routes', 'yeaft_plugins']) {
+    for (const capability of [
+      'plaintext-ok',
+      'workbench_session_routes',
+      'workbench_request_correlation',
+      'workbench_terminal_cleanup_fence',
+      'yeaft_plugins',
+    ]) {
       expect(source).toContain(`'${capability}'`);
     }
     expect(source).toMatch(/if \(isWorkCenterEnabled\(\)\) \{\s*capabilities\.push\('work_center', 'work_center_message_v2'\)/s);

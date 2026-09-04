@@ -59,12 +59,11 @@ vi.mock('../../server/ws-utils.js', () => ({
 const { handleAgentFileTerminal } = await import('../../server/handlers/agent-file-terminal.js');
 const { handleClientMisc } = await import('../../server/handlers/client-misc.js');
 const { handleClientWorkbench } = await import('../../server/handlers/client-workbench.js');
+const { cleanupWorkbenchForDisconnectedClient } = await import('../../server/ws-client.js');
 const {
   __testExpireWorkbenchRequest,
   __testResetWorkbenchCorrelations,
-  clearWorkbenchCorrelationsForClient,
   getWorkbenchTerminalOwner,
-  workbenchTerminalCleanupMessage,
 } = await import('../../server/workbench-correlation.js');
 const {
   workbenchRouteKey,
@@ -89,6 +88,7 @@ function installRouteAgent(agentId, sessions = []) {
       'file_editor',
       'workbench_session_routes',
       'workbench_request_correlation',
+      'workbench_terminal_cleanup_fence',
     ],
     conversations: new Map(),
     yeaftSessions: new Map(sessions.map(session => [session.id, { ...session }])),
@@ -1730,7 +1730,64 @@ describe('Agent file terminal forwarding', () => {
     }));
   });
 
-  it('closes a late legacy terminal success without consuming the same-id retry owner', async () => {
+  it('sends token-fenced late-success cleanup to a capable Agent without consuming its retry owner', async () => {
+    const first = await registerRouteRequest({
+      type: 'terminal_create',
+      requestId: 'fenced-success-expired',
+      extra: { terminalId: 'fenced-success-retry-terminal', cols: 80, rows: 24 },
+    });
+    expect(__testExpireWorkbenchRequest(
+      'agent-1',
+      first.outbound._workbenchRequestId,
+    )).toBe(true);
+
+    const retry = await registerRouteRequest({
+      type: 'terminal_create',
+      requestId: 'fenced-success-retry',
+      extra: { terminalId: 'fenced-success-retry-terminal', cols: 80, rows: 24 },
+    });
+    await vi.waitFor(() => expect(sendToWebClient).toHaveBeenCalledWith(
+      first.client,
+      expect.objectContaining({
+        type: 'terminal_error',
+        requestId: 'fenced-success-expired',
+        error: 'Workbench request timed out',
+      }),
+    ));
+    sendToAgent.mockClear();
+    sendToWebClient.mockClear();
+
+    await handleAgentFileTerminal('agent-1', agents.get('agent-1'), {
+      type: 'terminal_created',
+      conversationId: first.outbound.conversationId,
+      workbenchRouteKey: first.outbound.workbenchRouteKey,
+      workbenchWorkspaceGeneration: first.outbound.workbenchWorkspaceGeneration,
+      _requestUserId: first.outbound._requestUserId,
+      _requestClientId: first.outbound._requestClientId,
+      requestId: first.outbound.requestId,
+      terminalId: 'fenced-success-retry-terminal',
+      success: true,
+      _workbenchRequestId: first.outbound._workbenchRequestId,
+    });
+
+    expect(sendToWebClient).not.toHaveBeenCalled();
+    expect(sendToAgent).toHaveBeenCalledWith(
+      agents.get('agent-1'),
+      expect.objectContaining({
+        type: 'terminal_close',
+        conversationId: first.outbound.conversationId,
+        terminalId: 'fenced-success-retry-terminal',
+        workbenchRouteKey: first.outbound.workbenchRouteKey,
+        workbenchWorkspaceGeneration: first.outbound.workbenchWorkspaceGeneration,
+        _workbenchRequestId: first.outbound._workbenchRequestId,
+      }),
+    );
+    expect(getWorkbenchTerminalOwner('agent-1', 'fenced-success-retry-terminal')).toMatchObject({
+      pendingRequestId: retry.outbound._workbenchRequestId,
+    });
+  });
+
+  it('does not send a destructive late-success close to a legacy Agent without cleanup fencing', async () => {
     const legacyCapabilities = ['terminal', 'file_editor', 'workbench_session_routes'];
     const first = await registerRouteRequest({
       type: 'terminal_create',
@@ -1773,46 +1830,69 @@ describe('Agent file terminal forwarding', () => {
     });
 
     expect(sendToWebClient).not.toHaveBeenCalled();
-    expect(sendToAgent).toHaveBeenCalledWith(
-      agents.get('agent-1'),
-      expect.objectContaining({
-        type: 'terminal_close',
-        conversationId: first.outbound.conversationId,
-        terminalId: 'legacy-success-retry-terminal',
-        workbenchRouteKey: first.outbound.workbenchRouteKey,
-        workbenchWorkspaceGeneration: first.outbound.workbenchWorkspaceGeneration,
-        _workbenchRequestId: first.outbound._workbenchRequestId,
-      }),
-    );
+    expect(sendToAgent).not.toHaveBeenCalled();
     expect(getWorkbenchTerminalOwner('agent-1', 'legacy-success-retry-terminal')).toMatchObject({
       pendingRequestId: retry.outbound._workbenchRequestId,
     });
   });
 
-  it('builds disconnect cleanup for the exact create request of a same-id terminal owner', async () => {
+  it('sends the exact established create token when the browser disconnects after Agent ack', async () => {
+    const { outbound } = await registerRouteRequest({
+      type: 'terminal_create',
+      clientId: 'disconnect-established-client',
+      extra: { terminalId: 'disconnect-established-terminal', cols: 80, rows: 24 },
+    });
+    await handleAgentFileTerminal('agent-1', agents.get('agent-1'), {
+      type: 'terminal_created',
+      conversationId: outbound.conversationId,
+      terminalId: 'disconnect-established-terminal',
+      success: true,
+      _workbenchRequestId: outbound._workbenchRequestId,
+      workbenchWorkspaceGeneration: outbound.workbenchWorkspaceGeneration,
+    });
+    sendToAgent.mockClear();
+
+    cleanupWorkbenchForDisconnectedClient('disconnect-established-client');
+
+    expect(sendToAgent).toHaveBeenCalledWith(
+      agents.get('agent-1'),
+      {
+        type: 'terminal_close',
+        terminalId: 'disconnect-established-terminal',
+        conversationId: outbound.conversationId,
+        workbenchRouteKey: outbound.workbenchRouteKey,
+        workbenchWorkspaceGeneration: outbound.workbenchWorkspaceGeneration,
+        _workbenchRequestId: outbound._workbenchRequestId,
+      },
+    );
+    expect(getWorkbenchTerminalOwner('agent-1', 'disconnect-established-terminal')).toBeNull();
+  });
+
+  it('sends the exact pending create token when the browser disconnects before Agent ack', async () => {
     const { outbound } = await registerRouteRequest({
       type: 'terminal_create',
       clientId: 'disconnect-cleanup-client',
       extra: { terminalId: 'disconnect-retry-terminal', cols: 80, rows: 24 },
     });
-    await handleAgentFileTerminal('agent-1', agents.get('agent-1'), {
-      type: 'terminal_created',
-      conversationId: outbound.conversationId,
-      terminalId: 'disconnect-retry-terminal',
-      success: true,
-      _workbenchRequestId: outbound._workbenchRequestId,
-      workbenchWorkspaceGeneration: outbound.workbenchWorkspaceGeneration,
+    expect(getWorkbenchTerminalOwner('agent-1', 'disconnect-retry-terminal')).toMatchObject({
+      pendingRequestId: outbound._workbenchRequestId,
     });
+    sendToAgent.mockClear();
 
-    const [owner] = clearWorkbenchCorrelationsForClient('disconnect-cleanup-client');
-    expect(workbenchTerminalCleanupMessage(owner)).toEqual({
-      type: 'terminal_close',
-      terminalId: 'disconnect-retry-terminal',
-      conversationId: outbound.conversationId,
-      workbenchRouteKey: outbound.workbenchRouteKey,
-      workbenchWorkspaceGeneration: outbound.workbenchWorkspaceGeneration,
-      _workbenchRequestId: outbound._workbenchRequestId,
-    });
+    cleanupWorkbenchForDisconnectedClient('disconnect-cleanup-client');
+
+    expect(sendToAgent).toHaveBeenCalledWith(
+      agents.get('agent-1'),
+      {
+        type: 'terminal_close',
+        terminalId: 'disconnect-retry-terminal',
+        conversationId: outbound.conversationId,
+        workbenchRouteKey: outbound.workbenchRouteKey,
+        workbenchWorkspaceGeneration: outbound.workbenchWorkspaceGeneration,
+        _workbenchRequestId: outbound._workbenchRequestId,
+      },
+    );
+    expect(getWorkbenchTerminalOwner('agent-1', 'disconnect-retry-terminal')).toBeNull();
   });
 
   it('quarantines a late legacy terminal error without falling through to a same-id retry owner', async () => {

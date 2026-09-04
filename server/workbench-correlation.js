@@ -291,6 +291,15 @@ export function deleteWorkbenchTerminalOwner(agentId, terminalId) {
 
 export function clearWorkbenchCorrelationsForClient(clientId) {
   if (!clientId) return [];
+  // Capture terminal cleanup capabilities before releasing pending creates.
+  // releasePendingTerminalReservation() removes the matching owner, but the
+  // disconnect path still needs its exact create token to cancel Agent work.
+  const terminals = [];
+  for (const [key, owner] of terminalOwners) {
+    if (owner?.clientId !== clientId) continue;
+    terminals.push(owner);
+    terminalOwners.delete(key);
+  }
   for (const [key, pending] of pendingRequests) {
     if (pending?.clientId !== clientId) continue;
     pendingRequests.delete(key);
@@ -300,12 +309,6 @@ export function clearWorkbenchCorrelationsForClient(clientId) {
   }
   for (const [key, expired] of expiredRequests) {
     if (expired?.clientId === clientId) expiredRequests.delete(key);
-  }
-  const terminals = [];
-  for (const [key, owner] of terminalOwners) {
-    if (owner?.clientId !== clientId) continue;
-    terminals.push(owner);
-    terminalOwners.delete(key);
   }
   return terminals;
 }

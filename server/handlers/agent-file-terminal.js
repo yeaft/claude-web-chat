@@ -10,6 +10,7 @@ import {
 } from '../ws-utils.js';
 import {
   agentSupportsWorkbenchRequestCorrelation,
+  agentSupportsWorkbenchTerminalCleanupFence,
   currentWorkbenchWorkspaceGeneration,
   workbenchRouteKeyFromConversationId,
 } from '../workbench-route.js';
@@ -124,7 +125,11 @@ async function handleTerminalResponse(agentId, agent, msg, routeKey) {
         terminalId,
       };
       const closeMessage = workbenchTerminalCleanupMessage(cleanup);
-      if (agentRecord && closeMessage) await sendToAgent(agentRecord, closeMessage);
+      if (agentRecord
+          && closeMessage
+          && agentSupportsWorkbenchTerminalCleanupFence(agentRecord)) {
+        await sendToAgent(agentRecord, closeMessage);
+      }
       return;
     }
     if (pending.routeKey !== routeKey || pending.terminalId !== terminalId) {
