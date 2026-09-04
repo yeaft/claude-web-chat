@@ -133,6 +133,8 @@ describe('Workbench capability launcher', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     document.body.innerHTML = '';
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
   });
 
   it('starts on the four-item chooser and keeps the add button beside opened tabs', async () => {
@@ -340,6 +342,73 @@ describe('Workbench capability launcher', () => {
     }, 600);
     expect(wrapper.get('.workbench-panel').attributes('style')).toContain('width: 600px');
     wrapper.unmount();
+  });
+
+  it.each([
+    ['mouse', { runtimeProvider: 'yeaft', agentId: 'agent-1', sessionId: 'session-b' }],
+    ['touch', { runtimeProvider: 'yeaft', agentId: 'agent-2', sessionId: 'session-b' }],
+  ])('cancels a %s resize when its Agent Session owner changes', async (pointerType, nextRoute) => {
+    workbenchStore.workbenchPanelWidthForRoute.mockImplementation(route => (
+      route.agentId === 'agent-1' && route.sessionId === 'session-a' ? 500 : 480
+    ));
+    const wrapper = mountWorkbench();
+    const handle = wrapper.get('.resize-handle').element;
+    const dispatchTouch = (target, type, clientX) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'touches', {
+        value: clientX === undefined ? [] : [{ clientX }],
+      });
+      target.dispatchEvent(event);
+    };
+
+    if (pointerType === 'touch') dispatchTouch(handle, 'touchstart', 700);
+    else handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 700 }));
+    if (pointerType === 'touch') dispatchTouch(document, 'touchmove', 650);
+    else document.dispatchEvent(new MouseEvent('mousemove', { clientX: 650 }));
+    await Vue.nextTick();
+    expect(wrapper.get('.workbench-panel').attributes('style')).toContain('width: 550px');
+
+    workbenchStore.activeSessionRoute = nextRoute;
+    workbenchStore.effectiveWorkDir = '/workspace/b';
+    await Vue.nextTick();
+    expect(wrapper.get('.workbench-panel').attributes('style')).toContain('width: 480px');
+    expect(document.body.style.cursor).toBe('');
+    expect(document.body.style.userSelect).toBe('');
+
+    if (pointerType === 'touch') {
+      dispatchTouch(document, 'touchmove', 600);
+      dispatchTouch(document, 'touchend');
+    } else {
+      document.dispatchEvent(new MouseEvent('mousemove', { clientX: 600 }));
+      document.dispatchEvent(new MouseEvent('mouseup'));
+    }
+    await Vue.nextTick();
+
+    expect(wrapper.get('.workbench-panel').attributes('style')).toContain('width: 480px');
+    expect(workbenchStore.rememberWorkbenchPanelState).toHaveBeenCalledWith(
+      'yeaft:agent-1:session-a',
+      550,
+    );
+    expect(workbenchStore.rememberWorkbenchPanelState).not.toHaveBeenCalledWith(nextRoute, 600);
+    wrapper.unmount();
+  });
+
+  it('cleans up an active resize when the workbench unmounts', () => {
+    workbenchStore.workbenchPanelWidthForRoute.mockReturnValue(500);
+    const wrapper = mountWorkbench();
+    wrapper.get('.resize-handle').element.dispatchEvent(
+      new MouseEvent('mousedown', { bubbles: true, clientX: 700 }),
+    );
+
+    expect(document.body.style.cursor).toBe('col-resize');
+    expect(document.body.style.userSelect).toBe('none');
+    wrapper.unmount();
+    expect(document.body.style.cursor).toBe('');
+    expect(document.body.style.userSelect).toBe('');
+
+    document.dispatchEvent(new MouseEvent('mousemove', { clientX: 600 }));
+    document.dispatchEvent(new MouseEvent('mouseup'));
+    expect(workbenchStore.rememberWorkbenchPanelState).not.toHaveBeenCalled();
   });
 
   it('retains each Session terminal instance while restoring isolated active tabs', async () => {
