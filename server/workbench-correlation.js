@@ -4,6 +4,7 @@ const REQUEST_TTL_MS = 2 * 60 * 1000;
 const MAX_PENDING = 4096;
 
 const pendingRequests = new Map();
+const expiredRequests = new Map();
 const terminalOwners = new Map();
 
 function requestKey(agentId, requestId) {
@@ -22,12 +23,40 @@ function releasePendingTerminalReservation(pending) {
   if (owner?.pendingRequestId === pending.requestId) terminalOwners.delete(key);
 }
 
+function pruneExpiredRequests(now = Date.now()) {
+  for (const [key, expired] of expiredRequests) {
+    if (expired?.expiresAt > now) continue;
+    expiredRequests.delete(key);
+  }
+}
+
+function quarantineExpiredRequest(key, pending, now = Date.now()) {
+  if (!pending?.allowLegacyCorrelation) return;
+  pruneExpiredRequests(now);
+  while (expiredRequests.size >= MAX_PENDING) {
+    const oldest = expiredRequests.keys().next().value;
+    if (oldest == null) break;
+    expiredRequests.delete(oldest);
+  }
+  expiredRequests.set(key, {
+    agentId: pending.agentId,
+    responseTypes: new Set(pending.expectedResponseTypes),
+    routeKey: pending.routeKey,
+    userId: pending.userId,
+    clientId: pending.clientId,
+    publicRequestId: pending.publicRequestId,
+    terminalId: pending.terminalId,
+    expiresAt: now + REQUEST_TTL_MS,
+  });
+}
+
 function expirePending(key, pending, reason = 'timeout') {
   if (pendingRequests.get(key) !== pending) return false;
   pendingRequests.delete(key);
   if (pending.timeout) clearTimeout(pending.timeout);
   pending.timeout = null;
   releasePendingTerminalReservation(pending);
+  quarantineExpiredRequest(key, pending);
   if (typeof pending?.onTimeout === 'function') {
     Promise.resolve(pending.onTimeout(pending, reason)).catch(error => {
       console.error('[Server] Failed to report Workbench request timeout:', error);
@@ -37,6 +66,7 @@ function expirePending(key, pending, reason = 'timeout') {
 }
 
 function prune(now = Date.now()) {
+  pruneExpiredRequests(now);
   for (const [key, pending] of pendingRequests) {
     if (pending && pending.expiresAt > now) continue;
     expirePending(key, pending);
@@ -56,6 +86,7 @@ export function registerWorkbenchRequest({
   expectedResponseTypes,
   publicRequestId = null,
   terminalId = null,
+  allowLegacyCorrelation = false,
   onTimeout = null,
 }) {
   if (!agentId || !clientId || !userId || !routeKey || !conversationId
@@ -86,6 +117,7 @@ export function registerWorkbenchRequest({
     expectedResponseTypes: new Set(expected),
     publicRequestId,
     terminalId,
+    allowLegacyCorrelation: allowLegacyCorrelation === true,
     onTimeout,
     expiresAt: Date.now() + REQUEST_TTL_MS,
     timeout: null,
@@ -121,6 +153,25 @@ export function consumeWorkbenchRequest({ agentId, requestId, responseType, rout
  * only filter Server-owned pending records; they never directly select a Web
  * client. Ambiguous matches are intentionally left pending to time out.
  */
+function matchesLegacyCorrelation(record, {
+  agentId,
+  responseType,
+  routeKey,
+  userId,
+  clientId,
+  publicRequestId,
+  terminalId,
+}, responseTypes) {
+  if (record.agentId !== agentId
+      || record.routeKey !== routeKey
+      || record.userId !== userId
+      || !responseTypes?.has(responseType)) return false;
+  if (clientId && record.clientId !== clientId) return false;
+  if (publicRequestId && record.publicRequestId !== publicRequestId) return false;
+  if (terminalId && record.terminalId !== terminalId) return false;
+  return true;
+}
+
 export function consumeLegacyWorkbenchRequest({
   agentId,
   responseType,
@@ -131,16 +182,28 @@ export function consumeLegacyWorkbenchRequest({
   terminalId = null,
 }) {
   if (!agentId || !responseType || !routeKey || !userId) return null;
+  const correlation = {
+    agentId,
+    responseType,
+    routeKey,
+    userId,
+    clientId,
+    publicRequestId,
+    terminalId,
+  };
   prune();
+  for (const [key, expired] of expiredRequests) {
+    if (!matchesLegacyCorrelation(expired, correlation, expired.responseTypes)) continue;
+    // A public request id identifies the expired request exactly, so one late
+    // response can retire its tombstone. Without one, old and retried responses
+    // are indistinguishable; keep the quarantine until TTL rather than risk
+    // consuming a newer pending request.
+    if (publicRequestId) expiredRequests.delete(key);
+    return null;
+  }
   const matches = [];
   for (const [key, pending] of pendingRequests) {
-    if (pending.agentId !== agentId
-        || pending.routeKey !== routeKey
-        || pending.userId !== userId
-        || !pending.expectedResponseTypes.has(responseType)) continue;
-    if (clientId && pending.clientId !== clientId) continue;
-    if (publicRequestId && pending.publicRequestId !== publicRequestId) continue;
-    if (terminalId && pending.terminalId !== terminalId) continue;
+    if (!matchesLegacyCorrelation(pending, correlation, pending.expectedResponseTypes)) continue;
     matches.push([key, pending]);
     if (matches.length > 1) return null;
   }
@@ -202,6 +265,9 @@ export function clearWorkbenchCorrelationsForClient(clientId) {
     pending.timeout = null;
     releasePendingTerminalReservation(pending);
   }
+  for (const [key, expired] of expiredRequests) {
+    if (expired?.clientId === clientId) expiredRequests.delete(key);
+  }
   const terminals = [];
   for (const [key, owner] of terminalOwners) {
     if (owner?.clientId !== clientId) continue;
@@ -220,6 +286,9 @@ export function clearWorkbenchCorrelationsForAgent(agentId) {
     pending.timeout = null;
     releasePendingTerminalReservation(pending);
   }
+  for (const [key, expired] of expiredRequests) {
+    if (expired?.agentId === agentId) expiredRequests.delete(key);
+  }
   for (const [key, owner] of terminalOwners) {
     if (owner?.agentId === agentId) terminalOwners.delete(key);
   }
@@ -232,6 +301,7 @@ export function __testResetWorkbenchCorrelations() {
     releasePendingTerminalReservation(pending);
   }
   pendingRequests.clear();
+  expiredRequests.clear();
   terminalOwners.clear();
 }
 

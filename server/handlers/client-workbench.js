@@ -172,6 +172,7 @@ function correlateWorkbenchRequest({ agentId, clientId, client, msg, resolved, c
   }
   const expectedResponseTypes = RESPONSE_TYPES[msg.type];
   if (!expectedResponseTypes) return canonical;
+  const supportsRequestCorrelation = agentSupportsWorkbenchRequestCorrelation(agents.get(agentId));
   const registration = {
     agentId,
     clientId,
@@ -185,6 +186,7 @@ function correlateWorkbenchRequest({ agentId, clientId, client, msg, resolved, c
     expectedResponseTypes,
     publicRequestId: typeof msg.requestId === 'string' ? msg.requestId : null,
     terminalId: msg.terminalId || null,
+    allowLegacyCorrelation: !supportsRequestCorrelation,
     onTimeout: async () => {
       if (!client.authenticated || client.userId !== registration.userId) return;
       const response = workbenchTimeoutResponse({ agentId, msg, resolved });
@@ -198,7 +200,6 @@ function correlateWorkbenchRequest({ agentId, clientId, client, msg, resolved, c
     deleteWorkbenchRequest({ agentId, requestId });
     return null;
   }
-  const supportsRequestCorrelation = agentSupportsWorkbenchRequestCorrelation(agents.get(agentId));
   return {
     ...canonical,
     _workbenchRequestId: requestId,

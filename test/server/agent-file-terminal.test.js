@@ -1736,6 +1736,63 @@ describe('Agent file terminal forwarding', () => {
     expect(sendToWebClient.mock.calls[0][0]).not.toBe(otherClient);
   });
 
+  it('does not let a late legacy response consume a newer retry correlation', async () => {
+    const legacyCapabilities = ['terminal', 'file_editor', 'workbench_session_routes'];
+    const first = await registerRouteRequest({
+      type: 'read_file',
+      requestId: 'legacy-read-expired',
+      extra: { filePath: 'README.md' },
+      agentCapabilities: legacyCapabilities,
+    });
+    expect(__testExpireWorkbenchRequest(
+      'agent-1',
+      first.outbound._workbenchRequestId,
+    )).toBe(true);
+
+    const retry = await registerRouteRequest({
+      type: 'read_file',
+      requestId: 'legacy-read-retry',
+      extra: { filePath: 'README.md' },
+      agentCapabilities: legacyCapabilities,
+    });
+    await vi.waitFor(() => expect(sendToWebClient).toHaveBeenCalledWith(
+      first.client,
+      expect.objectContaining({
+        type: 'file_content',
+        requestId: 'legacy-read-expired',
+        error: 'Workbench request timed out',
+      }),
+    ));
+    sendToWebClient.mockClear();
+
+    const legacyReply = (outbound, content) => handleAgentFileTerminal(
+      'agent-1',
+      agents.get('agent-1'),
+      {
+        type: 'file_content',
+        conversationId: outbound.conversationId,
+        workbenchRouteKey: outbound.workbenchRouteKey,
+        workbenchWorkspaceGeneration: outbound.workbenchWorkspaceGeneration,
+        _requestUserId: outbound._requestUserId,
+        _requestClientId: outbound._requestClientId,
+        requestId: outbound.requestId,
+        requestedFilePath: 'README.md',
+        content,
+      },
+    );
+
+    await legacyReply(first.outbound, 'late expired content');
+    expect(sendToWebClient).not.toHaveBeenCalled();
+
+    await legacyReply(retry.outbound, 'retry content');
+    expect(sendToWebClient).toHaveBeenCalledTimes(1);
+    expect(sendToWebClient).toHaveBeenCalledWith(retry.client, expect.objectContaining({
+      type: 'file_content',
+      requestId: 'legacy-read-retry',
+      content: 'retry content',
+    }));
+  });
+
   it('projects read and save timeouts so Files UI can recover and retry', async () => {
     globalThis.Vue = Vue;
     const { outbound: readOutbound } = await registerRouteRequest({
