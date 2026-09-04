@@ -378,6 +378,38 @@ describe('app dialog contracts', () => {
 });
 
 describe('message flow regressions', () => {
+  it('resolves file references per response instead of dropping later turns at the 32-path cap', () => {
+    storeFactories.clear();
+    runtimeSessionsStore.sessionList = [{ id: 'session-files', agentId: 'agent-files' }];
+    const store = useChatStore();
+    store.currentView = 'yeaft';
+    store.currentAgent = 'agent-files';
+    store.currentAgentInfo = {
+      id: 'agent-files',
+      workDir: '/workspace/files',
+      capabilities: ['file_reference_resolution'],
+    };
+    store.yeaftAgentId = 'agent-files';
+    store.yeaftConversationId = 'yeaft-agent-files';
+    store.yeaftConversationIdsByAgent = { 'agent-files': 'yeaft-agent-files' };
+    store.yeaftActiveSessionFilter = 'session-files';
+    store.sendWsMessage = vi.fn(() => true);
+
+    const requestIds = Array.from({ length: 33 }, (_unused, index) => (
+      store.resolveMessageFileReferences([`src/file-${index}.js`])
+    ));
+
+    expect(new Set(requestIds).size).toBe(33);
+    expect(store.sendWsMessage).toHaveBeenCalledTimes(33);
+    expect(store.sendWsMessage.mock.calls.at(-1)[0]).toMatchObject({
+      type: 'resolve_file_references',
+      references: ['src/file-32.js'],
+      agentId: 'agent-files',
+      conversationId: 'yeaft-agent-files',
+      workDir: '/workspace/files',
+    });
+  });
+
   it('keeps container upgrade guidance separate from the npm manual-upgrade path', () => {
     for (const messages of [enMessages, zhCNMessages]) {
       const text = messages['chat.agent.containerImageUpgradeRequired'];
