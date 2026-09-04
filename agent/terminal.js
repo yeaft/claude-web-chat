@@ -78,7 +78,7 @@ function terminalOwner(source) {
   };
 }
 
-function terminalOwnerMatches(term, msg) {
+function terminalRouteOwnerMatches(term, msg) {
   if (!term || !msg) return false;
   const owner = terminalOwner(term);
   const request = terminalOwner(msg);
@@ -90,6 +90,12 @@ function terminalOwnerMatches(term, msg) {
   return !request.workbenchRouteKey
     && !request.workbenchWorkspaceGeneration
     && request.conversationId === owner.conversationId;
+}
+
+function terminalOwnerMatches(term, msg) {
+  if (!terminalRouteOwnerMatches(term, msg)) return false;
+  const requestId = msg?._workbenchRequestId || '';
+  return !requestId || requestId === (term?._workbenchRequestId || '');
 }
 
 function rejectTerminalOwnerMismatch(msg, terminalId) {
@@ -147,7 +153,7 @@ export async function handleTerminalCreate(msg) {
   // immutable owner, never by another Session that guessed the id.
   if (ctx.terminals.has(terminalId)) {
     const existing = ctx.terminals.get(terminalId);
-    if (!terminalOwnerMatches(existing, msg)) {
+    if (!terminalRouteOwnerMatches(existing, msg)) {
       rejectTerminalOwnerMismatch(msg, terminalId);
       return;
     }

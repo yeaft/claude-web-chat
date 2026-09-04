@@ -4,7 +4,10 @@ import {
   sendToWebClient, forwardToAgent,
   verifyConversationOwnership, getCachedDir
 } from '../ws-utils.js';
-import { resolveWorkbenchRequest } from '../workbench-route.js';
+import {
+  agentSupportsWorkbenchRequestCorrelation,
+  resolveWorkbenchRequest,
+} from '../workbench-route.js';
 import {
   deleteWorkbenchRequest,
   getWorkbenchTerminalOwner,
@@ -61,6 +64,82 @@ const RESPONSE_TYPES = Object.freeze({
   upload_to_dir: ['file_op_result'],
 });
 
+const TIMEOUT_RESPONSE_TYPES = Object.freeze({
+  terminal_create: 'terminal_error',
+  read_file: 'file_content',
+  resolve_file_references: 'file_references_resolved',
+  write_file: 'file_saved',
+  list_directory: 'directory_listing',
+  git_status: 'git_status_result',
+  git_diff: 'git_diff_result',
+  git_add: 'git_op_result',
+  git_reset: 'git_op_result',
+  git_restore: 'git_op_result',
+  git_commit: 'git_op_result',
+  git_push: 'git_op_result',
+  file_search: 'file_search_result',
+  create_file: 'file_op_result',
+  delete_files: 'file_op_result',
+  move_files: 'file_op_result',
+  copy_files: 'file_op_result',
+  upload_to_dir: 'file_op_result',
+});
+
+const FILE_OPERATIONS = Object.freeze({
+  create_file: 'create',
+  delete_files: 'delete',
+  move_files: 'move',
+  copy_files: 'copy',
+  upload_to_dir: 'upload',
+});
+
+function workbenchTimeoutResponse({ agentId, msg, resolved }) {
+  const type = TIMEOUT_RESPONSE_TYPES[msg.type];
+  if (!type) return null;
+  const error = 'Workbench request timed out';
+  const response = {
+    type,
+    agentId,
+    conversationId: resolved.conversationId,
+    workbenchRouteKey: resolved.routeKey,
+    workbenchWorkspaceGeneration: resolved.workspaceGeneration,
+    ...(typeof msg.requestId === 'string' ? { requestId: msg.requestId } : {}),
+    error,
+  };
+  if (msg.type === 'terminal_create') {
+    return { ...response, terminalId: msg.terminalId || null, message: error };
+  }
+  if (msg.type === 'read_file') {
+    return { ...response, filePath: msg.filePath };
+  }
+  if (msg.type === 'resolve_file_references') {
+    return { ...response, references: [] };
+  }
+  if (msg.type === 'write_file') {
+    return { ...response, filePath: msg.filePath, requestedFilePath: msg.filePath };
+  }
+  if (msg.type === 'list_directory') {
+    return { ...response, dirPath: msg.dirPath, entries: [] };
+  }
+  if (msg.type === 'git_status') {
+    return { ...response, files: [] };
+  }
+  if (msg.type === 'git_diff') {
+    return { ...response, diff: '' };
+  }
+  if (msg.type.startsWith('git_')) {
+    return { ...response, success: false, operation: msg.type.slice(4) };
+  }
+  if (msg.type === 'file_search') {
+    return { ...response, query: msg.query, results: [] };
+  }
+  return {
+    ...response,
+    success: false,
+    operation: FILE_OPERATIONS[msg.type] || msg.type,
+  };
+}
+
 function canonicalWorkbenchMessage(msg, resolved, { canonicalWorkDir = false } = {}) {
   const {
     _requestUserId: _ignoredUserId,
@@ -93,6 +172,7 @@ function correlateWorkbenchRequest({ agentId, clientId, client, msg, resolved, c
   }
   const expectedResponseTypes = RESPONSE_TYPES[msg.type];
   if (!expectedResponseTypes) return canonical;
+  const supportsRequestCorrelation = agentSupportsWorkbenchRequestCorrelation(agents.get(agentId));
   const registration = {
     agentId,
     clientId,
@@ -106,6 +186,12 @@ function correlateWorkbenchRequest({ agentId, clientId, client, msg, resolved, c
     expectedResponseTypes,
     publicRequestId: typeof msg.requestId === 'string' ? msg.requestId : null,
     terminalId: msg.terminalId || null,
+    allowLegacyCorrelation: !supportsRequestCorrelation,
+    onTimeout: async () => {
+      if (!client.authenticated || client.userId !== registration.userId) return;
+      const response = workbenchTimeoutResponse({ agentId, msg, resolved });
+      if (response) await sendToWebClient(client, response);
+    },
   };
   const requestId = registerWorkbenchRequest(registration);
   if (!requestId) return null;
@@ -114,7 +200,14 @@ function correlateWorkbenchRequest({ agentId, clientId, client, msg, resolved, c
     deleteWorkbenchRequest({ agentId, requestId });
     return null;
   }
-  return { ...canonical, _workbenchRequestId: requestId };
+  return {
+    ...canonical,
+    _workbenchRequestId: requestId,
+    ...(!supportsRequestCorrelation ? {
+      _requestUserId: client.userId,
+      _requestClientId: clientId,
+    } : {}),
+  };
 }
 
 async function forwardCorrelatedWorkbenchRequest({ agentId, clientId, client, msg, resolved, canonical }) {

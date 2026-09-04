@@ -179,6 +179,64 @@ describe('Agent terminal request routing metadata', () => {
     expect(ctx.terminals.size).toBe(0);
   });
 
+  it('keeps a same-id replacement alive when stale timeout or disconnect cleanup arrives', async () => {
+    const sharedOwner = {
+      conversationId: '_workbench:yeaft:agent-a:session-a',
+      terminalId: 'same-id-replacement',
+      cols: 80,
+      rows: 24,
+      workDir: '/workspace/a',
+      workbenchRouteKey: 'yeaft:agent-a:session-a',
+      workbenchWorkspaceGeneration: 'yeaft:agent-a:session-a@workspace-a',
+    };
+    const expiredCreate = { ...sharedOwner, _workbenchRequestId: 'expired-create-token' };
+    const replacementCreate = { ...sharedOwner, _workbenchRequestId: 'replacement-create-token' };
+
+    await handleTerminalCreate(expiredCreate);
+    const expiredPty = ptyProcess;
+    ptyProcess = new FakePty();
+    ctx.nodePty = { spawn: vi.fn(() => ptyProcess) };
+    await handleTerminalCreate(replacementCreate);
+    expect(expiredPty.kill).toHaveBeenCalledTimes(1);
+
+    handleTerminalClose(expiredCreate);
+    expect(ptyProcess.kill).not.toHaveBeenCalled();
+    expect(ctx.terminals.get('same-id-replacement')?.pty).toBe(ptyProcess);
+
+    handleTerminalClose(replacementCreate);
+    expect(ptyProcess.kill).toHaveBeenCalledTimes(1);
+    expect(ctx.terminals.has('same-id-replacement')).toBe(false);
+  });
+
+  it('keeps a pending same-id replacement alive when stale cleanup arrives', async () => {
+    const sharedOwner = {
+      conversationId: '_workbench:yeaft:agent-a:session-a',
+      terminalId: 'pending-same-id-replacement',
+      cols: 80,
+      rows: 24,
+      workDir: '/workspace/a',
+      workbenchRouteKey: 'yeaft:agent-a:session-a',
+      workbenchWorkspaceGeneration: 'yeaft:agent-a:session-a@workspace-a',
+    };
+    let resolvePty;
+    ctx.nodePty = new Promise(resolve => { resolvePty = resolve; });
+    const replacement = { ...sharedOwner, _workbenchRequestId: 'pending-replacement-token' };
+    const createPromise = handleTerminalCreate(replacement);
+    await Promise.resolve();
+
+    handleTerminalClose({ ...sharedOwner, _workbenchRequestId: 'expired-create-token' });
+    expect(ctx.terminals.get('pending-same-id-replacement')).toMatchObject({
+      pending: true,
+      _workbenchRequestId: 'pending-replacement-token',
+    });
+
+    const backend = { spawn: vi.fn(() => ptyProcess) };
+    resolvePty(backend);
+    await createPromise;
+    expect(backend.spawn).toHaveBeenCalledTimes(1);
+    expect(ctx.terminals.get('pending-same-id-replacement')?.pty).toBe(ptyProcess);
+  });
+
   it('rejects cross-route input, resize, close, and terminal-id replacement', async () => {
     const ownerA = {
       conversationId: '_workbench:yeaft:agent-a:session-a',

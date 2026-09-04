@@ -9,14 +9,19 @@ import {
   clearAgentDirCache,
 } from '../ws-utils.js';
 import {
+  agentSupportsWorkbenchRequestCorrelation,
+  agentSupportsWorkbenchTerminalCleanupFence,
   currentWorkbenchWorkspaceGeneration,
   workbenchRouteKeyFromConversationId,
 } from '../workbench-route.js';
 import {
+  consumeLegacyWorkbenchRequest,
   consumeWorkbenchRequest,
   deleteWorkbenchTerminalOwner,
   getWorkbenchTerminalOwner,
+  isLegacyWorkbenchRequestQuarantined,
   registerWorkbenchTerminalOwner,
+  workbenchTerminalCleanupMessage,
 } from '../workbench-correlation.js';
 
 function stripAgentRouting(msg) {
@@ -48,6 +53,28 @@ async function sendToPendingClient(agentId, msg, pending) {
   if (!client?.authenticated || client.userId !== pending?.userId) return false;
   await sendToWebClient(client, pendingResponse(agentId, msg, pending));
   return true;
+}
+
+function consumeRouteResponse(agentId, agent, msg, routeKey) {
+  if (msg._workbenchRequestId) {
+    return consumeWorkbenchRequest({
+      agentId,
+      requestId: msg._workbenchRequestId,
+      responseType: msg.type,
+      routeKey,
+    });
+  }
+  const agentRecord = agents.get(agentId) || agent;
+  if (agentSupportsWorkbenchRequestCorrelation(agentRecord)) return null;
+  return consumeLegacyWorkbenchRequest({
+    agentId,
+    responseType: msg.type,
+    routeKey,
+    userId: msg._requestUserId,
+    clientId: msg._requestClientId || null,
+    publicRequestId: typeof msg.requestId === 'string' ? msg.requestId : null,
+    terminalId: msg.terminalId || null,
+  });
 }
 
 async function forwardLegacyResponse(agentId, msg) {
@@ -83,25 +110,25 @@ function cacheBinaryPreview(msg) {
   };
 }
 
-async function handleTerminalResponse(agentId, msg, routeKey) {
+async function handleTerminalResponse(agentId, agent, msg, routeKey) {
   const terminalId = msg.terminalId || null;
   if (msg.type === 'terminal_created') {
-    const pending = consumeWorkbenchRequest({
-      agentId,
-      requestId: msg._workbenchRequestId,
-      responseType: msg.type,
-      routeKey,
-    });
-    if (!pending) {
+    const pending = consumeRouteResponse(agentId, agent, msg, routeKey);
+    const quarantined = isLegacyWorkbenchRequestQuarantined(pending);
+    if (!pending || quarantined) {
       const agentRecord = agents.get(agentId);
-      if (agentRecord && terminalId && msg.workbenchWorkspaceGeneration) {
-        await sendToAgent(agentRecord, {
-          type: 'terminal_close',
-          conversationId: msg.conversationId,
-          terminalId,
-          workbenchRouteKey: routeKey,
-          workbenchWorkspaceGeneration: msg.workbenchWorkspaceGeneration,
-        });
+      const cleanup = quarantined ? pending : {
+        requestId: msg._workbenchRequestId || null,
+        conversationId: msg.conversationId,
+        routeKey,
+        workspaceGeneration: msg.workbenchWorkspaceGeneration,
+        terminalId,
+      };
+      const closeMessage = workbenchTerminalCleanupMessage(cleanup);
+      if (agentRecord
+          && closeMessage
+          && agentSupportsWorkbenchTerminalCleanupFence(agentRecord)) {
+        await sendToAgent(agentRecord, closeMessage);
       }
       return;
     }
@@ -117,16 +144,18 @@ async function handleTerminalResponse(agentId, msg, routeKey) {
 
   // Create errors carry the one-shot create correlation even though a
   // terminal-id reservation already exists. Consume and release it first.
-  if (msg.type === 'terminal_error' && msg._workbenchRequestId) {
-    const pending = consumeWorkbenchRequest({
-      agentId,
-      requestId: msg._workbenchRequestId,
-      responseType: msg.type,
-      routeKey,
-    });
+  if (msg.type === 'terminal_error') {
+    const pending = consumeRouteResponse(agentId, agent, msg, routeKey);
+    // Explicit opaque ids and quarantined legacy replies must never fall
+    // through to terminal ownership. A quarantine tombstone describes the
+    // expired create, not any same-id replacement owner.
+    if (isLegacyWorkbenchRequestQuarantined(pending)) return;
     if (pending?.terminalId) deleteWorkbenchTerminalOwner(agentId, pending.terminalId);
-    if (pending?.routeKey === routeKey) await sendToPendingClient(agentId, msg, pending);
-    return;
+    if (pending?.routeKey === routeKey) {
+      await sendToPendingClient(agentId, msg, pending);
+      return;
+    }
+    if (msg._workbenchRequestId) return;
   }
 
   const owner = terminalId ? getWorkbenchTerminalOwner(agentId, terminalId) : null;
@@ -148,13 +177,8 @@ async function handleAgentDirectoryPickerResponse(agentId, msg) {
   await sendToPendingClient(agentId, msg, pending);
 }
 
-async function handleOneShotResponse(agentId, msg, routeKey) {
-  const pending = consumeWorkbenchRequest({
-    agentId,
-    requestId: msg._workbenchRequestId,
-    responseType: msg.type,
-    routeKey,
-  });
+async function handleOneShotResponse(agentId, agent, msg, routeKey) {
+  const pending = consumeRouteResponse(agentId, agent, msg, routeKey);
   if (!pending) return;
   const currentGeneration = currentWorkbenchWorkspaceGeneration({
     route: pending.route,
@@ -192,8 +216,8 @@ export async function handleAgentFileTerminal(agentId, agent, rawMsg) {
   }
 
   if (routeKey) {
-    if (terminalTypes.has(msg.type)) await handleTerminalResponse(agentId, msg, routeKey);
-    else await handleOneShotResponse(agentId, msg, routeKey);
+    if (terminalTypes.has(msg.type)) await handleTerminalResponse(agentId, agent, msg, routeKey);
+    else await handleOneShotResponse(agentId, agent, msg, routeKey);
     return true;
   }
 
@@ -203,6 +227,10 @@ export async function handleAgentFileTerminal(agentId, agent, rawMsg) {
     await handleAgentDirectoryPickerResponse(agentId, msg);
     return true;
   }
+
+  // Opaque correlation ids are Server-owned. A response carrying one cannot
+  // downgrade to legacy routing when its conversation is invalid or stale.
+  if (msg._workbenchRequestId) return true;
 
   // `_workbench:` is reserved for Server-authored route conversations. An
   // invalid or cross-Agent value is not a legacy conversation.

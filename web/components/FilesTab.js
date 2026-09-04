@@ -712,6 +712,7 @@ export default {
       createEditor: editor.createEditor,
       openFileInTab: tabs.openFileInTab,
       bumpTabRevision: tabs.bumpTabRevision,
+      acceptTabsRestoreRequest: tabs.acceptTabsRestoreRequest,
       tree, fp, qo, ops,
       mdPreviewMode: preview.mdPreviewMode,
       renderOfficeLocal: preview.renderOfficeLocal,
@@ -881,7 +882,10 @@ export default {
       preview.initMermaid();
       if (store.currentAgent) {
         tree.initFileBrowser();
-        store.sendWsMessage({ type: 'restore_file_tabs' });
+        store.sendWsMessage({
+          type: 'restore_file_tabs',
+          restoreRequestId: tabs.beginTabsRestoreRequest(),
+        });
       }
     });
 

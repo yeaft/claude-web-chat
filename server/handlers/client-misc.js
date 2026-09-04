@@ -190,6 +190,9 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
           conversationId: resolved.conversationId || msg.conversationId || client.currentConversation,
           workbenchRouteKey: resolved.routeKey,
           workbenchWorkspaceGeneration: resolved.workspaceGeneration,
+          restoreRequestId: typeof msg.restoreRequestId === 'string'
+            ? msg.restoreRequestId
+            : null,
           openFiles: saved?.files || [],
           activeIndex: saved?.activeIndex || 0
         });

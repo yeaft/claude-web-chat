@@ -17,7 +17,11 @@ import {
   BROWSER_RUNTIME_SETUP_PROTOCOL,
   WORKBENCH_ROUTE_PROTOCOL,
 } from './client-protocol.js';
-import { clearWorkbenchCorrelationsForClient } from './workbench-correlation.js';
+import {
+  clearWorkbenchCorrelationsForClient,
+  workbenchTerminalCleanupMessage,
+} from './workbench-correlation.js';
+import { agentSupportsWorkbenchTerminalCleanupFence } from './workbench-route.js';
 import { clearBrowserRuntimeForClient } from './browser-runtime-routes.js';
 import {
   parseMessage, sendToWebClient, sendToAgent,
@@ -29,6 +33,17 @@ import { CLIENT_BROWSER_TYPES, handleClientBrowser } from './handlers/client-bro
 import { handleClientMisc } from './handlers/client-misc.js';
 import { clearWorkCenterRequestsForClient, handleClientWorkCenter } from './handlers/client-work-center.js';
 import { recordPerfTraceEvent } from './perf-trace.js';
+
+export function cleanupWorkbenchForDisconnectedClient(clientId) {
+  const ownedTerminals = clearWorkbenchCorrelationsForClient(clientId);
+  for (const owner of ownedTerminals) {
+    const agent = agents.get(owner.agentId);
+    const closeMessage = workbenchTerminalCleanupMessage(owner);
+    if (!agent || !closeMessage || !agentSupportsWorkbenchTerminalCleanupFence(agent)) continue;
+    void sendToAgent(agent, closeMessage)
+      .catch(error => console.warn('[Workbench] PTY disconnect cleanup failed:', error.message));
+  }
+}
 
 export function handleWebConnection(ws, url, req = {}) {
   const clientId = randomUUID();
@@ -203,18 +218,7 @@ export function handleWebConnection(ws, url, req = {}) {
         },
       }).catch(error => console.warn('[BrowserRuntime] peer disconnect cleanup failed:', error.message));
     }
-    const ownedTerminals = clearWorkbenchCorrelationsForClient(clientId);
-    for (const owner of ownedTerminals) {
-      const agent = agents.get(owner.agentId);
-      if (!agent) continue;
-      void sendToAgent(agent, {
-        type: 'terminal_close',
-        terminalId: owner.terminalId,
-        conversationId: owner.conversationId,
-        workbenchRouteKey: owner.routeKey,
-        workbenchWorkspaceGeneration: owner.workspaceGeneration,
-      }).catch(error => console.warn('[Workbench] PTY disconnect cleanup failed:', error.message));
-    }
+    cleanupWorkbenchForDisconnectedClient(clientId);
     webClients.delete(clientId);
     console.log(`Web client disconnected: ${clientId}`);
   });

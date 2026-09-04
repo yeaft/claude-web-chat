@@ -19,6 +19,21 @@ export function createFileTabs(store, {
   const fileSaving = Vue.ref(false);
   const tabRevision = Vue.ref(0);
   const bumpTabRevision = () => { tabRevision.value += 1; };
+  let restoreRequestSequence = 0;
+  let pendingRestoreRequest = null;
+
+  const beginTabsRestoreRequest = () => {
+    const requestId = `file-tabs-${Date.now()}-${++restoreRequestSequence}`;
+    pendingRestoreRequest = { requestId, tabRevision: tabRevision.value };
+    return requestId;
+  };
+
+  const acceptTabsRestoreRequest = (requestId) => {
+    const pending = pendingRestoreRequest;
+    if (!pending || requestId !== pending.requestId) return false;
+    pendingRestoreRequest = null;
+    return tabRevision.value === pending.tabRevision;
+  };
 
   const activeFile = Vue.computed(() => {
     if (activeFileIndex.value >= 0 && activeFileIndex.value < openFiles.value.length) {
@@ -260,6 +275,7 @@ export function createFileTabs(store, {
   return {
     fileTabsMap, openFiles, activeFileIndex, activeFile,
     fileLoading, fileSaving, tabRevision, bumpTabRevision,
+    beginTabsRestoreRequest, acceptTabsRestoreRequest,
     saveTabsState, restoreTabsState, openFileInTab,
     switchToTab, closeFileTab, closeFileTabs,
     closeTabsToLeft, closeTabsToRight, closeOtherTabs, closeAllTabs,
