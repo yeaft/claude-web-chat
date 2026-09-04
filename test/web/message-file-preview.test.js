@@ -726,6 +726,32 @@ describe('message file preview', () => {
     expect(resolveMessageFileReference('.gitignore')).toEqual({ path: '.gitignore', line: null });
   });
 
+  it('collects and decorates Agent-confirmed file paths in ordinary response text', () => {
+    const source = [
+      '<p>Changed web/components/AssistantTurn.js:410 and missing/not-created.js.</p>',
+      '<p><strong>Also:</strong> docs/design-doc.md#L119, but not origin/main or v1.0.486.</p>',
+      '<pre><code>web/components/FilesTab.js:17</code></pre>',
+    ].join('');
+
+    expect(collectMessageFileReferences(source)).toEqual([
+      'web/components/AssistantTurn.js',
+      'missing/not-created.js',
+      'docs/design-doc.md',
+    ]);
+    const html = decorateMessageFileReferences(source, new Map([
+      ['web/components/AssistantTurn.js', 'web/components/AssistantTurn.js'],
+      ['docs/design-doc.md', 'docs/design-doc.md'],
+    ]));
+
+    expect(html).toContain('href="web/components/AssistantTurn.js:410" data-resolved-file-path="web/components/AssistantTurn.js"');
+    expect(html).toContain('href="docs/design-doc.md#L119" data-resolved-file-path="docs/design-doc.md"');
+    expect(html).toContain('missing/not-created.js');
+    expect(html).not.toContain('href="missing/not-created.js"');
+    expect(html).not.toContain('href="origin/main"');
+    expect(html).not.toContain('href="v1.0.486"');
+    expect(html).toContain('<pre><code>web/components/FilesTab.js:17</code></pre>');
+  });
+
   it('decorates file links and standalone inline-code references without touching code blocks', () => {
     const source = [
       '<a href="docs/design-doc.md#L119">design doc</a>',
@@ -807,6 +833,66 @@ describe('message file preview', () => {
 
     await wrapper.get('a[href="https://example.test"]').trigger('click');
     expect(openFileInExplorer).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it('revalidates file references when completed response content changes', async () => {
+    const resolveMessageFileReferences = vi.fn()
+      .mockReturnValueOnce('file-refs-old')
+      .mockReturnValueOnce('file-refs-new');
+    globalThis.Vue = Vue;
+    globalThis.Pinia = {
+      defineStore: () => () => ({}),
+      useChatStore: () => ({
+        answerUserQuestion: vi.fn(),
+        cancelVpTurn: vi.fn(),
+        openFileInExplorer: vi.fn(),
+        resolveMessageFileReferences,
+      }),
+    };
+    globalThis.marked = {
+      setOptions: vi.fn(),
+      parse: vi.fn(value => `<p>${value}</p>`),
+    };
+    globalThis.hljs = undefined;
+    const { default: AssistantTurn } = await import('../../web/components/AssistantTurn.js');
+    const wrapper = mount(AssistantTurn, {
+      props: {
+        turn: {
+          id: 'turn-file-preview-update',
+          textContent: 'old/file.js',
+          textSegments: [{ key: 'result', content: 'old/file.js', kind: 'result' }],
+          toolMsgs: [], imageMsgs: [], todoMsg: null, askMsg: null, isStreaming: false,
+        },
+      },
+      global: {
+        mocks: { $t: key => key },
+        provide: { t: key => key },
+        stubs: { ToolLine: true, AskCard: true, VpSpeakerHeader: true },
+      },
+    });
+
+    expect(resolveMessageFileReferences).toHaveBeenLastCalledWith(['old/file.js']);
+    window.dispatchEvent(new CustomEvent('workbench-message', { detail: {
+      type: 'file_references_resolved',
+      requestId: 'file-refs-old',
+      references: [{ requestedPath: 'old/file.js', resolvedPath: 'old/file.js' }],
+    } }));
+    await Vue.nextTick();
+    expect(wrapper.find('a[href="old/file.js"]').exists()).toBe(true);
+
+    await wrapper.setProps({
+      turn: {
+        ...wrapper.props('turn'),
+        textContent: 'new/file.js',
+        textSegments: [{ key: 'result', content: 'new/file.js', kind: 'result' }],
+      },
+    });
+    await Vue.nextTick();
+
+    expect(resolveMessageFileReferences).toHaveBeenLastCalledWith(['new/file.js']);
+    expect(wrapper.find('a[href="old/file.js"]').exists()).toBe(false);
+    expect(wrapper.find('a[href="new/file.js"]').exists()).toBe(false);
     wrapper.unmount();
   });
 

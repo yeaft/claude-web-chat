@@ -407,6 +407,10 @@ export default {
     const progressSegments = Vue.computed(() => textSegments.value.filter(segment => segment.kind !== 'result'));
     const resultSegments = Vue.computed(() => textSegments.value.filter(segment => segment.kind === 'result'));
 
+    const fileReferenceSourceSignature = Vue.computed(() => textSegments.value.map(segment => {
+      if (typeof segment?.content === 'string') return segment.content;
+      return segment?.content == null ? '' : JSON.stringify(segment.content);
+    }).join('\u0000'));
     const requestFileReferenceResolution = () => {
       if (props.turn?.isStreaming) return;
       const references = new Set();
@@ -417,6 +421,7 @@ export default {
           for (const path of collectMessageFileReferences(html)) references.add(path);
         } catch (_) {}
       }
+      resolvedFileReferences.clear();
       fileReferenceRequestId = store.resolveMessageFileReferences?.([...references]) || null;
     };
     const handleFileReferenceResolution = event => {
@@ -436,9 +441,15 @@ export default {
       requestFileReferenceResolution();
     });
     Vue.onBeforeUnmount(() => window.removeEventListener('workbench-message', handleFileReferenceResolution));
-    Vue.watch(() => props.turn?.isStreaming, (streaming, previous) => {
-      if (previous && !streaming) requestFileReferenceResolution();
-    });
+    Vue.watch(
+      [() => props.turn?.isStreaming, fileReferenceSourceSignature],
+      ([streaming], [previousStreaming, previousSignature]) => {
+        if (!streaming && (previousStreaming || fileReferenceSourceSignature.value !== previousSignature)) {
+          requestFileReferenceResolution();
+        }
+      },
+      { flush: 'post' },
+    );
 
     const addCodeBlockCopyButtons = (html) => {
       return html.replace(/<pre><code([^>]*)>([\s\S]*?)<\/code><\/pre>/g,

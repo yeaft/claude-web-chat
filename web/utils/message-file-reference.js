@@ -6,6 +6,8 @@ const LINE_SUFFIX = /:(\d+)(?::\d+)?$/;
 const VERSION_BASENAME = /^v?\d+(?:\.\d+){1,}(?:[-+][A-Za-z\d.-]+)?$/i;
 const ARCHIVE_EXTENSION = /\.(?:7z|bz2?|gz|rar|tar|tgz|xz|zip|zst)$/i;
 const KNOWN_EXTENSIONLESS_FILE = /^(?:README|LICENSE|CHANGELOG|CONTRIBUTING|Dockerfile|Makefile)(?:[-_.][A-Za-z\d-]+)?$/i;
+const TEXT_TOKEN = /(?:file:\/\/\/|[A-Za-z]:[\\/]|(?:\.{1,2}|~)?[\\/])?[A-Za-z\d_.@+-]+(?:[\\/][A-Za-z\d_.@+-]+)*(?:#L\d+(?:C\d+)?|:\d+(?::\d+)?)?/gi;
+const PROTECTED_HTML = /(<pre\b[^>]*>[\s\S]*?<\/pre>|<a\b[^>]*>[\s\S]*?<\/a>|<code\b[^>]*>[\s\S]*?<\/code>)|(<[^>]+>)|([^<]+)/gi;
 
 const isRecognizableFilePath = value => {
   const basename = value.split(/[\\/]/).pop() || '';
@@ -54,18 +56,50 @@ const decodeHtml = value => value
   .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
   .replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 const escapeAttribute = value => value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const trimTextToken = value => value.replace(/^[('"`]+/, '').replace(/[.)'"`,;!?]+$/, '');
+
+function collectTextFileReferences(text, references) {
+  const decoded = decodeHtml(text || '');
+  for (const match of decoded.matchAll(TEXT_TOKEN)) {
+    const candidate = trimTextToken(match[0]);
+    const reference = resolveMessageFileReference(candidate);
+    if (reference) references.add(reference.path);
+  }
+}
 
 export function collectMessageFileReferences(html) {
   if (typeof html !== 'string' || !html) return [];
   const references = new Set();
-  html.replace(/(<pre\b[^>]*>[\s\S]*?<\/pre>)|<a\s+[^>]*?href=(['"])(.*?)\2[^>]*>|<code>([^<]+)<\/code>/gi,
-    (_match, pre, _quote, href, codeText) => {
-      if (pre) return '';
-      const reference = resolveMessageFileReference(href || decodeHtml(codeText || ''));
+  html.replace(PROTECTED_HTML, (_match, protectedElement, tag, text) => {
+    if (protectedElement) {
+      if (/^<pre\b/i.test(protectedElement)) return '';
+      const anchor = protectedElement.match(/^<a\s+[^>]*?href=(['"])(.*?)\1/i);
+      if (anchor) {
+        const reference = resolveMessageFileReference(anchor[2]);
+        if (reference) references.add(reference.path);
+        return '';
+      }
+      const codeText = protectedElement.replace(/^<code\b[^>]*>|<\/code>$/gi, '');
+      const reference = resolveMessageFileReference(decodeHtml(codeText));
       if (reference) references.add(reference.path);
       return '';
-    });
+    }
+    if (!tag) collectTextFileReferences(text, references);
+    return '';
+  });
   return [...references];
+}
+
+function decorateTextFileReferences(text, resolved) {
+  return text.replace(TEXT_TOKEN, token => {
+    const candidate = trimTextToken(token);
+    const leading = token.slice(0, token.indexOf(candidate));
+    const trailing = token.slice(token.indexOf(candidate) + candidate.length);
+    const reference = resolveMessageFileReference(decodeHtml(candidate));
+    const resolvedPath = reference && resolved.get(reference.path);
+    if (!reference || !resolvedPath) return token;
+    return `${leading}<a href="${escapeAttribute(candidate)}" data-resolved-file-path="${escapeAttribute(resolvedPath)}" class="message-file-reference">${candidate}</a>${trailing}`;
+  });
 }
 
 /** Render only Agent-confirmed references as file links. Unconfirmed Markdown
@@ -84,12 +118,17 @@ export function decorateMessageFileReferences(html, resolvedReferences = {}) {
       return `<a href="${escapeAttribute(href)}" data-resolved-file-path="${escapeAttribute(resolvedPath)}" class="message-file-reference">${label}</a>`;
     });
 
-  return anchors.replace(/(<pre\b[^>]*>[\s\S]*?<\/pre>)|<code>([^<]+)<\/code>/gi, (match, pre, codeText) => {
+  const codeLinks = anchors.replace(/(<pre\b[^>]*>[\s\S]*?<\/pre>)|<code>([^<]+)<\/code>/gi, (match, pre, codeText) => {
     if (pre || !codeText) return match;
     const decoded = decodeHtml(codeText);
     const reference = resolveMessageFileReference(decoded);
     const resolvedPath = reference && resolved.get(reference.path);
     if (!reference || !resolvedPath) return match;
     return `<a href="${escapeAttribute(decoded)}" data-resolved-file-path="${escapeAttribute(resolvedPath)}" class="message-file-reference"><code>${codeText}</code></a>`;
+  });
+
+  return codeLinks.replace(PROTECTED_HTML, (match, protectedElement, tag, text) => {
+    if (protectedElement || tag) return match;
+    return decorateTextFileReferences(text, resolved);
   });
 }
