@@ -8350,40 +8350,17 @@ export const useChatStore = defineStore('chat', {
         agentId: route.agentId,
         sessionId: route.sessionId,
       } : null;
-      const batchKey = [agentId, conversationId, workDir, route?.sessionId || ''].join('\u0000');
-      if (!(this._messageFileReferenceBatches instanceof Map)) {
-        this._messageFileReferenceBatches = new Map();
-      }
-      let batch = this._messageFileReferenceBatches.get(batchKey);
-      if (!batch) {
-        batch = {
-          requestId: `file_refs_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-          references: new Set(),
-          agentId,
-          conversationId,
-          workDir,
-          workbenchRoute,
-        };
-        this._messageFileReferenceBatches.set(batchKey, batch);
-        queueMicrotask(() => {
-          if (this._messageFileReferenceBatches.get(batchKey) !== batch) return;
-          this._messageFileReferenceBatches.delete(batchKey);
-          this.sendWsMessage({
-            type: 'resolve_file_references',
-            requestId: batch.requestId,
-            references: [...batch.references].slice(0, 32),
-            agentId: batch.agentId,
-            conversationId: batch.conversationId,
-            workDir: batch.workDir,
-            workbenchRoute: batch.workbenchRoute,
-          });
-        });
-      }
-      for (const path of paths) {
-        if (batch.references.size >= 32) break;
-        batch.references.add(path);
-      }
-      return batch.requestId;
+      const requestId = `file_refs_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      this.sendWsMessage({
+        type: 'resolve_file_references',
+        requestId,
+        references: paths,
+        agentId,
+        conversationId,
+        workDir,
+        workbenchRoute,
+      });
+      return requestId;
     },
 
     openFileInExplorer(filePath, { hideTree = false, line = null } = {}) {

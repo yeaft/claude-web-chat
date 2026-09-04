@@ -41,7 +41,7 @@ export function resolveMessageFileReference(href) {
     value = value.slice(0, hashMatch.index);
   } else {
     const suffixMatch = value.match(LINE_SUFFIX);
-    if (suffixMatch && !WINDOWS_ABSOLUTE_PATH.test(value.slice(0, suffixMatch.index + 1))) {
+    if (suffixMatch) {
       line = Number(suffixMatch[1]);
       value = value.slice(0, suffixMatch.index);
     }

@@ -702,6 +702,7 @@ describe('message file preview', () => {
   it('accepts local code and document references while leaving web links alone', () => {
     expect(resolveMessageFileReference('docs/design-doc.md#L119')).toEqual({ path: 'docs/design-doc.md', line: 119 });
     expect(resolveMessageFileReference('./src/main.js:42')).toEqual({ path: './src/main.js', line: 42 });
+    expect(resolveMessageFileReference('C:\\repo\\src\\main.js:42')).toEqual({ path: 'C:\\repo\\src\\main.js', line: 42 });
     expect(resolveMessageFileReference('/workspace/readme.md')).toEqual({ path: '/workspace/readme.md', line: null });
     expect(resolveMessageFileReference('file:///workspace/spec.pdf')).toEqual({ path: '/workspace/spec.pdf', line: null });
     expect(resolveMessageFileReference('https://example.test/design-doc.md')).toBeNull();
