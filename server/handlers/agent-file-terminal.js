@@ -16,10 +16,11 @@ import {
 import {
   consumeLegacyWorkbenchRequest,
   consumeWorkbenchRequest,
-  LEGACY_WORKBENCH_REQUEST_QUARANTINED,
   deleteWorkbenchTerminalOwner,
   getWorkbenchTerminalOwner,
+  isLegacyWorkbenchRequestQuarantined,
   registerWorkbenchTerminalOwner,
+  workbenchTerminalCleanupMessage,
 } from '../workbench-correlation.js';
 
 function stripAgentRouting(msg) {
@@ -112,17 +113,18 @@ async function handleTerminalResponse(agentId, agent, msg, routeKey) {
   const terminalId = msg.terminalId || null;
   if (msg.type === 'terminal_created') {
     const pending = consumeRouteResponse(agentId, agent, msg, routeKey);
-    if (!pending) {
+    const quarantined = isLegacyWorkbenchRequestQuarantined(pending);
+    if (!pending || quarantined) {
       const agentRecord = agents.get(agentId);
-      if (agentRecord && terminalId && msg.workbenchWorkspaceGeneration) {
-        await sendToAgent(agentRecord, {
-          type: 'terminal_close',
-          conversationId: msg.conversationId,
-          terminalId,
-          workbenchRouteKey: routeKey,
-          workbenchWorkspaceGeneration: msg.workbenchWorkspaceGeneration,
-        });
-      }
+      const cleanup = quarantined ? pending : {
+        requestId: msg._workbenchRequestId || null,
+        conversationId: msg.conversationId,
+        routeKey,
+        workspaceGeneration: msg.workbenchWorkspaceGeneration,
+        terminalId,
+      };
+      const closeMessage = workbenchTerminalCleanupMessage(cleanup);
+      if (agentRecord && closeMessage) await sendToAgent(agentRecord, closeMessage);
       return;
     }
     if (pending.routeKey !== routeKey || pending.terminalId !== terminalId) {
@@ -139,14 +141,16 @@ async function handleTerminalResponse(agentId, agent, msg, routeKey) {
   // terminal-id reservation already exists. Consume and release it first.
   if (msg.type === 'terminal_error') {
     const pending = consumeRouteResponse(agentId, agent, msg, routeKey);
+    // Explicit opaque ids and quarantined legacy replies must never fall
+    // through to terminal ownership. A quarantine tombstone describes the
+    // expired create, not any same-id replacement owner.
+    if (isLegacyWorkbenchRequestQuarantined(pending)) return;
     if (pending?.terminalId) deleteWorkbenchTerminalOwner(agentId, pending.terminalId);
     if (pending?.routeKey === routeKey) {
       await sendToPendingClient(agentId, msg, pending);
       return;
     }
-    // Explicit opaque ids and quarantined legacy replies must never fall
-    // through to terminal ownership.
-    if (msg._workbenchRequestId || pending === LEGACY_WORKBENCH_REQUEST_QUARANTINED) return;
+    if (msg._workbenchRequestId) return;
   }
 
   const owner = terminalId ? getWorkbenchTerminalOwner(agentId, terminalId) : null;

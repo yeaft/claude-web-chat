@@ -11,6 +11,24 @@ export const LEGACY_WORKBENCH_REQUEST_QUARANTINED = Symbol(
   'legacy-workbench-request-quarantined',
 );
 
+export function isLegacyWorkbenchRequestQuarantined(value) {
+  return value?.quarantine === LEGACY_WORKBENCH_REQUEST_QUARANTINED;
+}
+
+export function workbenchTerminalCleanupMessage(owner) {
+  if (!owner?.terminalId || !owner?.conversationId || !owner?.routeKey
+      || !owner?.workspaceGeneration) return null;
+  const requestId = owner.requestId || owner.pendingRequestId || null;
+  return {
+    type: 'terminal_close',
+    conversationId: owner.conversationId,
+    terminalId: owner.terminalId,
+    workbenchRouteKey: owner.routeKey,
+    workbenchWorkspaceGeneration: owner.workspaceGeneration,
+    ...(requestId ? { _workbenchRequestId: requestId } : {}),
+  };
+}
+
 function requestKey(agentId, requestId) {
   return `${String(agentId || '')}\u0000${String(requestId || '')}`;
 }
@@ -44,6 +62,9 @@ function quarantineExpiredRequest(key, pending, now = Date.now()) {
   }
   expiredRequests.set(key, {
     agentId: pending.agentId,
+    requestId: pending.requestId,
+    conversationId: pending.conversationId,
+    workspaceGeneration: pending.workspaceGeneration,
     responseTypes: new Set(pending.expectedResponseTypes),
     routeKey: pending.routeKey,
     userId: pending.userId,
@@ -203,7 +224,15 @@ export function consumeLegacyWorkbenchRequest({
     // are indistinguishable; keep the quarantine until TTL rather than risk
     // consuming a newer pending request.
     if (publicRequestId) expiredRequests.delete(key);
-    return LEGACY_WORKBENCH_REQUEST_QUARANTINED;
+    return {
+      quarantine: LEGACY_WORKBENCH_REQUEST_QUARANTINED,
+      agentId: expired.agentId,
+      requestId: expired.requestId,
+      conversationId: expired.conversationId,
+      routeKey: expired.routeKey,
+      workspaceGeneration: expired.workspaceGeneration,
+      terminalId: expired.terminalId,
+    };
   }
   const matches = [];
   for (const [key, pending] of pendingRequests) {

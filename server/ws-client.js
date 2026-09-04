@@ -17,7 +17,10 @@ import {
   BROWSER_RUNTIME_SETUP_PROTOCOL,
   WORKBENCH_ROUTE_PROTOCOL,
 } from './client-protocol.js';
-import { clearWorkbenchCorrelationsForClient } from './workbench-correlation.js';
+import {
+  clearWorkbenchCorrelationsForClient,
+  workbenchTerminalCleanupMessage,
+} from './workbench-correlation.js';
 import { clearBrowserRuntimeForClient } from './browser-runtime-routes.js';
 import {
   parseMessage, sendToWebClient, sendToAgent,
@@ -206,14 +209,10 @@ export function handleWebConnection(ws, url, req = {}) {
     const ownedTerminals = clearWorkbenchCorrelationsForClient(clientId);
     for (const owner of ownedTerminals) {
       const agent = agents.get(owner.agentId);
-      if (!agent) continue;
-      void sendToAgent(agent, {
-        type: 'terminal_close',
-        terminalId: owner.terminalId,
-        conversationId: owner.conversationId,
-        workbenchRouteKey: owner.routeKey,
-        workbenchWorkspaceGeneration: owner.workspaceGeneration,
-      }).catch(error => console.warn('[Workbench] PTY disconnect cleanup failed:', error.message));
+      const closeMessage = workbenchTerminalCleanupMessage(owner);
+      if (!agent || !closeMessage) continue;
+      void sendToAgent(agent, closeMessage)
+        .catch(error => console.warn('[Workbench] PTY disconnect cleanup failed:', error.message));
     }
     webClients.delete(clientId);
     console.log(`Web client disconnected: ${clientId}`);
