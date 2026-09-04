@@ -688,29 +688,41 @@ export default {
       focusWorkbenchItem(nextItem.id);
     };
 
+    const panelWidth = Vue.ref(0);
+    const isResizing = Vue.ref(false);
+    const hasCustomWidth = Vue.ref(false);
+    let panelResizeObserver = null;
+    let activeResize = null;
+
+    const cancelActiveResize = () => {
+      activeResize?.cleanup();
+    };
+
     Vue.watch(
       workbenchContextKey,
       (contextKey, previousContextKey) => {
         if (contextKey === previousContextKey) return;
+        cancelActiveResize();
         if (previousContextKey) {
           capabilityState.set(previousContextKey, {
             activeCapability: activeCapability.value,
             openCapabilities: [...openCapabilities],
           });
-          store.rememberWorkbenchPanelState(previousContextKey.split('\u0000', 1)[0]);
+          store.rememberWorkbenchPanelState(
+            previousContextKey.split('\u0000', 1)[0],
+            hasCustomWidth.value ? panelWidth.value : undefined,
+          );
         }
         store.restoreWorkbenchPanelState(activeRoute.value);
+        const savedWidth = store.workbenchPanelWidthForRoute(activeRoute.value);
+        hasCustomWidth.value = savedWidth !== null;
+        panelWidth.value = savedWidth || 0;
         openFileItems.value = [];
         activeFilePath.value = '';
         restoreCapability();
       },
       { flush: 'sync', immediate: true },
     );
-
-    const panelWidth = Vue.ref(0);
-    const isResizing = Vue.ref(false);
-    const hasCustomWidth = Vue.ref(false);
-    let panelResizeObserver = null;
 
     const syncPanelWidth = () => {
       const width = Math.round(panelRoot.value?.getBoundingClientRect?.().width || 0);
@@ -818,8 +830,11 @@ export default {
 
     const startResize = (e) => {
       e.preventDefault();
+      cancelActiveResize();
       const isTouch = e.type === 'touchstart';
       const startX = isTouch ? e.touches[0].clientX : e.clientX;
+      const resizeContextKey = workbenchContextKey.value;
+      const resizeRoute = { ...activeRoute.value };
       isResizing.value = true;
       if (!hasCustomWidth.value) {
         const el = e.target.closest('.workbench-panel');
@@ -829,9 +844,27 @@ export default {
       const startWidth = panelWidth.value;
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
+      let resize = null;
+
+      const cleanup = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onEnd);
+        document.removeEventListener('touchmove', onMove);
+        document.removeEventListener('touchend', onEnd);
+        document.removeEventListener('touchcancel', onEnd);
+        if (activeResize !== resize) return;
+        activeResize = null;
+        isResizing.value = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      };
+      const isCurrentResize = () => activeResize === resize
+        && workbenchContextKey.value === resizeContextKey;
 
       const onMove = (moveEvent) => {
-        const clientX = isTouch ? moveEvent.touches[0].clientX : moveEvent.clientX;
+        if (!isCurrentResize()) return;
+        const clientX = isTouch ? moveEvent.touches[0]?.clientX : moveEvent.clientX;
+        if (!Number.isFinite(clientX)) return;
         const delta = startX - clientX;
         const maxWidth = Math.max(900, window.innerWidth - 100);
         panelWidth.value = Math.max(280, Math.min(maxWidth, startWidth + delta));
@@ -839,18 +872,20 @@ export default {
       };
 
       const onEnd = () => {
-        isResizing.value = false;
+        if (!isCurrentResize()) {
+          cleanup();
+          return;
+        }
+        store.rememberWorkbenchPanelState(resizeRoute, panelWidth.value);
         notifyWorkbenchResize();
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onEnd);
-        document.removeEventListener('touchmove', onMove);
-        document.removeEventListener('touchend', onEnd);
+        cleanup();
       };
 
+      resize = { cleanup };
+      activeResize = resize;
       document.addEventListener(isTouch ? 'touchmove' : 'mousemove', onMove);
       document.addEventListener(isTouch ? 'touchend' : 'mouseup', onEnd);
+      if (isTouch) document.addEventListener('touchcancel', onEnd);
     };
 
     const handleOpenFile = (event) => {
@@ -924,6 +959,7 @@ export default {
     );
 
     Vue.onUnmounted(() => {
+      cancelActiveResize();
       window.removeEventListener('open-file-in-explorer', handleOpenFile);
       window.removeEventListener('workbench-file-items-changed', handleFileItemsChanged);
       document.removeEventListener('click', handleDocumentClick);

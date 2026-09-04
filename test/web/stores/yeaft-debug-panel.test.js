@@ -85,7 +85,8 @@ describe('YeaftDebugPanel store actions', () => {
 
     store.workbenchExpanded = true;
     store.workbenchMaximized = true;
-    expect(store.rememberWorkbenchPanelState(sessionOne)).toBe(true);
+    expect(store.rememberWorkbenchPanelState(sessionOne, 640.4)).toBe(true);
+    expect(store.workbenchPanelWidthForRoute(sessionOne)).toBe(640);
 
     store.restoreWorkbenchPanelState(sessionTwo);
     expect(store.workbenchExpanded).toBe(false);
@@ -93,14 +94,16 @@ describe('YeaftDebugPanel store actions', () => {
 
     store.workbenchExpanded = true;
     store.workbenchMaximized = false;
-    expect(store.rememberWorkbenchPanelState(sessionTwo)).toBe(true);
+    expect(store.rememberWorkbenchPanelState(sessionTwo, 480)).toBe(true);
 
     store.restoreWorkbenchPanelState(sessionOne);
     expect(store.workbenchExpanded).toBe(true);
     expect(store.workbenchMaximized).toBe(true);
+    expect(store.workbenchPanelWidthForRoute(sessionOne)).toBe(640);
     store.restoreWorkbenchPanelState(sessionTwo);
     expect(store.workbenchExpanded).toBe(true);
     expect(store.workbenchMaximized).toBe(false);
+    expect(store.workbenchPanelWidthForRoute(sessionTwo)).toBe(480);
   });
 
   it('closes debug when Workbench opens', () => {
