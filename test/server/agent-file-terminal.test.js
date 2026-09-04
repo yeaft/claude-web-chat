@@ -82,7 +82,12 @@ function routeClient(userId, overrides = {}) {
 function installRouteAgent(agentId, sessions = []) {
   agents.set(agentId, {
     ownerId: sessions[0]?.userId || null,
-    capabilities: ['terminal', 'file_editor', 'workbench_session_routes'],
+    capabilities: [
+      'terminal',
+      'file_editor',
+      'workbench_session_routes',
+      'workbench_request_correlation',
+    ],
     conversations: new Map(),
     yeaftSessions: new Map(sessions.map(session => [session.id, { ...session }])),
   });
@@ -97,11 +102,13 @@ async function registerRouteRequest({
   workDir = '/workspace/session-1',
   requestId = null,
   extra = {},
+  agentCapabilities = null,
 }) {
   const route = { runtimeProvider: 'yeaft', agentId, sessionId };
   const client = routeClient(userId, { currentAgent: agentId });
   webClients.set(clientId, client);
   installRouteAgent(agentId, [{ id: sessionId, workDir, userId }]);
+  if (Array.isArray(agentCapabilities)) agents.get(agentId).capabilities = [...agentCapabilities];
   forwardToAgent.mockClear();
   const handled = await handleClientWorkbench(
     clientId,
@@ -247,7 +254,9 @@ describe('Agent file terminal forwarding', () => {
       workDir: canonicalWorkDir,
     });
     try {
-      agents.set(agentId, { capabilities: ['workbench_session_routes'] });
+      agents.set(agentId, {
+        capabilities: ['workbench_session_routes', 'workbench_request_correlation'],
+      });
       const handled = await handleClientWorkbench(
         'client-route',
         {
@@ -756,28 +765,47 @@ describe('Agent file terminal forwarding', () => {
     expect(tabs.fileLoading.value).toBe(false);
   });
 
-  it('correlates restored file tabs with their read requests', () => {
+  function createRestoreHarness({ routeKey = '', workspaceGeneration = '' } = {}) {
     globalThis.Vue = Vue;
     const sent = [];
-    const openFiles = Vue.ref([]);
-    const activeFileIndex = Vue.ref(-1);
     const store = {
       currentAgent: 'agent-a',
       currentConversation: 'conversation-a',
       clientId: 'client-a',
       sendWsMessage: msg => sent.push(msg),
     };
+    const tabs = createFileTabs(store, {
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/workspace',
+      editorContainer: Vue.ref(null),
+      createEditor: vi.fn(),
+      destroyEditor: vi.fn(),
+      clearFindMarkers: vi.fn(),
+      saveCurrentUndoHistory: vi.fn(),
+      saveAllUndoHistory: vi.fn(),
+      cleanupUndoHistory: vi.fn(),
+      deleteConversationHistory: vi.fn(),
+      debugStatus: Vue.ref(''),
+      mdPreviewMode: Vue.ref(true),
+      renderOfficeLocal: vi.fn(),
+      performFind: vi.fn(),
+      findBarVisible: Vue.ref(false),
+      findQuery: Vue.ref(''),
+      t: value => value,
+    });
     const handle = createWsHandler({
       store,
       normalizePath: value => value,
       getEffectiveWorkDir: () => '/workspace',
-      openFiles,
-      activeFileIndex,
-      activeFile: Vue.computed(() => openFiles.value[activeFileIndex.value] || null),
-      fileSaving: Vue.ref(false),
+      openFiles: tabs.openFiles,
+      activeFileIndex: tabs.activeFileIndex,
+      activeFile: tabs.activeFile,
+      fileSaving: tabs.fileSaving,
       saveTabsState: vi.fn(),
       createEditor: vi.fn(),
-      openFileInTab: vi.fn(),
+      openFileInTab: tabs.openFileInTab,
+      bumpTabRevision: tabs.bumpTabRevision,
+      acceptTabsRestoreRequest: tabs.acceptTabsRestoreRequest,
       tree: { handleDirectoryListing: vi.fn() },
       setTreeVisible: vi.fn(),
       fp: { handleFolderPickerListing: vi.fn() },
@@ -786,10 +814,19 @@ describe('Agent file terminal forwarding', () => {
       mdPreviewMode: Vue.ref(true),
       renderOfficeLocal: vi.fn(),
       editorContainer: Vue.ref(null),
+      routeKey,
+      workspaceGeneration,
     }).handleWorkbenchMessage;
+    return { handle, sent, store, tabs };
+  }
+
+  it('correlates restored file tabs with the latest restore request', () => {
+    const { handle, sent, tabs } = createRestoreHarness();
+    const restoreRequestId = tabs.beginTabsRestoreRequest();
 
     handle(new CustomEvent('workbench-message', { detail: {
       type: 'file_tabs_restored',
+      restoreRequestId,
       openFiles: [{ path: 'README.md' }],
       activeIndex: 0,
     } }));
@@ -802,7 +839,7 @@ describe('Agent file terminal forwarding', () => {
       workDir: '/workspace',
       _clientId: 'client-a',
     });
-    expect(openFiles.value[0]).toMatchObject({
+    expect(tabs.openFiles.value[0]).toMatchObject({
       path: 'README.md',
       agentId: 'agent-a',
       conversationId: 'conversation-a',
@@ -811,6 +848,74 @@ describe('Agent file terminal forwarding', () => {
       loading: true,
       loadError: null,
     });
+  });
+
+  it('does not revive restored tabs after a same-generation open and close', async () => {
+    const { handle, sent, tabs } = createRestoreHarness();
+    const restoreRequestId = tabs.beginTabsRestoreRequest();
+    tabs.openFileInTab('temporary.md', 'temporary.md');
+    await tabs.closeFileTab(0);
+    expect(tabs.openFiles.value).toEqual([]);
+    const readsBeforeRestore = sent.filter(msg => msg.type === 'read_file').length;
+
+    handle(new CustomEvent('workbench-message', { detail: {
+      type: 'file_tabs_restored',
+      restoreRequestId,
+      openFiles: [{ path: 'closed.md' }],
+      activeIndex: 0,
+    } }));
+
+    expect(tabs.openFiles.value).toEqual([]);
+    expect(sent.filter(msg => msg.type === 'read_file')).toHaveLength(readsBeforeRestore);
+  });
+
+  it('accepts only the latest file-tab restore response', () => {
+    const { handle, tabs } = createRestoreHarness();
+    const firstRequestId = tabs.beginTabsRestoreRequest();
+    const secondRequestId = tabs.beginTabsRestoreRequest();
+
+    handle(new CustomEvent('workbench-message', { detail: {
+      type: 'file_tabs_restored',
+      restoreRequestId: firstRequestId,
+      openFiles: [{ path: 'stale.md' }],
+      activeIndex: 0,
+    } }));
+    expect(tabs.openFiles.value).toEqual([]);
+
+    handle(new CustomEvent('workbench-message', { detail: {
+      type: 'file_tabs_restored',
+      restoreRequestId: secondRequestId,
+      openFiles: [{ path: 'latest.md' }],
+      activeIndex: 0,
+    } }));
+    expect(tabs.openFiles.value.map(file => file.path)).toEqual(['latest.md']);
+  });
+
+  it('rejects a stale workspace restore without consuming the current request', () => {
+    const routeKey = 'yeaft:agent-a:session-a';
+    const workspaceGeneration = 'current-generation';
+    const { handle, tabs } = createRestoreHarness({ routeKey, workspaceGeneration });
+    const restoreRequestId = tabs.beginTabsRestoreRequest();
+
+    handle(new CustomEvent('workbench-message', { detail: {
+      type: 'file_tabs_restored',
+      restoreRequestId,
+      workbenchRouteKey: routeKey,
+      workbenchWorkspaceGeneration: 'stale-generation',
+      openFiles: [{ path: 'stale.md' }],
+      activeIndex: 0,
+    } }));
+    expect(tabs.openFiles.value).toEqual([]);
+
+    handle(new CustomEvent('workbench-message', { detail: {
+      type: 'file_tabs_restored',
+      restoreRequestId,
+      workbenchRouteKey: routeKey,
+      workbenchWorkspaceGeneration: workspaceGeneration,
+      openFiles: [{ path: 'current.md' }],
+      activeIndex: 0,
+    } }));
+    expect(tabs.openFiles.value.map(file => file.path)).toEqual(['current.md']);
   });
 
   it('aborts a confirmed dirty batch before mutation when its commit fence expires', async () => {
@@ -1443,7 +1548,15 @@ describe('Agent file terminal forwarding', () => {
       workbenchWorkspaceGeneration: outbound.workbenchWorkspaceGeneration,
     });
 
-    expect(sendToWebClient).not.toHaveBeenCalled();
+    expect(sendToWebClient).toHaveBeenCalledTimes(1);
+    expect(sendToWebClient).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        type: 'terminal_error',
+        terminalId: 'late-terminal',
+        error: 'Workbench request timed out',
+      }),
+    );
     expect(sendToAgent).toHaveBeenCalledWith(
       agents.get('late-terminal-agent'),
       expect.objectContaining({
@@ -1502,7 +1615,13 @@ describe('Agent file terminal forwarding', () => {
 
     expect(__testExpireWorkbenchRequest('agent-1', outbound._workbenchRequestId)).toBe(true);
     await reply({});
-    expect(sendToWebClient).not.toHaveBeenCalled();
+    expect(sendToWebClient).toHaveBeenCalledTimes(1);
+    expect(sendToWebClient.mock.calls[0][1]).toMatchObject({
+      type: 'git_status_result',
+      requestId: 'git-1',
+      files: [],
+      error: 'Workbench request timed out',
+    });
 
     const second = await registerRouteRequest({ type: 'git_status', requestId: 'git-2' });
     sendToWebClient.mockClear();
@@ -1517,6 +1636,34 @@ describe('Agent file terminal forwarding', () => {
       _workbenchRequestId: second.outbound._workbenchRequestId,
     });
     expect(sendToWebClient).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the file search query in timeout recovery responses', async () => {
+    const { outbound } = await registerRouteRequest({
+      type: 'file_search',
+      requestId: 'search-timeout-1',
+      extra: { query: 'needle' },
+    });
+    sendToWebClient.mockClear();
+
+    expect(__testExpireWorkbenchRequest('agent-1', outbound._workbenchRequestId)).toBe(true);
+    await handleAgentFileTerminal('agent-1', agents.get('agent-1'), {
+      type: 'file_search_result',
+      conversationId: outbound.conversationId,
+      _workbenchRequestId: outbound._workbenchRequestId,
+      workbenchWorkspaceGeneration: outbound.workbenchWorkspaceGeneration,
+      query: 'needle',
+      results: [{ path: 'late-result.txt' }],
+    });
+
+    expect(sendToWebClient).toHaveBeenCalledTimes(1);
+    expect(sendToWebClient.mock.calls[0][1]).toMatchObject({
+      type: 'file_search_result',
+      requestId: 'search-timeout-1',
+      query: 'needle',
+      results: [],
+      error: 'Workbench request timed out',
+    });
   });
 
   it('reserves a route terminal id against another browser before Agent ack', async () => {
@@ -1549,6 +1696,159 @@ describe('Agent file terminal forwarding', () => {
       type: 'error',
       message: 'Invalid Workbench Session route',
     }));
+  });
+
+  it('routes a legacy route-capable Agent response without internal correlation to the requesting browser', async () => {
+    const { outbound, client } = await registerRouteRequest({
+      type: 'read_file',
+      requestId: 'legacy-read-1',
+      extra: { filePath: 'README.md' },
+      agentCapabilities: ['terminal', 'file_editor', 'workbench_session_routes'],
+    });
+    const otherClient = routeClient('user-1', { currentAgent: 'agent-1' });
+    webClients.set('client-2', otherClient);
+    sendToWebClient.mockClear();
+
+    expect(outbound).toMatchObject({
+      _requestUserId: 'user-1',
+      _requestClientId: 'client-1',
+      requestId: 'legacy-read-1',
+    });
+    await handleAgentFileTerminal('agent-1', agents.get('agent-1'), {
+      type: 'file_content',
+      conversationId: outbound.conversationId,
+      workbenchRouteKey: outbound.workbenchRouteKey,
+      workbenchWorkspaceGeneration: outbound.workbenchWorkspaceGeneration,
+      _requestUserId: outbound._requestUserId,
+      _requestClientId: outbound._requestClientId,
+      requestId: outbound.requestId,
+      requestedFilePath: 'README.md',
+      content: '# legacy response',
+    });
+
+    expect(sendToWebClient).toHaveBeenCalledTimes(1);
+    expect(sendToWebClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      type: 'file_content',
+      requestId: 'legacy-read-1',
+      requestedFilePath: 'README.md',
+      content: '# legacy response',
+    }));
+    expect(sendToWebClient.mock.calls[0][0]).not.toBe(otherClient);
+  });
+
+  it('projects read and save timeouts so Files UI can recover and retry', async () => {
+    globalThis.Vue = Vue;
+    const { outbound: readOutbound } = await registerRouteRequest({
+      type: 'read_file',
+      requestId: 'read-timeout-1',
+      extra: { filePath: 'README.md' },
+    });
+    const sent = [];
+    const store = {
+      currentAgent: 'agent-1',
+      currentConversation: readOutbound.conversationId,
+      clientId: 'client-1',
+      sendWsMessage: msg => sent.push(msg),
+    };
+    const tabs = createFileTabs(store, {
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/workspace/session-1',
+      editorContainer: Vue.ref(null),
+      createEditor: vi.fn(),
+      destroyEditor: vi.fn(),
+      clearFindMarkers: vi.fn(),
+      saveCurrentUndoHistory: vi.fn(),
+      saveAllUndoHistory: vi.fn(),
+      cleanupUndoHistory: vi.fn(),
+      deleteConversationHistory: vi.fn(),
+      debugStatus: Vue.ref(''),
+      mdPreviewMode: Vue.ref(false),
+      renderOfficeLocal: vi.fn(),
+      performFind: vi.fn(),
+      findBarVisible: Vue.ref(false),
+      findQuery: Vue.ref(''),
+      t: value => value,
+    });
+    tabs.openFileInTab('README.md', 'README.md', {
+      agentId: 'agent-1',
+      conversationId: readOutbound.conversationId,
+      workDir: '/workspace/session-1',
+      requestId: 'read-timeout-1',
+    });
+    const handle = createWsHandler({
+      store,
+      normalizePath: value => value,
+      getEffectiveWorkDir: () => '/workspace/session-1',
+      openFiles: tabs.openFiles,
+      activeFileIndex: tabs.activeFileIndex,
+      activeFile: tabs.activeFile,
+      fileLoading: tabs.fileLoading,
+      fileSaving: tabs.fileSaving,
+      saveTabsState: vi.fn(),
+      createEditor: vi.fn(),
+      openFileInTab: tabs.openFileInTab,
+      bumpTabRevision: tabs.bumpTabRevision,
+      acceptTabsRestoreRequest: tabs.acceptTabsRestoreRequest,
+      tree: { handleDirectoryListing: vi.fn() },
+      setTreeVisible: vi.fn(),
+      fp: { handleFolderPickerListing: vi.fn() },
+      qo: {},
+      ops: { takePendingDownload: () => null },
+      mdPreviewMode: Vue.ref(false),
+      renderOfficeLocal: vi.fn(),
+      editorContainer: Vue.ref(null),
+      routeKey: readOutbound.workbenchRouteKey,
+      workspaceGeneration: readOutbound.workbenchWorkspaceGeneration,
+    }).handleWorkbenchMessage;
+
+    sendToWebClient.mockClear();
+    expect(__testExpireWorkbenchRequest('agent-1', readOutbound._workbenchRequestId)).toBe(true);
+    await handleAgentFileTerminal('agent-1', agents.get('agent-1'), {
+      type: 'file_content',
+      conversationId: readOutbound.conversationId,
+      _workbenchRequestId: readOutbound._workbenchRequestId,
+      workbenchWorkspaceGeneration: readOutbound.workbenchWorkspaceGeneration,
+      requestedFilePath: 'README.md',
+      content: 'late content',
+    });
+    await vi.waitFor(() => expect(sendToWebClient).toHaveBeenCalledTimes(1));
+    const readTimeout = sendToWebClient.mock.calls.at(-1)[1];
+    handle(new CustomEvent('workbench-message', { detail: readTimeout }));
+    expect(tabs.fileLoading.value).toBe(false);
+    expect(tabs.activeFile.value.loadError).toBe('Workbench request timed out');
+
+    tabs.activeFile.value.content = 'updated';
+    tabs.activeFile.value.isDirty = true;
+    tabs.saveFile();
+    const saveRequest = sent.find(msg => msg.type === 'write_file');
+    const saveRegistration = await registerRouteRequest({
+      type: 'write_file',
+      requestId: saveRequest.requestId,
+      extra: { filePath: 'README.md', content: 'updated' },
+    });
+    sendToWebClient.mockClear();
+    expect(__testExpireWorkbenchRequest(
+      'agent-1',
+      saveRegistration.outbound._workbenchRequestId,
+    )).toBe(true);
+    await handleAgentFileTerminal('agent-1', agents.get('agent-1'), {
+      type: 'file_saved',
+      conversationId: saveRegistration.outbound.conversationId,
+      _workbenchRequestId: saveRegistration.outbound._workbenchRequestId,
+      workbenchWorkspaceGeneration: saveRegistration.outbound.workbenchWorkspaceGeneration,
+      requestedFilePath: 'README.md',
+      success: true,
+    });
+    await vi.waitFor(() => expect(sendToWebClient).toHaveBeenCalledTimes(1));
+    const saveTimeout = sendToWebClient.mock.calls.at(-1)[1];
+    handle(new CustomEvent('workbench-message', { detail: saveTimeout }));
+    expect(tabs.fileSaving.value).toBe(false);
+    expect(tabs.activeFile.value.isDirty).toBe(true);
+    expect(tabs.activeFile.value.pendingSaveRequestId).toBeUndefined();
+
+    const writesBeforeRetry = sent.filter(msg => msg.type === 'write_file').length;
+    tabs.saveFile();
+    expect(sent.filter(msg => msg.type === 'write_file')).toHaveLength(writesBeforeRetry + 1);
   });
 
   it('routes same-owner concurrent browsers only to the requesting browser', async () => {

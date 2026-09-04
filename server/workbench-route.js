@@ -4,6 +4,12 @@ import { sessionDb } from './db/session-db.js';
 import { yeaftSessionDb } from './db/yeaft-session-db.js';
 
 export const WORKBENCH_SESSION_ROUTE_CAPABILITY = 'workbench_session_routes';
+export const WORKBENCH_REQUEST_CORRELATION_CAPABILITY = 'workbench_request_correlation';
+
+export function agentSupportsWorkbenchRequestCorrelation(agent) {
+  return Array.isArray(agent?.capabilities)
+    && agent.capabilities.includes(WORKBENCH_REQUEST_CORRELATION_CAPABILITY);
+}
 
 const PROVIDERS = new Set(['yeaft', 'claude-code', 'copilot']);
 const SCOPES = new Set(['main', 'files-folder-picker', 'git-folder-picker']);

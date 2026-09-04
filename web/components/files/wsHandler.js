@@ -10,6 +10,7 @@ export function createWsHandler({
   // File tabs
   openFiles, activeFileIndex, activeFile, fileSaving,
   saveTabsState, createEditor, openFileInTab, bumpTabRevision = () => {},
+  acceptTabsRestoreRequest = () => false,
   // Tree
   tree, setTreeVisible,
   // Folder picker
@@ -196,6 +197,7 @@ export function createWsHandler({
         break;
       }
       case 'file_tabs_restored': {
+        if (!acceptTabsRestoreRequest(msg.restoreRequestId)) return;
         if (msg.openFiles?.length > 0 && openFiles.value.length === 0) {
           const pendingRestoreIndex = msg.activeIndex || 0;
           const totalFiles = msg.openFiles.length;
