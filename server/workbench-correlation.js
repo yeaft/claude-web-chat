@@ -7,6 +7,10 @@ const pendingRequests = new Map();
 const expiredRequests = new Map();
 const terminalOwners = new Map();
 
+export const LEGACY_WORKBENCH_REQUEST_QUARANTINED = Symbol(
+  'legacy-workbench-request-quarantined',
+);
+
 function requestKey(agentId, requestId) {
   return `${String(agentId || '')}\u0000${String(requestId || '')}`;
 }
@@ -199,7 +203,7 @@ export function consumeLegacyWorkbenchRequest({
     // are indistinguishable; keep the quarantine until TTL rather than risk
     // consuming a newer pending request.
     if (publicRequestId) expiredRequests.delete(key);
-    return null;
+    return LEGACY_WORKBENCH_REQUEST_QUARANTINED;
   }
   const matches = [];
   for (const [key, pending] of pendingRequests) {

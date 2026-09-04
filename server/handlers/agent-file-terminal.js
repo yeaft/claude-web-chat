@@ -16,6 +16,7 @@ import {
 import {
   consumeLegacyWorkbenchRequest,
   consumeWorkbenchRequest,
+  LEGACY_WORKBENCH_REQUEST_QUARANTINED,
   deleteWorkbenchTerminalOwner,
   getWorkbenchTerminalOwner,
   registerWorkbenchTerminalOwner,
@@ -143,8 +144,9 @@ async function handleTerminalResponse(agentId, agent, msg, routeKey) {
       await sendToPendingClient(agentId, msg, pending);
       return;
     }
-    // An explicit opaque id must never fall through to terminal ownership.
-    if (msg._workbenchRequestId) return;
+    // Explicit opaque ids and quarantined legacy replies must never fall
+    // through to terminal ownership.
+    if (msg._workbenchRequestId || pending === LEGACY_WORKBENCH_REQUEST_QUARANTINED) return;
   }
 
   const owner = terminalId ? getWorkbenchTerminalOwner(agentId, terminalId) : null;
@@ -216,6 +218,10 @@ export async function handleAgentFileTerminal(agentId, agent, rawMsg) {
     await handleAgentDirectoryPickerResponse(agentId, msg);
     return true;
   }
+
+  // Opaque correlation ids are Server-owned. A response carrying one cannot
+  // downgrade to legacy routing when its conversation is invalid or stale.
+  if (msg._workbenchRequestId) return true;
 
   // `_workbench:` is reserved for Server-authored route conversations. An
   // invalid or cross-Agent value is not a legacy conversation.

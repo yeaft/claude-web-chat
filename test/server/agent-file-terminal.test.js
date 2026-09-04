@@ -1525,6 +1525,35 @@ describe('Agent file terminal forwarding', () => {
     expect(sendToWebClient.mock.calls[0][0]).toBe(client);
   });
 
+  it('does not downgrade an opaque correlation response to legacy broadcast on a non-route conversation', async () => {
+    const { outbound, client } = await registerRouteRequest({
+      type: 'git_status',
+      requestId: 'opaque-no-downgrade',
+    });
+    const otherClient = routeClient('user-2', { currentAgent: 'agent-1' });
+    webClients.set('client-2', otherClient);
+    sendToWebClient.mockClear();
+
+    await handleAgentFileTerminal('agent-1', agents.get('agent-1'), {
+      type: 'git_status_result',
+      conversationId: 'legacy-conversation',
+      _workbenchRequestId: outbound._workbenchRequestId,
+      files: [{ path: 'forged.txt' }],
+    });
+
+    expect(sendToWebClient).not.toHaveBeenCalled();
+
+    await handleAgentFileTerminal('agent-1', agents.get('agent-1'), {
+      type: 'git_status_result',
+      conversationId: outbound.conversationId,
+      _workbenchRequestId: outbound._workbenchRequestId,
+      files: [],
+    });
+    expect(sendToWebClient).toHaveBeenCalledTimes(1);
+    expect(sendToWebClient.mock.calls[0][0]).toBe(client);
+    expect(sendToWebClient.mock.calls[0][0]).not.toBe(otherClient);
+  });
+
   it('actively closes a late terminal created after its Server correlation expired', async () => {
     const { outbound } = await registerRouteRequest({
       type: 'terminal_create',
@@ -1695,6 +1724,73 @@ describe('Agent file terminal forwarding', () => {
     expect(sendToWebClient).toHaveBeenCalledWith(secondClient, expect.objectContaining({
       type: 'error',
       message: 'Invalid Workbench Session route',
+    }));
+  });
+
+  it('quarantines a late legacy terminal error without falling through to a same-id retry owner', async () => {
+    const legacyCapabilities = ['terminal', 'file_editor', 'workbench_session_routes'];
+    const first = await registerRouteRequest({
+      type: 'terminal_create',
+      requestId: 'legacy-terminal-expired',
+      extra: { terminalId: 'legacy-retry-terminal', cols: 80, rows: 24 },
+      agentCapabilities: legacyCapabilities,
+    });
+    expect(__testExpireWorkbenchRequest(
+      'agent-1',
+      first.outbound._workbenchRequestId,
+    )).toBe(true);
+
+    const retry = await registerRouteRequest({
+      type: 'terminal_create',
+      requestId: 'legacy-terminal-retry',
+      extra: { terminalId: 'legacy-retry-terminal', cols: 80, rows: 24 },
+      agentCapabilities: legacyCapabilities,
+    });
+    await vi.waitFor(() => expect(sendToWebClient).toHaveBeenCalledWith(
+      first.client,
+      expect.objectContaining({
+        type: 'terminal_error',
+        requestId: 'legacy-terminal-expired',
+        error: 'Workbench request timed out',
+      }),
+    ));
+    sendToWebClient.mockClear();
+
+    await handleAgentFileTerminal('agent-1', agents.get('agent-1'), {
+      type: 'terminal_error',
+      conversationId: first.outbound.conversationId,
+      workbenchRouteKey: first.outbound.workbenchRouteKey,
+      workbenchWorkspaceGeneration: first.outbound.workbenchWorkspaceGeneration,
+      _requestUserId: first.outbound._requestUserId,
+      _requestClientId: first.outbound._requestClientId,
+      requestId: first.outbound.requestId,
+      terminalId: 'legacy-retry-terminal',
+      error: 'late create failure',
+    });
+
+    expect(sendToWebClient).not.toHaveBeenCalled();
+    expect(getWorkbenchTerminalOwner('agent-1', 'legacy-retry-terminal')).toMatchObject({
+      pendingRequestId: retry.outbound._workbenchRequestId,
+    });
+
+    await handleAgentFileTerminal('agent-1', agents.get('agent-1'), {
+      type: 'terminal_created',
+      conversationId: retry.outbound.conversationId,
+      workbenchRouteKey: retry.outbound.workbenchRouteKey,
+      workbenchWorkspaceGeneration: retry.outbound.workbenchWorkspaceGeneration,
+      _requestUserId: retry.outbound._requestUserId,
+      _requestClientId: retry.outbound._requestClientId,
+      requestId: retry.outbound.requestId,
+      terminalId: 'legacy-retry-terminal',
+      success: true,
+    });
+
+    expect(sendToWebClient).toHaveBeenCalledTimes(1);
+    expect(sendToWebClient).toHaveBeenCalledWith(retry.client, expect.objectContaining({
+      type: 'terminal_created',
+      requestId: 'legacy-terminal-retry',
+      terminalId: 'legacy-retry-terminal',
+      success: true,
     }));
   });
 
