@@ -98,15 +98,37 @@ function openPullRequest(repo, overrides = {}) {
 function createGithubRunner(repo, options = {}) {
   const baseRun = createRepoCommandRunner();
   const calls = [];
+  const fetchUrl = options.githubRemoteUrl || 'git@github.example.test:acme/repo.git';
+  const pushUrls = options.githubPushUrls || [fetchUrl];
   let pr = openPullRequest(repo, options.pullRequest);
+  let workflowListCalls = 0;
   const run = async (command, args, commandOptions = {}) => {
     calls.push({ command, args: [...args] });
     if (command === 'git' && args[0] === 'remote' && args[1] === 'get-url') {
       return {
-        stdout: options.githubRemoteUrl || 'git@github.example.test:acme/repo.git',
+        stdout: args.includes('--push') ? pushUrls.join('\n') : fetchUrl,
         stderr: '',
         exitCode: 0,
       };
+    }
+    if (command === 'git' && args[0] === 'push') {
+      const pushUrlIndex = args.findIndex(arg => pushUrls.includes(arg));
+      if (pushUrlIndex >= 0) {
+        const refspec = args.find(arg => arg.startsWith('refs/tags/'));
+        if (options.tagPushRace && refspec) {
+          const [source, target] = refspec.split(':');
+          const sha = git(commandOptions.cwd || repo.checkout, 'rev-parse', `${source}^{commit}`);
+          git(repo.root, '--git-dir', repo.remote, 'update-ref', target, sha);
+          return {
+            stdout: `=\t${refspec}\t[up to date]`,
+            stderr: '',
+            exitCode: 0,
+          };
+        }
+        const mappedArgs = [...args];
+        mappedArgs[pushUrlIndex] = repo.remote;
+        return baseRun(command, mappedArgs, commandOptions);
+      }
     }
     if (command !== 'gh') return baseRun(command, args, commandOptions);
     if (args[0] === 'pr' && args[1] === 'view') {
@@ -117,6 +139,40 @@ function createGithubRunner(repo, options = {}) {
         return { stdout: JSON.stringify({ nameWithOwner: 'acme/repo' }), stderr: '', exitCode: 0 };
       }
       return { stdout: JSON.stringify({ defaultBranchRef: { name: 'main' } }), stderr: '', exitCode: 0 };
+    }
+    if (args[0] === 'api' && args.some(arg => /actions\/workflows\?per_page=100$/.test(arg))) {
+      return {
+        stdout: JSON.stringify([{
+          workflows: options.workflows || [{ id: 77, name: 'Dev Release', path: '.github/workflows/dev-release.yml' }],
+        }]),
+        stderr: '',
+        exitCode: 0,
+      };
+    }
+    if (args[0] === 'api' && args.some(arg => /actions\/workflows\/\d+\/runs\?per_page=100$/.test(arg))) {
+      workflowListCalls += 1;
+      const runs = workflowListCalls === 1
+        ? (options.workflowBaselineRuns || [])
+        : (options.workflowRuns || []);
+      const workflowRuns = runs.map(item => ({
+        id: item.id ?? item.databaseId,
+        workflow_id: item.workflow_id ?? item.workflowDatabaseId,
+        head_sha: item.head_sha ?? item.headSha,
+        head_branch: item.head_branch ?? item.headBranch,
+        status: item.status,
+        conclusion: item.conclusion,
+        html_url: item.html_url ?? item.url,
+        event: item.event,
+        created_at: item.created_at ?? item.createdAt,
+        run_started_at: item.run_started_at ?? item.startedAt,
+      }));
+      return { stdout: JSON.stringify({ workflow_runs: workflowRuns }), stderr: '', exitCode: 0 };
+    }
+    if (args[0] === 'api' && args.some(arg => /actions\/runs\/\d+$/.test(arg))) {
+      const id = Number(args.find(arg => /actions\/runs\/\d+$/.test(arg)).split('/').pop());
+      const detail = options.workflowDetails?.[id];
+      if (!detail) throw new Error(`Missing workflow detail for run ${id}`);
+      return { stdout: JSON.stringify(detail), stderr: '', exitCode: 0 };
     }
     if (args[0] === 'api') {
       const mergeSha = options.mergeSha || repo.snapshotSha;
@@ -132,14 +188,11 @@ function createGithubRunner(repo, options = {}) {
         exitCode: 0,
       };
     }
-    if (args[0] === 'run' && args[1] === 'list') {
-      return { stdout: JSON.stringify(options.workflowRuns || []), stderr: '', exitCode: 0 };
-    }
     if (args[0] === 'run' && args[1] === 'view') {
       const id = Number(args[2]);
       const detail = options.workflowDetails?.[id];
       if (!detail) throw new Error(`Missing workflow detail for run ${id}`);
-      return { stdout: JSON.stringify(detail), stderr: '', exitCode: 0 };
+      return { stdout: JSON.stringify({ jobs: detail.jobs || [] }), stderr: '', exitCode: 0 };
     }
     throw new Error(`Unexpected gh call: ${args.join(' ')}`);
   };
@@ -192,6 +245,38 @@ describe('repository workflow helpers', () => {
     expect(formatted.code).toBe('COMMAND_FAILED');
     expect(JSON.stringify(formatted)).not.toContain('secret-token');
     expect(JSON.stringify(formatted)).toContain('https://***@github.example.test/acme/repo');
+  });
+
+  it('redacts plain and encoded query-string credentials from structured failures', async () => {
+    const runner = createRepoCommandRunner({
+      execFileImpl: async () => {
+        const error = new Error('request failed');
+        error.code = 128;
+        error.stderr = [
+          'https://github.example.test/acme/repo?access_token=plain-secret&x=1',
+          'https%3A%2F%2Fgithub.example.test%2Facme%2Frepo%3Ftoken%3Dencoded-secret%26x%3D1',
+          'https%253A%252F%252Fgithub.example.test%252Facme%252Frepo%253Faccess%255Ftoken%253Ddouble-secret%2526x%253D1',
+        ].join('\n');
+        throw error;
+      },
+    });
+    let caught;
+    try {
+      await runner('git', ['fetch', 'https://github.example.test/acme/repo?token=argument-secret']);
+    } catch (error) {
+      caught = error;
+    }
+
+    const serialized = JSON.stringify(formatRepoWorkflowError(caught));
+    expect(serialized).not.toMatch(/plain-secret|encoded-secret|double-secret|argument-secret/);
+    expect(serialized.match(/\*\*\*/g)?.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('redacts credentials from unexpected errors at the final serialization boundary', () => {
+    const error = new Error('request https://github.example.test/acme/repo?access_token=unexpected-secret&keep=visible failed');
+    const serialized = JSON.stringify(formatRepoWorkflowError(error));
+    expect(serialized).not.toContain('unexpected-secret');
+    expect(serialized).toContain('keep=visible');
   });
 
   it('calculates numeric tags without lexicographic version mistakes', () => {
@@ -298,7 +383,12 @@ describe('landRepoWorkflow', () => {
     const github = createGithubRunner(repo);
     const review = await prepareRepoReview({ cwd: repo.checkout, pr: 1 }, { run: github.run });
     const developmentPath = join(repo.root, 'development');
-    git(repo.checkout, 'worktree', 'add', '-b', 'yeaft-wt/feature', developmentPath, 'origin/feature');
+    await prepareRepoWorkflow({
+      cwd: repo.checkout,
+      name: 'feature',
+      baseBranch: 'feature',
+      worktreePath: developmentPath,
+    }, { run: github.run });
 
     const result = await landRepoWorkflow({
       cwd: repo.checkout,
@@ -344,11 +434,41 @@ describe('landRepoWorkflow', () => {
     expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(repo.baseSha);
   });
 
+  it('rejects a pushurl that targets another repository before merge or tag side effects', async () => {
+    const repo = createPullRequestRepository();
+    const github = createGithubRunner(repo, {
+      githubPushUrls: ['git@github.example.test:other/repository.git'],
+    });
+
+    await expect(landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+      approvedBy: 'reviewer',
+      tagPrefix: 'v1.0.',
+    }, { run: github.run })).rejects.toMatchObject({
+      code: 'GITHUB_PUSH_URL_MISMATCH',
+      details: {
+        expected: 'github.example.test/acme/repo',
+        pushTargets: ['github.example.test/other/repository'],
+      },
+    });
+
+    expect(github.calls.some(call => call.command === 'gh' && call.args[0] === 'api')).toBe(false);
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(repo.baseSha);
+  });
+
   it('keeps dirty requested worktrees after a successful merge', async () => {
     const repo = createPullRequestRepository();
     const github = createGithubRunner(repo);
     const developmentPath = join(repo.root, 'development');
-    git(repo.checkout, 'worktree', 'add', '-b', 'yeaft-wt/feature', developmentPath, 'origin/feature');
+    await prepareRepoWorkflow({
+      cwd: repo.checkout,
+      name: 'feature',
+      baseBranch: 'feature',
+      worktreePath: developmentPath,
+    }, { run: github.run });
     writeFileSync(join(developmentPath, 'untracked.txt'), 'keep me\n');
 
     const result = await landRepoWorkflow({
@@ -362,6 +482,35 @@ describe('landRepoWorkflow', () => {
 
     expect(result.cleanup).toEqual([{ path: developmentPath, status: 'kept-dirty' }]);
     expect(readFileSync(join(developmentPath, 'untracked.txt'), 'utf8')).toBe('keep me\n');
+  });
+
+  it('keeps an owned worktree when it contains ignored files', async () => {
+    const repo = createPullRequestRepository();
+    const github = createGithubRunner(repo);
+    const developmentPath = join(repo.root, 'development');
+    await prepareRepoWorkflow({
+      cwd: repo.checkout,
+      name: 'feature',
+      baseBranch: 'feature',
+      worktreePath: developmentPath,
+    }, { run: github.run });
+    const commonDir = git(developmentPath, 'rev-parse', '--git-common-dir');
+    const excludePath = join(commonDir, 'info', 'exclude');
+    writeFileSync(excludePath, `${readFileSync(excludePath, 'utf8')}\ncredentials.secret\n`);
+    writeFileSync(join(developmentPath, 'credentials.secret'), 'must survive\n');
+    expect(git(developmentPath, 'status', '--porcelain=v1')).toBe('');
+
+    const result = await landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+      approvedBy: 'reviewer',
+      worktreePaths: [developmentPath],
+    }, { run: github.run });
+
+    expect(result.cleanup).toEqual([{ path: developmentPath, status: 'kept-dirty' }]);
+    expect(readFileSync(join(developmentPath, 'credentials.secret'), 'utf8')).toBe('must survive\n');
   });
 
   it('never removes a requested clean worktree that is not owned by this workflow', async () => {
@@ -393,19 +542,21 @@ describe('landRepoWorkflow', () => {
     const common = {
       headSha: repo.snapshotSha,
       headBranch: 'main',
+      workflowDatabaseId: 77,
       workflowName: 'Dev Release',
       status: 'completed',
       conclusion: 'success',
       event: 'push',
     };
     const github = createGithubRunner(repo, {
+      workflowBaselineRuns: [{ databaseId: 10, workflowDatabaseId: 77 }],
       workflowRuns: [
-        { ...common, databaseId: 1, createdAt: '2026-01-01T00:00:00Z', url: 'https://example.test/runs/1' },
-        { ...common, databaseId: 2, createdAt: '2026-01-02T00:00:00Z', url: 'https://example.test/runs/2' },
+        { ...common, databaseId: 11, createdAt: '2026-09-05T12:00:01Z', url: 'https://example.test/runs/11' },
+        { ...common, databaseId: 12, createdAt: '2026-09-05T12:00:02Z', url: 'https://example.test/runs/12' },
       ],
       workflowDetails: {
-        1: { ...common, databaseId: 1, url: 'https://example.test/runs/1', jobs: [] },
-        2: { ...common, databaseId: 2, url: 'https://example.test/runs/2', jobs: [] },
+        11: { id: 11, workflow_id: 77, head_sha: repo.snapshotSha, head_branch: 'main', created_at: '2026-09-05T12:00:01Z', status: 'completed', conclusion: 'success', event: 'push', html_url: 'https://example.test/runs/11', jobs: [] },
+        12: { id: 12, workflow_id: 77, head_sha: repo.snapshotSha, head_branch: 'main', created_at: '2026-09-05T12:00:02Z', status: 'completed', conclusion: 'success', event: 'push', html_url: 'https://example.test/runs/12', jobs: [] },
       },
     });
 
@@ -418,11 +569,124 @@ describe('landRepoWorkflow', () => {
       workflow: 'Dev Release',
       pollIntervalMs: 1,
       waitTimeoutMs: 100,
-    }, { run: github.run });
+    }, {
+      run: github.run,
+      now: () => Date.parse('2026-09-05T12:00:00Z'),
+      sleep: async () => {},
+    });
 
-    expect(result.workflow).toMatchObject({ id: 2, url: 'https://example.test/runs/2' });
+    expect(result.workflow).toMatchObject({ id: 12, workflowId: 77, url: 'https://example.test/runs/12' });
+    expect(github.calls).toContainEqual(expect.objectContaining({
+      command: 'gh',
+      args: expect.arrayContaining(['api', 'repos/acme/repo/actions/workflows?per_page=100']),
+    }));
+    expect(github.calls.some(call => call.command === 'gh'
+      && call.args[0] === 'workflow'
+      && call.args[1] === 'view')).toBe(false);
     const viewCall = github.calls.find(call => call.command === 'gh' && call.args[0] === 'run' && call.args[1] === 'view');
-    expect(viewCall.args[2]).toBe('2');
+    expect(viewCall.args[2]).toBe('12');
+  });
+
+  it('does not attribute an old push or workflow_dispatch run to this landing', async () => {
+    const repo = createPullRequestRepository();
+    const timestamp = '2026-09-05T12:00:01Z';
+    const github = createGithubRunner(repo, {
+      workflowBaselineRuns: [{ databaseId: 20, workflowDatabaseId: 77 }],
+      workflowRuns: [
+        {
+          databaseId: 20,
+          workflowDatabaseId: 77,
+          headSha: repo.snapshotSha,
+          headBranch: 'v1.0.0',
+          createdAt: timestamp,
+          event: 'push',
+          status: 'completed',
+          conclusion: 'success',
+        },
+        {
+          databaseId: 21,
+          workflowDatabaseId: 77,
+          headSha: repo.snapshotSha,
+          headBranch: 'v1.0.0',
+          createdAt: timestamp,
+          event: 'workflow_dispatch',
+          status: 'completed',
+          conclusion: 'success',
+        },
+      ],
+    });
+    let clock = Date.parse('2026-09-05T12:00:00Z');
+
+    await expect(landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+      approvedBy: 'reviewer',
+      tagPrefix: 'v1.0.',
+      workflow: 'Dev Release',
+      pollIntervalMs: 1,
+      waitTimeoutMs: 150,
+    }, {
+      run: github.run,
+      now: () => {
+        clock += 100;
+        return clock;
+      },
+      sleep: async () => {},
+    })).rejects.toMatchObject({
+      code: 'WORKFLOW_NOT_FOUND',
+      details: {
+        remoteEffects: {
+          tag: { status: 'created', name: 'v1.0.0', sha: repo.snapshotSha },
+        },
+      },
+    });
+  });
+
+  it('revalidates immutable workflow identity from the Actions run API', async () => {
+    const repo = createPullRequestRepository();
+    const runInfo = {
+      databaseId: 31,
+      workflowDatabaseId: 77,
+      headSha: repo.snapshotSha,
+      headBranch: 'main',
+      createdAt: '2026-09-05T12:00:01Z',
+      event: 'push',
+      status: 'completed',
+      conclusion: 'success',
+    };
+    const github = createGithubRunner(repo, {
+      workflowBaselineRuns: [{ databaseId: 30, workflowDatabaseId: 77 }],
+      workflowRuns: [runInfo],
+      workflowDetails: {
+        31: {
+          id: 31,
+          workflow_id: 88,
+          head_sha: repo.snapshotSha,
+          head_branch: 'main',
+          created_at: '2026-09-05T12:00:01Z',
+          event: 'push',
+          status: 'completed',
+          conclusion: 'success',
+        },
+      },
+    });
+
+    await expect(landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+      approvedBy: 'reviewer',
+      workflow: 'Dev Release',
+      pollIntervalMs: 1,
+      waitTimeoutMs: 100,
+    }, {
+      run: github.run,
+      now: () => Date.parse('2026-09-05T12:00:00Z'),
+      sleep: async () => {},
+    })).rejects.toMatchObject({ code: 'WORKFLOW_IDENTITY_MISMATCH' });
   });
 
   it('accepts a different squash commit when its tree matches the approved snapshot', async () => {
@@ -497,6 +761,72 @@ describe('landRepoWorkflow', () => {
     expect(github.calls.filter(call => call.command === 'gh' && call.args[0] === 'api')).toHaveLength(1);
   });
 
+  it('reuses any numeric remote tag already pointing at the landed commit', async () => {
+    const repo = createPullRequestRepository();
+    git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/tags/v1.0.0', repo.snapshotSha);
+    git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/tags/v1.0.1', repo.baseSha);
+    const github = createGithubRunner(repo);
+
+    const result = await landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+      approvedBy: 'reviewer',
+      tagPrefix: 'v1.0.',
+    }, { run: github.run });
+
+    expect(result.tag).toEqual({ name: 'v1.0.0', sha: repo.snapshotSha, reused: true });
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/tags/v1.0.1')).toBe(repo.baseSha);
+  });
+
+  it('reports a same-target concurrent tag winner as reused', async () => {
+    const repo = createPullRequestRepository();
+    const github = createGithubRunner(repo, { tagPushRace: true });
+
+    const result = await landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+      approvedBy: 'reviewer',
+      tagPrefix: 'v1.0.',
+    }, { run: github.run });
+
+    expect(result.tag).toEqual({ name: 'v1.0.0', sha: repo.snapshotSha, reused: true });
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/tags/v1.0.0')).toBe(repo.snapshotSha);
+  });
+
+  it('reports deterministic tag validation failures as not attempted', async () => {
+    const repo = createPullRequestRepository();
+    const github = createGithubRunner(repo);
+    let caught;
+
+    try {
+      await landRepoWorkflow({
+        cwd: repo.checkout,
+        pr: 1,
+        reviewedHead: repo.headSha,
+        reviewedSnapshot: repo.snapshotSha,
+        approvedBy: 'reviewer',
+        tagPrefix: 'bad tag',
+      }, { run: github.run });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      code: 'INVALID_TAG_PREFIX',
+      details: {
+        remoteEffects: {
+          merge: { status: 'created', sha: repo.snapshotSha },
+          tag: { stage: 'validate', status: 'not-attempted', prefix: 'bad tag', sha: repo.snapshotSha },
+        },
+      },
+    });
+    expect(git(repo.root, '--git-dir', repo.remote, 'tag')).toBe('');
+  });
+
   it('does not let an already-merged retry bypass the reviewed head', async () => {
     const repo = createPullRequestRepository();
     git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/heads/main', repo.snapshotSha);
@@ -565,6 +895,9 @@ describe('CLI and tool surface', () => {
       toolNames,
       prompt: 'Prepare a GitHub pull request review workflow.',
     }).has('RepoWorkflow')).toBe(true);
+    for (const prompt of ['Review PR #42', 'Merge PR #42', '审查 PR #42', '合并 PR #42']) {
+      expect(resolveActiveToolNames({ toolNames, prompt }).has('RepoWorkflow'), prompt).toBe(true);
+    }
 
     const candidate = allTools.find(tool => tool.name === 'RepoWorkflow');
     const directory = discoverToolCapabilities({

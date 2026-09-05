@@ -42,6 +42,7 @@
     "docker-entrypoint.sh",
     "yeaft/templates/**/*.md",
     "yeaft/dream/prompts/**/*.md",
+    "skills/**/*.md",
     "browser-runtime/extension/**/*",
     "browser-runtime/*.ps1",
     "local-runtime/**/*"

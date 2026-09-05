@@ -1,5 +1,7 @@
 import { execFile as execFileCallback } from 'node:child_process';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -8,18 +10,34 @@ const DEFAULT_REMOTE = 'origin';
 const DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 15_000;
 const MAX_ERROR_OUTPUT = 4_000;
+const WORKTREE_OWNERSHIP_FILE = 'yeaft-repo-workflow-owner.json';
+const WORKTREE_OWNERSHIP_VERSION = 1;
+
+function redactUrlCredentials(value) {
+  return String(value || '')
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/giu, '$1***@')
+    .replace(/((?:[?&]|%3f|%26|%253f|%2526)(?:access(?:_|%5f|%255f)token|token)(?:=|%3d|%253d))(?:(?![&#\s]|%26|%2526).)*/giu, '$1***');
+}
+
+function redactStructured(value, seen = new WeakSet()) {
+  if (typeof value === 'string') return redactUrlCredentials(value);
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return '[Circular]';
+  seen.add(value);
+  if (Array.isArray(value)) return value.map(item => redactStructured(item, seen));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    /^(?:access_?token|token)$/iu.test(key) ? '***' : redactStructured(item, seen),
+  ]));
+}
 
 export class RepoWorkflowError extends Error {
   constructor(code, message, details = {}) {
-    super(message);
+    super(redactUrlCredentials(message));
     this.name = 'RepoWorkflowError';
     this.code = code;
-    this.details = details;
+    this.details = redactStructured(details);
   }
-}
-
-function redactUrlCredentials(value) {
-  return String(value || '').replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/giu, '$1***@');
 }
 
 function clip(value, max = MAX_ERROR_OUTPUT) {
@@ -174,7 +192,13 @@ async function resolveRepository(run, cwd, options = {}) {
     throw new RepoWorkflowError('REMOTE_NOT_FOUND', `Git remote "${remote}" does not exist`, { remotes });
   }
   const remoteUrl = await gitOutput(run, repoRoot, ['remote', 'get-url', remote]);
-  return { repoRoot, workspaceRoot, remote, remoteUrl };
+  return {
+    repoRoot,
+    workspaceRoot,
+    commonDir: absoluteCommonDir,
+    remote,
+    remoteUrl,
+  };
 }
 
 async function resolveDefaultBranch(run, repository, explicitBase) {
@@ -264,6 +288,127 @@ function githubRepository(repository) {
   return parseGithubRemoteUrl(repository.remoteUrl);
 }
 
+async function assertPushTarget(run, repository) {
+  const github = githubRepository(repository);
+  const pushUrls = (await gitOutput(run, repository.repoRoot, [
+    'remote', 'get-url', '--push', '--all', repository.remote,
+  ])).split(/\r?\n/).filter(Boolean);
+  if (pushUrls.length === 0) {
+    throw new RepoWorkflowError('GITHUB_PUSH_URL_UNKNOWN', `Git remote "${repository.remote}" has no push URL`);
+  }
+  const targets = pushUrls.map(pushUrl => {
+    try {
+      return parseGithubRemoteUrl(pushUrl);
+    } catch {
+      return null;
+    }
+  });
+  const valid = targets.every(target => target
+    && target.host === github.host
+    && target.nameWithOwner.toLowerCase() === github.nameWithOwner.toLowerCase());
+  if (!valid) {
+    throw new RepoWorkflowError('GITHUB_PUSH_URL_MISMATCH', 'Selected remote fetch and push URLs do not identify the same GitHub repository', {
+      remote: repository.remote,
+      expected: github.selector,
+      pushTargets: targets.map(target => target?.selector || 'unsupported'),
+    });
+  }
+  return pushUrls[0];
+}
+
+function worktreeOwnershipKey(path) {
+  return createHash('sha256').update(resolve(path)).digest('hex');
+}
+
+async function worktreeOwnershipPaths(run, repository, path) {
+  const key = worktreeOwnershipKey(path);
+  const rawGitDir = await gitOutput(run, path, ['rev-parse', '--path-format=absolute', '--git-dir']);
+  const gitDir = isAbsolute(rawGitDir) ? rawGitDir : resolve(path, rawGitDir);
+  return {
+    worktree: join(gitDir, WORKTREE_OWNERSHIP_FILE),
+    repository: join(repository.commonDir, 'yeaft-repo-workflow', `${key}.json`),
+  };
+}
+
+function createWorktreeOwnership(path, kind, createdHead, branch = null) {
+  return {
+    version: WORKTREE_OWNERSHIP_VERSION,
+    nonce: randomBytes(32).toString('hex'),
+    path: resolve(path),
+    kind,
+    createdHead,
+    branch,
+  };
+}
+
+async function writeJsonAtomic(path, value) {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+  await rename(temporary, path);
+}
+
+async function persistWorktreeOwnership(run, repository, ownership) {
+  const paths = await worktreeOwnershipPaths(run, repository, ownership.path);
+  try {
+    await writeJsonAtomic(paths.repository, ownership);
+    await writeJsonAtomic(paths.worktree, ownership);
+  } catch (error) {
+    await Promise.allSettled([unlink(paths.repository), unlink(paths.worktree)]);
+    throw new RepoWorkflowError('WORKTREE_OWNERSHIP_WRITE_FAILED', 'Could not persist worktree ownership metadata', {
+      path: ownership.path,
+      error: error?.message || String(error),
+    });
+  }
+  return ownership;
+}
+
+async function readJsonFile(path) {
+  try {
+    return JSON.parse(await readFile(path, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function sameSecret(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string' || left.length !== right.length) return false;
+  return timingSafeEqual(Buffer.from(left), Buffer.from(right));
+}
+
+async function verifyWorktreeOwnership(run, repository, path, expected = {}) {
+  let paths;
+  try {
+    paths = await worktreeOwnershipPaths(run, repository, path);
+  } catch {
+    return null;
+  }
+  const [worktree, repositoryCopy] = await Promise.all([
+    readJsonFile(paths.worktree),
+    readJsonFile(paths.repository),
+  ]);
+  const valid = worktree?.version === WORKTREE_OWNERSHIP_VERSION
+    && repositoryCopy?.version === WORKTREE_OWNERSHIP_VERSION
+    && sameSecret(worktree.nonce, repositoryCopy.nonce)
+    && worktree.path === resolve(path)
+    && repositoryCopy.path === resolve(path)
+    && worktree.kind === repositoryCopy.kind
+    && worktree.createdHead === repositoryCopy.createdHead
+    && worktree.branch === repositoryCopy.branch
+    && (!expected.kind || worktree.kind === expected.kind)
+    && (!expected.createdHead || worktree.createdHead === expected.createdHead)
+    && (expected.branch === undefined || worktree.branch === expected.branch);
+  return valid ? { ownership: worktree, paths } : null;
+}
+
+async function removeWorktreeOwnership(paths) {
+  await Promise.allSettled([unlink(paths.repository), unlink(paths.worktree)]);
+}
+
+async function worktreeStatus(run, path) {
+  return gitOutput(run, path, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching']);
+}
+
 export async function prepareRepoWorkflow(options = {}, dependencies = {}) {
   const run = dependencies.run || createRepoCommandRunner({ signal: dependencies.signal });
   const repository = await resolveRepository(run, options.cwd || process.cwd(), options);
@@ -276,10 +421,16 @@ export async function prepareRepoWorkflow(options = {}, dependencies = {}) {
   const existing = worktrees.find(item => resolve(item.path) === worktreePath);
 
   if (existing) {
-    if (existing.branch !== branch || existing.head !== baseSha) {
-      throw new RepoWorkflowError('WORKTREE_CONFLICT', 'Existing worktree does not match the requested branch and latest base', {
+    const ownership = await verifyWorktreeOwnership(run, repository, worktreePath, {
+      kind: 'development',
+      createdHead: baseSha,
+      branch,
+    });
+    if (existing.branch !== branch || existing.head !== baseSha || !ownership) {
+      throw new RepoWorkflowError('WORKTREE_CONFLICT', 'Existing worktree is not an owned checkout of the requested branch and latest base', {
         requested: { worktreePath, branch, baseSha },
         existing,
+        ownershipVerified: Boolean(ownership),
       });
     }
     return {
@@ -303,6 +454,17 @@ export async function prepareRepoWorkflow(options = {}, dependencies = {}) {
   }
 
   await runGit(run, repository.repoRoot, ['worktree', 'add', '-b', branch, worktreePath, baseSha]);
+  try {
+    await persistWorktreeOwnership(
+      run,
+      repository,
+      createWorktreeOwnership(worktreePath, 'development', baseSha, branch),
+    );
+  } catch (error) {
+    await runGit(run, repository.repoRoot, ['worktree', 'remove', worktreePath]);
+    await runGit(run, repository.repoRoot, ['branch', '-D', branch]);
+    throw error;
+  }
   return {
     ok: true,
     phase: 'prepare',
@@ -437,11 +599,19 @@ export async function prepareRepoReview(options = {}, dependencies = {}) {
   const existing = worktrees.find(item => resolve(item.path) === worktreePath);
 
   if (existing) {
-    const status = await gitOutput(run, worktreePath, ['status', '--porcelain']);
-    if (!existing.detached || existing.head !== frozen.snapshotSha || status) {
-      throw new RepoWorkflowError('REVIEW_WORKTREE_CONFLICT', 'Existing review worktree is not a clean checkout of the frozen merge snapshot', {
+    const [status, ownership] = await Promise.all([
+      worktreeStatus(run, worktreePath),
+      verifyWorktreeOwnership(run, repository, worktreePath, {
+        kind: 'review',
+        createdHead: frozen.snapshotSha,
+        branch: null,
+      }),
+    ]);
+    if (!existing.detached || existing.head !== frozen.snapshotSha || status || !ownership) {
+      throw new RepoWorkflowError('REVIEW_WORKTREE_CONFLICT', 'Existing review worktree is not an owned clean checkout of the frozen merge snapshot', {
         existing,
         dirty: Boolean(status),
+        ownershipVerified: Boolean(ownership),
       });
     }
   } else {
@@ -449,6 +619,16 @@ export async function prepareRepoReview(options = {}, dependencies = {}) {
       throw new RepoWorkflowError('PATH_EXISTS', `Review worktree path already exists: ${worktreePath}`);
     }
     await runGit(run, repository.repoRoot, ['worktree', 'add', '--detach', worktreePath, frozen.snapshotSha]);
+    try {
+      await persistWorktreeOwnership(
+        run,
+        repository,
+        createWorktreeOwnership(worktreePath, 'review', frozen.snapshotSha),
+      );
+    } catch (error) {
+      await runGit(run, repository.repoRoot, ['worktree', 'remove', worktreePath]);
+      throw error;
+    }
   }
 
   return {
@@ -531,13 +711,17 @@ async function resolveRemoteTagCommit(run, repository, tag) {
   return (peeled || direct)?.split(/\s+/)[0] || null;
 }
 
-async function createAndPushNextTag(run, repository, targetSha, prefix, start = 0) {
+async function createAndPushNextTag(run, repository, pushUrl, targetSha, prefix, start = 0, callbacks = {}) {
+  const onStage = callbacks.onStage || (() => {});
+  const beforePush = callbacks.beforePush || (async () => {});
+  onStage({ stage: 'validate', status: 'not-attempted', prefix, sha: targetSha });
   const refCheck = await runGit(run, repository.repoRoot, ['check-ref-format', `refs/tags/${prefix}${start}`], {
     allowExitCodes: [1],
   });
   if (refCheck.exitCode !== 0) {
     throw new RepoWorkflowError('INVALID_TAG_PREFIX', `tagPrefix does not form a valid Git tag: ${prefix}`);
   }
+  onStage({ stage: 'scan-remote', status: 'not-attempted', prefix, sha: targetSha });
   const remoteTags = await runGit(run, repository.repoRoot, [
     'ls-remote',
     '--tags',
@@ -548,11 +732,14 @@ async function createAndPushNextTag(run, repository, targetSha, prefix, start = 
     .map(ref => ({ ...ref, suffix: numericTagSuffix(ref.name, prefix) }))
     .filter(ref => ref.suffix !== null)
     .sort((a, b) => b.suffix - a.suffix);
-  const latest = matchingTags[0];
-  if (latest?.commitSha === targetSha) {
-    return { name: latest.name, sha: targetSha, reused: true };
+  const existingTarget = matchingTags.find(ref => ref.commitSha === targetSha);
+  if (existingTarget) {
+    onStage({ stage: 'verified-preexisting', status: 'preexisting', name: existingTarget.name, sha: targetSha });
+    return { name: existingTarget.name, sha: targetSha, reused: true };
   }
+
   const tag = nextNumericTag(matchingTags.map(ref => ref.name), prefix, start);
+  onStage({ stage: 'selected', status: 'not-attempted', name: tag, sha: targetSha });
   const remoteExisting = await resolveRemoteTagCommit(run, repository, tag);
   if (remoteExisting && remoteExisting !== targetSha) {
     throw new RepoWorkflowError('TAG_CONFLICT', `Remote tag ${tag} already points to another commit`, {
@@ -576,12 +763,21 @@ async function createAndPushNextTag(run, repository, targetSha, prefix, start = 
   if (local.exitCode !== 0) {
     await runGit(run, repository.repoRoot, ['tag', tag, targetSha]);
   }
+  onStage({ stage: 'local-ready', status: 'none', name: tag, sha: targetSha });
+
+  let reused = Boolean(remoteExisting);
   if (!remoteExisting) {
+    await beforePush();
+    onStage({ stage: 'push-started', status: 'unknown', name: tag, sha: targetSha });
     try {
-      await runGit(run, repository.repoRoot, ['push', repository.remote, `${localRef}:${localRef}`]);
+      const pushed = await runGit(run, repository.repoRoot, ['push', '--porcelain', pushUrl, `${localRef}:${localRef}`]);
+      const porcelain = `${pushed.stdout}\n${pushed.stderr}`;
+      if (porcelain.split(/\r?\n/).some(line => line.startsWith('='))) reused = true;
+      onStage({ stage: 'push-returned', status: 'unknown', name: tag, sha: targetSha });
     } catch (error) {
       const racedCommit = await resolveRemoteTagCommit(run, repository, tag);
       if (racedCommit !== targetSha) throw error;
+      reused = true;
     }
   }
   const remoteCommit = await resolveRemoteTagCommit(run, repository, tag);
@@ -592,7 +788,9 @@ async function createAndPushNextTag(run, repository, targetSha, prefix, start = 
       actual: remoteCommit,
     });
   }
-  return { name: tag, sha: targetSha, reused: Boolean(remoteExisting) };
+  const effect = { stage: reused ? 'verified-preexisting' : 'verified-created', status: reused ? 'preexisting' : 'created', name: tag, sha: targetSha };
+  onStage(effect);
+  return { name: tag, sha: targetSha, reused };
 }
 
 function abortedError() {
@@ -617,6 +815,93 @@ function sleep(ms, signal) {
   });
 }
 
+async function captureWorkflowIdentity(run, repository, workflow) {
+  const github = githubRepository(repository);
+  const response = await ghJson(run, repository.repoRoot, [
+    'api',
+    '--hostname',
+    github.host,
+    '--paginate',
+    '--slurp',
+    `repos/${github.nameWithOwner}/actions/workflows?per_page=100`,
+  ]);
+  const pages = Array.isArray(response) ? response : [response];
+  const workflows = pages.flatMap(page => Array.isArray(page?.workflows) ? page.workflows : []);
+  const selector = String(workflow || '').trim();
+  const matches = workflows.filter(item => {
+    const id = Number(item?.id);
+    const path = String(item?.path || '');
+    return (Number.isSafeInteger(id) && String(id) === selector)
+      || path === selector
+      || basename(path) === selector
+      || String(item?.name || '') === selector;
+  });
+  if (matches.length > 1) {
+    throw new RepoWorkflowError('WORKFLOW_AMBIGUOUS', `Workflow "${selector}" matches multiple GitHub workflows`, {
+      matches: matches.map(item => ({ id: item.id, name: item.name, path: item.path })),
+    });
+  }
+  const info = matches[0];
+  const workflowId = Number(info?.id);
+  if (!Number.isSafeInteger(workflowId) || workflowId <= 0) {
+    throw new RepoWorkflowError('WORKFLOW_ID_UNKNOWN', `Workflow "${selector}" has no immutable GitHub workflow ID`);
+  }
+  return { id: workflowId, name: String(info.name || selector), path: String(info.path || '') };
+}
+
+async function listWorkflowRuns(run, repository, workflowIdentity) {
+  const github = githubRepository(repository);
+  const response = await ghJson(run, repository.repoRoot, [
+    'api',
+    '--hostname',
+    github.host,
+    `repos/${github.nameWithOwner}/actions/workflows/${workflowIdentity.id}/runs?per_page=100`,
+  ]);
+  return Array.isArray(response?.workflow_runs) ? response.workflow_runs : [];
+}
+
+async function captureWorkflowBaseline(run, repository, workflowIdentity) {
+  const runs = await listWorkflowRuns(run, repository, workflowIdentity);
+  const baselineRunId = runs.reduce((maximum, item) => {
+    const id = Number(item?.databaseId ?? item?.id);
+    return Number.isSafeInteger(id) ? Math.max(maximum, id) : maximum;
+  }, 0);
+  return { ...workflowIdentity, baselineRunId };
+}
+
+function workflowRunTimestamp(runInfo) {
+  const value = Date.parse(runInfo?.createdAt
+    || runInfo?.startedAt
+    || runInfo?.created_at
+    || runInfo?.run_started_at
+    || '');
+  return Number.isFinite(value) ? value : null;
+}
+
+function matchesWorkflowRun(runInfo, options, { requireWorkflowId = false } = {}) {
+  const id = Number(runInfo?.databaseId ?? runInfo?.id);
+  const workflowId = Number(runInfo?.workflowDatabaseId ?? runInfo?.workflow_id);
+  const timestamp = workflowRunTimestamp(runInfo);
+  return Number.isSafeInteger(id)
+    && id > options.workflowFence.baselineRunId
+    && (!requireWorkflowId || workflowId === options.workflowFence.id)
+    && runInfo.event === 'push'
+    && (runInfo.headSha ?? runInfo.head_sha) === options.targetSha
+    && (runInfo.headBranch ?? runInfo.head_branch) === options.ref
+    && timestamp !== null
+    && timestamp >= Math.floor(options.notBeforeMs / 1000) * 1000;
+}
+
+async function loadWorkflowRunDetail(run, repository, runId) {
+  const github = githubRepository(repository);
+  return ghJson(run, repository.repoRoot, [
+    'api',
+    '--hostname',
+    github.host,
+    `repos/${github.nameWithOwner}/actions/runs/${runId}`,
+  ]);
+}
+
 async function waitForWorkflow(run, repository, options, dependencies = {}) {
   const sleepImpl = dependencies.sleep || sleep;
   const signal = dependencies.signal;
@@ -624,68 +909,86 @@ async function waitForWorkflow(run, repository, options, dependencies = {}) {
   const github = githubRepository(repository);
   const timeoutMs = Number(options.waitTimeoutMs || DEFAULT_WAIT_TIMEOUT_MS);
   const pollIntervalMs = Number(options.pollIntervalMs || DEFAULT_POLL_INTERVAL_MS);
-  const startedAt = now();
+  const waitStartedAt = now();
   let runInfo = null;
 
-  while (now() - startedAt <= timeoutMs) {
-    const runs = await ghJson(run, repository.repoRoot, [
-      'run',
-      'list',
-      '--repo',
-      github.selector,
-      '--limit',
-      '50',
-      '--json',
-      'databaseId,headSha,headBranch,status,conclusion,url,workflowName,event,createdAt',
-    ]);
+  while (now() - waitStartedAt <= timeoutMs) {
+    const runs = await listWorkflowRuns(run, repository, options.workflowFence);
     runInfo = runs
-      .filter(item => item.headSha === options.targetSha
-        && (!options.tag || item.headBranch === options.tag)
-        && item.workflowName === options.workflow)
-      .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0))[0] || null;
+      .filter(item => matchesWorkflowRun(item, options, { requireWorkflowId: true }))
+      .sort((a, b) => Number(b.id ?? b.databaseId) - Number(a.id ?? a.databaseId))[0] || null;
     if (runInfo) break;
     await sleepImpl(pollIntervalMs, signal);
   }
 
   if (!runInfo) {
-    throw new RepoWorkflowError('WORKFLOW_NOT_FOUND', `Workflow "${options.workflow}" did not appear before timeout`, {
+    throw new RepoWorkflowError('WORKFLOW_NOT_FOUND', `Workflow "${options.workflowFence.name}" did not produce a new matching push run before timeout`, {
       effect: 'merge-and-tag-completed',
-      workflow: options.workflow,
+      workflow: options.workflowFence,
       targetSha: options.targetSha,
-      tag: options.tag || null,
+      ref: options.ref,
+      notBefore: new Date(options.notBeforeMs).toISOString(),
     });
   }
 
-  while (now() - startedAt <= timeoutMs) {
-    const detail = await ghJson(run, repository.repoRoot, [
-      'run',
-      'view',
-      String(runInfo.databaseId),
-      '--repo',
-      github.selector,
-      '--json',
-      'databaseId,status,conclusion,url,headSha,headBranch,jobs',
-    ]);
+  const selectedRunId = Number(runInfo.id ?? runInfo.databaseId);
+  while (now() - waitStartedAt <= timeoutMs) {
+    const detail = await loadWorkflowRunDetail(run, repository, selectedRunId);
+    const detailRunId = Number(detail.id ?? detail.databaseId);
+    if (!matchesWorkflowRun(detail, options, { requireWorkflowId: true })
+      || detailRunId !== selectedRunId) {
+      throw new RepoWorkflowError('WORKFLOW_IDENTITY_MISMATCH', 'GitHub workflow run details do not match the fenced push run', {
+        expected: {
+          runId: selectedRunId,
+          workflowId: options.workflowFence.id,
+          targetSha: options.targetSha,
+          ref: options.ref,
+          event: 'push',
+        },
+        actual: {
+          runId: detailRunId || null,
+          workflowId: Number(detail.workflow_id ?? detail.workflowDatabaseId) || null,
+          targetSha: detail.head_sha ?? detail.headSha ?? null,
+          ref: detail.head_branch ?? detail.headBranch ?? null,
+          event: detail.event || null,
+        },
+      });
+    }
     if (detail.status === 'completed') {
-      const jobs = (detail.jobs || []).map(job => ({
+      const jobsResponse = await ghJson(run, repository.repoRoot, [
+        'run',
+        'view',
+        String(selectedRunId),
+        '--repo',
+        github.selector,
+        '--json',
+        'jobs',
+      ]);
+      const jobs = (jobsResponse.jobs || []).map(job => ({
         name: job.name,
         status: job.status,
         conclusion: job.conclusion || null,
       }));
       if (detail.conclusion !== 'success') {
-        throw new RepoWorkflowError('WORKFLOW_FAILED', `Workflow "${options.workflow}" completed with ${detail.conclusion}`, {
+        throw new RepoWorkflowError('WORKFLOW_FAILED', `Workflow "${options.workflowFence.name}" completed with ${detail.conclusion}`, {
           effect: 'merge-and-tag-completed',
-          run: { id: detail.databaseId, url: detail.url, conclusion: detail.conclusion, jobs },
+          run: { id: detailRunId, url: detail.html_url || detail.url, conclusion: detail.conclusion, jobs },
         });
       }
-      return { id: detail.databaseId, url: detail.url, conclusion: detail.conclusion, jobs };
+      return {
+        id: detailRunId,
+        workflowId: options.workflowFence.id,
+        url: detail.html_url || detail.url,
+        conclusion: detail.conclusion,
+        jobs,
+      };
     }
     await sleepImpl(pollIntervalMs, signal);
   }
 
-  throw new RepoWorkflowError('WORKFLOW_TIMEOUT', `Workflow "${options.workflow}" did not finish before timeout`, {
+  throw new RepoWorkflowError('WORKFLOW_TIMEOUT', `Workflow "${options.workflowFence.name}" did not finish before timeout`, {
     effect: 'merge-and-tag-completed',
-    run: { id: runInfo.databaseId, url: runInfo.url },
+    run: { id: selectedRunId, url: runInfo.html_url || runInfo.url },
   });
 }
 
@@ -699,20 +1002,30 @@ async function cleanupWorktrees(run, repository, paths, reviewedHead, reviewedSn
       results.push({ path, status: 'not-registered' });
       continue;
     }
-    const ownedDevelopment = record.branch?.startsWith('yeaft-wt/') && record.head === reviewedHead;
-    const ownedReview = record.detached && record.head === reviewedSnapshot;
-    if (!ownedDevelopment && !ownedReview) {
+    const developmentShape = record.branch?.startsWith('yeaft-wt/') && record.head === reviewedHead;
+    const reviewShape = record.detached && record.head === reviewedSnapshot;
+    const ownership = developmentShape
+      ? await verifyWorktreeOwnership(run, repository, path, { kind: 'development', branch: record.branch })
+      : reviewShape
+        ? await verifyWorktreeOwnership(run, repository, path, {
+          kind: 'review',
+          createdHead: reviewedSnapshot,
+          branch: null,
+        })
+        : null;
+    if (!ownership) {
       results.push({ path, status: 'kept-unowned', branch: record.branch, head: record.head });
       continue;
     }
-    const dirty = await gitOutput(run, path, ['status', '--porcelain']);
+    const dirty = await worktreeStatus(run, path);
     if (dirty) {
       results.push({ path, status: 'kept-dirty' });
       continue;
     }
     await runGit(run, repository.repoRoot, ['worktree', 'remove', path]);
+    await removeWorktreeOwnership(ownership.paths);
     let branchDeleted = false;
-    if (ownedDevelopment) {
+    if (developmentShape) {
       const branchHead = await runGit(run, repository.repoRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${record.branch}`], {
         allowExitCodes: [1],
       });
@@ -754,12 +1067,22 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
   }
 
   const repository = await resolveRepository(run, options.cwd || process.cwd(), options);
+  // Freeze every identity used by a later side effect before merging. Fetch URL
+  // selects the GitHub repository; every configured push URL must select the
+  // same repository, and tag pushes use the validated URL rather than a remote
+  // name whose pushurl can drift independently.
+  const pushUrl = options.tagPrefix ? await assertPushTarget(run, repository) : null;
+  const workflowIdentity = options.workflow
+    ? await captureWorkflowIdentity(run, repository, options.workflow)
+    : null;
+  const now = dependencies.now || (() => Date.now());
+  let workflowFence = null;
+  let workflowNotBeforeMs = null;
   const info = await loadPullRequest(run, repository, pr);
   let checks = null;
   let mergeSha = info.mergeCommit?.oid || null;
   let mergeCreated = false;
   let tag = null;
-  let tagAttempted = false;
 
   if (info.state === 'OPEN') {
     checks = validateOpenPullRequest(info, { requireChecksComplete: true });
@@ -769,6 +1092,10 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
         reviewed: { headSha: options.reviewedHead, snapshotSha: options.reviewedSnapshot },
         current: { headSha: frozen.headSha, snapshotSha: frozen.snapshotSha, baseSha: frozen.baseSha },
       });
+    }
+    if (workflowIdentity && !options.tagPrefix) {
+      workflowFence = await captureWorkflowBaseline(run, repository, workflowIdentity);
+      workflowNotBeforeMs = now();
     }
     const github = githubRepository(repository);
     let response;
@@ -835,15 +1162,34 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
     }
 
     if (options.tagPrefix) {
-      tagAttempted = true;
-      tag = await createAndPushNextTag(run, repository, mergeSha, options.tagPrefix, options.tagStart ?? 0);
-      remoteEffects.tag = { status: tag.reused ? 'preexisting' : 'created', name: tag.name, sha: tag.sha };
+      tag = await createAndPushNextTag(
+        run,
+        repository,
+        pushUrl,
+        mergeSha,
+        options.tagPrefix,
+        options.tagStart ?? 0,
+        {
+          onStage: effect => { remoteEffects.tag = effect; },
+          beforePush: async () => {
+            if (!workflowIdentity) return;
+            workflowFence = await captureWorkflowBaseline(run, repository, workflowIdentity);
+            workflowNotBeforeMs = now();
+          },
+        },
+      );
+      if (workflowIdentity && !workflowFence) {
+        throw new RepoWorkflowError('WORKFLOW_NOT_TRIGGERED', 'The target tag already existed, so this landing did not trigger a new workflow run', {
+          tag,
+        });
+      }
     }
-    const workflow = options.workflow
+    const workflow = workflowFence
       ? await waitForWorkflow(run, repository, {
-        workflow: options.workflow,
+        workflowFence,
         targetSha: mergeSha,
-        tag: tag?.name || null,
+        ref: tag?.name || info.baseRefName,
+        notBeforeMs: workflowNotBeforeMs,
         waitTimeoutMs: options.waitTimeoutMs,
         pollIntervalMs: options.pollIntervalMs,
       }, dependencies)
@@ -868,31 +1214,30 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
       cleanup,
     };
   } catch (error) {
-    if (tagAttempted && !tag) {
-      remoteEffects.tag = { status: 'unknown', prefix: options.tagPrefix };
-    }
     throw attachRemoteEffects(error, remoteEffects);
   }
 }
 
 export function formatRepoWorkflowError(error) {
-  if (error instanceof RepoWorkflowError) {
-    const remoteEffects = error.details?.remoteEffects;
-    const hasPossibleRemoteEffect = remoteEffects
-      && Object.values(remoteEffects).some(effect => effect?.status !== 'rejected');
-    return {
+  const payload = error instanceof RepoWorkflowError
+    ? (() => {
+      const remoteEffects = error.details?.remoteEffects;
+      const hasPossibleRemoteEffect = remoteEffects
+        && Object.values(remoteEffects).some(effect => effect?.status !== 'rejected');
+      return {
+        ok: false,
+        errorEffect: hasPossibleRemoteEffect ? 'unknown' : 'none',
+        error: error.message,
+        code: error.code,
+        details: error.details,
+      };
+    })()
+    : {
       ok: false,
-      errorEffect: hasPossibleRemoteEffect ? 'unknown' : 'none',
-      error: error.message,
-      code: error.code,
-      details: error.details,
+      errorEffect: 'unknown',
+      error: error?.message || String(error),
+      code: 'UNEXPECTED_ERROR',
+      details: {},
     };
-  }
-  return {
-    ok: false,
-    errorEffect: 'unknown',
-    error: error?.message || String(error),
-    code: 'UNEXPECTED_ERROR',
-    details: {},
-  };
+  return redactStructured(payload);
 }
