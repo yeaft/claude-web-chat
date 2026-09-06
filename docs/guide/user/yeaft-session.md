@@ -26,7 +26,9 @@ Session metadata and history live under the owning Agent's Yeaft directory. `wor
 5. Create the Session.
 6. After creation, choose model/effort in the composer and edit the announcement in Session settings, then send a message.
 
-When the roster is omitted and the Agent's VP library contains `omni`, the runtime can use Omni as the default generalist. An explicitly non-empty roster is never silently replaced.
+When the roster is omitted and the Agent's VP library contains `omni`, the runtime can use **Omni**, the all-purpose assistant (Chinese name: **全能助手**), as the default generalist. Its internal ID remains `omni`, so existing references keep working. An explicitly non-empty roster is never silently replaced.
+
+The assistant helps with questions, research, writing, translation, learning, planning, data analysis, and coding tasks—not just clarification or handoffs. It chooses direct answers, tools, or collaboration to suit the task while respecting project ownership and authorization. At Agent startup, exact historical stock souls and their matching old name, role, and description are upgraded; user-edited souls and custom metadata are preserved.
 
 ## Route a turn
 
