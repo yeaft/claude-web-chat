@@ -4,14 +4,17 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   bundledYeaftSkillsDir,
+  bundledYeaftSkillsDirs,
   createManagedProjectSkill,
   createManagedSkill,
+  createSkillManager,
   parseSkill,
   removeManagedProjectSkill,
   removeManagedSkill,
   SkillManager,
 } from '../../../agent/yeaft/skills.js';
 import { buildPluginCatalog } from '../../../agent/yeaft/plugins.js';
+import { seedBundledSkills } from '../../../agent/yeaft/init.js';
 
 const roots = [];
 
@@ -352,7 +355,69 @@ describe('bundled Agent skills distribution', () => {
       expect(parseSkill(readFileSync(skillPath, 'utf8'), skillPath)).toMatchObject({
         name: 'review-merge-tag',
       });
+      expect(bundledYeaftSkillsDirs()).toEqual([join(agentRoot, 'skills')]);
       expect(bundledYeaftSkillsDir()).toBe(join(agentRoot, 'skills'));
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousOverride === undefined) delete process.env.YEAFT_SKILLS_BUNDLED_DIR;
+      else process.env.YEAFT_SKILLS_BUNDLED_DIR = previousOverride;
+    }
+  });
+
+  it('loads packaged review-merge-tag alongside an existing external bundled root', () => {
+    const agentRoot = join(process.cwd(), 'agent');
+    const home = tempRoot();
+    const yeaftDir = tempRoot();
+    const external = join(home, '.claude', 'skills', 'yeaft-skills', 'skills');
+    write(external, 'external-only/SKILL.md', skill('external-only', '# External'));
+    write(external, 'review-merge-tag/SKILL.md', skill('review-merge-tag', '# Shadowed external'));
+    const previousHome = process.env.HOME;
+    const previousOverride = process.env.YEAFT_SKILLS_BUNDLED_DIR;
+    process.env.HOME = home;
+    delete process.env.YEAFT_SKILLS_BUNDLED_DIR;
+    try {
+      const manager = createSkillManager(yeaftDir);
+
+      expect(manager.skillsDirs.slice(0, 2)).toEqual([external, join(agentRoot, 'skills')]);
+      expect(manager.get('external-only')).toMatchObject({ _tier: 'bundled', content: '# External' });
+      expect(manager.get('review-merge-tag')).toMatchObject({
+        _tier: 'bundled',
+        _path: join(agentRoot, 'skills', 'review-merge-tag'),
+      });
+      expect(manager.get('review-merge-tag').content).not.toBe('# Shadowed external');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousOverride === undefined) delete process.env.YEAFT_SKILLS_BUNDLED_DIR;
+      else process.env.YEAFT_SKILLS_BUNDLED_DIR = previousOverride;
+    }
+  });
+
+  it('keeps Agent built-ins authoritative over an explicit bundled override', () => {
+    const agentRoot = join(process.cwd(), 'agent');
+    const home = tempRoot();
+    const yeaftDir = tempRoot();
+    const override = tempRoot();
+    write(override, 'review-merge-tag/SKILL.md', skill('review-merge-tag', '# Shadowed override'));
+    write(override, 'override-only/SKILL.md', skill('override-only', '# Override only'));
+    const previousHome = process.env.HOME;
+    const previousOverride = process.env.YEAFT_SKILLS_BUNDLED_DIR;
+    process.env.HOME = home;
+    process.env.YEAFT_SKILLS_BUNDLED_DIR = override;
+    try {
+      const manager = createSkillManager(yeaftDir);
+
+      expect(manager.skillsDirs.slice(0, 2)).toEqual([override, join(agentRoot, 'skills')]);
+      expect(bundledYeaftSkillsDir()).toBe(override);
+      expect(manager.has('override-only')).toBe(true);
+      expect(manager.get('review-merge-tag')._path).toBe(join(agentRoot, 'skills', 'review-merge-tag'));
+      expect(manager.get('review-merge-tag').content).not.toBe('# Shadowed override');
+
+      const seedDir = join(tempRoot(), 'skills');
+      seedBundledSkills(seedDir);
+      expect(readFileSync(join(seedDir, 'review-merge-tag', 'SKILL.md'), 'utf8'))
+        .toBe(readFileSync(join(agentRoot, 'skills', 'review-merge-tag', 'SKILL.md'), 'utf8'));
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
