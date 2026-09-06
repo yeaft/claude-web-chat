@@ -655,10 +655,15 @@ export async function prepareRepoReview(options = {}, dependencies = {}) {
   };
 }
 
-export function nextNumericTag(tagNames, prefix, start = 0) {
-  if (typeof prefix !== 'string' || !prefix) {
-    throw new RepoWorkflowError('INVALID_TAG_PREFIX', 'tagPrefix must be a non-empty string');
+function validateTagPrefix(prefix) {
+  if (typeof prefix !== 'string' || !/^v\d+\.\d+\.$/.test(prefix)) {
+    throw new RepoWorkflowError('INVALID_TAG_PREFIX', 'tagPrefix must match v<digits>.<digits>.');
   }
+  return prefix;
+}
+
+export function nextNumericTag(tagNames, prefix, start = 0) {
+  validateTagPrefix(prefix);
   const suffixes = tagNames
     .filter(name => name.startsWith(prefix))
     .map(name => name.slice(prefix.length))
@@ -685,6 +690,7 @@ function parseRemoteTags(output) {
   }
   return [...refs.values()].map(ref => ({
     name: ref.name,
+    directSha: ref.directSha,
     commitSha: ref.commitSha || ref.directSha,
   }));
 }
@@ -697,7 +703,7 @@ function numericTagSuffix(name, prefix) {
   return Number.isSafeInteger(number) ? number : null;
 }
 
-async function resolveRemoteTagCommit(run, repository, tag) {
+async function resolveRemoteTag(run, repository, tag) {
   const result = await runGit(run, repository.repoRoot, [
     'ls-remote',
     '--tags',
@@ -705,10 +711,7 @@ async function resolveRemoteTagCommit(run, repository, tag) {
     `refs/tags/${tag}`,
     `refs/tags/${tag}^{}`,
   ]);
-  const lines = result.stdout.split(/\r?\n/).filter(Boolean);
-  const peeled = lines.find(line => line.endsWith(`refs/tags/${tag}^{}`));
-  const direct = lines.find(line => line.endsWith(`refs/tags/${tag}`));
-  return (peeled || direct)?.split(/\s+/)[0] || null;
+  return parseRemoteTags(result.stdout).find(ref => ref.name === tag) || null;
 }
 
 async function resolveRemoteRefSha(run, repository, ref) {
@@ -717,7 +720,7 @@ async function resolveRemoteRefSha(run, repository, ref) {
   return line?.split(/\s+/)[0] || null;
 }
 
-async function rollbackRemoteTag(run, repository, pushUrl, tag, targetSha, onStage) {
+async function rollbackRemoteTag(run, repository, pushUrl, tag, directSha, targetSha, onStage) {
   const ref = `refs/tags/${tag}`;
   onStage({ stage: 'rollback-started', status: 'unknown', name: tag, sha: targetSha });
   let rollbackError = null;
@@ -725,7 +728,7 @@ async function rollbackRemoteTag(run, repository, pushUrl, tag, targetSha, onSta
     await runGit(run, repository.repoRoot, [
       'push',
       '--porcelain',
-      `--force-with-lease=${ref}:${targetSha}`,
+      `--force-with-lease=${ref}:${directSha}`,
       pushUrl,
       `:${ref}`,
     ]);
@@ -734,7 +737,7 @@ async function rollbackRemoteTag(run, repository, pushUrl, tag, targetSha, onSta
   }
   let remaining;
   try {
-    remaining = await resolveRemoteTagCommit(run, repository, tag);
+    remaining = await resolveRemoteTag(run, repository, tag);
   } catch (verifyError) {
     onStage({ stage: 'rollback-verify-failed', status: 'unknown', name: tag, sha: targetSha });
     throw new RepoWorkflowError('TAG_ROLLBACK_VERIFY_FAILED', `Remote tag ${tag} rollback could not be verified after the base advanced`, {
@@ -764,7 +767,9 @@ async function createAndPushNextTag(run, repository, pushUrl, targetSha, prefix,
   const beforePush = callbacks.beforePush || (async () => {});
   const baseGuard = callbacks.baseGuard || null;
   onStage({ stage: 'validate', status: 'not-attempted', prefix, sha: targetSha });
-  const refCheck = await runGit(run, repository.repoRoot, ['check-ref-format', `refs/tags/${prefix}${start}`], {
+  validateTagPrefix(prefix);
+  const initialTag = nextNumericTag([], prefix, start);
+  const refCheck = await runGit(run, repository.repoRoot, ['check-ref-format', `refs/tags/${initialTag}`], {
     allowExitCodes: [1],
   });
   if (refCheck.exitCode !== 0) {
@@ -788,73 +793,95 @@ async function createAndPushNextTag(run, repository, pushUrl, targetSha, prefix,
   }
 
   const tag = nextNumericTag(matchingTags.map(ref => ref.name), prefix, start);
+  const tagRef = `refs/tags/${tag}`;
   onStage({ stage: 'selected', status: 'not-attempted', name: tag, sha: targetSha });
-  const remoteExisting = await resolveRemoteTagCommit(run, repository, tag);
-  if (remoteExisting && remoteExisting !== targetSha) {
-    throw new RepoWorkflowError('TAG_CONFLICT', `Remote tag ${tag} already points to another commit`, {
-      tag,
-      expected: targetSha,
-      actual: remoteExisting,
-    });
+  const remoteExisting = await resolveRemoteTag(run, repository, tag);
+  if (remoteExisting) {
+    if (remoteExisting.commitSha !== targetSha) {
+      throw new RepoWorkflowError('TAG_CONFLICT', `Remote tag ${tag} already points to another commit`, {
+        tag,
+        expected: targetSha,
+        actual: remoteExisting,
+      });
+    }
+    onStage({ stage: 'verified-preexisting', status: 'preexisting', name: tag, sha: targetSha });
+    return { name: tag, sha: targetSha, reused: true };
   }
 
-  const localRef = `refs/tags/${tag}`;
-  const local = await runGit(run, repository.repoRoot, ['rev-parse', '--verify', '--quiet', `${localRef}^{commit}`], {
-    allowExitCodes: [1],
-  });
-  if (local.exitCode === 0 && local.stdout !== targetSha) {
-    throw new RepoWorkflowError('LOCAL_TAG_CONFLICT', `Local tag ${tag} points to another commit`, {
-      tag,
-      expected: targetSha,
-      actual: local.stdout,
-    });
-  }
-  if (local.exitCode !== 0) {
-    await runGit(run, repository.repoRoot, ['tag', tag, targetSha]);
-  }
-  onStage({ stage: 'local-ready', status: 'none', name: tag, sha: targetSha });
-
-  let reused = Boolean(remoteExisting);
-  if (!remoteExisting) {
-    await beforePush();
-    onStage({ stage: 'push-started', status: 'unknown', name: tag, sha: targetSha });
+  await beforePush();
+  onStage({ stage: 'push-started', status: 'unknown', name: tag, sha: targetSha });
+  let reused = false;
+  try {
+    // Push the commit object directly. This deliberately leaves the local tag
+    // namespace untouched and makes the empty-ref lease the creation fence.
+    const pushed = await runGit(run, repository.repoRoot, [
+      'push',
+      '--porcelain',
+      `--force-with-lease=${tagRef}:`,
+      pushUrl,
+      `${targetSha}:${tagRef}`,
+    ]);
+    const porcelain = `${pushed.stdout}\n${pushed.stderr}`;
+    reused = porcelain.split(/\r?\n/).some(line => line.startsWith('=') && line.includes(tagRef));
+    onStage({ stage: 'push-returned', status: 'unknown', name: tag, sha: targetSha });
+  } catch (pushError) {
+    let observedTag;
+    let currentBase;
     try {
-      // A same-target base refspec is omitted by Git as a no-op, so it cannot
-      // act as a compare-only command in receive-pack or join an atomic push.
-      // Create the tag with its own lease, then re-read the base and compensate
-      // with an exact tag lease if the cross-ref invariant no longer holds.
-      const pushed = await runGit(run, repository.repoRoot, [
-        'push',
-        '--porcelain',
-        `--force-with-lease=${localRef}:`,
-        pushUrl,
-        `${localRef}:${localRef}`,
-      ]);
-      const porcelain = `${pushed.stdout}\n${pushed.stderr}`;
-      if (porcelain.split(/\r?\n/).some(line => line.startsWith('=') && line.includes(localRef))) reused = true;
-      onStage({ stage: 'push-returned', status: 'unknown', name: tag, sha: targetSha });
-    } catch (error) {
-      const [racedCommit, currentBase] = await Promise.all([
-        resolveRemoteTagCommit(run, repository, tag),
+      [observedTag, currentBase] = await Promise.all([
+        resolveRemoteTag(run, repository, tag),
         baseGuard ? resolveRemoteRefSha(run, repository, baseGuard.ref) : Promise.resolve(null),
       ]);
-      if (racedCommit !== targetSha || (baseGuard && currentBase !== baseGuard.sha)) throw error;
-      reused = true;
+    } catch (verifyError) {
+      const effect = {
+        stage: 'push-outcome-unknown',
+        status: 'unknown',
+        name: tag,
+        sha: targetSha,
+        transientTagMayHaveTriggeredAutomation: true,
+      };
+      onStage(effect);
+      throw new RepoWorkflowError('TAG_PUSH_OUTCOME_UNKNOWN', `Remote tag ${tag} state is unknown after push failed`, {
+        tag,
+        directSha: 'unknown',
+        commitSha: 'unknown',
+        currentBase: 'unknown',
+        pushError: formatRepoWorkflowError(pushError),
+        verifyError: formatRepoWorkflowError(verifyError),
+        transientTagMayHaveTriggeredAutomation: true,
+      });
     }
+    const effect = {
+      stage: 'push-outcome-unknown',
+      status: 'unknown',
+      name: tag,
+      sha: targetSha,
+      transientTagMayHaveTriggeredAutomation: true,
+    };
+    onStage(effect);
+    throw new RepoWorkflowError('TAG_PUSH_OUTCOME_UNKNOWN', `Remote tag ${tag} outcome is unknown after push failed`, {
+      tag,
+      directSha: observedTag?.directSha || null,
+      commitSha: observedTag?.commitSha || null,
+      currentBase,
+      pushError: formatRepoWorkflowError(pushError),
+      transientTagMayHaveTriggeredAutomation: true,
+    });
   }
-  const [remoteCommit, currentBase] = await Promise.all([
-    resolveRemoteTagCommit(run, repository, tag),
+
+  const [remoteTag, currentBase] = await Promise.all([
+    resolveRemoteTag(run, repository, tag),
     baseGuard ? resolveRemoteRefSha(run, repository, baseGuard.ref) : Promise.resolve(null),
   ]);
-  if (remoteCommit !== targetSha) {
+  if (remoteTag?.commitSha !== targetSha || (!reused && remoteTag.directSha !== targetSha)) {
     throw new RepoWorkflowError('TAG_VERIFY_FAILED', `Remote tag ${tag} could not be verified`, {
       tag,
-      expected: targetSha,
-      actual: remoteCommit,
+      expected: { directSha: reused ? 'preexisting' : targetSha, commitSha: targetSha },
+      actual: remoteTag,
     });
   }
   if (baseGuard && currentBase !== baseGuard.sha) {
-    if (!reused) await rollbackRemoteTag(run, repository, pushUrl, tag, targetSha, onStage);
+    if (!reused) await rollbackRemoteTag(run, repository, pushUrl, tag, remoteTag.directSha, targetSha, onStage);
     throw new RepoWorkflowError('BASE_ADVANCED_DURING_TAG_PUSH', `Remote base advanced while tag ${tag} was being created`, {
       tag,
       expected: baseGuard.sha,
@@ -1067,7 +1094,8 @@ async function waitForWorkflow(run, repository, options, dependencies = {}) {
   });
 }
 
-async function cleanupWorktrees(run, repository, paths, reviewedHead, reviewedSnapshot) {
+async function cleanupWorktrees(run, repository, paths, reviewedHead, reviewedSnapshot, callbacks = {}) {
+  const beforeBranchDelete = callbacks.beforeBranchDelete || (async () => {});
   const results = [];
   for (const requestedPath of paths || []) {
     const path = resolve(requestedPath);
@@ -1100,16 +1128,30 @@ async function cleanupWorktrees(run, repository, paths, reviewedHead, reviewedSn
     await runGit(run, repository.repoRoot, ['worktree', 'remove', path]);
     await removeWorktreeOwnership(ownership.paths);
     let branchDeleted = false;
+    let branchStatus;
     if (developmentShape) {
-      const branchHead = await runGit(run, repository.repoRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${record.branch}`], {
+      const branchRef = `refs/heads/${record.branch}`;
+      const branchHead = await runGit(run, repository.repoRoot, ['rev-parse', '--verify', '--quiet', branchRef], {
         allowExitCodes: [1],
       });
       if (branchHead.exitCode === 0 && branchHead.stdout === reviewedHead) {
-        await runGit(run, repository.repoRoot, ['branch', '-D', record.branch]);
-        branchDeleted = true;
+        await beforeBranchDelete({ path, branch: record.branch, ref: branchRef, expectedHead: reviewedHead });
+        const deleted = await runGit(run, repository.repoRoot, ['update-ref', '-d', branchRef, reviewedHead], {
+          allowExitCodes: [1, 128],
+        });
+        branchDeleted = deleted.exitCode === 0;
+        if (!branchDeleted) branchStatus = 'kept-raced';
+      } else if (branchHead.exitCode === 0) {
+        branchStatus = 'kept-raced';
       }
     }
-    results.push({ path, status: 'removed', branch: record.branch, branchDeleted });
+    results.push({
+      path,
+      status: 'removed',
+      branch: record.branch,
+      branchDeleted,
+      ...(branchStatus ? { branchStatus } : {}),
+    });
   }
   return results;
 }
@@ -1140,6 +1182,7 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
   if (!['merge', 'squash', 'rebase'].includes(mergeMethod)) {
     throw new RepoWorkflowError('INVALID_INPUT', 'mergeMethod must be merge, squash, or rebase');
   }
+  if (options.tagPrefix !== undefined) validateTagPrefix(options.tagPrefix);
 
   const repository = await resolveRepository(run, options.cwd || process.cwd(), options);
   // Freeze every identity used by a later side effect before merging. Fetch URL
@@ -1279,6 +1322,7 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
       options.worktreePaths || [],
       options.reviewedHead,
       options.reviewedSnapshot,
+      { beforeBranchDelete: dependencies.beforeCleanupBranchDelete },
     );
 
     return {

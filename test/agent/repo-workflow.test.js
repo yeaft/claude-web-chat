@@ -135,7 +135,9 @@ function createGithubRunner(repo, options = {}) {
     }
     if (command === 'git' && args[0] === 'push') {
       const pushUrlIndex = args.findIndex(arg => pushUrls.includes(arg));
-      if (options.receivePackRace && pushUrlIndex >= 0 && args.some(arg => arg.startsWith('refs/tags/'))) {
+      const tagRefspec = args.find(arg => /^[^:]*:refs\/tags\//.test(arg));
+      const deletesTag = tagRefspec?.startsWith(':');
+      if (options.receivePackRace && pushUrlIndex >= 0 && tagRefspec && !deletesTag) {
         const mappedArgs = [...args];
         mappedArgs[pushUrlIndex] = repo.remote;
         const push = baseRun(command, mappedArgs, commandOptions);
@@ -148,20 +150,24 @@ function createGithubRunner(repo, options = {}) {
         return push;
       }
       if (pushUrlIndex >= 0) {
-        const refspec = args.find(arg => arg.startsWith('refs/tags/'));
-        if (options.tagPushRace && refspec) {
-          const [source, target] = refspec.split(':');
+        if (options.beforeTagDelete && deletesTag) await options.beforeTagDelete(tagRefspec);
+        if (options.tagPushRace && tagRefspec && !deletesTag) {
+          const [source, target] = tagRefspec.split(':');
           const sha = git(commandOptions.cwd || repo.checkout, 'rev-parse', `${source}^{commit}`);
           git(repo.root, '--git-dir', repo.remote, 'update-ref', target, sha);
           return {
-            stdout: `=\t${refspec}\t[up to date]`,
+            stdout: `=\t${tagRefspec}\t[up to date]`,
             stderr: '',
             exitCode: 0,
           };
         }
         const mappedArgs = [...args];
         mappedArgs[pushUrlIndex] = repo.remote;
-        return baseRun(command, mappedArgs, commandOptions);
+        const result = await baseRun(command, mappedArgs, commandOptions);
+        if (options.tagPushAcceptedThenError && tagRefspec && !deletesTag) {
+          throw new Error('simulated transport failure after remote acceptance');
+        }
+        return result;
       }
     }
     if (command !== 'gh') return baseRun(command, args, commandOptions);
@@ -313,10 +319,19 @@ describe('repository workflow helpers', () => {
     expect(serialized).toContain('keep=visible');
   });
 
-  it('calculates numeric tags without lexicographic version mistakes', () => {
+  it('calculates numeric development tags without lexicographic version mistakes', () => {
     expect(nextNumericTag(['v1.0.9', 'v1.0.10', 'v1.0.beta', 'other-99'], 'v1.0.')).toBe('v1.0.11');
-    expect(nextNumericTag([], 'release-', 7)).toBe('release-7');
+    expect(nextNumericTag([], 'v2.3.', 7)).toBe('v2.3.7');
   });
+
+  it.each(['', 'release-', 'v2.', 'v1.0', 'v1.0.$(touch nope)', 'v1.0.;echo nope']) (
+    'rejects non-development tag prefix %s',
+    prefix => {
+      expect(() => nextNumericTag([], prefix)).toThrowError(expect.objectContaining({
+        code: 'INVALID_TAG_PREFIX',
+      }));
+    },
+  );
 
   it('classifies failed, successful, and in-progress checks', () => {
     expect(summarizeChecks([
@@ -444,6 +459,11 @@ describe('landRepoWorkflow', () => {
       ],
     });
     expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/tags/v1.0.0')).toBe(repo.snapshotSha);
+    expect(git(repo.checkout, 'tag')).toBe('');
+    const tagPush = github.calls.find(call => call.command === 'git'
+      && call.args[0] === 'push'
+      && call.args.includes(`${repo.snapshotSha}:refs/tags/v1.0.0`));
+    expect(tagPush).toBeTruthy();
     const mergeCall = github.calls.find(call => call.command === 'gh' && call.args[0] === 'api');
     expect(mergeCall.args).toEqual(expect.arrayContaining([
       '--hostname',
@@ -516,6 +536,44 @@ describe('landRepoWorkflow', () => {
 
     expect(result.cleanup).toEqual([{ path: developmentPath, status: 'kept-dirty' }]);
     expect(readFileSync(join(developmentPath, 'untracked.txt'), 'utf8')).toBe('keep me\n');
+  });
+
+  it('CAS-preserves a development branch that advances after cleanup inspection', async () => {
+    const repo = createPullRequestRepository();
+    const github = createGithubRunner(repo);
+    const developmentPath = join(repo.root, 'development');
+    await prepareRepoWorkflow({
+      cwd: repo.checkout,
+      name: 'feature',
+      baseBranch: 'feature',
+      worktreePath: developmentPath,
+    }, { run: github.run });
+
+    const result = await landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+      approvedBy: 'reviewer',
+      worktreePaths: [developmentPath],
+    }, {
+      run: github.run,
+      beforeCleanupBranchDelete: async ({ ref, expectedHead }) => {
+        git(repo.checkout, 'update-ref', ref, repo.snapshotSha, expectedHead);
+      },
+    });
+
+    expect(result.cleanup).toEqual([{
+      path: developmentPath,
+      status: 'removed',
+      branch: 'yeaft-wt/feature',
+      branchDeleted: false,
+      branchStatus: 'kept-raced',
+    }]);
+    expect(git(repo.checkout, 'rev-parse', 'refs/heads/yeaft-wt/feature')).toBe(repo.snapshotSha);
+    expect(github.calls.some(call => call.command === 'git'
+      && call.args[0] === 'update-ref'
+      && call.args.slice(1).join(' ') === `-d refs/heads/yeaft-wt/feature ${repo.headSha}`)).toBe(true);
   });
 
   it('keeps an owned worktree when it contains ignored files', async () => {
@@ -831,6 +889,44 @@ describe('landRepoWorkflow', () => {
     expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/tags/v1.0.0')).toBe(repo.snapshotSha);
   });
 
+  it('reports an accepted tag push followed by a transport error as unknown', async () => {
+    const repo = createPullRequestRepository();
+    const github = createGithubRunner(repo, { tagPushAcceptedThenError: true });
+
+    await expect(landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+      approvedBy: 'reviewer',
+      tagPrefix: 'v1.0.',
+    }, { run: github.run })).rejects.toMatchObject({
+      code: 'TAG_PUSH_OUTCOME_UNKNOWN',
+      details: {
+        tag: 'v1.0.0',
+        directSha: repo.snapshotSha,
+        commitSha: repo.snapshotSha,
+        transientTagMayHaveTriggeredAutomation: true,
+        remoteEffects: {
+          tag: {
+            stage: 'push-outcome-unknown',
+            status: 'unknown',
+            name: 'v1.0.0',
+            sha: repo.snapshotSha,
+            transientTagMayHaveTriggeredAutomation: true,
+          },
+        },
+      },
+    });
+
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/tags/v1.0.0')).toBe(repo.snapshotSha);
+    expect(git(repo.checkout, 'tag')).toBe('');
+    const tagPushes = github.calls.filter(call => call.command === 'git'
+      && call.args[0] === 'push'
+      && call.args.some(arg => arg.endsWith(':refs/tags/v1.0.0')));
+    expect(tagPushes).toHaveLength(1);
+  });
+
   it('refuses and rolls back the tag when the base advances during remote receive', async () => {
     const repo = createPullRequestRepository();
     const receivePackRace = installPostAdvertisementBaseAdvanceHook(repo);
@@ -857,6 +953,25 @@ describe('landRepoWorkflow', () => {
 
     expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(advancedBaseSha);
     expect(git(repo.root, '--git-dir', repo.remote, 'tag')).toBe('');
+    expect(git(repo.checkout, 'tag')).toBe('');
+
+    git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/heads/main', repo.snapshotSha, advancedBaseSha);
+    const retryGithub = createGithubRunner(repo, {
+      pullRequest: {
+        state: 'MERGED',
+        mergeCommit: { oid: repo.snapshotSha },
+        mergedAt: '2026-01-01T00:00:00Z',
+      },
+    });
+    const retry = await landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+      approvedBy: 'reviewer',
+      tagPrefix: 'v1.0.',
+    }, { run: retryGithub.run });
+    expect(retry.tag).toEqual({ name: 'v1.0.0', sha: repo.snapshotSha, reused: false });
 
     const tagPushes = github.calls.filter(call => call.command === 'git'
       && call.args[0] === 'push'
@@ -869,9 +984,50 @@ describe('landRepoWorkflow', () => {
     expect(tagPushes[1].args).toContain(':refs/tags/v1.0.0');
   });
 
-  it('reports deterministic tag validation failures as not attempted', async () => {
+  it('uses the created direct object as the rollback lease and preserves an annotated replacement', async () => {
+    const repo = createPullRequestRepository();
+    git(repo.seed, 'tag', '-a', 'replacement-tag', '-m', 'replacement tag', repo.snapshotSha);
+    const annotatedTagSha = git(repo.seed, 'rev-parse', 'refs/tags/replacement-tag');
+    git(repo.seed, 'push', 'origin', 'refs/tags/replacement-tag:refs/tags/replacement-object');
+    const receivePackRace = installPostAdvertisementBaseAdvanceHook(repo);
+    const github = createGithubRunner(repo, {
+      receivePackRace,
+      beforeTagDelete: async () => {
+        git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/tags/v1.0.0', annotatedTagSha, repo.snapshotSha);
+      },
+    });
+
+    await expect(landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+      approvedBy: 'reviewer',
+      tagPrefix: 'v1.0.',
+    }, { run: github.run })).rejects.toMatchObject({
+      code: 'TAG_ROLLBACK_FAILED',
+      details: {
+        actual: {
+          directSha: annotatedTagSha,
+          commitSha: repo.snapshotSha,
+        },
+        transientTagMayHaveTriggeredAutomation: true,
+      },
+    });
+
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/tags/v1.0.0')).toBe(annotatedTagSha);
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/tags/v1.0.0^{}')).toBe(repo.snapshotSha);
+    const rollbackPush = github.calls.find(call => call.command === 'git'
+      && call.args[0] === 'push'
+      && call.args.includes(':refs/tags/v1.0.0'));
+    expect(rollbackPush.args).toContain(`--force-with-lease=refs/tags/v1.0.0:${repo.snapshotSha}`);
+  });
+
+  it('rejects a metacharacter tag prefix without executing it', async () => {
     const repo = createPullRequestRepository();
     const github = createGithubRunner(repo);
+    const marker = join(repo.root, 'prefix-command-ran');
+    const tagPrefix = `v1.0.;touch ${marker};#`;
     let caught;
 
     try {
@@ -881,7 +1037,7 @@ describe('landRepoWorkflow', () => {
         reviewedHead: repo.headSha,
         reviewedSnapshot: repo.snapshotSha,
         approvedBy: 'reviewer',
-        tagPrefix: 'bad tag',
+        tagPrefix,
       }, { run: github.run });
     } catch (error) {
       caught = error;
@@ -889,14 +1045,13 @@ describe('landRepoWorkflow', () => {
 
     expect(caught).toMatchObject({
       code: 'INVALID_TAG_PREFIX',
-      details: {
-        remoteEffects: {
-          merge: { status: 'created', sha: repo.snapshotSha },
-          tag: { stage: 'validate', status: 'not-attempted', prefix: 'bad tag', sha: repo.snapshotSha },
-        },
-      },
+      details: {},
     });
+    expect(existsSync(marker)).toBe(false);
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(repo.baseSha);
     expect(git(repo.root, '--git-dir', repo.remote, 'tag')).toBe('');
+    expect(github.calls.some(call => call.command === 'gh' && call.args[0] === 'api')).toBe(false);
+    expect(github.calls.some(call => call.command === 'git' && call.args[0] === 'push')).toBe(false);
   });
 
   it('fails closed when an already-merged retry requests an unfenced branch workflow', async () => {
