@@ -49,7 +49,6 @@ export function parseRepoWorkflowArgs(argv) {
       case '--pr': options.pr = parseInteger(value, arg); break;
       case '--reviewed-head': options.reviewedHead = value; break;
       case '--reviewed-snapshot': options.reviewedSnapshot = value; break;
-      case '--approved-by': options.approvedBy = value; break;
       case '--merge-method': options.mergeMethod = value; break;
       case '--tag-prefix': options.tagPrefix = value; break;
       case '--tag-start': options.tagStart = parseInteger(value, arg); break;
@@ -73,9 +72,9 @@ export function repoWorkflowHelp(command = null) {
     return `Usage: yeaft-repo review-prep --pr <number> [options]\n\nFreeze GitHub PR head/base/merge refs and create a clean detached review worktree.\n\nOptions:\n  --pr <number>         Pull request number\n  --name <name>         Review worktree name\n  --worktree <path>     Review worktree path\n${common}`;
   }
   if (command === 'land') {
-    return `Usage: yeaft-repo land --pr <number> --reviewed-head <sha> --reviewed-snapshot <sha> --approved-by <name> [options]\n\nRe-freeze the reviewed PR, merge with head matching, optionally tag and wait for a workflow.\n\nOptions:\n  --pr <number>                 Pull request number\n  --reviewed-head <sha>         Exact approved PR head SHA\n  --reviewed-snapshot <sha>     Exact approved GitHub merge snapshot SHA\n  --approved-by <name>          Reviewer identity; approval is never inferred\n  --merge-method <method>       merge, squash, or rebase (default: merge)\n  --tag-prefix <prefix>         Create the next numeric remote tag, e.g. v1.0.\n  --tag-start <number>          First numeric suffix when no tag exists (default: 0)\n  --workflow <name>             Wait for this GitHub Actions workflow\n  --wait-timeout-ms <ms>        Workflow wait timeout (default: 1800000)\n  --poll-interval-ms <ms>       Workflow polling interval (default: 15000)\n  --cleanup-worktree <path>     Remove a clean worktree; repeat as needed\n${common}`;
+    return `Usage: yeaft-repo land [options]\n\nLanding is unavailable from the standalone CLI. Use RepoWorkflow inside a Session turn carrying a host-issued, exact-review approval capability.\n${common}`;
   }
-  return `yeaft-repo — deterministic GitHub repository workflow\n\nUsage:\n  yeaft-repo prepare --name <name> [options]\n  yeaft-repo review-prep --pr <number> [options]\n  yeaft-repo land --pr <number> --reviewed-head <sha> --reviewed-snapshot <sha> --approved-by <name> [options]\n\nEach command emits one JSON result. GitHub repositories require authenticated git and gh CLIs.\nRun yeaft-repo <command> --help for command options.`;
+  return `yeaft-repo — deterministic GitHub repository workflow\n\nUsage:\n  yeaft-repo prepare --name <name> [options]\n  yeaft-repo review-prep --pr <number> [options]\n\nThe standalone CLI cannot land pull requests; Session landing requires a host-issued approval capability.\nEach command emits one JSON result. GitHub repositories require authenticated git and gh CLIs.\nRun yeaft-repo <command> --help for command options.`;
 }
 
 export async function runRepoWorkflowCli(argv, dependencies = {}) {

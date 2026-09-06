@@ -99,6 +99,21 @@ Returns JSON: { ok, dispatched?, error?, detail? }.`,
           zh: '可选：转交的简短原因',
         },
       },
+      repoApproval: {
+        type: 'object',
+        description: {
+          en: 'Optional structured repository landing approval. The host binds it to the authenticated sender VP, target VP, and current Session, then issues a non-serializable one-time capability.',
+          zh: '可选的结构化仓库落地批准。宿主会将其绑定到真实发送 VP、目标 VP 和当前 Session，并签发不可序列化的一次性 capability。',
+        },
+        properties: {
+          repository: { type: 'string', description: 'GitHub owner/repository identity' },
+          pr: { type: 'integer', minimum: 1 },
+          reviewedHead: { type: 'string', description: 'Exact approved 40-character PR head SHA' },
+          reviewedSnapshot: { type: 'string', description: 'Exact approved 40-character merge snapshot SHA' },
+        },
+        required: ['repository', 'pr', 'reviewedHead', 'reviewedSnapshot'],
+        additionalProperties: false,
+      },
     },
     required: ['to', 'text'],
   },
@@ -109,7 +124,7 @@ Returns JSON: { ok, dispatched?, error?, detail? }.`,
   // dispatch is rejected; the cost is one fresh read, not stale workspace data.
   mayMutateWorkspaceAfterReturn: () => true,
   async execute(input, ctx = {}) {
-    const { to, text, reason } = input || {};
+    const { to, text, reason, repoApproval } = input || {};
     if (!to || typeof to !== 'string') {
       return JSON.stringify({ ok: false, error: 'to_required' });
     }
@@ -134,6 +149,7 @@ Returns JSON: { ok, dispatched?, error?, detail? }.`,
         taskId: ctx.taskId ?? null,
         inboundEnvelope: ctx.inboundEnvelope ?? null,
         sourceThreadId: ctx.threadId ?? null,
+        repoApproval,
       },
       { taskMembers: ctx.taskMembers },
     );

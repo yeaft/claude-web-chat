@@ -41,26 +41,38 @@ jobs:
 
       - name: Resolve tag and commit
         id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT_SHA: ${{ github.sha }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.tag }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$DISPATCH_TAG"
             git fetch --tags origin
             TAG_COMMIT=$(git rev-list -n 1 "refs/tags/${TAG}" 2>/dev/null || true)
             if [ -z "$TAG_COMMIT" ]; then
-              echo "::error::Tag '${TAG}' not found in this repository."
+              echo "::error::Requested tag was not found in this repository."
               exit 1
             fi
           else
-            TAG="${{ github.ref_name }}"
-            TAG_COMMIT="${{ github.sha }}"
+            TAG="$REF_NAME"
+            TAG_COMMIT="$EVENT_SHA"
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag must match v<major>.<minor>.<patch>."
+            exit 1
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "commit=${TAG_COMMIT}" >> "$GITHUB_OUTPUT"
 
       - name: Verify tag commit is on main
+        env:
+          RELEASE_TAG: ${{ steps.resolve.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.resolve.outputs.commit }}
         run: |
-          TAG="${{ steps.resolve.outputs.tag }}"
-          TAG_COMMIT="${{ steps.resolve.outputs.commit }}"
+          TAG="$RELEASE_TAG"
+          TAG_COMMIT="$RELEASE_COMMIT"
           echo "Tag: ${TAG}"
           echo "Commit: ${TAG_COMMIT}"
 
@@ -118,10 +130,11 @@ jobs:
         run: npm ci
 
       - name: Set version from tag
+        env:
+          RELEASE_TAG: ${{ needs.validate-tag.outputs.tag }}
         run: |
-          TAG="${{ needs.validate-tag.outputs.tag }}"
-          VERSION=${TAG#v}
-          cd agent && npm version $VERSION --no-git-tag-version --allow-same-version
+          VERSION=${RELEASE_TAG#v}
+          cd agent && npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Publish to npm
         run: cd agent && npm publish --access public --tag latest

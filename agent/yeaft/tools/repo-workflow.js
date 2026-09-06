@@ -38,7 +38,6 @@ This tool does not review code and never infers approval. The land phase require
       pr: { type: 'integer', description: 'GitHub pull request number' },
       reviewedHead: { type: 'string', description: 'Exact independently approved PR head SHA' },
       reviewedSnapshot: { type: 'string', description: 'Exact independently approved GitHub merge snapshot SHA' },
-      approvedBy: { type: 'string', description: 'Reviewer identity; required for land and never inferred' },
       mergeMethod: { type: 'string', enum: ['merge', 'squash', 'rebase'] },
       tagPrefix: { type: 'string', description: 'Optional numeric tag prefix, for example v1.0.' },
       tagStart: { type: 'integer', minimum: 0 },
@@ -56,7 +55,16 @@ This tool does not review code and never infers approval. The land phase require
   async execute(input, ctx) {
     const options = { ...input, cwd: input.cwd || ctx?.cwd || process.cwd() };
     try {
-      const dependencies = { signal: ctx?.signal };
+      const dependencies = input.phase === 'land'
+        ? {
+          signal: ctx?.signal,
+          approvalCapability: ctx?.inboundEnvelope?._repoApproval,
+          approvalContext: {
+            sessionId: ctx?.inboundEnvelope?.sessionId,
+            recipientVpId: ctx?.senderVpId,
+          },
+        }
+        : { signal: ctx?.signal };
       const result = input.phase === 'prepare'
         ? await prepareRepoWorkflow(options, dependencies)
         : input.phase === 'review-prep'

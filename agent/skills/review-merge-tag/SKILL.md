@@ -37,7 +37,7 @@ Reviewer 调用：
 
 ### 3. Review 通过后的落地
 
-只有收到独立 reviewer 的明确批准后才能调用：
+只有收到独立 reviewer 的明确批准后才能调用。Reviewer 必须用 `RouteForward` 把绑定仓库、PR、exact head 和 exact merge snapshot 的结构化批准交回 landing VP；宿主会随该 handoff 铸造不可序列化、一次性的 approval capability。随后 landing VP 才能在处理该 handoff 的同一 turn 调用：
 
 ```json
 {
@@ -45,14 +45,13 @@ Reviewer 调用：
   "pr": 123,
   "reviewedHead": "<exact 40-char head SHA>",
   "reviewedSnapshot": "<exact 40-char merge snapshot SHA>",
-  "approvedBy": "reviewer-id",
   "tagPrefix": "v1.0.",
   "workflow": "Dev Release",
   "worktreePaths": ["<development worktree>", "<review worktree>"]
 }
 ```
 
-`land` 不会推断 review 已通过。它会重新冻结 PR，任何 head/snapshot 漂移都会停止；随后使用 GitHub API 的 `sha` 做 head-match merge。若要求 tag，它只从远端 tags 数值计算下一版，用 create-only lease 推送，再复核 base 与 tag；发现推送期间 base 漂移时会用精确 tag lease 补偿删除并失败。标准 Git/GitHub receive-pack 不提供 compare-only base + create-tag 的跨 ref 原子事务，因此远端 hook 或 workflow 仍可能短暂看到随后被删除的 tag；若补偿删除也失败，错误会明确报告未知远端副作用。若要求 workflow，它等待匹配 tag 与 merge SHA 的 run 完成；最后只删除干净且明确指定的 worktree。
+`approvedBy` 等普通字符串没有授权语义。`land` 只接受宿主 capability，并重新冻结 PR；任何 repo、PR、recipient、head 或 snapshot 不匹配都会停止，随后才使用 GitHub API 的 `sha` 做 head-match merge。若要求 tag，它只从远端 tags 数值计算下一版，用 create-only lease 推送，再复核 base 与 tag；发现推送期间 base 漂移时会用精确 tag lease 补偿删除并失败。标准 Git/GitHub receive-pack 不提供 compare-only base + create-tag 的跨 ref 原子事务，因此远端 hook 或 workflow 仍可能短暂看到随后被删除的 tag；若补偿删除也失败，错误会明确报告未知远端副作用。若要求 workflow，它等待匹配 tag 与 merge SHA 的 run 完成；最后只删除干净且明确指定的 worktree。
 
 ## 通用性与边界
 

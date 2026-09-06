@@ -7,18 +7,59 @@ import { parseRepoWorkflowArgs, runRepoWorkflowCli } from '../../agent/repo-work
 import {
   createRepoCommandRunner,
   formatRepoWorkflowError,
-  landRepoWorkflow,
+  landRepoWorkflow as landRepoWorkflowCore,
   nextNumericTag,
   parseGithubRemoteUrl,
   prepareRepoReview,
   prepareRepoWorkflow,
   summarizeChecks,
 } from '../../agent/repo-workflow.js';
+import { createRouter } from '../../agent/yeaft/routing/router.js';
+import { createCoordinator } from '../../agent/yeaft/sessions/coordinator.js';
 import { CONDITIONAL_BUILTIN_TOOL_NAMES, resolveActiveToolNames } from '../../agent/yeaft/tools/activation.js';
 import { discoverToolCapabilities } from '../../agent/yeaft/tools/discover-tools.js';
 import { allTools } from '../../agent/yeaft/tools/index.js';
 
 const tempRoots = [];
+
+function issueTestApproval(options, repository = 'github.example.test/acme/repo') {
+  let envelope = null;
+  const group = {
+    getMeta: () => ({
+      id: 'test-session',
+      roster: ['linus', 'martin'],
+      defaultVpId: 'linus',
+    }),
+    appendMessage: record => ({ id: 'msg-approval', ts: new Date(0).toISOString(), ...record }),
+  };
+  const coordinator = createCoordinator(group, {
+    deliver(vpId, delivered) {
+      if (vpId === 'linus') envelope = delivered;
+    },
+  });
+  const result = createRouter({ coordinator }).forward({
+    from: 'martin',
+    to: 'linus',
+    text: 'APPROVE exact repository landing tuple',
+    repoApproval: {
+      repository,
+      pr: options.pr,
+      reviewedHead: options.reviewedHead,
+      reviewedSnapshot: options.reviewedSnapshot,
+    },
+  });
+  if (!result.ok || !envelope?._repoApproval) throw new Error('test approval capability was not issued');
+  return envelope;
+}
+
+function landRepoWorkflow(options = {}, dependencies = {}) {
+  const envelope = issueTestApproval(options, dependencies.approvalRepository);
+  return landRepoWorkflowCore(options, {
+    ...dependencies,
+    approvalCapability: envelope._repoApproval,
+    approvalContext: { sessionId: envelope.sessionId, recipientVpId: 'linus' },
+  });
+}
 
 function git(cwd, ...args) {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -444,7 +485,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       tagPrefix: 'v1.0.',
       worktreePaths: [developmentPath, review.reviewWorktree.path],
     }, { run: github.run });
@@ -482,8 +522,25 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: '0'.repeat(40),
-      approvedBy: 'reviewer',
     }, { run: github.run })).rejects.toMatchObject({ code: 'REVIEW_STALE' });
+    expect(github.calls.some(call => call.command === 'gh' && call.args[0] === 'api')).toBe(false);
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(repo.baseSha);
+  });
+
+  it('rejects approval for the same owner and repository on another GitHub host', async () => {
+    const repo = createPullRequestRepository();
+    const github = createGithubRunner(repo);
+
+    await expect(landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+    }, {
+      run: github.run,
+      approvalRepository: 'github.com/acme/repo',
+    })).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' });
+
     expect(github.calls.some(call => call.command === 'gh' && call.args[0] === 'api')).toBe(false);
     expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(repo.baseSha);
   });
@@ -499,7 +556,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       tagPrefix: 'v1.0.',
     }, { run: github.run })).rejects.toMatchObject({
       code: 'GITHUB_PUSH_URL_MISMATCH',
@@ -530,7 +586,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       worktreePaths: [developmentPath],
     }, { run: github.run });
 
@@ -554,7 +609,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       worktreePaths: [developmentPath],
     }, {
       run: github.run,
@@ -597,7 +651,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       worktreePaths: [developmentPath],
     }, { run: github.run });
 
@@ -616,7 +669,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       worktreePaths: [unrelatedPath],
     }, { run: github.run });
 
@@ -657,7 +709,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       workflow: 'Dev Release',
       pollIntervalMs: 1,
       waitTimeoutMs: 100,
@@ -714,7 +765,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       tagPrefix: 'v1.0.',
       workflow: 'Dev Release',
       pollIntervalMs: 1,
@@ -770,7 +820,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       workflow: 'Dev Release',
       pollIntervalMs: 1,
       waitTimeoutMs: 100,
@@ -791,7 +840,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       mergeMethod: 'squash',
     }, { run: github.run });
 
@@ -813,8 +861,7 @@ describe('landRepoWorkflow', () => {
         pr: 1,
         reviewedHead: repo.headSha,
         reviewedSnapshot: repo.snapshotSha,
-        approvedBy: 'reviewer',
-      }, { run: github.run });
+        }, { run: github.run });
     } catch (error) {
       caught = error;
     }
@@ -838,7 +885,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       tagPrefix: 'v1.0.',
     };
 
@@ -864,7 +910,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       tagPrefix: 'v1.0.',
     }, { run: github.run });
 
@@ -881,7 +926,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       tagPrefix: 'v1.0.',
     }, { run: github.run });
 
@@ -898,7 +942,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       tagPrefix: 'v1.0.',
     }, { run: github.run })).rejects.toMatchObject({
       code: 'TAG_PUSH_OUTCOME_UNKNOWN',
@@ -938,7 +981,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       tagPrefix: 'v1.0.',
     }, { run: github.run })).rejects.toMatchObject({
       code: 'BASE_ADVANCED_DURING_TAG_PUSH',
@@ -968,7 +1010,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       tagPrefix: 'v1.0.',
     }, { run: retryGithub.run });
     expect(retry.tag).toEqual({ name: 'v1.0.0', sha: repo.snapshotSha, reused: false });
@@ -1002,7 +1043,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       tagPrefix: 'v1.0.',
     }, { run: github.run })).rejects.toMatchObject({
       code: 'TAG_ROLLBACK_FAILED',
@@ -1036,8 +1076,7 @@ describe('landRepoWorkflow', () => {
         pr: 1,
         reviewedHead: repo.headSha,
         reviewedSnapshot: repo.snapshotSha,
-        approvedBy: 'reviewer',
-        tagPrefix,
+          tagPrefix,
       }, { run: github.run });
     } catch (error) {
       caught = error;
@@ -1070,7 +1109,6 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
       workflow: 'Dev Release',
     }, { run: github.run })).rejects.toMatchObject({ code: 'WORKFLOW_NOT_TRIGGERED' });
 
@@ -1095,16 +1133,15 @@ describe('landRepoWorkflow', () => {
       pr: 1,
       reviewedHead: '0'.repeat(40),
       reviewedSnapshot: repo.snapshotSha,
-      approvedBy: 'reviewer',
     }, { run: github.run })).rejects.toMatchObject({ code: 'REVIEW_STALE' });
   });
 });
 
 describe('CLI and tool surface', () => {
-  it('parses repeated cleanup paths and exact review evidence', () => {
+  it('parses repeated cleanup paths and exact review evidence without accepting approval metadata', () => {
     expect(parseRepoWorkflowArgs([
       'land', '--pr', '42', '--reviewed-head', 'a'.repeat(40), '--reviewed-snapshot', 'b'.repeat(40),
-      '--approved-by', 'martin', '--tag-prefix', 'v2.', '--cleanup-worktree', '/one', '--cleanup-worktree', '/two',
+      '--tag-prefix', 'v1.0.', '--cleanup-worktree', '/one', '--cleanup-worktree', '/two',
     ])).toEqual({
       help: false,
       command: 'land',
@@ -1112,11 +1149,94 @@ describe('CLI and tool surface', () => {
         pr: 42,
         reviewedHead: 'a'.repeat(40),
         reviewedSnapshot: 'b'.repeat(40),
-        approvedBy: 'martin',
-        tagPrefix: 'v2.',
+        tagPrefix: 'v1.0.',
         worktreePaths: ['/one', '/two'],
       },
     });
+    expect(() => parseRepoWorkflowArgs(['land', '--approved-by', 'martin']))
+      .toThrow('Unknown option: --approved-by');
+  });
+
+  it('rejects direct landing with arbitrary approvedBy before invoking a command runner', async () => {
+    let calls = 0;
+    await expect(landRepoWorkflowCore({
+      cwd: process.cwd(),
+      pr: 42,
+      reviewedHead: 'a'.repeat(40),
+      reviewedSnapshot: 'b'.repeat(40),
+      approvedBy: 'martin',
+    }, {
+      run: async () => {
+        calls += 1;
+        throw new Error('runner must not execute');
+      },
+    })).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' });
+    expect(calls).toBe(0);
+  });
+
+  it('keeps standalone CLI landing fail closed even with exact review evidence', async () => {
+    const stdout = [];
+    const stderr = [];
+    let calls = 0;
+    const exitCode = await runRepoWorkflowCli([
+      'land', '--pr', '42', '--reviewed-head', 'a'.repeat(40), '--reviewed-snapshot', 'b'.repeat(40),
+    ], {
+      run: async () => {
+        calls += 1;
+        throw new Error('runner must not execute');
+      },
+      writeOut: text => stdout.push(text),
+      writeErr: text => stderr.push(text),
+    });
+    expect(exitCode).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(JSON.parse(stderr[0])).toMatchObject({ ok: false, code: 'APPROVAL_REQUIRED' });
+    expect(calls).toBe(0);
+  });
+
+  it('rejects arbitrary approvedBy at the real tool boundary without an inbound capability', async () => {
+    const tool = allTools.find(item => item.name === 'RepoWorkflow');
+    const result = JSON.parse(await tool.execute({
+      phase: 'land',
+      cwd: process.cwd(),
+      pr: 42,
+      reviewedHead: 'a'.repeat(40),
+      reviewedSnapshot: 'b'.repeat(40),
+      approvedBy: 'vp-martin',
+    }, {
+      senderVpId: 'vp-linus',
+      inboundEnvelope: { sessionId: 'session-untrusted-tool-call' },
+    }));
+
+    expect(result).toMatchObject({ ok: false, code: 'APPROVAL_REQUIRED' });
+    expect(tool.parameters.properties.approvedBy).toBeUndefined();
+  });
+
+  it('keeps untrusted workflow values out of run scripts and enforces the release tag grammar', () => {
+    const workflow = readFileSync(join(process.cwd(), '.github/workflows/dev-release.yml'), 'utf8');
+    const lines = workflow.split('\n');
+    const runScripts = [];
+    for (let index = 0; index < lines.length; index += 1) {
+      const match = lines[index].match(/^(\s*)run:\s*(.*)$/);
+      if (!match) continue;
+      const indent = match[1].length;
+      if (match[2] && match[2] !== '|') runScripts.push(match[2]);
+      while (index + 1 < lines.length) {
+        const next = lines[index + 1];
+        if (next.trim() && next.match(/^\s*/)[0].length <= indent) break;
+        runScripts.push(next);
+        index += 1;
+      }
+    }
+    const scripts = runScripts.join('\n');
+
+    expect(scripts).not.toContain('${{ github.');
+    expect(scripts).not.toContain('${{ steps.');
+    expect(scripts).not.toContain('${{ needs.');
+    expect(workflow).toContain('[[ ! "$TAG" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]');
+    for (const unsafe of ['v1.0.$(touch pwned)', 'v1.0.`touch pwned`', 'v1.0.1\\nrun: touch pwned']) {
+      expect(unsafe).not.toMatch(/^v[0-9]+\.[0-9]+\.[0-9]+$/);
+    }
   });
 
   it('emits one JSON error instead of shell logs', async () => {

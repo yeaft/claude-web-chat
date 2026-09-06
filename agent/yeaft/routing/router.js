@@ -27,6 +27,7 @@
 
 import { resolveMemberId } from '../sessions/roster.js';
 import { createLoopGuard, extendCausedBy } from './loop-guard.js';
+import { isRepoApprovalIssuer, issueRepoApprovalCapability } from './repo-approval.js';
 
 function routeForwardParentFromEnvelope(envelope) {
   const msg = envelope?.msg;
@@ -122,6 +123,8 @@ export function createRouter(deps = {}) {
     }
     const meta = coordinator.group.getMeta();
     if (!meta) return { ok: false, error: 'group_not_initialised' };
+    const senderVpId = resolveMemberId(meta, from);
+    if (!senderVpId) return { ok: false, error: 'sender_not_in_roster' };
     const claimedVpIds = args.inboundEnvelope?._cliTurnContext?.claimedVpIds;
 
     // Roster membership — `all` is reserved broadcast sentinel handled by
@@ -132,7 +135,7 @@ export function createRouter(deps = {}) {
     if (targetVpId !== 'all' && !targetVpId) {
       return { ok: false, error: 'target_not_in_roster' };
     }
-    if (targetVpId === from) {
+    if (targetVpId === senderVpId) {
       return { ok: false, error: 'self_forward_rejected' };
     }
     if (targetVpId !== 'all' && claimedVpIds?.has?.(targetVpId)) {
@@ -146,6 +149,24 @@ export function createRouter(deps = {}) {
     // spec's intent ("depth of forwards already taken").
     const chain = extendCausedBy(args.inboundEnvelope || null, null);
     const routeForwardParent = routeForwardParentFromEnvelope(args.inboundEnvelope);
+    let repoApproval = null;
+    if (args.repoApproval !== undefined) {
+      if (targetVpId === 'all') {
+        return { ok: false, error: 'repo_approval_requires_single_target' };
+      }
+      if (!isRepoApprovalIssuer(senderVpId)) {
+        return { ok: false, error: 'repo_approval_issuer_forbidden' };
+      }
+      repoApproval = issueRepoApprovalCapability({
+        ...args.repoApproval,
+        sessionId: meta.id,
+        issuerVpId: senderVpId,
+        recipientVpId: targetVpId,
+      });
+      if (!repoApproval) {
+        return { ok: false, error: 'invalid_repo_approval' };
+      }
+    }
 
     // Loop guard: for broadcast, use 'all' as the target key so one VP
     // spamming @all still gets throttled even if each cycle hits different
@@ -182,6 +203,7 @@ export function createRouter(deps = {}) {
         // of UI replay and future visible history so it doesn't render as a
         // second assistant/user block after the target VP answers.
         internal: true,
+        ...(repoApproval ? { _repoApproval: repoApproval } : {}),
         meta: {
           synthetic: true,
           injectedBy: 'route_forward',

@@ -4,6 +4,10 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import {
+  consumeRepoApprovalCapability,
+  isRepoApprovalCapability,
+} from './yeaft/routing/repo-approval.js';
 
 const execFile = promisify(execFileCallback);
 const DEFAULT_REMOTE = 'origin';
@@ -1175,8 +1179,8 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
   if (!/^[0-9a-f]{40}$/i.test(options.reviewedSnapshot || '')) {
     throw new RepoWorkflowError('INVALID_INPUT', 'reviewedSnapshot must be the exact 40-character reviewed merge snapshot SHA');
   }
-  if (!String(options.approvedBy || '').trim()) {
-    throw new RepoWorkflowError('APPROVAL_REQUIRED', 'approvedBy is required; landing cannot infer review approval');
+  if (!isRepoApprovalCapability(dependencies.approvalCapability)) {
+    throw new RepoWorkflowError('APPROVAL_REQUIRED', 'Landing requires a host-issued repository approval capability');
   }
   const mergeMethod = options.mergeMethod || 'merge';
   if (!['merge', 'squash', 'rebase'].includes(mergeMethod)) {
@@ -1185,6 +1189,17 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
   if (options.tagPrefix !== undefined) validateTagPrefix(options.tagPrefix);
 
   const repository = await resolveRepository(run, options.cwd || process.cwd(), options);
+  const github = githubRepository(repository);
+  const approval = consumeRepoApprovalCapability(dependencies.approvalCapability, {
+    ...dependencies.approvalContext,
+    repository: `${github.host}/${github.nameWithOwner}`,
+    pr,
+    reviewedHead: options.reviewedHead,
+    reviewedSnapshot: options.reviewedSnapshot,
+  });
+  if (!approval) {
+    throw new RepoWorkflowError('APPROVAL_REQUIRED', 'Repository approval capability is missing, invalid, stale, or already consumed');
+  }
   // Freeze every identity used by a later side effect before merging. Fetch URL
   // selects the GitHub repository; every configured push URL must select the
   // same repository, and tag pushes use the validated URL rather than a remote
@@ -1329,7 +1344,7 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
       ok: true,
       phase: 'land',
       repository: compactRepository(repository),
-      approval: { by: String(options.approvedBy).trim(), headSha: options.reviewedHead, snapshotSha: options.reviewedSnapshot },
+      approval: { by: approval.issuerVpId, headSha: options.reviewedHead, snapshotSha: options.reviewedSnapshot },
       pullRequest: { number: info.number, url: info.url, baseBranch: info.baseRefName, checks },
       merge: { sha: mergeSha, alreadyMerged: !mergeCreated },
       tag,

@@ -2001,7 +2001,9 @@ function getOrCreateSessionContext(sessionId, sessionHandle) {
   const coord = createCoordinator(sessionHandle, {
     deliver: (vpId, envelope) => enqueueForVp(sessionId, vpId, envelope),
   });
-  const router = createRouter({ coordinator: coord });
+  const router = createRouter({
+    coordinator: coord,
+  });
   if (!entry) {
     entry = makeGroupContextStub();
     sessionContexts.set(sessionId, entry);
@@ -3921,7 +3923,6 @@ function buildVpPersona(vpId) {
   }
 }
 
-
 /**
  * Install the dream pipeline progress sink and runtime settings bridge.
  * Thread scheduling is owned by the group VP runtime below, not by mutable
@@ -5110,7 +5111,9 @@ export function buildVpQueryOpts({ vpId, sessionCoordinator, sessionId, envelope
   if (persona) out.vpPersona = persona;
   if (sessionCoordinator && typeof sessionCoordinator.ingest === 'function') {
     try {
-      out.router = createRouter({ coordinator: sessionCoordinator });
+      out.router = createRouter({
+        coordinator: sessionCoordinator,
+      });
     } catch {
       // Router build failure is non-fatal.
     }
@@ -8208,7 +8211,9 @@ export const __testHooks = {
     });
     const entry = makeGroupContextStub();
     entry.coord = coord;
-    entry.router = createRouter({ coordinator: coord });
+    entry.router = createRouter({
+      coordinator: coord,
+    });
     entry.sessionHandle = group;
     entry.historyHydrated = true;
     sessionContexts.set(sessionId, entry);
