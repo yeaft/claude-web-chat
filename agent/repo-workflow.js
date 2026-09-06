@@ -714,6 +714,7 @@ async function resolveRemoteTagCommit(run, repository, tag) {
 async function createAndPushNextTag(run, repository, pushUrl, targetSha, prefix, start = 0, callbacks = {}) {
   const onStage = callbacks.onStage || (() => {});
   const beforePush = callbacks.beforePush || (async () => {});
+  const baseGuard = callbacks.baseGuard || null;
   onStage({ stage: 'validate', status: 'not-attempted', prefix, sha: targetSha });
   const refCheck = await runGit(run, repository.repoRoot, ['check-ref-format', `refs/tags/${prefix}${start}`], {
     allowExitCodes: [1],
@@ -770,13 +771,23 @@ async function createAndPushNextTag(run, repository, pushUrl, targetSha, prefix,
     await beforePush();
     onStage({ stage: 'push-started', status: 'unknown', name: tag, sha: targetSha });
     try {
-      const pushed = await runGit(run, repository.repoRoot, ['push', '--porcelain', pushUrl, `${localRef}:${localRef}`]);
+      const pushArgs = ['push', '--porcelain'];
+      if (baseGuard) pushArgs.push('--atomic', `--force-with-lease=${baseGuard.ref}:${baseGuard.sha}`);
+      pushArgs.push(pushUrl, `${localRef}:${localRef}`);
+      if (baseGuard) pushArgs.push(`${baseGuard.sha}:${baseGuard.ref}`);
+      const pushed = await runGit(run, repository.repoRoot, pushArgs);
       const porcelain = `${pushed.stdout}\n${pushed.stderr}`;
-      if (porcelain.split(/\r?\n/).some(line => line.startsWith('='))) reused = true;
+      if (porcelain.split(/\r?\n/).some(line => line.startsWith('=') && line.includes(localRef))) reused = true;
       onStage({ stage: 'push-returned', status: 'unknown', name: tag, sha: targetSha });
     } catch (error) {
-      const racedCommit = await resolveRemoteTagCommit(run, repository, tag);
-      if (racedCommit !== targetSha) throw error;
+      const [racedCommit, currentBase] = await Promise.all([
+        resolveRemoteTagCommit(run, repository, tag),
+        baseGuard
+          ? gitOutput(run, repository.repoRoot, ['ls-remote', repository.remote, baseGuard.ref])
+            .then(output => output.split(/\s+/)[0] || null)
+          : Promise.resolve(null),
+      ]);
+      if (racedCommit !== targetSha || (baseGuard && currentBase !== baseGuard.sha)) throw error;
       reused = true;
     }
   }
@@ -1143,6 +1154,9 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
     merge: { status: mergeCreated ? 'created' : 'preexisting', pr, sha: mergeSha },
   };
   try {
+    if (workflowIdentity && !options.tagPrefix && !workflowFence) {
+      throw new RepoWorkflowError('WORKFLOW_NOT_TRIGGERED', 'The pull request was already merged, so this landing cannot fence a new branch workflow run');
+    }
     const baseSha = await fetchBase(run, repository, info.baseRefName);
     if (baseSha !== mergeSha) {
       throw new RepoWorkflowError('BASE_ADVANCED_AFTER_MERGE', 'Remote base no longer points at this PR merge commit; refusing to tag a moving target', {
@@ -1170,6 +1184,7 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
         options.tagPrefix,
         options.tagStart ?? 0,
         {
+          baseGuard: { ref: `refs/heads/${info.baseRefName}`, sha: mergeSha },
           onStage: effect => { remoteEffects.tag = effect; },
           beforePush: async () => {
             if (!workflowIdentity) return;

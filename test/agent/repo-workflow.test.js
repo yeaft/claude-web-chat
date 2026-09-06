@@ -102,6 +102,7 @@ function createGithubRunner(repo, options = {}) {
   const pushUrls = options.githubPushUrls || [fetchUrl];
   let pr = openPullRequest(repo, options.pullRequest);
   let workflowListCalls = 0;
+  let advancedBaseSha = null;
   const run = async (command, args, commandOptions = {}) => {
     calls.push({ command, args: [...args] });
     if (command === 'git' && args[0] === 'remote' && args[1] === 'get-url') {
@@ -124,6 +125,13 @@ function createGithubRunner(repo, options = {}) {
             stderr: '',
             exitCode: 0,
           };
+        }
+        if (options.advanceBaseBeforeTagPush && refspec && !advancedBaseSha) {
+          writeFileSync(join(repo.seed, 'advanced.txt'), 'advanced after validation\n');
+          git(repo.seed, 'add', 'advanced.txt');
+          git(repo.seed, 'commit', '-m', 'advance base after validation');
+          advancedBaseSha = git(repo.seed, 'rev-parse', 'HEAD');
+          git(repo.seed, 'push', 'origin', `${advancedBaseSha}:refs/heads/main`);
         }
         const mappedArgs = [...args];
         mappedArgs[pushUrlIndex] = repo.remote;
@@ -196,7 +204,7 @@ function createGithubRunner(repo, options = {}) {
     }
     throw new Error(`Unexpected gh call: ${args.join(' ')}`);
   };
-  return { run, calls, getPullRequest: () => pr };
+  return { run, calls, getPullRequest: () => pr, getAdvancedBaseSha: () => advancedBaseSha };
 }
 
 afterEach(() => {
@@ -797,6 +805,31 @@ describe('landRepoWorkflow', () => {
     expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/tags/v1.0.0')).toBe(repo.snapshotSha);
   });
 
+  it('atomically refuses the tag when the base advances after validation', async () => {
+    const repo = createPullRequestRepository();
+    const github = createGithubRunner(repo, { advanceBaseBeforeTagPush: true });
+
+    await expect(landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+      approvedBy: 'reviewer',
+      tagPrefix: 'v1.0.',
+    }, { run: github.run })).rejects.toMatchObject({
+      code: 'COMMAND_FAILED',
+      details: {
+        remoteEffects: {
+          tag: { stage: 'push-started', status: 'unknown', name: 'v1.0.0', sha: repo.snapshotSha },
+        },
+      },
+    });
+
+    expect(github.getAdvancedBaseSha()).toMatch(/^[0-9a-f]{40}$/);
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(github.getAdvancedBaseSha());
+    expect(git(repo.root, '--git-dir', repo.remote, 'tag')).toBe('');
+  });
+
   it('reports deterministic tag validation failures as not attempted', async () => {
     const repo = createPullRequestRepository();
     const github = createGithubRunner(repo);
@@ -825,6 +858,31 @@ describe('landRepoWorkflow', () => {
       },
     });
     expect(git(repo.root, '--git-dir', repo.remote, 'tag')).toBe('');
+  });
+
+  it('fails closed when an already-merged retry requests an unfenced branch workflow', async () => {
+    const repo = createPullRequestRepository();
+    git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/heads/main', repo.snapshotSha);
+    const github = createGithubRunner(repo, {
+      pullRequest: {
+        state: 'MERGED',
+        mergeCommit: { oid: repo.snapshotSha },
+        mergedAt: '2026-01-01T00:00:00Z',
+      },
+    });
+
+    await expect(landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+      approvedBy: 'reviewer',
+      workflow: 'Dev Release',
+    }, { run: github.run })).rejects.toMatchObject({ code: 'WORKFLOW_NOT_TRIGGERED' });
+
+    const workflowRunCalls = github.calls.filter(call => call.command === 'gh'
+      && call.args.some(arg => /actions\/workflows\/\d+\/runs\?per_page=100$/.test(arg)));
+    expect(workflowRunCalls).toHaveLength(0);
   });
 
   it('does not let an already-merged retry bypass the reviewed head', async () => {
