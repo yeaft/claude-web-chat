@@ -770,7 +770,13 @@ async function rollbackRemoteTag(run, repository, pushUrl, tag, directSha, targe
       transientTagMayHaveTriggeredAutomation: true,
     });
   }
-  onStage({ stage: 'rolled-back', status: 'none', name: tag, sha: targetSha });
+  onStage({
+    stage: 'rolled-back',
+    status: 'unknown',
+    name: tag,
+    sha: targetSha,
+    transientTagMayHaveTriggeredAutomation: true,
+  });
 }
 
 async function assertTagBaseGuard(run, repository, baseGuard, tag) {
@@ -896,10 +902,10 @@ async function createAndPushNextTag(run, repository, pushUrl, targetSha, prefix,
     });
   }
 
-  const [remoteTag, currentBase] = await Promise.all([
-    resolveRemoteTag(run, repository, tag),
-    baseGuard ? resolveRemoteRefSha(run, repository, baseGuard.ref) : Promise.resolve(null),
-  ]);
+  const remoteTag = await resolveRemoteTag(run, repository, tag);
+  const currentBase = baseGuard
+    ? await resolveRemoteRefSha(run, repository, baseGuard.ref)
+    : null;
   if (remoteTag?.commitSha !== targetSha || (!reused && remoteTag.directSha !== targetSha)) {
     throw new RepoWorkflowError('TAG_VERIFY_FAILED', `Remote tag ${tag} could not be verified`, {
       tag,
@@ -1142,6 +1148,7 @@ function rejectLegacyLandingOptions(options) {
 
 async function pushReviewedSnapshot(run, repository, pushUrl, baseRef, frozenBase, reviewedSnapshot) {
   let pushFailure = null;
+  let pushRejected = false;
   try {
     const pushed = await runGit(run, repository.repoRoot, [
       'push',
@@ -1150,7 +1157,10 @@ async function pushReviewedSnapshot(run, repository, pushUrl, baseRef, frozenBas
       pushUrl,
       `${reviewedSnapshot}:${baseRef}`,
     ], { allowExitCodes: [1] });
-    if (pushed.exitCode !== 0) pushFailure = pushed;
+    if (pushed.exitCode !== 0) {
+      pushFailure = pushed;
+      pushRejected = true;
+    }
   } catch (error) {
     pushFailure = error;
   }
@@ -1168,7 +1178,7 @@ async function pushReviewedSnapshot(run, repository, pushUrl, baseRef, frozenBas
   }
   if (actual === reviewedSnapshot) return;
   if (pushFailure) {
-    if (actual === frozenBase) {
+    if (pushRejected && actual === frozenBase) {
       throw new RepoWorkflowError('BASE_LEASE_REJECTED', 'Remote base did not accept the exact reviewed snapshot with the frozen-base lease', {
         ref: baseRef,
         expectedOld: frozenBase,
@@ -1176,7 +1186,7 @@ async function pushReviewedSnapshot(run, repository, pushUrl, baseRef, frozenBas
         actual,
       });
     }
-    throw new RepoWorkflowError('BASE_UPDATE_OUTCOME_UNKNOWN', 'Remote base outcome is unknown after the atomic update failed and the ref advanced', {
+    throw new RepoWorkflowError('BASE_UPDATE_OUTCOME_UNKNOWN', 'Remote base outcome is unknown after the atomic update attempt failed', {
       ref: baseRef,
       expectedOld: frozenBase,
       expectedNew: reviewedSnapshot,
