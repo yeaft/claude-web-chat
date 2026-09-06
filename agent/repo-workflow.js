@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import {
   consumeRepoApprovalCapability,
   isRepoApprovalCapability,
-} from './yeaft/routing/repo-approval.js';
+} from './yeaft/routing/router.js';
 
 const execFile = promisify(execFileCallback);
 const DEFAULT_REMOTE = 'origin';
@@ -1140,7 +1140,7 @@ async function cleanupWorktrees(run, repository, paths, reviewedHead, reviewedSn
       });
       if (branchHead.exitCode === 0 && branchHead.stdout === reviewedHead) {
         await beforeBranchDelete({ path, branch: record.branch, ref: branchRef, expectedHead: reviewedHead });
-        const deleted = await runGit(run, repository.repoRoot, ['update-ref', '-d', branchRef, reviewedHead], {
+        const deleted = await runGit(run, repository.repoRoot, ['update-ref', '--no-deref', '-d', branchRef, reviewedHead], {
           allowExitCodes: [1, 128],
         });
         branchDeleted = deleted.exitCode === 0;

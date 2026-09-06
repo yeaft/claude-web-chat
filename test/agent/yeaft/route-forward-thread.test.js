@@ -3,11 +3,10 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCoordinator } from '../../../agent/yeaft/sessions/coordinator.js';
-import { createRouter } from '../../../agent/yeaft/routing/router.js';
 import {
   consumeRepoApprovalCapability,
-  issueRepoApprovalCapability,
-} from '../../../agent/yeaft/routing/repo-approval.js';
+  createRouter,
+} from '../../../agent/yeaft/routing/router.js';
 import { createLoopGuard, MAX_CHAIN_DEPTH } from '../../../agent/yeaft/routing/loop-guard.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { Engine } from '../../../agent/yeaft/engine.js';
@@ -178,12 +177,6 @@ describe('route_forward thread ownership', () => {
       text: 'mutable-role lookalike approval',
       repoApproval,
     })).toMatchObject({ ok: false, error: 'repo_approval_issuer_forbidden' });
-    expect(issueRepoApprovalCapability({
-      sessionId: 'session-route-thread',
-      issuerVpId: 'linus',
-      recipientVpId: 'martin',
-      ...repoApproval,
-    })).toBeNull();
     expect(delivered).toHaveLength(0);
   });
 

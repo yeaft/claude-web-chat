@@ -468,7 +468,7 @@ describe('prepareRepoReview', () => {
 });
 
 describe('landRepoWorkflow', () => {
-  it('head-match merges, creates the next remote numeric tag, and removes only requested clean worktrees', async () => {
+  it('accepts a real Router-issued approval to head-match merge, tag, and clean up', async () => {
     const repo = createPullRequestRepository();
     const github = createGithubRunner(repo);
     const review = await prepareRepoReview({ cwd: repo.checkout, pr: 1 }, { run: github.run });
@@ -627,7 +627,47 @@ describe('landRepoWorkflow', () => {
     expect(git(repo.checkout, 'rev-parse', 'refs/heads/yeaft-wt/feature')).toBe(repo.snapshotSha);
     expect(github.calls.some(call => call.command === 'git'
       && call.args[0] === 'update-ref'
-      && call.args.slice(1).join(' ') === `-d refs/heads/yeaft-wt/feature ${repo.headSha}`)).toBe(true);
+      && call.args.slice(1).join(' ') === `--no-deref -d refs/heads/yeaft-wt/feature ${repo.headSha}`)).toBe(true);
+  });
+
+  it('does not follow a development branch that races into a symref during cleanup', async () => {
+    const repo = createPullRequestRepository();
+    const github = createGithubRunner(repo);
+    const developmentPath = join(repo.root, 'development');
+    await prepareRepoWorkflow({
+      cwd: repo.checkout,
+      name: 'feature',
+      baseBranch: 'feature',
+      worktreePath: developmentPath,
+    }, { run: github.run });
+    const branchRef = 'refs/heads/yeaft-wt/feature';
+    const unrelatedRef = 'refs/heads/unrelated';
+    git(repo.checkout, 'update-ref', unrelatedRef, repo.headSha);
+
+    const result = await landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+      worktreePaths: [developmentPath],
+    }, {
+      run: github.run,
+      beforeCleanupBranchDelete: async ({ ref }) => {
+        expect(ref).toBe(branchRef);
+        git(repo.checkout, 'symbolic-ref', ref, unrelatedRef);
+      },
+    });
+
+    expect(result.cleanup).toEqual([{
+      path: developmentPath,
+      status: 'removed',
+      branch: 'yeaft-wt/feature',
+      branchDeleted: true,
+    }]);
+    expect(git(repo.checkout, 'rev-parse', unrelatedRef)).toBe(repo.headSha);
+    expect(() => git(repo.checkout, 'symbolic-ref', branchRef)).toThrow();
+    expect(github.calls.some(call => call.command === 'git'
+      && call.args.join(' ') === `update-ref --no-deref -d ${branchRef} ${repo.headSha}`)).toBe(true);
   });
 
   it('keeps an owned worktree when it contains ignored files', async () => {
@@ -1166,6 +1206,27 @@ describe('CLI and tool surface', () => {
       reviewedSnapshot: 'b'.repeat(40),
       approvedBy: 'martin',
     }, {
+      run: async () => {
+        calls += 1;
+        throw new Error('runner must not execute');
+      },
+    })).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' });
+    expect(calls).toBe(0);
+  });
+
+  it('does not expose a caller-accessible repository approval mint', async () => {
+    const routerModule = await import('../../agent/yeaft/routing/router.js');
+    let calls = 0;
+
+    expect(routerModule.issueRepoApprovalCapability).toBeUndefined();
+    await expect(landRepoWorkflowCore({
+      cwd: process.cwd(),
+      pr: 42,
+      reviewedHead: 'a'.repeat(40),
+      reviewedSnapshot: 'b'.repeat(40),
+    }, {
+      approvalCapability: Object.freeze(Object.create(null)),
+      approvalContext: { sessionId: 'session-direct', recipientVpId: 'linus' },
       run: async () => {
         calls += 1;
         throw new Error('runner must not execute');
