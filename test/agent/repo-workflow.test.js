@@ -103,6 +103,15 @@ function createPullRequestRepository() {
   return { root, remote, seed, checkout, baseSha, headSha, snapshotSha };
 }
 
+function runReleaseFence(checkout, tag, commit) {
+  return execFileSync('sh', [
+    join(process.cwd(), 'scripts/verify-dev-release.sh'),
+    'verify',
+    tag,
+    commit,
+  ], { cwd: checkout, encoding: 'utf8' }).trim();
+}
+
 function installPostAdvertisementBaseAdvanceHook(repo) {
   writeFileSync(join(repo.seed, 'advanced.txt'), 'advanced during tag receive\n');
   git(repo.seed, 'add', 'advanced.txt');
@@ -1288,8 +1297,9 @@ describe('CLI and tool surface', () => {
     expect(tool.parameters.properties.approvedBy).toBeUndefined();
   });
 
-  it('keeps untrusted workflow values out of run scripts and enforces the release tag grammar', () => {
+  it('keeps untrusted workflow values out of run scripts and revalidates before each publisher', () => {
     const workflow = readFileSync(join(process.cwd(), '.github/workflows/dev-release.yml'), 'utf8');
+    const helper = readFileSync(join(process.cwd(), 'scripts/verify-dev-release.sh'), 'utf8');
     const lines = workflow.split('\n');
     const runScripts = [];
     for (let index = 0; index < lines.length; index += 1) {
@@ -1309,10 +1319,66 @@ describe('CLI and tool surface', () => {
     expect(scripts).not.toContain('${{ github.');
     expect(scripts).not.toContain('${{ steps.');
     expect(scripts).not.toContain('${{ needs.');
-    expect(workflow).toContain('[[ ! "$TAG" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]');
+    expect(workflow.match(/scripts\/verify-dev-release\.sh verify/g)).toHaveLength(4);
+    expect(workflow.indexOf('Revalidate authoritative release refs')).toBeLessThan(workflow.indexOf('Publish to npm'));
+    expect(workflow.indexOf('Revalidate authoritative release refs for Server image')).toBeLessThan(workflow.indexOf('Build and push Server image'));
+    expect(workflow.indexOf('Revalidate authoritative release refs for Agent image')).toBeLessThan(workflow.indexOf('Build and push Agent image'));
+    expect(helper).toContain("'^v[0-9]+\\.[0-9]+\\.[0-9]+$'");
     for (const unsafe of ['v1.0.$(touch pwned)', 'v1.0.`touch pwned`', 'v1.0.1\\nrun: touch pwned']) {
       expect(unsafe).not.toMatch(/^v[0-9]+\.[0-9]+\.[0-9]+$/);
     }
+  });
+
+  it('accepts an annotated release tag peeled to the current origin/main commit', () => {
+    const repo = createPullRequestRepository();
+    const releaseCommit = git(repo.seed, 'rev-parse', 'main');
+    git(repo.seed, 'push', 'origin', 'main');
+    git(repo.seed, 'tag', '-a', 'v1.2.3', '-m', 'release', releaseCommit);
+    git(repo.seed, 'push', 'origin', 'refs/tags/v1.2.3');
+    git(repo.checkout, 'fetch', 'origin', releaseCommit);
+    git(repo.checkout, 'checkout', '--detach', releaseCommit);
+
+    expect(runReleaseFence(repo.checkout, 'v1.2.3', releaseCommit)).toContain('Release fence passed');
+  });
+
+  it('rejects publishing from a checkout other than the fenced release commit', () => {
+    const repo = createPullRequestRepository();
+    const releaseCommit = git(repo.seed, 'rev-parse', 'main');
+    git(repo.seed, 'push', 'origin', 'main');
+    git(repo.seed, 'tag', 'v1.2.3', releaseCommit);
+    git(repo.seed, 'push', 'origin', 'refs/tags/v1.2.3');
+
+    expect(() => runReleaseFence(repo.checkout, 'v1.2.3', releaseCommit)).toThrowError(
+      expect.objectContaining({ stderr: expect.stringContaining('Current checkout HEAD points to') }),
+    );
+  });
+
+  it('rejects a transient release tag deleted after validation', () => {
+    const repo = createPullRequestRepository();
+    const releaseCommit = git(repo.seed, 'rev-parse', 'main');
+    git(repo.seed, 'push', 'origin', 'main');
+    git(repo.seed, 'tag', 'v1.2.3', releaseCommit);
+    git(repo.seed, 'push', 'origin', 'refs/tags/v1.2.3');
+    git(repo.checkout, 'fetch', 'origin', releaseCommit);
+    git(repo.checkout, 'checkout', '--detach', releaseCommit);
+
+    expect(runReleaseFence(repo.checkout, 'v1.2.3', releaseCommit)).toContain('Release fence passed');
+    git(repo.seed, 'push', 'origin', ':refs/tags/v1.2.3');
+
+    expect(() => runReleaseFence(repo.checkout, 'v1.2.3', releaseCommit)).toThrowError(
+      expect.objectContaining({ stderr: expect.stringContaining("Remote tag 'v1.2.3' does not exist on origin") }),
+    );
+  });
+
+  it('rejects a historical main tag that is not current origin/main', () => {
+    const repo = createPullRequestRepository();
+    git(repo.seed, 'tag', 'v1.2.3', repo.baseSha);
+    git(repo.seed, 'push', 'origin', 'refs/tags/v1.2.3');
+    git(repo.seed, 'push', 'origin', 'main');
+
+    expect(() => runReleaseFence(repo.checkout, 'v1.2.3', repo.baseSha)).toThrowError(
+      expect.objectContaining({ stderr: expect.stringContaining('origin/main points to') }),
+    );
   });
 
   it('emits one JSON error instead of shell logs', async () => {
