@@ -26,7 +26,9 @@ Session metadata 和 history 位于所属 Agent 的 Yeaft 目录。`workDir` 是
 5. 创建 Session。
 6. 创建后在 composer 选择 model/effort，在 Session settings 编辑公告，然后发送消息。
 
-如果没有传 roster，而 Agent 的 VP library 中存在 `omni`，runtime 可以使用 Omni 作为默认 generalist。显式传入的非空 roster 永远不会被静默覆盖。
+如果没有传 roster，而 Agent 的 VP library 中存在 `omni`，runtime 可以使用**全能助手**作为默认通用助手。其内部 ID 仍为 `omni`，已有引用无需修改。显式传入的非空 roster 永远不会被静默覆盖。
+
+全能助手可帮助处理问答、研究、写作、翻译、学习、规划、数据分析和编程执行，而不只是澄清需求或转交任务。它会根据任务选择直接回答、使用工具或协作，并遵守项目分工与授权边界。Agent 启动时会将精确匹配旧默认版本的 soul 和对应旧名称、角色、简介升级；用户改写过的 soul 或自定义元数据不会被覆盖。
 
 ## 路由一个 turn
 

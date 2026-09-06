@@ -63,7 +63,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { createVp, VpCrudError } from './vp-crud.js';
-import { DEFAULT_VP_LIB_DIR, personaHash } from './vp-store.js';
+import { DEFAULT_VP_LIB_DIR, parseRoleMd, personaHash } from './vp-store.js';
 import { DEFAULT_VPS } from './seed-defaults.js';
 import { STOCK_VP_IDS } from './stock-ids.js';
 
@@ -265,16 +265,29 @@ export function backfillLocalizedPersonaBody(source, vp) {
     .filter(value => typeof value === 'string' && value.trim())
     .map(value => value.trim());
 
-  if (!acceptedOldBodies.includes(body) && !isObsoleteOmniAssistantBody(vp, body)) return null;
-  return replaceRoleBody(source, nextBody);
+  if (!acceptedOldBodies.includes(body)) return null;
+  return replaceRoleBody(upgradeStockMetadata(source, vp), nextBody);
 }
 
-function isObsoleteOmniAssistantBody(vp, body) {
-  if (!vp || vp.vpId !== 'omni') return false;
-  const text = String(body || '').trim();
-  return text.startsWith('You are Omni Assistant / 全能助手,')
-    && text.includes('Language policy / 语言策略:')
-    && text.includes('Core capabilities / 核心能力:');
+/** Upgrade only known stock values alongside an exact historical body match. */
+function upgradeStockMetadata(source, vp) {
+  if (!vp.legacyMetadata) return source;
+  const { meta } = parseRoleMd(source);
+  const values = {
+    nameZh: vp.displayNameZh,
+    role: vp.role,
+    roleZh: vp.roleZh,
+    description: vp.description,
+    descriptionZh: vp.descriptionZh,
+  };
+  return source.replace(/^(---\r?\n)([\s\S]*?)(\r?\n---)/, (_match, open, yaml, close) => {
+    for (const [key, value] of Object.entries(values)) {
+      if (meta[key] !== vp.legacyMetadata[key] || !value) continue;
+      const quoted = `'${value.replace(/'/g, "''")}'`;
+      yaml = yaml.replace(new RegExp(`^${key}:[^\\r\\n]*`, 'm'), () => `${key}: ${quoted}`);
+    }
+    return open + yaml + close;
+  });
 }
 
 /**
