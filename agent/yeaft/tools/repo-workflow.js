@@ -60,8 +60,9 @@ This tool does not review code and never infers approval. The land phase require
           signal: ctx?.signal,
           approvalCapability: ctx?.inboundEnvelope?._repoApproval,
           approvalContext: {
-            sessionId: ctx?.inboundEnvelope?.sessionId,
+            sessionId: ctx?.sessionId,
             recipientVpId: ctx?.senderVpId,
+            turnId: ctx?.turnId,
           },
         }
         : { signal: ctx?.signal };

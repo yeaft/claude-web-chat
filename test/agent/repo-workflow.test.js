@@ -14,7 +14,7 @@ import {
   prepareRepoWorkflow,
   summarizeChecks,
 } from '../../agent/repo-workflow.js';
-import { createRouter } from '../../agent/yeaft/routing/router.js';
+import { bindRepoApprovalCapability, createRouter } from '../../agent/yeaft/routing/router.js';
 import { createCoordinator } from '../../agent/yeaft/sessions/coordinator.js';
 import { CONDITIONAL_BUILTIN_TOOL_NAMES, resolveActiveToolNames } from '../../agent/yeaft/tools/activation.js';
 import { discoverToolCapabilities } from '../../agent/yeaft/tools/discover-tools.js';
@@ -22,7 +22,10 @@ import { allTools } from '../../agent/yeaft/tools/index.js';
 
 const tempRoots = [];
 
-function issueTestApproval(options, repository = 'github.example.test/acme/repo') {
+function issueTestApproval(options, repository = 'github.example.test/acme/repo', {
+  turnId = 'turn-repo-workflow-test',
+  now = Date.now,
+} = {}) {
   let envelope = null;
   const group = {
     getMeta: () => ({
@@ -37,7 +40,7 @@ function issueTestApproval(options, repository = 'github.example.test/acme/repo'
       if (vpId === 'linus') envelope = delivered;
     },
   });
-  const result = createRouter({ coordinator }).forward({
+  const result = createRouter({ coordinator, now }).forward({
     from: 'martin',
     to: 'linus',
     text: 'APPROVE exact repository landing tuple',
@@ -49,15 +52,25 @@ function issueTestApproval(options, repository = 'github.example.test/acme/repo'
     },
   });
   if (!result.ok || !envelope?._repoApproval) throw new Error('test approval capability was not issued');
-  return envelope;
+  if (!bindRepoApprovalCapability(envelope._repoApproval, {
+    sessionId: envelope.sessionId,
+    recipientVpId: 'linus',
+    turnId,
+  }, { now })) {
+    throw new Error('test approval capability was not bound');
+  }
+  return { envelope, turnId };
 }
 
 function landRepoWorkflow(options = {}, dependencies = {}) {
-  const envelope = issueTestApproval(options, dependencies.approvalRepository);
+  const { envelope, turnId } = issueTestApproval(options, dependencies.approvalRepository, {
+    turnId: dependencies.approvalTurnId,
+    now: dependencies.now,
+  });
   return landRepoWorkflowCore(options, {
     ...dependencies,
     approvalCapability: envelope._repoApproval,
-    approvalContext: { sessionId: envelope.sessionId, recipientVpId: 'linus' },
+    approvalContext: { sessionId: envelope.sessionId, recipientVpId: 'linus', turnId },
   });
 }
 
@@ -1295,6 +1308,63 @@ describe('CLI and tool surface', () => {
 
     expect(result).toMatchObject({ ok: false, code: 'APPROVAL_REQUIRED' });
     expect(tool.parameters.properties.approvedBy).toBeUndefined();
+  });
+
+  it('passes the exact current tool turn to repository approval consumption', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'yeaft-repo-tool-turn-'));
+    tempRoots.push(root);
+    const checkout = join(root, 'checkout');
+    const bin = join(root, 'bin');
+    const marker = join(root, 'gh-calls.log');
+    execFileSync('git', ['init', checkout]);
+    execFileSync('git', ['remote', 'add', 'origin', 'https://github.example.test/acme/repo.git'], { cwd: checkout });
+    execFileSync('mkdir', ['-p', bin]);
+    const ghPath = join(bin, 'gh');
+    writeFileSync(ghPath, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$YEAFT_GH_MARKER"\nexit 17\n');
+    chmodSync(ghPath, 0o755);
+    const previousPath = process.env.PATH;
+    const previousMarker = process.env.YEAFT_GH_MARKER;
+    process.env.PATH = `${bin}:${previousPath || ''}`;
+    process.env.YEAFT_GH_MARKER = marker;
+    const tool = allTools.find(item => item.name === 'RepoWorkflow');
+    const input = {
+      phase: 'land',
+      cwd: checkout,
+      pr: 42,
+      reviewedHead: 'a'.repeat(40),
+      reviewedSnapshot: 'b'.repeat(40),
+    };
+
+    try {
+      const approved = issueTestApproval(input, 'github.example.test/acme/repo', {
+        turnId: 'turn-approved-tool',
+      });
+      const approvedResult = JSON.parse(await tool.execute(input, {
+        sessionId: approved.envelope.sessionId,
+        senderVpId: 'linus',
+        turnId: approved.turnId,
+        inboundEnvelope: approved.envelope,
+      }));
+      expect(approvedResult.code).not.toBe('APPROVAL_REQUIRED');
+      expect(readFileSync(marker, 'utf8').trim().split('\n')).toHaveLength(1);
+
+      const wrongTurn = issueTestApproval(input, 'github.example.test/acme/repo', {
+        turnId: 'turn-approved-tool-2',
+      });
+      const wrongTurnResult = JSON.parse(await tool.execute(input, {
+        sessionId: wrongTurn.envelope.sessionId,
+        senderVpId: 'linus',
+        turnId: 'turn-wrong-tool',
+        inboundEnvelope: wrongTurn.envelope,
+      }));
+      expect(wrongTurnResult).toMatchObject({ ok: false, code: 'APPROVAL_REQUIRED' });
+      expect(readFileSync(marker, 'utf8').trim().split('\n')).toHaveLength(1);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousMarker === undefined) delete process.env.YEAFT_GH_MARKER;
+      else process.env.YEAFT_GH_MARKER = previousMarker;
+    }
   });
 
   it('keeps untrusted workflow values out of run scripts and revalidates before each publisher', () => {

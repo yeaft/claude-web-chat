@@ -76,7 +76,12 @@ import { hydrateYeaftStatusFromSession } from './status-cache.js';
 import { handleVpSubscribe } from './vp/vp-bridge.js';
 import { createVp, updateVp, deleteVp, readVp, VpCrudError } from './vp/vp-crud.js';
 import { scanVpLibrary } from './vp/vp-store.js';
-import { createRouter } from './routing/router.js';
+import {
+  bindRepoApprovalCapability,
+  createRouter,
+  isRepoApprovalCapability,
+  revokeRepoApprovalCapability,
+} from './routing/router.js';
 import {
   SessionCrudError,
   createSessionFromSpec,
@@ -462,6 +467,21 @@ const turnAbortCtrls = new Map();
  * @type {Map<string, { sessionId: string, vpId: string, threadId: string, key: string }>}
  */
 const turnAbortMeta = new Map();
+/** @type {Map<string, { capability: object, sessionId: string, vpId: string }>} Exact-turn repo approvals, never persisted or projected. */
+const turnRepoApprovals = new Map();
+
+function revokeTurnRepoApproval(turnId) {
+  const grant = turnRepoApprovals.get(turnId);
+  turnRepoApprovals.delete(turnId);
+  return grant ? revokeRepoApprovalCapability(grant.capability) : false;
+}
+
+function revokeRepoApprovalsForRecipient(sessionId, vpId) {
+  for (const [turnId, grant] of turnRepoApprovals.entries()) {
+    if (grant.sessionId !== sessionId || grant.vpId !== vpId) continue;
+    revokeTurnRepoApproval(turnId);
+  }
+}
 
 /**
  * Per-VP status broker — the agent-side authority for VP timeline
@@ -1168,6 +1188,7 @@ function invalidateGroupContext(sessionId, { abortRuntime = false } = {}) {
   }
   for (const [turnId, meta] of Array.from(turnAbortMeta.entries())) {
     if (meta?.sessionId !== sessionId) continue;
+    revokeTurnRepoApproval(turnId);
     turnAbortCtrls.delete(turnId);
     turnAbortMeta.delete(turnId);
   }
@@ -2140,12 +2161,21 @@ async function routeEnvelopeToVpThread(sessionId, vpId, envelope) {
   let related = false;
 
   const meta = envelope?.msg?.meta || {};
+  const repoApproval = envelope?._repoApproval;
+  const hasRepoApproval = isRepoApprovalCapability(repoApproval);
+  if (envelope?.msg?.role === 'user' || envelope?.msg?.from === 'user') {
+    revokeRepoApprovalsForRecipient(sessionId, vpId);
+  }
   const isTaskResult = meta.injectedBy === 'task_result';
   const sourceThreadId = typeof meta.sourceThreadId === 'string' && meta.sourceThreadId.trim()
     ? meta.sourceThreadId.trim()
     : null;
 
-  if (isTaskResult && sourceThreadId) {
+  if (hasRepoApproval) {
+    // Approval is an execution capability, not text. It must never collapse
+    // into a related thread's pendingQueries/rescue path.
+    thread = getOrCreateVpThread({ sessionId, vpId, title: fallbackTitle(text) });
+  } else if (isTaskResult && sourceThreadId) {
     thread = getOrCreateVpThread({ sessionId, vpId, threadId: sourceThreadId, title: fallbackTitle(text) });
   } else if (runningThreads.length === 0) {
     thread = getOrCreateVpThread({ sessionId, vpId, title: fallbackTitle(text) });
@@ -2188,6 +2218,12 @@ async function routeEnvelopeToVpThread(sessionId, vpId, envelope) {
   if (!thread) return null;
   rememberThreadMessage(thread, envelope?.msg);
   const turnId = `${randomUUID().slice(0, 8)}:${vpId}`;
+  if (hasRepoApproval) {
+    if (!bindRepoApprovalCapability(repoApproval, { sessionId, recipientVpId: vpId, turnId })) {
+      return null;
+    }
+    turnRepoApprovals.set(turnId, { capability: repoApproval, sessionId, vpId });
+  }
   const perfTraceId = envelope?._perfTraceId || envelope?.perfTraceId || null;
   if (perfTraceId) {
     recordAgentPerfTrace(ctx.CONFIG, {
@@ -2359,6 +2395,7 @@ function ensureDriverRunning(sessionId, vpId, threadId = 'main') {
       } catch (err) {
         console.warn('[Yeaft] driveVp: runVpTurn failed', vpId, err?.message || err);
       } finally {
+        revokeTurnRepoApproval(turnId);
         turnAbortCtrls.delete(turnId);
         turnAbortMeta.delete(turnId);
         if (vpAborts.get(key) === vpAbort) vpAborts.delete(key);
@@ -2493,6 +2530,7 @@ export async function __testResetVpState() {
     if (Array.isArray(inbox)) inbox.length = 0;
   }
   vpThreads.clear();
+  for (const turnId of turnRepoApprovals.keys()) revokeTurnRepoApproval(turnId);
   turnAbortCtrls.clear();
   turnAbortMeta.clear();
   await __testDrainVpDrivers();
@@ -5047,7 +5085,7 @@ function resolveCollabToolPolicy(sessionMeta) {
   return vpCount > 1 ? COLLAB_TOOL_POLICY.MULTI_VP : COLLAB_TOOL_POLICY.SINGLE_VP;
 }
 
-export function buildVpQueryOpts({ vpId, sessionCoordinator, sessionId, envelope, threadId = 'main' }) {
+export function buildVpQueryOpts({ vpId, sessionCoordinator, sessionId, envelope, threadId = 'main', turnId = null }) {
   // Read the session meta once and reuse for defaultVpId fallback,
   // announcement injection, and roster prompt context. Calling getMeta()
   // twice per turn is wasteful — and (more importantly) opens a window
@@ -5084,6 +5122,7 @@ export function buildVpQueryOpts({ vpId, sessionCoordinator, sessionId, envelope
   if (!resolvedVpId) return undefined;
 
   const out = { senderVpId: resolvedVpId, threadId: threadId || 'main' };
+  if (typeof turnId === 'string' && turnId.trim()) out.vpTurnId = turnId.trim();
   if (typeof sessionId === 'string' && sessionId.trim()) {
     out.sessionId = sessionId.trim();
   }
@@ -5307,6 +5346,7 @@ async function runVpTurnWithEscalation(args) {
     graceMs: ESCALATE_AFTER_ABORT_MS,
     onEscalate: () => {
       if (escalationState.escalated) return;
+      revokeTurnRepoApproval(turnId);
       escalationState.escalated = true;
       escalationState.terminalEmitted = true;
       console.error(
@@ -5525,6 +5565,7 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
       queryTimer = setTimeout(() => {
         if (!vpAbort.signal.aborted) {
           console.error(`[Yeaft] query timeout after ${queryTimeoutMs / 1000}s of silence — aborting VP ${vpId}`);
+          revokeTurnRepoApproval(turnId);
           try { vpAbort.abort(); } catch { /* best-effort */ }
         }
       }, queryTimeoutMs);
@@ -5561,6 +5602,7 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         sessionId,
         envelope: inboundEnvelope,
         threadId,
+        turnId,
       });
       if (queryOpts) {
         const envelopeProjectContext = normalizeProjectContext(inboundEnvelope?._projectContext, sessionId);
@@ -6222,6 +6264,10 @@ function emitQueuedTurnAbort(meta, turnId) {
 }
 
 function abortAllVpRuntime(aborted, sessionId = null) {
+  for (const [turnId, meta] of Array.from(turnAbortMeta.entries())) {
+    if (sessionId && meta?.sessionId !== sessionId) continue;
+    revokeTurnRepoApproval(turnId);
+  }
   for (const [key, ctrl] of vpAborts) {
     if (sessionId && !key.startsWith(`${sessionId}::`)) continue;
     try {
@@ -6264,6 +6310,7 @@ export function handleYeaftAbortThread(_msg = {}) {
       const meta = turnAbortMeta.get(turnId);
       if ((meta?.threadId || 'main') !== targetThreadId) continue;
       try { if (!ctrl.signal.aborted) { ctrl.abort(); aborted.push(turnId); } } catch { /* best-effort */ }
+      revokeTurnRepoApproval(turnId);
       turnAbortCtrls.delete(turnId);
       turnAbortMeta.delete(turnId);
     }
@@ -6282,6 +6329,7 @@ export function handleYeaftAbortThread(_msg = {}) {
   for (const [turnId, ctrl] of turnAbortCtrls) {
     try { if (!ctrl.signal.aborted) { ctrl.abort(); aborted.push(turnId); } } catch { /* best-effort */ }
   }
+  for (const turnId of turnAbortMeta.keys()) revokeTurnRepoApproval(turnId);
   turnAbortCtrls.clear();
   turnAbortMeta.clear();
   abortAllVpRuntime(aborted);
@@ -6308,10 +6356,12 @@ export function handleYeaftAbortAll(msg = {}) {
     const meta = turnAbortMeta.get(turnId);
     if (sessionId && meta?.sessionId !== sessionId) continue;
     try { if (!ctrl.signal.aborted) { ctrl.abort(); aborted.push(turnId); } } catch { /* best-effort */ }
+    revokeTurnRepoApproval(turnId);
     turnAbortCtrls.delete(turnId);
     turnAbortMeta.delete(turnId);
   }
   if (!sessionId) {
+    for (const turnId of turnAbortMeta.keys()) revokeTurnRepoApproval(turnId);
     turnAbortCtrls.clear();
     turnAbortMeta.clear();
   }
@@ -6358,6 +6408,7 @@ export function handleYeaftAbortTurn(msg = {}) {
       success = true;
       abortedTurnIds.push(turnId);
     }
+    revokeTurnRepoApproval(turnId);
     turnAbortCtrls.delete(turnId);
     turnAbortMeta.delete(turnId);
   }
@@ -7668,6 +7719,7 @@ export async function resetYeaftSession() {
     try { if (!ctrl.signal.aborted) ctrl.abort(); } catch { /* best-effort */ }
   }
   vpAborts.clear();
+  for (const turnId of turnAbortMeta.keys()) revokeTurnRepoApproval(turnId);
   turnAbortCtrls.clear();
   turnAbortMeta.clear();
   vpInboxes.clear();
@@ -8146,6 +8198,7 @@ export const __testHooks = {
     return loadAndBroadcastYeaftSkillSlashCommands();
   },
   resetAbortState() {
+    for (const turnId of turnRepoApprovals.keys()) revokeTurnRepoApproval(turnId);
     turnAbortCtrls.clear();
     turnAbortMeta.clear();
     vpAborts.clear();

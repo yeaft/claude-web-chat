@@ -1196,7 +1196,7 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
     pr,
     reviewedHead: options.reviewedHead,
     reviewedSnapshot: options.reviewedSnapshot,
-  });
+  }, { now: dependencies.now || Date.now });
   if (!approval) {
     throw new RepoWorkflowError('APPROVAL_REQUIRED', 'Repository approval capability is missing, invalid, stale, or already consumed');
   }

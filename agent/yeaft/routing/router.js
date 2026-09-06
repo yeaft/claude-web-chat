@@ -30,6 +30,7 @@ import { createLoopGuard, extendCausedBy } from './loop-guard.js';
 
 const repoApprovals = new WeakMap();
 const REPO_APPROVAL_ISSUER_IDS = new Set(['martin']);
+export const REPO_APPROVAL_TTL_MS = 2 * 60 * 1000;
 
 function normalizeId(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -60,7 +61,7 @@ function isRepoApprovalIssuer(vpId) {
  * resolution. Keeping this function module-private prevents callers from
  * turning a claimed issuer string into landing authority.
  */
-function issueRepoApprovalCapability(input = {}) {
+function issueRepoApprovalCapability(input = {}, { now = Date.now } = {}) {
   const sessionId = normalizeId(input.sessionId);
   const issuerVpId = normalizeId(input.issuerVpId);
   const recipientVpId = normalizeId(input.recipientVpId);
@@ -68,12 +69,14 @@ function issueRepoApprovalCapability(input = {}) {
   const pr = Number(input.pr);
   const reviewedHead = normalizeSha(input.reviewedHead);
   const reviewedSnapshot = normalizeSha(input.reviewedSnapshot);
+  const issuedAt = Number(now());
   if (!sessionId || !isRepoApprovalIssuer(issuerVpId) || !recipientVpId || issuerVpId === recipientVpId
-    || !repository || !Number.isSafeInteger(pr) || pr <= 0 || !reviewedHead || !reviewedSnapshot) {
+    || !repository || !Number.isSafeInteger(pr) || pr <= 0 || !reviewedHead || !reviewedSnapshot
+    || !Number.isFinite(issuedAt)) {
     return null;
   }
   const capability = Object.freeze(Object.create(null));
-  repoApprovals.set(capability, Object.freeze({
+  repoApprovals.set(capability, {
     sessionId,
     issuerVpId,
     recipientVpId,
@@ -81,7 +84,10 @@ function issueRepoApprovalCapability(input = {}) {
     pr,
     reviewedHead,
     reviewedSnapshot,
-  }));
+    issuedAt,
+    expiresAt: issuedAt + REPO_APPROVAL_TTL_MS,
+    turnId: null,
+  });
   return capability;
 }
 
@@ -89,19 +95,47 @@ export function isRepoApprovalCapability(capability) {
   return Boolean(capability && typeof capability === 'object' && repoApprovals.has(capability));
 }
 
+/** Bind a freshly issued capability to the exact Web execution that received it. */
+export function bindRepoApprovalCapability(capability, expected = {}, { now = Date.now } = {}) {
+  if (!capability || typeof capability !== 'object') return false;
+  const grant = repoApprovals.get(capability);
+  const turnId = normalizeId(expected.turnId);
+  const currentTime = Number(now());
+  if (!grant || !turnId || !Number.isFinite(currentTime)) return false;
+  if (currentTime > grant.expiresAt
+    || grant.turnId
+    || grant.sessionId !== normalizeId(expected.sessionId)
+    || grant.recipientVpId !== normalizeId(expected.recipientVpId)) {
+    repoApprovals.delete(capability);
+    return false;
+  }
+  grant.turnId = turnId;
+  return true;
+}
+
+export function revokeRepoApprovalCapability(capability) {
+  if (!capability || typeof capability !== 'object') return false;
+  return repoApprovals.delete(capability);
+}
+
 /** Consume a capability exactly once and verify its complete landing tuple. */
-export function consumeRepoApprovalCapability(capability, expected = {}) {
+export function consumeRepoApprovalCapability(capability, expected = {}, { now = Date.now } = {}) {
   if (!capability || typeof capability !== 'object') return null;
   const grant = repoApprovals.get(capability);
   repoApprovals.delete(capability);
   if (!grant) return null;
-  const matches = grant.sessionId === normalizeId(expected.sessionId)
+  const currentTime = Number(now());
+  const matches = Number.isFinite(currentTime)
+    && currentTime <= grant.expiresAt
+    && grant.turnId
+    && grant.turnId === normalizeId(expected.turnId)
+    && grant.sessionId === normalizeId(expected.sessionId)
     && grant.recipientVpId === normalizeId(expected.recipientVpId)
     && grant.repository === normalizeApprovalRepository(expected.repository)
     && grant.pr === Number(expected.pr)
     && grant.reviewedHead === normalizeSha(expected.reviewedHead)
     && grant.reviewedSnapshot === normalizeSha(expected.reviewedSnapshot);
-  return matches ? grant : null;
+  return matches ? Object.freeze({ ...grant }) : null;
 }
 
 function routeForwardParentFromEnvelope(envelope) {
@@ -151,7 +185,8 @@ export function createRouter(deps = {}) {
   if (!coordinator || typeof coordinator.ingest !== 'function') {
     throw new Error('createRouter: coordinator (with ingest()) is required');
   }
-  const guard = deps.guard || createLoopGuard({ now: deps.now });
+  const now = typeof deps.now === 'function' ? deps.now : Date.now;
+  const guard = deps.guard || createLoopGuard({ now });
 
   /**
    * Forward a message from a VP to another VP (or @all). Routes through
@@ -237,7 +272,7 @@ export function createRouter(deps = {}) {
         sessionId: meta.id,
         issuerVpId: senderVpId,
         recipientVpId: targetVpId,
-      });
+      }, { now });
       if (!repoApproval) {
         return { ok: false, error: 'invalid_repo_approval' };
       }
