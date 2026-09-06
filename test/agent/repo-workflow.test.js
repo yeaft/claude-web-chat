@@ -125,12 +125,17 @@ function runReleaseFence(checkout, tag, commit) {
   ], { cwd: checkout, encoding: 'utf8' }).trim();
 }
 
-function installBaseReceiveAdvanceHook(repo) {
-  writeFileSync(join(repo.seed, 'advanced.txt'), 'advanced during base receive\n');
+function createBaseAdvanceCommit(repo) {
+  writeFileSync(join(repo.seed, 'advanced.txt'), 'advance remote base\n');
   git(repo.seed, 'add', 'advanced.txt');
-  git(repo.seed, 'commit', '-m', 'advance base during base receive');
+  git(repo.seed, 'commit', '-m', 'advance remote base');
   const advancedBaseSha = git(repo.seed, 'rev-parse', 'HEAD');
   git(repo.seed, 'push', 'origin', `${advancedBaseSha}:refs/heads/race-object`);
+  return advancedBaseSha;
+}
+
+function installBaseReceiveAdvanceHook(repo) {
+  const advancedBaseSha = createBaseAdvanceCommit(repo);
   const requestSeen = join(repo.root, 'base-request-seen');
   const baseAdvanced = join(repo.root, 'base-advanced');
   const hook = join(repo.remote, 'hooks', 'pre-receive');
@@ -187,6 +192,16 @@ function createGithubRunner(repo, options = {}) {
       mappedArgs[1] = repo.remote;
       return baseRun(command, mappedArgs, commandOptions);
     }
+    if (command === 'git' && args[0] === 'ls-remote' && args.includes('origin')) {
+      const result = await baseRun(command, args, commandOptions);
+      const tagPattern = args.find(arg => arg.startsWith('refs/tags/') && arg.endsWith('*'));
+      const exactTag = args.find(arg => /^refs\/tags\/[^*]+$/.test(arg));
+      if (options.afterRemoteTagScan && tagPattern) await options.afterRemoteTagScan();
+      if (options.afterExactRemoteTagLookup && exactTag && !exactTag.endsWith('^{}')) {
+        await options.afterExactRemoteTagLookup(exactTag);
+      }
+      return result;
+    }
     if (command === 'git' && args[0] === 'push') {
       const pushUrlIndex = args.findIndex(arg => pushUrls.includes(arg));
       const tagRefspec = args.find(arg => /^[^:]*:refs\/tags\//.test(arg));
@@ -226,6 +241,10 @@ function createGithubRunner(repo, options = {}) {
             mergeCommit: { oid: mergeSha },
             mergedAt: '2026-01-01T00:00:00Z',
           });
+          if (options.basePushAcceptedThenError) {
+            git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/heads/main', options.basePushAcceptedThenError, mergeSha);
+            throw new Error('simulated transport failure after remote base acceptance and advance');
+          }
         }
         if (options.tagPushAcceptedThenError && tagRefspec && !deletesTag) {
           throw new Error('simulated transport failure after remote acceptance');
@@ -855,6 +874,70 @@ describe('landRepoWorkflow', () => {
     expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/tags/v1.0.0')).toBe(repo.snapshotSha);
   });
 
+  it('fails closed when base advances after a matching tag is found in the remote scan', async () => {
+    const repo = createPullRequestRepository();
+    const advancedBaseSha = createBaseAdvanceCommit(repo);
+    git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/tags/v1.0.0', repo.snapshotSha);
+    const github = createGithubRunner(repo, {
+      afterRemoteTagScan: () => {
+        git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/heads/main', advancedBaseSha, repo.snapshotSha);
+      },
+    });
+
+    await expect(landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+      tagPrefix: 'v1.0.',
+    }, { run: github.run })).rejects.toMatchObject({
+      code: 'BASE_ADVANCED_DURING_TAG_PUSH',
+      details: {
+        tag: 'v1.0.0',
+        expected: repo.snapshotSha,
+        actual: advancedBaseSha,
+        tagRolledBack: false,
+        transientTagMayHaveTriggeredAutomation: false,
+      },
+    });
+
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(advancedBaseSha);
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/tags/v1.0.0')).toBe(repo.snapshotSha);
+  });
+
+  it('fails closed when base advances after a concurrently created target tag is resolved', async () => {
+    const repo = createPullRequestRepository();
+    const advancedBaseSha = createBaseAdvanceCommit(repo);
+    const github = createGithubRunner(repo, {
+      afterRemoteTagScan: () => {
+        git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/tags/v1.0.0', repo.snapshotSha);
+      },
+      afterExactRemoteTagLookup: () => {
+        git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/heads/main', advancedBaseSha, repo.snapshotSha);
+      },
+    });
+
+    await expect(landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+      tagPrefix: 'v1.0.',
+    }, { run: github.run })).rejects.toMatchObject({
+      code: 'BASE_ADVANCED_DURING_TAG_PUSH',
+      details: {
+        tag: 'v1.0.0',
+        expected: repo.snapshotSha,
+        actual: advancedBaseSha,
+        tagRolledBack: false,
+        transientTagMayHaveTriggeredAutomation: false,
+      },
+    });
+
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(advancedBaseSha);
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/tags/v1.0.0')).toBe(repo.snapshotSha);
+  });
+
   it('reports an accepted tag push followed by a transport error as unknown', async () => {
     const repo = createPullRequestRepository();
     const github = createGithubRunner(repo, { tagPushAcceptedThenError: true });
@@ -892,6 +975,49 @@ describe('landRepoWorkflow', () => {
     expect(tagPushes).toHaveLength(1);
   });
 
+  it('reports an accepted base push followed by a transport error and concurrent advance as unknown', async () => {
+    const repo = createPullRequestRepository();
+    const advancedBaseSha = createBaseAdvanceCommit(repo);
+    const github = createGithubRunner(repo, { basePushAcceptedThenError: advancedBaseSha });
+
+    let caught;
+    try {
+      await landRepoWorkflow({
+        cwd: repo.checkout,
+        pr: 1,
+        reviewedHead: repo.headSha,
+        reviewedSnapshot: repo.snapshotSha,
+        tagPrefix: 'v1.0.',
+      }, { run: github.run });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      code: 'BASE_UPDATE_OUTCOME_UNKNOWN',
+      details: {
+        ref: 'refs/heads/main',
+        expectedOld: repo.baseSha,
+        expectedNew: repo.snapshotSha,
+        actual: advancedBaseSha,
+        remoteEffects: {
+          base: {
+            status: 'unknown',
+            ref: 'refs/heads/main',
+            before: repo.baseSha,
+            sha: repo.snapshotSha,
+          },
+        },
+      },
+    });
+    expect(formatRepoWorkflowError(caught)).toMatchObject({
+      errorEffect: 'unknown',
+      code: 'BASE_UPDATE_OUTCOME_UNKNOWN',
+    });
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(advancedBaseSha);
+    expect(git(repo.root, '--git-dir', repo.remote, 'tag')).toBe('');
+  });
+
   it('leaves the competing base intact and creates no tag when base advances during receive', async () => {
     const repo = createPullRequestRepository();
     const baseReceiveRace = installBaseReceiveAdvanceHook(repo);
@@ -911,14 +1037,14 @@ describe('landRepoWorkflow', () => {
     }
 
     expect(caught).toMatchObject({
-      code: 'BASE_LEASE_REJECTED',
+      code: 'BASE_UPDATE_OUTCOME_UNKNOWN',
       details: {
         expectedOld: repo.baseSha,
         expectedNew: repo.snapshotSha,
         actual: baseReceiveRace.advancedBaseSha,
         remoteEffects: {
           base: {
-            status: 'rejected',
+            status: 'unknown',
             ref: 'refs/heads/main',
             before: repo.baseSha,
             sha: repo.snapshotSha,
@@ -927,8 +1053,8 @@ describe('landRepoWorkflow', () => {
       },
     });
     expect(formatRepoWorkflowError(caught)).toMatchObject({
-      errorEffect: 'none',
-      code: 'BASE_LEASE_REJECTED',
+      errorEffect: 'unknown',
+      code: 'BASE_UPDATE_OUTCOME_UNKNOWN',
     });
     expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main'))
       .toBe(baseReceiveRace.advancedBaseSha);

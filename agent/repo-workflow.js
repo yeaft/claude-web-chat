@@ -773,6 +773,20 @@ async function rollbackRemoteTag(run, repository, pushUrl, tag, directSha, targe
   onStage({ stage: 'rolled-back', status: 'none', name: tag, sha: targetSha });
 }
 
+async function assertTagBaseGuard(run, repository, baseGuard, tag) {
+  if (!baseGuard) return;
+  const currentBase = await resolveRemoteRefSha(run, repository, baseGuard.ref);
+  if (currentBase !== baseGuard.sha) {
+    throw new RepoWorkflowError('BASE_ADVANCED_DURING_TAG_PUSH', `Remote base advanced while tag ${tag} was being reused`, {
+      tag,
+      expected: baseGuard.sha,
+      actual: currentBase,
+      tagRolledBack: false,
+      transientTagMayHaveTriggeredAutomation: false,
+    });
+  }
+}
+
 async function createAndPushNextTag(run, repository, pushUrl, targetSha, prefix, start = 0, callbacks = {}) {
   const onStage = callbacks.onStage || (() => {});
   const beforePush = callbacks.beforePush || (async () => {});
@@ -799,6 +813,7 @@ async function createAndPushNextTag(run, repository, pushUrl, targetSha, prefix,
     .sort((a, b) => b.suffix - a.suffix);
   const existingTarget = matchingTags.find(ref => ref.commitSha === targetSha);
   if (existingTarget) {
+    await assertTagBaseGuard(run, repository, baseGuard, existingTarget.name);
     onStage({ stage: 'verified-preexisting', status: 'preexisting', name: existingTarget.name, sha: targetSha });
     return { name: existingTarget.name, sha: targetSha, reused: true };
   }
@@ -815,6 +830,7 @@ async function createAndPushNextTag(run, repository, pushUrl, targetSha, prefix,
         actual: remoteExisting,
       });
     }
+    await assertTagBaseGuard(run, repository, baseGuard, tag);
     onStage({ stage: 'verified-preexisting', status: 'preexisting', name: tag, sha: targetSha });
     return { name: tag, sha: targetSha, reused: true };
   }
@@ -1152,11 +1168,20 @@ async function pushReviewedSnapshot(run, repository, pushUrl, baseRef, frozenBas
   }
   if (actual === reviewedSnapshot) return;
   if (pushFailure) {
-    throw new RepoWorkflowError('BASE_LEASE_REJECTED', 'Remote base did not accept the exact reviewed snapshot with the frozen-base lease', {
+    if (actual === frozenBase) {
+      throw new RepoWorkflowError('BASE_LEASE_REJECTED', 'Remote base did not accept the exact reviewed snapshot with the frozen-base lease', {
+        ref: baseRef,
+        expectedOld: frozenBase,
+        expectedNew: reviewedSnapshot,
+        actual,
+      });
+    }
+    throw new RepoWorkflowError('BASE_UPDATE_OUTCOME_UNKNOWN', 'Remote base outcome is unknown after the atomic update failed and the ref advanced', {
       ref: baseRef,
       expectedOld: frozenBase,
       expectedNew: reviewedSnapshot,
       actual,
+      pushError: formatRepoWorkflowError(pushFailure),
     });
   }
   throw new RepoWorkflowError('BASE_UPDATE_VERIFY_FAILED', 'Remote base does not point at the exact reviewed snapshot after push', {
