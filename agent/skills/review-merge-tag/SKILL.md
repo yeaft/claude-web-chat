@@ -5,7 +5,7 @@ description: 用 RepoWorkflow 在任意 GitHub 仓库执行开发 worktree、精
 
 # Repository Workflow
 
-不要逐条调用 `git fetch`、`git worktree list`、`gh pr view`、`git ls-remote` 和 `gh run watch` 来发现同一批事实。使用内置 `RepoWorkflow` 工具；非 Yeaft 环境使用等价的 `yeaft-repo` CLI。两者返回相同的紧凑 JSON。
+不要逐条调用 `git fetch`、`git worktree list`、`gh pr view`、`git ls-remote` 和 `gh run watch` 来发现同一批事实。Session 内使用 `RepoWorkflow` 工具。非 Yeaft 环境可用 `yeaft-repo` CLI 执行 `prepare` 和 `review-prep`，这两个阶段返回与工具相同的紧凑 JSON；CLI 不能执行 `land`。
 
 ## 三个边界
 
@@ -63,17 +63,13 @@ Reviewer 调用：
 
 ## CLI
 
-Yeaft 外部或人工终端可运行：
+Yeaft 外部或人工终端只可运行准备阶段：
 
 ```bash
 yeaft-repo prepare --name fix-short-description
 yeaft-repo review-prep --pr 123
-yeaft-repo land --pr 123 \
-  --reviewed-head <sha> \
-  --reviewed-snapshot <sha> \
-  --approved-by reviewer-id \
-  --tag-prefix v1.0. \
-  --workflow "Dev Release"
 ```
 
-每条命令 stdout 只输出一个成功 JSON；失败时 stderr 输出一个带稳定 `code` 和副作用状态的 JSON。
+独立 CLI 不能执行 `land`。Landing 必须在 Session 中通过 `RepoWorkflow` 工具执行，并携带当前 handoff 由宿主签发、绑定 exact review 的 approval capability；普通参数或 `approvedBy` 字符串不能替代该 capability。
+
+每条可用命令 stdout 只输出一个成功 JSON；失败时 stderr 输出一个带稳定 `code` 和副作用状态的 JSON。

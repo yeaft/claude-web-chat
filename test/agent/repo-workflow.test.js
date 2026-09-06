@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { parseRepoWorkflowArgs, runRepoWorkflowCli } from '../../agent/repo-workflow-cli.js';
+import { parseRepoWorkflowArgs, repoWorkflowHelp, runRepoWorkflowCli } from '../../agent/repo-workflow-cli.js';
 import {
   createRepoCommandRunner,
   formatRepoWorkflowError,
@@ -1178,6 +1178,21 @@ describe('landRepoWorkflow', () => {
 });
 
 describe('CLI and tool surface', () => {
+  it('keeps the bundled skill consistent with the standalone CLI landing boundary', () => {
+    const skill = readFileSync(
+      join(process.cwd(), 'agent', 'skills', 'review-merge-tag', 'SKILL.md'),
+      'utf8',
+    );
+
+    expect(repoWorkflowHelp()).not.toContain('yeaft-repo land');
+    expect(repoWorkflowHelp('land')).toContain('Landing is unavailable from the standalone CLI');
+    expect(skill).toContain('CLI 不能执行 `land`');
+    expect(skill).toContain('yeaft-repo prepare --name fix-short-description');
+    expect(skill).toContain('yeaft-repo review-prep --pr 123');
+    expect(skill).not.toContain('yeaft-repo land');
+    expect(skill).not.toContain('--approved-by');
+  });
+
   it('parses repeated cleanup paths and exact review evidence without accepting approval metadata', () => {
     expect(parseRepoWorkflowArgs([
       'land', '--pr', '42', '--reviewed-head', 'a'.repeat(40), '--reviewed-snapshot', 'b'.repeat(40),
