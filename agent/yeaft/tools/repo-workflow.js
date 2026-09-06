@@ -14,7 +14,7 @@ const repoWorkflow = defineTool({
 Use this instead of repeatedly issuing git/gh shell commands:
 - prepare: fetch the remote default branch and create/reuse an exact-base development worktree.
 - review-prep: freeze a PR's exact base/head/GitHub merge snapshot and create/reuse a clean detached review worktree.
-- land: re-freeze an independently approved exact head/snapshot, merge with head matching, optionally create the next numeric tag, wait for a workflow, and remove only clean requested worktrees.
+- land: re-freeze an independently approved exact base/head/snapshot and atomically install that exact snapshot on the remote base with an expected-old lease, then optionally create the next numeric tag and wait for a workflow. Worktree cleanup is deliberately separate.
 
 This tool does not review code and never infers approval. The land phase requires the reviewer identity and exact SHAs returned by review-prep. Supports any local GitHub repository available to the Agent; git and authenticated gh CLIs are required.`,
     zh: `执行一个确定性的 GitHub 仓库工作流阶段，并返回紧凑的结构化证据。
@@ -22,7 +22,7 @@ This tool does not review code and never infers approval. The land phase require
 应使用此工具代替反复执行 git/gh shell 命令：
 - prepare：拉取远端默认分支，并创建或复用精确基线的开发 worktree。
 - review-prep：冻结 PR 的精确 base/head/GitHub merge snapshot，并创建或复用干净的 detached review worktree。
-- land：重新冻结已经独立批准的 exact head/snapshot，使用 head-match 合并，可选创建下一个数字 tag、等待 workflow，并且只删除指定的干净 worktree。
+- land：重新冻结已经独立批准的 exact base/head/snapshot，以 expected-old lease 在远端 base 上原子安装该 exact snapshot，随后可选创建下一个数字 tag 并等待 workflow。Worktree cleanup 刻意与 landing 分离。
 
 此工具不做代码审查，也不会推断 review 已通过。land 必须提供 reviewer 身份以及 review-prep 返回的精确 SHA。适用于 Agent 可访问的任意本地 GitHub 仓库；需要 git 和已认证的 gh CLI。`,
   },
@@ -38,13 +38,11 @@ This tool does not review code and never infers approval. The land phase require
       pr: { type: 'integer', description: 'GitHub pull request number' },
       reviewedHead: { type: 'string', description: 'Exact independently approved PR head SHA' },
       reviewedSnapshot: { type: 'string', description: 'Exact independently approved GitHub merge snapshot SHA' },
-      mergeMethod: { type: 'string', enum: ['merge', 'squash', 'rebase'] },
       tagPrefix: { type: 'string', description: 'Optional numeric tag prefix, for example v1.0.' },
       tagStart: { type: 'integer', minimum: 0 },
       workflow: { type: 'string', description: 'Optional GitHub Actions workflow name to wait for' },
       waitTimeoutMs: { type: 'integer', minimum: 1 },
       pollIntervalMs: { type: 'integer', minimum: 1 },
-      worktreePaths: { type: 'array', items: { type: 'string' }, description: 'Clean worktrees to remove after successful land' },
     },
     required: ['phase'],
   },

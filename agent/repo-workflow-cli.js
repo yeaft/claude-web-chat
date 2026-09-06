@@ -33,7 +33,7 @@ export function parseRepoWorkflowArgs(argv) {
     throw new Error(`Unknown command: ${command}`);
   }
 
-  const options = { worktreePaths: [] };
+  const options = {};
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '--help' || arg === '-h') return { help: true, command, options };
@@ -49,17 +49,14 @@ export function parseRepoWorkflowArgs(argv) {
       case '--pr': options.pr = parseInteger(value, arg); break;
       case '--reviewed-head': options.reviewedHead = value; break;
       case '--reviewed-snapshot': options.reviewedSnapshot = value; break;
-      case '--merge-method': options.mergeMethod = value; break;
       case '--tag-prefix': options.tagPrefix = value; break;
       case '--tag-start': options.tagStart = parseInteger(value, arg); break;
       case '--workflow': options.workflow = value; break;
       case '--wait-timeout-ms': options.waitTimeoutMs = parseInteger(value, arg); break;
       case '--poll-interval-ms': options.pollIntervalMs = parseInteger(value, arg); break;
-      case '--cleanup-worktree': options.worktreePaths.push(value); break;
       default: throw new Error(`Unknown option: ${arg}`);
     }
   }
-  if (options.worktreePaths.length === 0) delete options.worktreePaths;
   return { help: false, command, options };
 }
 

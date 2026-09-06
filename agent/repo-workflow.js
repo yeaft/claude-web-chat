@@ -405,10 +405,6 @@ async function verifyWorktreeOwnership(run, repository, path, expected = {}) {
   return valid ? { ownership: worktree, paths } : null;
 }
 
-async function removeWorktreeOwnership(paths) {
-  await Promise.allSettled([unlink(paths.repository), unlink(paths.worktree)]);
-}
-
 async function worktreeStatus(run, path) {
   return gitOutput(run, path, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching']);
 }
@@ -459,14 +455,25 @@ export async function prepareRepoWorkflow(options = {}, dependencies = {}) {
 
   await runGit(run, repository.repoRoot, ['worktree', 'add', '-b', branch, worktreePath, baseSha]);
   try {
-    await persistWorktreeOwnership(
+    const persistOwnership = dependencies.persistWorktreeOwnership || persistWorktreeOwnership;
+    await persistOwnership(
       run,
       repository,
       createWorktreeOwnership(worktreePath, 'development', baseSha, branch),
     );
   } catch (error) {
     await runGit(run, repository.repoRoot, ['worktree', 'remove', worktreePath]);
-    await runGit(run, repository.repoRoot, ['branch', '-D', branch]);
+    const branchRef = `refs/heads/${branch}`;
+    if (dependencies.beforePrepareBranchRollback) {
+      await dependencies.beforePrepareBranchRollback({ ref: branchRef, expectedHead: baseSha });
+    }
+    await runGit(run, repository.repoRoot, [
+      'update-ref',
+      '--no-deref',
+      '-d',
+      branchRef,
+      baseSha,
+    ], { allowExitCodes: [1, 128] });
     throw error;
   }
   return {
@@ -718,8 +725,8 @@ async function resolveRemoteTag(run, repository, tag) {
   return parseRemoteTags(result.stdout).find(ref => ref.name === tag) || null;
 }
 
-async function resolveRemoteRefSha(run, repository, ref) {
-  const output = await gitOutput(run, repository.repoRoot, ['ls-remote', repository.remote, ref]);
+async function resolveRemoteRefSha(run, repository, ref, remote = repository.remote) {
+  const output = await gitOutput(run, repository.repoRoot, ['ls-remote', remote, ref]);
   const line = output.split(/\r?\n/).find(candidate => candidate.endsWith(`\t${ref}`));
   return line?.split(/\s+/)[0] || null;
 }
@@ -1098,75 +1105,64 @@ async function waitForWorkflow(run, repository, options, dependencies = {}) {
   });
 }
 
-async function cleanupWorktrees(run, repository, paths, reviewedHead, reviewedSnapshot, callbacks = {}) {
-  const beforeBranchDelete = callbacks.beforeBranchDelete || (async () => {});
-  const results = [];
-  for (const requestedPath of paths || []) {
-    const path = resolve(requestedPath);
-    const worktrees = await listWorktrees(run, repository);
-    const record = worktrees.find(item => resolve(item.path) === path);
-    if (!record) {
-      results.push({ path, status: 'not-registered' });
-      continue;
-    }
-    const developmentShape = record.branch?.startsWith('yeaft-wt/') && record.head === reviewedHead;
-    const reviewShape = record.detached && record.head === reviewedSnapshot;
-    const ownership = developmentShape
-      ? await verifyWorktreeOwnership(run, repository, path, { kind: 'development', branch: record.branch })
-      : reviewShape
-        ? await verifyWorktreeOwnership(run, repository, path, {
-          kind: 'review',
-          createdHead: reviewedSnapshot,
-          branch: null,
-        })
-        : null;
-    if (!ownership) {
-      results.push({ path, status: 'kept-unowned', branch: record.branch, head: record.head });
-      continue;
-    }
-    const dirty = await worktreeStatus(run, path);
-    if (dirty) {
-      results.push({ path, status: 'kept-dirty' });
-      continue;
-    }
-    await runGit(run, repository.repoRoot, ['worktree', 'remove', path]);
-    await removeWorktreeOwnership(ownership.paths);
-    let branchDeleted = false;
-    let branchStatus;
-    if (developmentShape) {
-      const branchRef = `refs/heads/${record.branch}`;
-      const branchHead = await runGit(run, repository.repoRoot, ['rev-parse', '--verify', '--quiet', branchRef], {
-        allowExitCodes: [1],
-      });
-      if (branchHead.exitCode === 0 && branchHead.stdout === reviewedHead) {
-        await beforeBranchDelete({ path, branch: record.branch, ref: branchRef, expectedHead: reviewedHead });
-        const deleted = await runGit(run, repository.repoRoot, ['update-ref', '--no-deref', '-d', branchRef, reviewedHead], {
-          allowExitCodes: [1, 128],
-        });
-        branchDeleted = deleted.exitCode === 0;
-        if (!branchDeleted) branchStatus = 'kept-raced';
-      } else if (branchHead.exitCode === 0) {
-        branchStatus = 'kept-raced';
-      }
-    }
-    results.push({
-      path,
-      status: 'removed',
-      branch: record.branch,
-      branchDeleted,
-      ...(branchStatus ? { branchStatus } : {}),
-    });
-  }
-  return results;
-}
-
 function attachRemoteEffects(error, remoteEffects) {
   if (error instanceof RepoWorkflowError) {
     error.details = { ...error.details, remoteEffects };
     return error;
   }
-  return new RepoWorkflowError('POST_MERGE_FAILED', error?.message || String(error), {
+  return new RepoWorkflowError('POST_LANDING_FAILED', error?.message || String(error), {
     remoteEffects,
+  });
+}
+
+function rejectLegacyLandingOptions(options) {
+  if (Object.hasOwn(options, 'mergeMethod')) {
+    throw new RepoWorkflowError('MERGE_METHOD_UNSUPPORTED', 'land always installs the exact reviewed merge snapshot; mergeMethod is not supported');
+  }
+  if (Object.hasOwn(options, 'worktreePaths') || Object.hasOwn(options, 'cleanupWorktree')) {
+    throw new RepoWorkflowError('LANDING_CLEANUP_UNSUPPORTED', 'land never removes worktrees; cleanup must be requested separately after landing');
+  }
+}
+
+async function pushReviewedSnapshot(run, repository, pushUrl, baseRef, frozenBase, reviewedSnapshot) {
+  let pushFailure = null;
+  try {
+    const pushed = await runGit(run, repository.repoRoot, [
+      'push',
+      '--porcelain',
+      `--force-with-lease=${baseRef}:${frozenBase}`,
+      pushUrl,
+      `${reviewedSnapshot}:${baseRef}`,
+    ], { allowExitCodes: [1] });
+    if (pushed.exitCode !== 0) pushFailure = pushed;
+  } catch (error) {
+    pushFailure = error;
+  }
+
+  let actual;
+  try {
+    actual = await resolveRemoteRefSha(run, repository, baseRef, pushUrl);
+  } catch (error) {
+    throw new RepoWorkflowError('BASE_UPDATE_OUTCOME_UNKNOWN', 'Could not verify the remote base after the atomic update attempt', {
+      ref: baseRef,
+      expectedOld: frozenBase,
+      expectedNew: reviewedSnapshot,
+      cause: error?.message || String(error),
+    });
+  }
+  if (actual === reviewedSnapshot) return;
+  if (pushFailure) {
+    throw new RepoWorkflowError('BASE_LEASE_REJECTED', 'Remote base did not accept the exact reviewed snapshot with the frozen-base lease', {
+      ref: baseRef,
+      expectedOld: frozenBase,
+      expectedNew: reviewedSnapshot,
+      actual,
+    });
+  }
+  throw new RepoWorkflowError('BASE_UPDATE_VERIFY_FAILED', 'Remote base does not point at the exact reviewed snapshot after push', {
+    ref: baseRef,
+    expected: reviewedSnapshot,
+    actual,
   });
 }
 
@@ -1179,12 +1175,9 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
   if (!/^[0-9a-f]{40}$/i.test(options.reviewedSnapshot || '')) {
     throw new RepoWorkflowError('INVALID_INPUT', 'reviewedSnapshot must be the exact 40-character reviewed merge snapshot SHA');
   }
+  rejectLegacyLandingOptions(options);
   if (!isRepoApprovalCapability(dependencies.approvalCapability)) {
     throw new RepoWorkflowError('APPROVAL_REQUIRED', 'Landing requires a host-issued repository approval capability');
-  }
-  const mergeMethod = options.mergeMethod || 'merge';
-  if (!['merge', 'squash', 'rebase'].includes(mergeMethod)) {
-    throw new RepoWorkflowError('INVALID_INPUT', 'mergeMethod must be merge, squash, or rebase');
   }
   if (options.tagPrefix !== undefined) validateTagPrefix(options.tagPrefix);
 
@@ -1200,11 +1193,11 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
   if (!approval) {
     throw new RepoWorkflowError('APPROVAL_REQUIRED', 'Repository approval capability is missing, invalid, stale, or already consumed');
   }
-  // Freeze every identity used by a later side effect before merging. Fetch URL
-  // selects the GitHub repository; every configured push URL must select the
-  // same repository, and tag pushes use the validated URL rather than a remote
-  // name whose pushurl can drift independently.
-  const pushUrl = options.tagPrefix ? await assertPushTarget(run, repository) : null;
+
+  // The push URL and workflow identity are frozen before the first write. The
+  // base update itself is one receive-pack ref transaction guarded by the exact
+  // base observed together with the reviewed PR head and merge snapshot.
+  const pushUrl = await assertPushTarget(run, repository);
   const workflowIdentity = options.workflow
     ? await captureWorkflowIdentity(run, repository, options.workflow)
     : null;
@@ -1213,8 +1206,8 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
   let workflowNotBeforeMs = null;
   const info = await loadPullRequest(run, repository, pr);
   let checks = null;
-  let mergeSha = info.mergeCommit?.oid || null;
-  let mergeCreated = false;
+  let frozenBase = null;
+  let alreadyMerged = false;
   let tag = null;
 
   if (info.state === 'OPEN') {
@@ -1226,75 +1219,73 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
         current: { headSha: frozen.headSha, snapshotSha: frozen.snapshotSha, baseSha: frozen.baseSha },
       });
     }
-    if (workflowIdentity && !options.tagPrefix) {
-      workflowFence = await captureWorkflowBaseline(run, repository, workflowIdentity);
-      workflowNotBeforeMs = now();
-    }
-    const github = githubRepository(repository);
-    let response;
-    try {
-      response = await ghJson(run, repository.repoRoot, [
-        'api',
-        '--hostname',
-        github.host,
-        '--method',
-        'PUT',
-        `repos/${github.nameWithOwner}/pulls/${pr}/merge`,
-        '-f',
-        `sha=${options.reviewedHead}`,
-        '-f',
-        `merge_method=${mergeMethod}`,
-      ], 'MERGE_FAILED');
-    } catch (error) {
-      throw attachRemoteEffects(error, {
-        merge: { status: 'unknown', pr, reviewedHead: options.reviewedHead },
-      });
-    }
-    if (response.merged !== true || !response.sha) {
-      throw new RepoWorkflowError('MERGE_REJECTED', response.message || `GitHub did not merge PR #${pr}`, {
-        response,
-        remoteEffects: { merge: { status: 'rejected', pr, reviewedHead: options.reviewedHead } },
-      });
-    }
-    mergeSha = response.sha;
-    mergeCreated = true;
+    frozenBase = frozen.baseSha;
   } else if (info.state === 'MERGED') {
-    if (!mergeSha) {
-      throw new RepoWorkflowError('MERGE_COMMIT_UNKNOWN', `PR #${pr} is merged but GitHub returned no merge commit`);
-    }
-    if (info.headRefOid !== options.reviewedHead) {
-      throw new RepoWorkflowError('REVIEW_STALE', 'Reviewed head does not match the merged pull request head', {
+    const mergeSha = info.mergeCommit?.oid || null;
+    if (info.headRefOid !== options.reviewedHead || mergeSha !== options.reviewedSnapshot) {
+      throw new RepoWorkflowError('REVIEW_STALE', 'Merged pull request does not match the exact reviewed head and snapshot', {
         reviewed: { headSha: options.reviewedHead, snapshotSha: options.reviewedSnapshot },
         current: { headSha: info.headRefOid, mergeSha },
       });
     }
+    const parentLine = await gitOutput(run, repository.repoRoot, ['rev-list', '--parents', '-n', '1', options.reviewedSnapshot]);
+    const [, ...parents] = parentLine.split(/\s+/);
+    if (parents.length !== 2 || parents[1] !== options.reviewedHead) {
+      throw new RepoWorkflowError('SNAPSHOT_INCONSISTENT', 'Reviewed snapshot does not have the reviewed head as its second parent', {
+        headSha: options.reviewedHead,
+        snapshotSha: options.reviewedSnapshot,
+        parents,
+      });
+    }
+    const currentBase = await fetchBase(run, repository, info.baseRefName);
+    if (currentBase !== options.reviewedSnapshot) {
+      throw new RepoWorkflowError('BASE_NOT_EXACT_REVIEWED_SNAPSHOT', 'Remote base no longer points at the exact reviewed snapshot', {
+        expected: options.reviewedSnapshot,
+        actual: currentBase,
+      });
+    }
+    frozenBase = parents[0];
+    alreadyMerged = true;
   } else {
     throw new RepoWorkflowError('PR_NOT_LANDABLE', `PR #${pr} is ${String(info.state).toLowerCase()}`);
   }
 
+  if (workflowIdentity && !options.tagPrefix) {
+    if (alreadyMerged) {
+      throw new RepoWorkflowError('WORKFLOW_NOT_TRIGGERED', 'The exact reviewed snapshot is already landed, so this call cannot fence a new branch workflow run');
+    }
+    workflowFence = await captureWorkflowBaseline(run, repository, workflowIdentity);
+    workflowNotBeforeMs = now();
+  }
+
+  const baseRef = `refs/heads/${info.baseRefName}`;
   const remoteEffects = {
-    merge: { status: mergeCreated ? 'created' : 'preexisting', pr, sha: mergeSha },
+    base: {
+      status: alreadyMerged ? 'preexisting' : 'not-attempted',
+      ref: baseRef,
+      before: frozenBase,
+      sha: options.reviewedSnapshot,
+    },
   };
   try {
-    if (workflowIdentity && !options.tagPrefix && !workflowFence) {
-      throw new RepoWorkflowError('WORKFLOW_NOT_TRIGGERED', 'The pull request was already merged, so this landing cannot fence a new branch workflow run');
-    }
-    const baseSha = await fetchBase(run, repository, info.baseRefName);
-    if (baseSha !== mergeSha) {
-      throw new RepoWorkflowError('BASE_ADVANCED_AFTER_MERGE', 'Remote base no longer points at this PR merge commit; refusing to tag a moving target', {
-        mergeSha,
-        baseSha,
-      });
-    }
-    const reviewedTree = await gitOutput(run, repository.repoRoot, ['rev-parse', `${options.reviewedSnapshot}^{tree}`]);
-    const landedTree = await gitOutput(run, repository.repoRoot, ['rev-parse', `${mergeSha}^{tree}`]);
-    if (reviewedTree !== landedTree) {
-      throw new RepoWorkflowError('LANDING_TREE_MISMATCH', 'Merged result does not match the independently approved merge snapshot tree', {
-        reviewedSnapshot: options.reviewedSnapshot,
-        reviewedTree,
-        mergeSha,
-        landedTree,
-      });
+    if (!alreadyMerged) {
+      remoteEffects.base.status = 'unknown';
+      try {
+        await pushReviewedSnapshot(
+          run,
+          repository,
+          pushUrl,
+          baseRef,
+          frozenBase,
+          options.reviewedSnapshot,
+        );
+      } catch (error) {
+        if (error instanceof RepoWorkflowError && error.code === 'BASE_LEASE_REJECTED') {
+          remoteEffects.base.status = 'rejected';
+        }
+        throw error;
+      }
+      remoteEffects.base.status = 'created';
     }
 
     if (options.tagPrefix) {
@@ -1302,11 +1293,11 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
         run,
         repository,
         pushUrl,
-        mergeSha,
+        options.reviewedSnapshot,
         options.tagPrefix,
         options.tagStart ?? 0,
         {
-          baseGuard: { ref: `refs/heads/${info.baseRefName}`, sha: mergeSha },
+          baseGuard: { ref: baseRef, sha: options.reviewedSnapshot },
           onStage: effect => { remoteEffects.tag = effect; },
           beforePush: async () => {
             if (!workflowIdentity) return;
@@ -1324,21 +1315,13 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
     const workflow = workflowFence
       ? await waitForWorkflow(run, repository, {
         workflowFence,
-        targetSha: mergeSha,
+        targetSha: options.reviewedSnapshot,
         ref: tag?.name || info.baseRefName,
         notBeforeMs: workflowNotBeforeMs,
         waitTimeoutMs: options.waitTimeoutMs,
         pollIntervalMs: options.pollIntervalMs,
       }, dependencies)
       : null;
-    const cleanup = await cleanupWorktrees(
-      run,
-      repository,
-      options.worktreePaths || [],
-      options.reviewedHead,
-      options.reviewedSnapshot,
-      { beforeBranchDelete: dependencies.beforeCleanupBranchDelete },
-    );
 
     return {
       ok: true,
@@ -1346,10 +1329,9 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
       repository: compactRepository(repository),
       approval: { by: approval.issuerVpId, headSha: options.reviewedHead, snapshotSha: options.reviewedSnapshot },
       pullRequest: { number: info.number, url: info.url, baseBranch: info.baseRefName, checks },
-      merge: { sha: mergeSha, alreadyMerged: !mergeCreated },
+      merge: { sha: options.reviewedSnapshot, alreadyMerged },
       tag,
       workflow,
-      cleanup,
     };
   } catch (error) {
     throw attachRemoteEffects(error, remoteEffects);
@@ -1361,7 +1343,7 @@ export function formatRepoWorkflowError(error) {
     ? (() => {
       const remoteEffects = error.details?.remoteEffects;
       const hasPossibleRemoteEffect = remoteEffects
-        && Object.values(remoteEffects).some(effect => effect?.status !== 'rejected');
+        && Object.values(remoteEffects).some(effect => ['created', 'unknown'].includes(effect?.status));
       return {
         ok: false,
         errorEffect: hasPossibleRemoteEffect ? 'unknown' : 'none',

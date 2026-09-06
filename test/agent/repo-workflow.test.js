@@ -125,13 +125,13 @@ function runReleaseFence(checkout, tag, commit) {
   ], { cwd: checkout, encoding: 'utf8' }).trim();
 }
 
-function installPostAdvertisementBaseAdvanceHook(repo) {
-  writeFileSync(join(repo.seed, 'advanced.txt'), 'advanced during tag receive\n');
+function installBaseReceiveAdvanceHook(repo) {
+  writeFileSync(join(repo.seed, 'advanced.txt'), 'advanced during base receive\n');
   git(repo.seed, 'add', 'advanced.txt');
-  git(repo.seed, 'commit', '-m', 'advance base during tag receive');
+  git(repo.seed, 'commit', '-m', 'advance base during base receive');
   const advancedBaseSha = git(repo.seed, 'rev-parse', 'HEAD');
   git(repo.seed, 'push', 'origin', `${advancedBaseSha}:refs/heads/race-object`);
-  const requestSeen = join(repo.root, 'tag-request-seen');
+  const requestSeen = join(repo.root, 'base-request-seen');
   const baseAdvanced = join(repo.root, 'base-advanced');
   const hook = join(repo.remote, 'hooks', 'pre-receive');
   writeFileSync(hook, `#!/bin/sh
@@ -145,20 +145,6 @@ exit 1
 `);
   chmodSync(hook, 0o755);
   return { advancedBaseSha, requestSeen, baseAdvanced };
-}
-
-function pushSyntheticLanding(repo, { sameTree }) {
-  let sha;
-  if (sameTree) {
-    sha = git(repo.seed, 'commit-tree', `${repo.snapshotSha}^{tree}`, '-p', repo.baseSha, '-m', 'synthetic squash');
-  } else {
-    writeFileSync(join(repo.seed, 'file.txt'), 'unreviewed landing\n');
-    git(repo.seed, 'add', 'file.txt');
-    git(repo.seed, 'commit', '-m', 'unreviewed landing');
-    sha = git(repo.seed, 'rev-parse', 'HEAD');
-  }
-  git(repo.seed, 'push', 'origin', `${sha}:refs/heads/synthetic-landing`);
-  return sha;
 }
 
 function openPullRequest(repo, overrides = {}) {
@@ -196,20 +182,26 @@ function createGithubRunner(repo, options = {}) {
         exitCode: 0,
       };
     }
+    if (command === 'git' && args[0] === 'ls-remote' && pushUrls.includes(args[1])) {
+      const mappedArgs = [...args];
+      mappedArgs[1] = repo.remote;
+      return baseRun(command, mappedArgs, commandOptions);
+    }
     if (command === 'git' && args[0] === 'push') {
       const pushUrlIndex = args.findIndex(arg => pushUrls.includes(arg));
       const tagRefspec = args.find(arg => /^[^:]*:refs\/tags\//.test(arg));
+      const baseRefspec = args.find(arg => /^[0-9a-f]{40}:refs\/heads\/main$/i.test(arg));
       const deletesTag = tagRefspec?.startsWith(':');
-      if (options.receivePackRace && pushUrlIndex >= 0 && tagRefspec && !deletesTag) {
+      if (options.baseReceiveRace && pushUrlIndex >= 0 && baseRefspec) {
         const mappedArgs = [...args];
         mappedArgs[pushUrlIndex] = repo.remote;
         const push = baseRun(command, mappedArgs, commandOptions);
-        for (let attempt = 0; attempt < 1000 && !existsSync(options.receivePackRace.requestSeen); attempt += 1) {
+        for (let attempt = 0; attempt < 1000 && !existsSync(options.baseReceiveRace.requestSeen); attempt += 1) {
           await new Promise(resolvePromise => setTimeout(resolvePromise, 1));
         }
-        if (!existsSync(options.receivePackRace.requestSeen)) throw new Error('Timed out waiting for tag receive hook');
-        git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/heads/main', options.receivePackRace.advancedBaseSha, repo.snapshotSha);
-        writeFileSync(options.receivePackRace.baseAdvanced, 'advanced\n');
+        if (!existsSync(options.baseReceiveRace.requestSeen)) throw new Error('Timed out waiting for base receive hook');
+        git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/heads/main', options.baseReceiveRace.advancedBaseSha, repo.baseSha);
+        writeFileSync(options.baseReceiveRace.baseAdvanced, 'advanced\n');
         return push;
       }
       if (pushUrlIndex >= 0) {
@@ -227,6 +219,14 @@ function createGithubRunner(repo, options = {}) {
         const mappedArgs = [...args];
         mappedArgs[pushUrlIndex] = repo.remote;
         const result = await baseRun(command, mappedArgs, commandOptions);
+        if (baseRefspec && result.exitCode === 0) {
+          const [mergeSha] = baseRefspec.split(':');
+          pr = openPullRequest(repo, {
+            state: 'MERGED',
+            mergeCommit: { oid: mergeSha },
+            mergedAt: '2026-01-01T00:00:00Z',
+          });
+        }
         if (options.tagPushAcceptedThenError && tagRefspec && !deletesTag) {
           throw new Error('simulated transport failure after remote acceptance');
         }
@@ -450,6 +450,34 @@ describe('prepareRepoWorkflow', () => {
       code: 'INVALID_REMOTE',
     });
   });
+
+  it('CAS-preserves a branch that advances after ownership persistence fails', async () => {
+    const repo = createPullRequestRepository();
+    const github = createGithubRunner(repo);
+    const branchRef = 'refs/heads/yeaft-wt/ownership-race';
+    const worktreePath = join(repo.root, 'ownership-race');
+
+    await expect(prepareRepoWorkflow({
+      cwd: repo.checkout,
+      name: 'ownership-race',
+      worktreePath,
+    }, {
+      run: github.run,
+      persistWorktreeOwnership: async () => {
+        throw new Error('simulated ownership persistence failure');
+      },
+      beforePrepareBranchRollback: async ({ ref, expectedHead }) => {
+        expect(ref).toBe(branchRef);
+        expect(expectedHead).toBe(repo.baseSha);
+        git(repo.checkout, 'update-ref', ref, repo.headSha, expectedHead);
+      },
+    })).rejects.toThrow('simulated ownership persistence failure');
+
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(git(repo.checkout, 'rev-parse', branchRef)).toBe(repo.headSha);
+    expect(github.calls.some(call => call.command === 'git'
+      && call.args.join(' ') === `update-ref --no-deref -d ${branchRef} ${repo.baseSha}`)).toBe(true);
+  });
 });
 
 describe('prepareRepoReview', () => {
@@ -490,17 +518,9 @@ describe('prepareRepoReview', () => {
 });
 
 describe('landRepoWorkflow', () => {
-  it('accepts a real Router-issued approval to head-match merge, tag, and clean up', async () => {
+  it('atomically installs the exact reviewed snapshot on the frozen base and tags it', async () => {
     const repo = createPullRequestRepository();
     const github = createGithubRunner(repo);
-    const review = await prepareRepoReview({ cwd: repo.checkout, pr: 1 }, { run: github.run });
-    const developmentPath = join(repo.root, 'development');
-    await prepareRepoWorkflow({
-      cwd: repo.checkout,
-      name: 'feature',
-      baseBranch: 'feature',
-      worktreePath: developmentPath,
-    }, { run: github.run });
 
     const result = await landRepoWorkflow({
       cwd: repo.checkout,
@@ -508,32 +528,22 @@ describe('landRepoWorkflow', () => {
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       tagPrefix: 'v1.0.',
-      worktreePaths: [developmentPath, review.reviewWorktree.path],
     }, { run: github.run });
 
     expect(result).toMatchObject({
       ok: true,
       merge: { sha: repo.snapshotSha, alreadyMerged: false },
       tag: { name: 'v1.0.0', sha: repo.snapshotSha, reused: false },
-      cleanup: [
-        { path: developmentPath, status: 'removed', branch: 'yeaft-wt/feature', branchDeleted: true },
-        { path: review.reviewWorktree.path, status: 'removed', branch: null, branchDeleted: false },
-      ],
     });
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(repo.snapshotSha);
     expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/tags/v1.0.0')).toBe(repo.snapshotSha);
-    expect(git(repo.checkout, 'tag')).toBe('');
-    const tagPush = github.calls.find(call => call.command === 'git'
+    const basePush = github.calls.find(call => call.command === 'git'
       && call.args[0] === 'push'
-      && call.args.includes(`${repo.snapshotSha}:refs/tags/v1.0.0`));
-    expect(tagPush).toBeTruthy();
-    const mergeCall = github.calls.find(call => call.command === 'gh' && call.args[0] === 'api');
-    expect(mergeCall.args).toEqual(expect.arrayContaining([
-      '--hostname',
-      'github.example.test',
-      'repos/acme/repo/pulls/1/merge',
-      `sha=${repo.headSha}`,
-    ]));
-    expect(() => readFileSync(join(developmentPath, 'file.txt'))).toThrow();
+      && call.args.includes(`${repo.snapshotSha}:refs/heads/main`));
+    expect(basePush.args).toContain(`--force-with-lease=refs/heads/main:${repo.baseSha}`);
+    expect(github.calls.some(call => call.command === 'gh'
+      && call.args[0] === 'api'
+      && call.args.some(arg => /pulls\/1\/merge$/.test(arg)))).toBe(false);
   });
 
   it('stops before merge when the reviewed snapshot is stale', async () => {
@@ -591,156 +601,29 @@ describe('landRepoWorkflow', () => {
     expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(repo.baseSha);
   });
 
-  it('keeps dirty requested worktrees after a successful merge', async () => {
+  it.each([
+    ['the active repository root', repo => [repo.checkout]],
+    ['another worktree', repo => [join(repo.root, 'development')]],
+  ])('rejects cleanup for %s before any repository or remote side effect', async (_label, cleanupPaths) => {
     const repo = createPullRequestRepository();
-    const github = createGithubRunner(repo);
-    const developmentPath = join(repo.root, 'development');
-    await prepareRepoWorkflow({
-      cwd: repo.checkout,
-      name: 'feature',
-      baseBranch: 'feature',
-      worktreePath: developmentPath,
-    }, { run: github.run });
-    writeFileSync(join(developmentPath, 'untracked.txt'), 'keep me\n');
+    let calls = 0;
 
-    const result = await landRepoWorkflow({
+    await expect(landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
-      worktreePaths: [developmentPath],
-    }, { run: github.run });
-
-    expect(result.cleanup).toEqual([{ path: developmentPath, status: 'kept-dirty' }]);
-    expect(readFileSync(join(developmentPath, 'untracked.txt'), 'utf8')).toBe('keep me\n');
-  });
-
-  it('CAS-preserves a development branch that advances after cleanup inspection', async () => {
-    const repo = createPullRequestRepository();
-    const github = createGithubRunner(repo);
-    const developmentPath = join(repo.root, 'development');
-    await prepareRepoWorkflow({
-      cwd: repo.checkout,
-      name: 'feature',
-      baseBranch: 'feature',
-      worktreePath: developmentPath,
-    }, { run: github.run });
-
-    const result = await landRepoWorkflow({
-      cwd: repo.checkout,
-      pr: 1,
-      reviewedHead: repo.headSha,
-      reviewedSnapshot: repo.snapshotSha,
-      worktreePaths: [developmentPath],
+      worktreePaths: cleanupPaths(repo),
     }, {
-      run: github.run,
-      beforeCleanupBranchDelete: async ({ ref, expectedHead }) => {
-        git(repo.checkout, 'update-ref', ref, repo.snapshotSha, expectedHead);
+      run: async () => {
+        calls += 1;
+        throw new Error('runner must not execute');
       },
-    });
+    })).rejects.toMatchObject({ code: 'LANDING_CLEANUP_UNSUPPORTED' });
 
-    expect(result.cleanup).toEqual([{
-      path: developmentPath,
-      status: 'removed',
-      branch: 'yeaft-wt/feature',
-      branchDeleted: false,
-      branchStatus: 'kept-raced',
-    }]);
-    expect(git(repo.checkout, 'rev-parse', 'refs/heads/yeaft-wt/feature')).toBe(repo.snapshotSha);
-    expect(github.calls.some(call => call.command === 'git'
-      && call.args[0] === 'update-ref'
-      && call.args.slice(1).join(' ') === `--no-deref -d refs/heads/yeaft-wt/feature ${repo.headSha}`)).toBe(true);
-  });
-
-  it('does not follow a development branch that races into a symref during cleanup', async () => {
-    const repo = createPullRequestRepository();
-    const github = createGithubRunner(repo);
-    const developmentPath = join(repo.root, 'development');
-    await prepareRepoWorkflow({
-      cwd: repo.checkout,
-      name: 'feature',
-      baseBranch: 'feature',
-      worktreePath: developmentPath,
-    }, { run: github.run });
-    const branchRef = 'refs/heads/yeaft-wt/feature';
-    const unrelatedRef = 'refs/heads/unrelated';
-    git(repo.checkout, 'update-ref', unrelatedRef, repo.headSha);
-
-    const result = await landRepoWorkflow({
-      cwd: repo.checkout,
-      pr: 1,
-      reviewedHead: repo.headSha,
-      reviewedSnapshot: repo.snapshotSha,
-      worktreePaths: [developmentPath],
-    }, {
-      run: github.run,
-      beforeCleanupBranchDelete: async ({ ref }) => {
-        expect(ref).toBe(branchRef);
-        git(repo.checkout, 'symbolic-ref', ref, unrelatedRef);
-      },
-    });
-
-    expect(result.cleanup).toEqual([{
-      path: developmentPath,
-      status: 'removed',
-      branch: 'yeaft-wt/feature',
-      branchDeleted: true,
-    }]);
-    expect(git(repo.checkout, 'rev-parse', unrelatedRef)).toBe(repo.headSha);
-    expect(() => git(repo.checkout, 'symbolic-ref', branchRef)).toThrow();
-    expect(github.calls.some(call => call.command === 'git'
-      && call.args.join(' ') === `update-ref --no-deref -d ${branchRef} ${repo.headSha}`)).toBe(true);
-  });
-
-  it('keeps an owned worktree when it contains ignored files', async () => {
-    const repo = createPullRequestRepository();
-    const github = createGithubRunner(repo);
-    const developmentPath = join(repo.root, 'development');
-    await prepareRepoWorkflow({
-      cwd: repo.checkout,
-      name: 'feature',
-      baseBranch: 'feature',
-      worktreePath: developmentPath,
-    }, { run: github.run });
-    const commonDir = git(developmentPath, 'rev-parse', '--git-common-dir');
-    const excludePath = join(commonDir, 'info', 'exclude');
-    writeFileSync(excludePath, `${readFileSync(excludePath, 'utf8')}\ncredentials.secret\n`);
-    writeFileSync(join(developmentPath, 'credentials.secret'), 'must survive\n');
-    expect(git(developmentPath, 'status', '--porcelain=v1')).toBe('');
-
-    const result = await landRepoWorkflow({
-      cwd: repo.checkout,
-      pr: 1,
-      reviewedHead: repo.headSha,
-      reviewedSnapshot: repo.snapshotSha,
-      worktreePaths: [developmentPath],
-    }, { run: github.run });
-
-    expect(result.cleanup).toEqual([{ path: developmentPath, status: 'kept-dirty' }]);
-    expect(readFileSync(join(developmentPath, 'credentials.secret'), 'utf8')).toBe('must survive\n');
-  });
-
-  it('never removes a requested clean worktree that is not owned by this workflow', async () => {
-    const repo = createPullRequestRepository();
-    const github = createGithubRunner(repo);
-    const unrelatedPath = join(repo.root, 'unrelated');
-    git(repo.checkout, 'worktree', 'add', '-b', 'human-work', unrelatedPath, 'origin/main');
-
-    const result = await landRepoWorkflow({
-      cwd: repo.checkout,
-      pr: 1,
-      reviewedHead: repo.headSha,
-      reviewedSnapshot: repo.snapshotSha,
-      worktreePaths: [unrelatedPath],
-    }, { run: github.run });
-
-    expect(result.cleanup).toEqual([{
-      path: unrelatedPath,
-      status: 'kept-unowned',
-      branch: 'human-work',
-      head: repo.baseSha,
-    }]);
-    expect(readFileSync(join(unrelatedPath, 'file.txt'), 'utf8')).toBe('base\n');
+    expect(calls).toBe(0);
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(repo.baseSha);
+    expect(git(repo.root, '--git-dir', repo.remote, 'tag')).toBe('');
   });
 
   it('waits for the newest matching workflow run instead of relying on API order', async () => {
@@ -892,51 +775,26 @@ describe('landRepoWorkflow', () => {
     })).rejects.toMatchObject({ code: 'WORKFLOW_IDENTITY_MISMATCH' });
   });
 
-  it('accepts a different squash commit when its tree matches the approved snapshot', async () => {
+  it('rejects mergeMethod before any repository or remote side effect', async () => {
     const repo = createPullRequestRepository();
-    const mergeSha = pushSyntheticLanding(repo, { sameTree: true });
-    const github = createGithubRunner(repo, { mergeSha });
+    let calls = 0;
 
-    const result = await landRepoWorkflow({
+    await expect(landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       mergeMethod: 'squash',
-    }, { run: github.run });
+    }, {
+      run: async () => {
+        calls += 1;
+        throw new Error('runner must not execute');
+      },
+    })).rejects.toMatchObject({ code: 'MERGE_METHOD_UNSUPPORTED' });
 
-    expect(result.merge).toEqual({ sha: mergeSha, alreadyMerged: false });
-    expect(mergeSha).not.toBe(repo.snapshotSha);
-    expect(git(repo.checkout, 'rev-parse', `${mergeSha}^{tree}`))
-      .toBe(git(repo.checkout, 'rev-parse', `${repo.snapshotSha}^{tree}`));
-  });
-
-  it('reports remote effects when GitHub lands a tree that was not reviewed', async () => {
-    const repo = createPullRequestRepository();
-    const mergeSha = pushSyntheticLanding(repo, { sameTree: false });
-    const github = createGithubRunner(repo, { mergeSha });
-
-    let caught;
-    try {
-      await landRepoWorkflow({
-        cwd: repo.checkout,
-        pr: 1,
-        reviewedHead: repo.headSha,
-        reviewedSnapshot: repo.snapshotSha,
-        }, { run: github.run });
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(caught).toMatchObject({
-      code: 'LANDING_TREE_MISMATCH',
-      details: { remoteEffects: { merge: { status: 'created', sha: mergeSha } } },
-    });
-    expect(formatRepoWorkflowError(caught)).toMatchObject({
-      ok: false,
-      errorEffect: 'unknown',
-      code: 'LANDING_TREE_MISMATCH',
-    });
+    expect(calls).toBe(0);
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(repo.baseSha);
+    expect(git(repo.root, '--git-dir', repo.remote, 'tag')).toBe('');
   });
 
   it('reuses the latest remote tag when land is retried for the same merged PR', async () => {
@@ -958,7 +816,9 @@ describe('landRepoWorkflow', () => {
       merge: { sha: repo.snapshotSha, alreadyMerged: true },
       tag: { name: 'v1.0.0', sha: repo.snapshotSha, reused: true },
     });
-    expect(github.calls.filter(call => call.command === 'gh' && call.args[0] === 'api')).toHaveLength(1);
+    expect(github.calls.filter(call => call.command === 'gh'
+      && call.args[0] === 'api'
+      && call.args.some(arg => /pulls\/1\/merge$/.test(arg)))).toHaveLength(0);
   });
 
   it('reuses any numeric remote tag already pointing at the landed commit', async () => {
@@ -1032,97 +892,50 @@ describe('landRepoWorkflow', () => {
     expect(tagPushes).toHaveLength(1);
   });
 
-  it('refuses and rolls back the tag when the base advances during remote receive', async () => {
+  it('leaves the competing base intact and creates no tag when base advances during receive', async () => {
     const repo = createPullRequestRepository();
-    const receivePackRace = installPostAdvertisementBaseAdvanceHook(repo);
-    const { advancedBaseSha } = receivePackRace;
-    const github = createGithubRunner(repo, { receivePackRace });
+    const baseReceiveRace = installBaseReceiveAdvanceHook(repo);
+    const github = createGithubRunner(repo, { baseReceiveRace });
 
-    await expect(landRepoWorkflow({
-      cwd: repo.checkout,
-      pr: 1,
-      reviewedHead: repo.headSha,
-      reviewedSnapshot: repo.snapshotSha,
-      tagPrefix: 'v1.0.',
-    }, { run: github.run })).rejects.toMatchObject({
-      code: 'BASE_ADVANCED_DURING_TAG_PUSH',
+    let caught;
+    try {
+      await landRepoWorkflow({
+        cwd: repo.checkout,
+        pr: 1,
+        reviewedHead: repo.headSha,
+        reviewedSnapshot: repo.snapshotSha,
+        tagPrefix: 'v1.0.',
+      }, { run: github.run });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      code: 'BASE_LEASE_REJECTED',
       details: {
-        expected: repo.snapshotSha,
-        actual: advancedBaseSha,
+        expectedOld: repo.baseSha,
+        expectedNew: repo.snapshotSha,
+        actual: baseReceiveRace.advancedBaseSha,
         remoteEffects: {
-          tag: { stage: 'rolled-back', status: 'none', name: 'v1.0.0', sha: repo.snapshotSha },
+          base: {
+            status: 'rejected',
+            ref: 'refs/heads/main',
+            before: repo.baseSha,
+            sha: repo.snapshotSha,
+          },
         },
       },
     });
-
-    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(advancedBaseSha);
+    expect(formatRepoWorkflowError(caught)).toMatchObject({
+      errorEffect: 'none',
+      code: 'BASE_LEASE_REJECTED',
+    });
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main'))
+      .toBe(baseReceiveRace.advancedBaseSha);
     expect(git(repo.root, '--git-dir', repo.remote, 'tag')).toBe('');
-    expect(git(repo.checkout, 'tag')).toBe('');
-
-    git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/heads/main', repo.snapshotSha, advancedBaseSha);
-    const retryGithub = createGithubRunner(repo, {
-      pullRequest: {
-        state: 'MERGED',
-        mergeCommit: { oid: repo.snapshotSha },
-        mergedAt: '2026-01-01T00:00:00Z',
-      },
-    });
-    const retry = await landRepoWorkflow({
-      cwd: repo.checkout,
-      pr: 1,
-      reviewedHead: repo.headSha,
-      reviewedSnapshot: repo.snapshotSha,
-      tagPrefix: 'v1.0.',
-    }, { run: retryGithub.run });
-    expect(retry.tag).toEqual({ name: 'v1.0.0', sha: repo.snapshotSha, reused: false });
-
-    const tagPushes = github.calls.filter(call => call.command === 'git'
+    expect(github.calls.some(call => call.command === 'git'
       && call.args[0] === 'push'
-      && call.args.some(arg => arg.includes('refs/tags/v1.0.0')));
-    expect(tagPushes).toHaveLength(2);
-    expect(tagPushes[0].args).toContain('--force-with-lease=refs/tags/v1.0.0:');
-    expect(tagPushes[0].args).not.toContain('--atomic');
-    expect(tagPushes[0].args.some(arg => arg.includes('refs/heads/main'))).toBe(false);
-    expect(tagPushes[1].args).toContain(`--force-with-lease=refs/tags/v1.0.0:${repo.snapshotSha}`);
-    expect(tagPushes[1].args).toContain(':refs/tags/v1.0.0');
-  });
-
-  it('uses the created direct object as the rollback lease and preserves an annotated replacement', async () => {
-    const repo = createPullRequestRepository();
-    git(repo.seed, 'tag', '-a', 'replacement-tag', '-m', 'replacement tag', repo.snapshotSha);
-    const annotatedTagSha = git(repo.seed, 'rev-parse', 'refs/tags/replacement-tag');
-    git(repo.seed, 'push', 'origin', 'refs/tags/replacement-tag:refs/tags/replacement-object');
-    const receivePackRace = installPostAdvertisementBaseAdvanceHook(repo);
-    const github = createGithubRunner(repo, {
-      receivePackRace,
-      beforeTagDelete: async () => {
-        git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/tags/v1.0.0', annotatedTagSha, repo.snapshotSha);
-      },
-    });
-
-    await expect(landRepoWorkflow({
-      cwd: repo.checkout,
-      pr: 1,
-      reviewedHead: repo.headSha,
-      reviewedSnapshot: repo.snapshotSha,
-      tagPrefix: 'v1.0.',
-    }, { run: github.run })).rejects.toMatchObject({
-      code: 'TAG_ROLLBACK_FAILED',
-      details: {
-        actual: {
-          directSha: annotatedTagSha,
-          commitSha: repo.snapshotSha,
-        },
-        transientTagMayHaveTriggeredAutomation: true,
-      },
-    });
-
-    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/tags/v1.0.0')).toBe(annotatedTagSha);
-    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/tags/v1.0.0^{}')).toBe(repo.snapshotSha);
-    const rollbackPush = github.calls.find(call => call.command === 'git'
-      && call.args[0] === 'push'
-      && call.args.includes(':refs/tags/v1.0.0'));
-    expect(rollbackPush.args).toContain(`--force-with-lease=refs/tags/v1.0.0:${repo.snapshotSha}`);
+      && call.args.some(arg => arg.includes('refs/tags/')))).toBe(false);
   });
 
   it('rejects a metacharacter tag prefix without executing it', async () => {
@@ -1215,21 +1028,11 @@ describe('CLI and tool surface', () => {
     expect(skill).not.toContain('--approved-by');
   });
 
-  it('parses repeated cleanup paths and exact review evidence without accepting approval metadata', () => {
-    expect(parseRepoWorkflowArgs([
-      'land', '--pr', '42', '--reviewed-head', 'a'.repeat(40), '--reviewed-snapshot', 'b'.repeat(40),
-      '--tag-prefix', 'v1.0.', '--cleanup-worktree', '/one', '--cleanup-worktree', '/two',
-    ])).toEqual({
-      help: false,
-      command: 'land',
-      options: {
-        pr: 42,
-        reviewedHead: 'a'.repeat(40),
-        reviewedSnapshot: 'b'.repeat(40),
-        tagPrefix: 'v1.0.',
-        worktreePaths: ['/one', '/two'],
-      },
-    });
+  it('rejects removed cleanup, merge-method, and approval metadata CLI options', () => {
+    expect(() => parseRepoWorkflowArgs(['land', '--cleanup-worktree', '/one']))
+      .toThrow('Unknown option: --cleanup-worktree');
+    expect(() => parseRepoWorkflowArgs(['land', '--merge-method', 'squash']))
+      .toThrow('Unknown option: --merge-method');
     expect(() => parseRepoWorkflowArgs(['land', '--approved-by', 'martin']))
       .toThrow('Unknown option: --approved-by');
   });
@@ -1308,6 +1111,8 @@ describe('CLI and tool surface', () => {
 
     expect(result).toMatchObject({ ok: false, code: 'APPROVAL_REQUIRED' });
     expect(tool.parameters.properties.approvedBy).toBeUndefined();
+    expect(tool.parameters.properties.mergeMethod).toBeUndefined();
+    expect(tool.parameters.properties.worktreePaths).toBeUndefined();
   });
 
   it('passes the exact current tool turn to repository approval consumption', async () => {

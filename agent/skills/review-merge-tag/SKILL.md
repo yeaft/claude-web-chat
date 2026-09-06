@@ -1,6 +1,6 @@
 ---
 name: review-merge-tag
-description: 用 RepoWorkflow 在任意 GitHub 仓库执行开发 worktree、精确 PR review snapshot、head-match merge、数字 tag 与 workflow 验证；避免重复手工 git/gh 检查。
+description: 用 RepoWorkflow 在任意 GitHub 仓库执行开发 worktree、精确 PR review snapshot、base-ref CAS landing、数字 tag 与 workflow 验证；避免重复手工 git/gh 检查。
 ---
 
 # Repository Workflow
@@ -46,12 +46,13 @@ Reviewer 调用：
   "reviewedHead": "<exact 40-char head SHA>",
   "reviewedSnapshot": "<exact 40-char merge snapshot SHA>",
   "tagPrefix": "v1.0.",
-  "workflow": "Dev Release",
-  "worktreePaths": ["<development worktree>", "<review worktree>"]
+  "workflow": "Dev Release"
 }
 ```
 
-`approvedBy` 等普通字符串没有授权语义。`land` 只接受宿主 capability，并重新冻结 PR；任何 repo、PR、recipient、head 或 snapshot 不匹配都会停止，随后才使用 GitHub API 的 `sha` 做 head-match merge。若要求 tag，它只从远端 tags 数值计算下一版，用 create-only lease 推送，再复核 base 与 tag；发现推送期间 base 漂移时会用精确 tag lease 补偿删除并失败。标准 Git/GitHub receive-pack 不提供 compare-only base + create-tag 的跨 ref 原子事务，因此远端 hook 或 workflow 仍可能短暂看到随后被删除的 tag；若补偿删除也失败，错误会明确报告未知远端副作用。若要求 workflow，它等待匹配 tag 与 merge SHA 的 run 完成；最后只删除干净且明确指定的 worktree。
+`approvedBy` 等普通字符串没有授权语义。`land` 只接受宿主 capability，并重新冻结 PR；任何 repo、PR、recipient、head 或 snapshot 不匹配都会停止。Reviewed snapshot 必须以冻结的 base/head 为两个父提交；landing 通过单次 receive-pack 更新，用 `--force-with-lease=<base-ref>:<frozen-base>` 将该 exact snapshot 安装到远端 base。若 base 在最后冻结与 receive 之间前进，lease 会拒绝更新，并且不会创建 tag。若要求 tag，它只在 base CAS 成功后从远端 tags 数值计算下一版，用 create-only lease 推送并复核 base 与 tag。若要求 workflow，它等待匹配 tag 与 reviewed snapshot SHA 的 run 完成。
+
+Worktree cleanup 不属于 landing。`land` 会在任何仓库或远端副作用前拒绝 cleanup 请求，包括 active `repoRoot`；需要 cleanup 时必须在 landing 完成后走独立操作，cleanup 失败不能改变 landing 结果。
 
 ## 通用性与边界
 
