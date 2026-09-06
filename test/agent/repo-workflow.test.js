@@ -47,6 +47,8 @@ function issueTestApproval(options, repository = 'github.example.test/acme/repo'
     repoApproval: {
       repository,
       pr: options.pr,
+      baseBranch: options.baseBranch,
+      baseSha: options.baseSha,
       reviewedHead: options.reviewedHead,
       reviewedSnapshot: options.reviewedSnapshot,
     },
@@ -533,6 +535,8 @@ describe('prepareRepoReview', () => {
     });
     expect(result.landInput).toEqual({
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
     });
@@ -565,6 +569,8 @@ describe('landRepoWorkflow', () => {
     const result = await landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       tagPrefix: 'v1.0.',
@@ -586,12 +592,41 @@ describe('landRepoWorkflow', () => {
       && call.args.some(arg => /pulls\/1\/merge$/.test(arg)))).toBe(false);
   });
 
+  it('rejects a same-tip PR retarget before any push', async () => {
+    const repo = createPullRequestRepository();
+    git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/heads/release', repo.baseSha);
+    const github = createGithubRunner(repo, {
+      pullRequest: { baseRefName: 'release' },
+    });
+
+    await expect(landRepoWorkflow({
+      cwd: repo.checkout,
+      pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
+      reviewedHead: repo.headSha,
+      reviewedSnapshot: repo.snapshotSha,
+    }, { run: github.run })).rejects.toMatchObject({
+      code: 'REVIEW_STALE',
+      details: {
+        reviewed: { baseBranch: 'main', baseSha: repo.baseSha },
+        current: { baseBranch: 'release' },
+      },
+    });
+
+    expect(github.calls.some(call => call.command === 'git' && call.args[0] === 'push')).toBe(false);
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(repo.baseSha);
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/release')).toBe(repo.baseSha);
+  });
+
   it('stops before merge when the reviewed snapshot is stale', async () => {
     const repo = createPullRequestRepository();
     const github = createGithubRunner(repo);
     await expect(landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: '0'.repeat(40),
     }, { run: github.run })).rejects.toMatchObject({ code: 'REVIEW_STALE' });
@@ -606,6 +641,8 @@ describe('landRepoWorkflow', () => {
     await expect(landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
     }, {
@@ -626,6 +663,8 @@ describe('landRepoWorkflow', () => {
     await expect(landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       tagPrefix: 'v1.0.',
@@ -651,6 +690,8 @@ describe('landRepoWorkflow', () => {
     await expect(landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       worktreePaths: cleanupPaths(repo),
@@ -692,6 +733,8 @@ describe('landRepoWorkflow', () => {
     const result = await landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       workflow: 'Dev Release',
@@ -748,6 +791,8 @@ describe('landRepoWorkflow', () => {
     await expect(landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       tagPrefix: 'v1.0.',
@@ -803,6 +848,8 @@ describe('landRepoWorkflow', () => {
     await expect(landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       workflow: 'Dev Release',
@@ -822,6 +869,8 @@ describe('landRepoWorkflow', () => {
     await expect(landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       mergeMethod: 'squash',
@@ -843,6 +892,8 @@ describe('landRepoWorkflow', () => {
     const input = {
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       tagPrefix: 'v1.0.',
@@ -870,6 +921,8 @@ describe('landRepoWorkflow', () => {
     const result = await landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       tagPrefix: 'v1.0.',
@@ -886,6 +939,8 @@ describe('landRepoWorkflow', () => {
     const result = await landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       tagPrefix: 'v1.0.',
@@ -908,6 +963,8 @@ describe('landRepoWorkflow', () => {
     await expect(landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       tagPrefix: 'v1.0.',
@@ -941,6 +998,8 @@ describe('landRepoWorkflow', () => {
     await expect(landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       tagPrefix: 'v1.0.',
@@ -979,6 +1038,8 @@ describe('landRepoWorkflow', () => {
       await landRepoWorkflow({
         cwd: repo.checkout,
         pr: 1,
+        baseBranch: 'main',
+        baseSha: repo.baseSha,
         reviewedHead: repo.headSha,
         reviewedSnapshot: repo.snapshotSha,
         tagPrefix: 'v1.0.',
@@ -1042,6 +1103,8 @@ describe('landRepoWorkflow', () => {
     await expect(landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       tagPrefix: 'v1.0.',
@@ -1065,6 +1128,8 @@ describe('landRepoWorkflow', () => {
     await expect(landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       tagPrefix: 'v1.0.',
@@ -1104,6 +1169,8 @@ describe('landRepoWorkflow', () => {
       await landRepoWorkflow({
         cwd: repo.checkout,
         pr: 1,
+        baseBranch: 'main',
+        baseSha: repo.baseSha,
         reviewedHead: repo.headSha,
         reviewedSnapshot: repo.snapshotSha,
       }, { run: github.run });
@@ -1145,6 +1212,8 @@ describe('landRepoWorkflow', () => {
       await landRepoWorkflow({
         cwd: repo.checkout,
         pr: 1,
+        baseBranch: 'main',
+        baseSha: repo.baseSha,
         reviewedHead: repo.headSha,
         reviewedSnapshot: repo.snapshotSha,
         tagPrefix: 'v1.0.',
@@ -1188,6 +1257,8 @@ describe('landRepoWorkflow', () => {
       await landRepoWorkflow({
         cwd: repo.checkout,
         pr: 1,
+        baseBranch: 'main',
+        baseSha: repo.baseSha,
         reviewedHead: repo.headSha,
         reviewedSnapshot: repo.snapshotSha,
         tagPrefix: 'v1.0.',
@@ -1235,9 +1306,11 @@ describe('landRepoWorkflow', () => {
       await landRepoWorkflow({
         cwd: repo.checkout,
         pr: 1,
+        baseBranch: 'main',
+        baseSha: repo.baseSha,
         reviewedHead: repo.headSha,
         reviewedSnapshot: repo.snapshotSha,
-          tagPrefix,
+        tagPrefix,
       }, { run: github.run });
     } catch (error) {
       caught = error;
@@ -1268,6 +1341,8 @@ describe('landRepoWorkflow', () => {
     await expect(landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: repo.headSha,
       reviewedSnapshot: repo.snapshotSha,
       workflow: 'Dev Release',
@@ -1292,6 +1367,8 @@ describe('landRepoWorkflow', () => {
     await expect(landRepoWorkflow({
       cwd: repo.checkout,
       pr: 1,
+      baseBranch: 'main',
+      baseSha: repo.baseSha,
       reviewedHead: '0'.repeat(40),
       reviewedSnapshot: repo.snapshotSha,
     }, { run: github.run })).rejects.toMatchObject({ code: 'REVIEW_STALE' });
@@ -1328,6 +1405,8 @@ describe('CLI and tool surface', () => {
     await expect(landRepoWorkflowCore({
       cwd: process.cwd(),
       pr: 42,
+      baseBranch: 'main',
+      baseSha: 'c'.repeat(40),
       reviewedHead: 'a'.repeat(40),
       reviewedSnapshot: 'b'.repeat(40),
       approvedBy: 'martin',
@@ -1348,6 +1427,8 @@ describe('CLI and tool surface', () => {
     await expect(landRepoWorkflowCore({
       cwd: process.cwd(),
       pr: 42,
+      baseBranch: 'main',
+      baseSha: 'c'.repeat(40),
       reviewedHead: 'a'.repeat(40),
       reviewedSnapshot: 'b'.repeat(40),
     }, {
@@ -1387,6 +1468,8 @@ describe('CLI and tool surface', () => {
       phase: 'land',
       cwd: process.cwd(),
       pr: 42,
+      baseBranch: 'main',
+      baseSha: 'c'.repeat(40),
       reviewedHead: 'a'.repeat(40),
       reviewedSnapshot: 'b'.repeat(40),
       approvedBy: 'vp-martin',
@@ -1422,6 +1505,8 @@ describe('CLI and tool surface', () => {
       phase: 'land',
       cwd: checkout,
       pr: 42,
+      baseBranch: 'main',
+      baseSha: 'c'.repeat(40),
       reviewedHead: 'a'.repeat(40),
       reviewedSnapshot: 'b'.repeat(40),
     };

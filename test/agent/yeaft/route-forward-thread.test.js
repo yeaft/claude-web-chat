@@ -126,6 +126,8 @@ describe('route_forward thread ownership', () => {
       repoApproval: {
         repository: 'acme/repo',
         pr: 1677,
+        baseBranch: 'main',
+        baseSha: '1'.repeat(40),
         reviewedHead,
         reviewedSnapshot,
       },
@@ -175,6 +177,8 @@ describe('route_forward thread ownership', () => {
       turnId: probeContext.turnId,
       repository: 'github.com/acme/repo',
       pr: 1677,
+      baseBranch: 'main',
+      baseSha: '1'.repeat(40),
       reviewedHead,
       reviewedSnapshot,
     };
@@ -245,6 +249,8 @@ describe('route_forward thread ownership', () => {
     const repoApproval = {
       repository: 'acme/repo',
       pr: 1677,
+      baseBranch: 'main',
+      baseSha: '1'.repeat(40),
       reviewedHead: 'a'.repeat(40),
       reviewedSnapshot: 'b'.repeat(40),
     };
@@ -281,6 +287,8 @@ describe('route_forward thread ownership', () => {
       repoApproval: {
         repository: 'Acme/Repo.git',
         pr: 1677,
+        baseBranch: 'main',
+        baseSha: '1'.repeat(40),
         reviewedHead,
         reviewedSnapshot,
       },
@@ -303,6 +311,8 @@ describe('route_forward thread ownership', () => {
       recipientVpId: 'vp-linus',
       repository: 'acme/repo',
       pr: 1677,
+      baseBranch: 'main',
+      baseSha: '1'.repeat(40),
       reviewedHead,
       reviewedSnapshot,
     })).toBeNull();
@@ -312,18 +322,24 @@ describe('route_forward thread ownership', () => {
       turnId: 'turn-approved',
       repository: 'github.com/acme/repo',
       pr: 1677,
+      baseBranch: 'main',
+      baseSha: '1'.repeat(40),
       reviewedHead,
       reviewedSnapshot,
     }, { now: () => nowMs })).toMatchObject({
       issuerVpId: 'martin',
       recipientVpId: 'linus',
       repository: 'github.com/acme/repo',
+      baseBranch: 'main',
+      baseSha: '1'.repeat(40),
     });
     expect(consumeRepoApprovalCapability(capability, {
       sessionId: 'session-route-thread',
       recipientVpId: 'vp-linus',
       repository: 'acme/repo',
       pr: 1677,
+      baseBranch: 'main',
+      baseSha: '1'.repeat(40),
       reviewedHead,
       reviewedSnapshot,
     })).toBeNull();
@@ -343,6 +359,8 @@ describe('route_forward thread ownership', () => {
       recipientVpId: 'linus',
       repository: 'github.com/acme/repo',
       pr: 1677,
+      baseBranch: 'main',
+      baseSha: '1'.repeat(40),
       reviewedHead,
       reviewedSnapshot,
     };
@@ -355,6 +373,8 @@ describe('route_forward thread ownership', () => {
         repoApproval: {
           repository: 'acme/repo',
           pr: 1677,
+          baseBranch: 'main',
+          baseSha: '1'.repeat(40),
           reviewedHead,
           reviewedSnapshot,
         },
@@ -375,6 +395,30 @@ describe('route_forward thread ownership', () => {
     expect(consumeRepoApprovalCapability(wrongTurnCapability, {
       ...expected,
       turnId: 'turn-approved',
+    }, { now: () => nowMs })).toBeNull();
+
+    const wrongBaseBranchCapability = issue();
+    expect(bindRepoApprovalCapability(wrongBaseBranchCapability, {
+      sessionId: expected.sessionId,
+      recipientVpId: expected.recipientVpId,
+      turnId: 'turn-wrong-base-branch',
+    }, { now: () => nowMs })).toBe(true);
+    expect(consumeRepoApprovalCapability(wrongBaseBranchCapability, {
+      ...expected,
+      turnId: 'turn-wrong-base-branch',
+      baseBranch: 'release',
+    }, { now: () => nowMs })).toBeNull();
+
+    const wrongBaseShaCapability = issue();
+    expect(bindRepoApprovalCapability(wrongBaseShaCapability, {
+      sessionId: expected.sessionId,
+      recipientVpId: expected.recipientVpId,
+      turnId: 'turn-wrong-base-sha',
+    }, { now: () => nowMs })).toBe(true);
+    expect(consumeRepoApprovalCapability(wrongBaseShaCapability, {
+      ...expected,
+      turnId: 'turn-wrong-base-sha',
+      baseSha: '2'.repeat(40),
     }, { now: () => nowMs })).toBeNull();
 
     const expiredCapability = issue();
@@ -485,6 +529,8 @@ describe('route_forward thread ownership', () => {
       repoApproval: {
         repository: 'acme/repo',
         pr: 1677,
+        baseBranch: 'main',
+        baseSha: '1'.repeat(40),
         reviewedHead,
         reviewedSnapshot,
       },
@@ -553,6 +599,8 @@ describe('route_forward thread ownership', () => {
       turnId: probeContext.turnId,
       repository: 'github.com/acme/repo',
       pr: 1677,
+      baseBranch: 'main',
+      baseSha: '1'.repeat(40),
       reviewedHead,
       reviewedSnapshot,
     })).toBeNull();

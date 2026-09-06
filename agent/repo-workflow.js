@@ -660,6 +660,8 @@ export async function prepareRepoReview(options = {}, dependencies = {}) {
     reviewWorktree: { path: worktreePath, head: frozen.snapshotSha, detached: true },
     landInput: {
       pr: info.number,
+      baseBranch: info.baseRefName,
+      baseSha: frozen.baseSha,
       reviewedHead: frozen.headSha,
       reviewedSnapshot: frozen.snapshotSha,
     },
@@ -1204,6 +1206,15 @@ async function pushReviewedSnapshot(run, repository, pushUrl, baseRef, frozenBas
 export async function landRepoWorkflow(options = {}, dependencies = {}) {
   const run = dependencies.run || createRepoCommandRunner({ signal: dependencies.signal });
   const pr = assertPositiveInteger(options.pr, 'pr');
+  if (!isRepoApprovalCapability(dependencies.approvalCapability)) {
+    throw new RepoWorkflowError('APPROVAL_REQUIRED', 'Landing requires a host-issued repository approval capability');
+  }
+  if (typeof options.baseBranch !== 'string' || !options.baseBranch.trim()) {
+    throw new RepoWorkflowError('INVALID_INPUT', 'baseBranch must be the exact reviewed destination branch');
+  }
+  if (!/^[0-9a-f]{40}$/i.test(options.baseSha || '')) {
+    throw new RepoWorkflowError('INVALID_INPUT', 'baseSha must be the exact 40-character reviewed base commit SHA');
+  }
   if (!/^[0-9a-f]{40}$/i.test(options.reviewedHead || '')) {
     throw new RepoWorkflowError('INVALID_INPUT', 'reviewedHead must be the exact 40-character reviewed commit SHA');
   }
@@ -1211,9 +1222,8 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
     throw new RepoWorkflowError('INVALID_INPUT', 'reviewedSnapshot must be the exact 40-character reviewed merge snapshot SHA');
   }
   rejectLegacyLandingOptions(options);
-  if (!isRepoApprovalCapability(dependencies.approvalCapability)) {
-    throw new RepoWorkflowError('APPROVAL_REQUIRED', 'Landing requires a host-issued repository approval capability');
-  }
+  const approvedBaseBranch = options.baseBranch.trim();
+  const approvedBaseSha = options.baseSha.toLowerCase();
   if (options.tagPrefix !== undefined) validateTagPrefix(options.tagPrefix);
 
   const repository = await resolveRepository(run, options.cwd || process.cwd(), options);
@@ -1222,6 +1232,8 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
     ...dependencies.approvalContext,
     repository: `${github.host}/${github.nameWithOwner}`,
     pr,
+    baseBranch: approvedBaseBranch,
+    baseSha: approvedBaseSha,
     reviewedHead: options.reviewedHead,
     reviewedSnapshot: options.reviewedSnapshot,
   }, { now: dependencies.now || Date.now });
@@ -1240,6 +1252,12 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
   let workflowFence = null;
   let workflowNotBeforeMs = null;
   const info = await loadPullRequest(run, repository, pr);
+  if (info.baseRefName !== approvedBaseBranch) {
+    throw new RepoWorkflowError('REVIEW_STALE', 'PR destination branch changed after review', {
+      reviewed: { baseBranch: approvedBaseBranch, baseSha: approvedBaseSha },
+      current: { baseBranch: info.baseRefName },
+    });
+  }
   let checks = null;
   let frozenBase = null;
   let alreadyMerged = false;
@@ -1254,7 +1272,13 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
         current: { headSha: frozen.headSha, snapshotSha: frozen.snapshotSha, baseSha: frozen.baseSha },
       });
     }
-    frozenBase = frozen.baseSha;
+    if (frozen.baseSha !== approvedBaseSha) {
+      throw new RepoWorkflowError('REVIEW_STALE', 'PR base changed after review', {
+        reviewed: { baseBranch: approvedBaseBranch, baseSha: approvedBaseSha },
+        current: { baseBranch: info.baseRefName, baseSha: frozen.baseSha },
+      });
+    }
+    frozenBase = approvedBaseSha;
   } else if (info.state === 'MERGED') {
     const mergeSha = info.mergeCommit?.oid || null;
     if (info.headRefOid !== options.reviewedHead || mergeSha !== options.reviewedSnapshot) {
@@ -1265,14 +1289,15 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
     }
     const parentLine = await gitOutput(run, repository.repoRoot, ['rev-list', '--parents', '-n', '1', options.reviewedSnapshot]);
     const [, ...parents] = parentLine.split(/\s+/);
-    if (parents.length !== 2 || parents[1] !== options.reviewedHead) {
-      throw new RepoWorkflowError('SNAPSHOT_INCONSISTENT', 'Reviewed snapshot does not have the reviewed head as its second parent', {
+    if (parents.length !== 2 || parents[0] !== approvedBaseSha || parents[1] !== options.reviewedHead) {
+      throw new RepoWorkflowError('SNAPSHOT_INCONSISTENT', 'Reviewed snapshot does not have the approved base and reviewed head as its parents', {
+        baseSha: approvedBaseSha,
         headSha: options.reviewedHead,
         snapshotSha: options.reviewedSnapshot,
         parents,
       });
     }
-    const currentBase = await fetchBase(run, repository, info.baseRefName);
+    const currentBase = await fetchBase(run, repository, approvedBaseBranch);
     if (currentBase !== options.reviewedSnapshot) {
       throw new RepoWorkflowError('BASE_NOT_EXACT_REVIEWED_SNAPSHOT', 'Remote base no longer points at the exact reviewed snapshot', {
         expected: options.reviewedSnapshot,
@@ -1293,7 +1318,7 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
     workflowNotBeforeMs = now();
   }
 
-  const baseRef = `refs/heads/${info.baseRefName}`;
+  const baseRef = `refs/heads/${approvedBaseBranch}`;
   const remoteEffects = {
     base: {
       status: alreadyMerged ? 'preexisting' : 'not-attempted',
@@ -1351,7 +1376,7 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
       ? await waitForWorkflow(run, repository, {
         workflowFence,
         targetSha: options.reviewedSnapshot,
-        ref: tag?.name || info.baseRefName,
+        ref: tag?.name || approvedBaseBranch,
         notBeforeMs: workflowNotBeforeMs,
         waitTimeoutMs: options.waitTimeoutMs,
         pollIntervalMs: options.pollIntervalMs,
@@ -1362,8 +1387,14 @@ export async function landRepoWorkflow(options = {}, dependencies = {}) {
       ok: true,
       phase: 'land',
       repository: compactRepository(repository),
-      approval: { by: approval.issuerVpId, headSha: options.reviewedHead, snapshotSha: options.reviewedSnapshot },
-      pullRequest: { number: info.number, url: info.url, baseBranch: info.baseRefName, checks },
+      approval: {
+        by: approval.issuerVpId,
+        baseBranch: approvedBaseBranch,
+        baseSha: approvedBaseSha,
+        headSha: options.reviewedHead,
+        snapshotSha: options.reviewedSnapshot,
+      },
+      pullRequest: { number: info.number, url: info.url, baseBranch: approvedBaseBranch, checks },
       merge: { sha: options.reviewedSnapshot, alreadyMerged },
       tag,
       workflow,

@@ -67,12 +67,14 @@ function issueRepoApprovalCapability(input = {}, { now = Date.now } = {}) {
   const recipientVpId = normalizeId(input.recipientVpId);
   const repository = normalizeApprovalRepository(input.repository);
   const pr = Number(input.pr);
+  const baseBranch = normalizeId(input.baseBranch);
+  const baseSha = normalizeSha(input.baseSha);
   const reviewedHead = normalizeSha(input.reviewedHead);
   const reviewedSnapshot = normalizeSha(input.reviewedSnapshot);
   const issuedAt = Number(now());
   if (!sessionId || !isRepoApprovalIssuer(issuerVpId) || !recipientVpId || issuerVpId === recipientVpId
-    || !repository || !Number.isSafeInteger(pr) || pr <= 0 || !reviewedHead || !reviewedSnapshot
-    || !Number.isFinite(issuedAt)) {
+    || !repository || !Number.isSafeInteger(pr) || pr <= 0 || !baseBranch || !baseSha
+    || !reviewedHead || !reviewedSnapshot || !Number.isFinite(issuedAt)) {
     return null;
   }
   const capability = Object.freeze(Object.create(null));
@@ -82,6 +84,8 @@ function issueRepoApprovalCapability(input = {}, { now = Date.now } = {}) {
     recipientVpId,
     repository,
     pr,
+    baseBranch,
+    baseSha,
     reviewedHead,
     reviewedSnapshot,
     issuedAt,
@@ -133,6 +137,8 @@ export function consumeRepoApprovalCapability(capability, expected = {}, { now =
     && grant.recipientVpId === normalizeId(expected.recipientVpId)
     && grant.repository === normalizeApprovalRepository(expected.repository)
     && grant.pr === Number(expected.pr)
+    && grant.baseBranch === normalizeId(expected.baseBranch)
+    && grant.baseSha === normalizeSha(expected.baseSha)
     && grant.reviewedHead === normalizeSha(expected.reviewedHead)
     && grant.reviewedSnapshot === normalizeSha(expected.reviewedSnapshot);
   return matches ? Object.freeze({ ...grant }) : null;

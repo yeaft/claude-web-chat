@@ -31,18 +31,20 @@ Reviewer 调用：
 }
 ```
 
-它会一次冻结 GitHub PR 的 base/head/merge snapshot、检查 draft/conflict/checks，并创建 detached exact-snapshot review worktree。Reviewer 必须审查返回的 `reviewWorktree.path`，并把明确结论、`pullRequest.headSha` 和 `pullRequest.snapshotSha` 交回开发者。
+它会一次冻结 GitHub PR 的 base branch/base SHA/head/merge snapshot、检查 draft/conflict/checks，并创建 detached exact-snapshot review worktree。Reviewer 必须审查返回的 `reviewWorktree.path`，并把明确结论、`pullRequest.baseBranch`、`pullRequest.baseSha`、`pullRequest.headSha` 和 `pullRequest.snapshotSha` 交回开发者。
 
 工具只冻结事实，不替代代码审查。
 
 ### 3. Review 通过后的落地
 
-只有收到独立 reviewer 的明确批准后才能调用。Reviewer 必须用 `RouteForward` 把绑定仓库、PR、exact head 和 exact merge snapshot 的结构化批准交回 landing VP；宿主会随该 handoff 铸造不可序列化、一次性的 approval capability。随后 landing VP 才能在处理该 handoff 的同一 turn 调用：
+只有收到独立 reviewer 的明确批准后才能调用。Reviewer 必须用 `RouteForward` 把绑定仓库、PR、exact base branch/base SHA/head/merge snapshot 的结构化批准交回 landing VP；宿主会随该 handoff 铸造不可序列化、一次性的 approval capability。随后 landing VP 才能在处理该 handoff 的同一 turn 调用：
 
 ```json
 {
   "phase": "land",
   "pr": 123,
+  "baseBranch": "main",
+  "baseSha": "<exact 40-char base SHA>",
   "reviewedHead": "<exact 40-char head SHA>",
   "reviewedSnapshot": "<exact 40-char merge snapshot SHA>",
   "tagPrefix": "v1.0.",
@@ -50,7 +52,7 @@ Reviewer 调用：
 }
 ```
 
-`approvedBy` 等普通字符串没有授权语义。`land` 只接受宿主 capability，并重新冻结 PR；任何 repo、PR、recipient、head 或 snapshot 不匹配都会停止。Reviewed snapshot 必须以冻结的 base/head 为两个父提交；landing 通过单次 receive-pack 更新，用 `--force-with-lease=<base-ref>:<frozen-base>` 将该 exact snapshot 安装到远端 base。若 base 在最后冻结与 receive 之间前进，lease 会拒绝更新，并且不会创建 tag。若要求 tag，它只在 base CAS 成功后从远端 tags 数值计算下一版，用 create-only lease 推送并复核 base 与 tag。若要求 workflow，它等待匹配 tag 与 reviewed snapshot SHA 的 run 完成。
+`approvedBy` 等普通字符串没有授权语义。`land` 只接受宿主 capability，并重新冻结 PR；任何 repo、PR、recipient、base branch、base SHA、head 或 snapshot 不匹配都会停止。Reviewed snapshot 必须以批准的 base SHA/head 为两个父提交；landing 的目标 ref 只从批准的 base branch 推导，并在任何写入前拒绝 PR retarget。之后它通过单次 receive-pack 更新，用 `--force-with-lease=<base-ref>:<approved-base>` 将该 exact snapshot 安装到批准的远端 base。若 base 在最后冻结与 receive 之间前进，lease 会拒绝更新，并且不会创建 tag。若要求 tag，它只在 base CAS 成功后从远端 tags 数值计算下一版，用 create-only lease 推送并复核 base 与 tag。若要求 workflow，它等待匹配 tag 与 reviewed snapshot SHA 的 run 完成。
 
 Worktree cleanup 不属于 landing。`land` 会在任何仓库或远端副作用前拒绝 cleanup 请求，包括 active `repoRoot`；需要 cleanup 时必须在 landing 完成后走独立操作，cleanup 失败不能改变 landing 结果。
 
