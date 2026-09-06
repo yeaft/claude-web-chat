@@ -711,6 +711,54 @@ async function resolveRemoteTagCommit(run, repository, tag) {
   return (peeled || direct)?.split(/\s+/)[0] || null;
 }
 
+async function resolveRemoteRefSha(run, repository, ref) {
+  const output = await gitOutput(run, repository.repoRoot, ['ls-remote', repository.remote, ref]);
+  const line = output.split(/\r?\n/).find(candidate => candidate.endsWith(`\t${ref}`));
+  return line?.split(/\s+/)[0] || null;
+}
+
+async function rollbackRemoteTag(run, repository, pushUrl, tag, targetSha, onStage) {
+  const ref = `refs/tags/${tag}`;
+  onStage({ stage: 'rollback-started', status: 'unknown', name: tag, sha: targetSha });
+  let rollbackError = null;
+  try {
+    await runGit(run, repository.repoRoot, [
+      'push',
+      '--porcelain',
+      `--force-with-lease=${ref}:${targetSha}`,
+      pushUrl,
+      `:${ref}`,
+    ]);
+  } catch (error) {
+    rollbackError = error;
+  }
+  let remaining;
+  try {
+    remaining = await resolveRemoteTagCommit(run, repository, tag);
+  } catch (verifyError) {
+    onStage({ stage: 'rollback-verify-failed', status: 'unknown', name: tag, sha: targetSha });
+    throw new RepoWorkflowError('TAG_ROLLBACK_VERIFY_FAILED', `Remote tag ${tag} rollback could not be verified after the base advanced`, {
+      tag,
+      expected: null,
+      actual: 'unknown',
+      rollbackError: rollbackError ? formatRepoWorkflowError(rollbackError) : null,
+      verifyError: formatRepoWorkflowError(verifyError),
+      transientTagMayHaveTriggeredAutomation: true,
+    });
+  }
+  if (remaining !== null) {
+    onStage({ stage: 'rollback-failed', status: 'unknown', name: tag, sha: targetSha });
+    throw new RepoWorkflowError('TAG_ROLLBACK_FAILED', `Remote tag ${tag} could not be rolled back after the base advanced`, {
+      tag,
+      expected: null,
+      actual: remaining,
+      rollbackError: rollbackError ? formatRepoWorkflowError(rollbackError) : null,
+      transientTagMayHaveTriggeredAutomation: true,
+    });
+  }
+  onStage({ stage: 'rolled-back', status: 'none', name: tag, sha: targetSha });
+}
+
 async function createAndPushNextTag(run, repository, pushUrl, targetSha, prefix, start = 0, callbacks = {}) {
   const onStage = callbacks.onStage || (() => {});
   const beforePush = callbacks.beforePush || (async () => {});
@@ -771,32 +819,48 @@ async function createAndPushNextTag(run, repository, pushUrl, targetSha, prefix,
     await beforePush();
     onStage({ stage: 'push-started', status: 'unknown', name: tag, sha: targetSha });
     try {
-      const pushArgs = ['push', '--porcelain'];
-      if (baseGuard) pushArgs.push('--atomic', `--force-with-lease=${baseGuard.ref}:${baseGuard.sha}`);
-      pushArgs.push(pushUrl, `${localRef}:${localRef}`);
-      if (baseGuard) pushArgs.push(`${baseGuard.sha}:${baseGuard.ref}`);
-      const pushed = await runGit(run, repository.repoRoot, pushArgs);
+      // A same-target base refspec is omitted by Git as a no-op, so it cannot
+      // act as a compare-only command in receive-pack or join an atomic push.
+      // Create the tag with its own lease, then re-read the base and compensate
+      // with an exact tag lease if the cross-ref invariant no longer holds.
+      const pushed = await runGit(run, repository.repoRoot, [
+        'push',
+        '--porcelain',
+        `--force-with-lease=${localRef}:`,
+        pushUrl,
+        `${localRef}:${localRef}`,
+      ]);
       const porcelain = `${pushed.stdout}\n${pushed.stderr}`;
       if (porcelain.split(/\r?\n/).some(line => line.startsWith('=') && line.includes(localRef))) reused = true;
       onStage({ stage: 'push-returned', status: 'unknown', name: tag, sha: targetSha });
     } catch (error) {
       const [racedCommit, currentBase] = await Promise.all([
         resolveRemoteTagCommit(run, repository, tag),
-        baseGuard
-          ? gitOutput(run, repository.repoRoot, ['ls-remote', repository.remote, baseGuard.ref])
-            .then(output => output.split(/\s+/)[0] || null)
-          : Promise.resolve(null),
+        baseGuard ? resolveRemoteRefSha(run, repository, baseGuard.ref) : Promise.resolve(null),
       ]);
       if (racedCommit !== targetSha || (baseGuard && currentBase !== baseGuard.sha)) throw error;
       reused = true;
     }
   }
-  const remoteCommit = await resolveRemoteTagCommit(run, repository, tag);
+  const [remoteCommit, currentBase] = await Promise.all([
+    resolveRemoteTagCommit(run, repository, tag),
+    baseGuard ? resolveRemoteRefSha(run, repository, baseGuard.ref) : Promise.resolve(null),
+  ]);
   if (remoteCommit !== targetSha) {
     throw new RepoWorkflowError('TAG_VERIFY_FAILED', `Remote tag ${tag} could not be verified`, {
       tag,
       expected: targetSha,
       actual: remoteCommit,
+    });
+  }
+  if (baseGuard && currentBase !== baseGuard.sha) {
+    if (!reused) await rollbackRemoteTag(run, repository, pushUrl, tag, targetSha, onStage);
+    throw new RepoWorkflowError('BASE_ADVANCED_DURING_TAG_PUSH', `Remote base advanced while tag ${tag} was being created`, {
+      tag,
+      expected: baseGuard.sha,
+      actual: currentBase,
+      tagRolledBack: !reused,
+      transientTagMayHaveTriggeredAutomation: !reused,
     });
   }
   const effect = { stage: reused ? 'verified-preexisting' : 'verified-created', status: reused ? 'preexisting' : 'created', name: tag, sha: targetSha };

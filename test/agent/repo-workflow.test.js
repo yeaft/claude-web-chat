@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -62,6 +62,28 @@ function createPullRequestRepository() {
   return { root, remote, seed, checkout, baseSha, headSha, snapshotSha };
 }
 
+function installPostAdvertisementBaseAdvanceHook(repo) {
+  writeFileSync(join(repo.seed, 'advanced.txt'), 'advanced during tag receive\n');
+  git(repo.seed, 'add', 'advanced.txt');
+  git(repo.seed, 'commit', '-m', 'advance base during tag receive');
+  const advancedBaseSha = git(repo.seed, 'rev-parse', 'HEAD');
+  git(repo.seed, 'push', 'origin', `${advancedBaseSha}:refs/heads/race-object`);
+  const requestSeen = join(repo.root, 'tag-request-seen');
+  const baseAdvanced = join(repo.root, 'base-advanced');
+  const hook = join(repo.remote, 'hooks', 'pre-receive');
+  writeFileSync(hook, `#!/bin/sh
+set -eu
+touch ${JSON.stringify(requestSeen)}
+for attempt in $(seq 1 1000); do
+  [ -e ${JSON.stringify(baseAdvanced)} ] && exit 0
+  sleep 0.001
+done
+exit 1
+`);
+  chmodSync(hook, 0o755);
+  return { advancedBaseSha, requestSeen, baseAdvanced };
+}
+
 function pushSyntheticLanding(repo, { sameTree }) {
   let sha;
   if (sameTree) {
@@ -102,7 +124,6 @@ function createGithubRunner(repo, options = {}) {
   const pushUrls = options.githubPushUrls || [fetchUrl];
   let pr = openPullRequest(repo, options.pullRequest);
   let workflowListCalls = 0;
-  let advancedBaseSha = null;
   const run = async (command, args, commandOptions = {}) => {
     calls.push({ command, args: [...args] });
     if (command === 'git' && args[0] === 'remote' && args[1] === 'get-url') {
@@ -114,6 +135,18 @@ function createGithubRunner(repo, options = {}) {
     }
     if (command === 'git' && args[0] === 'push') {
       const pushUrlIndex = args.findIndex(arg => pushUrls.includes(arg));
+      if (options.receivePackRace && pushUrlIndex >= 0 && args.some(arg => arg.startsWith('refs/tags/'))) {
+        const mappedArgs = [...args];
+        mappedArgs[pushUrlIndex] = repo.remote;
+        const push = baseRun(command, mappedArgs, commandOptions);
+        for (let attempt = 0; attempt < 1000 && !existsSync(options.receivePackRace.requestSeen); attempt += 1) {
+          await new Promise(resolvePromise => setTimeout(resolvePromise, 1));
+        }
+        if (!existsSync(options.receivePackRace.requestSeen)) throw new Error('Timed out waiting for tag receive hook');
+        git(repo.root, '--git-dir', repo.remote, 'update-ref', 'refs/heads/main', options.receivePackRace.advancedBaseSha, repo.snapshotSha);
+        writeFileSync(options.receivePackRace.baseAdvanced, 'advanced\n');
+        return push;
+      }
       if (pushUrlIndex >= 0) {
         const refspec = args.find(arg => arg.startsWith('refs/tags/'));
         if (options.tagPushRace && refspec) {
@@ -125,13 +158,6 @@ function createGithubRunner(repo, options = {}) {
             stderr: '',
             exitCode: 0,
           };
-        }
-        if (options.advanceBaseBeforeTagPush && refspec && !advancedBaseSha) {
-          writeFileSync(join(repo.seed, 'advanced.txt'), 'advanced after validation\n');
-          git(repo.seed, 'add', 'advanced.txt');
-          git(repo.seed, 'commit', '-m', 'advance base after validation');
-          advancedBaseSha = git(repo.seed, 'rev-parse', 'HEAD');
-          git(repo.seed, 'push', 'origin', `${advancedBaseSha}:refs/heads/main`);
         }
         const mappedArgs = [...args];
         mappedArgs[pushUrlIndex] = repo.remote;
@@ -204,7 +230,7 @@ function createGithubRunner(repo, options = {}) {
     }
     throw new Error(`Unexpected gh call: ${args.join(' ')}`);
   };
-  return { run, calls, getPullRequest: () => pr, getAdvancedBaseSha: () => advancedBaseSha };
+  return { run, calls, getPullRequest: () => pr };
 }
 
 afterEach(() => {
@@ -805,9 +831,11 @@ describe('landRepoWorkflow', () => {
     expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/tags/v1.0.0')).toBe(repo.snapshotSha);
   });
 
-  it('atomically refuses the tag when the base advances after validation', async () => {
+  it('refuses and rolls back the tag when the base advances during remote receive', async () => {
     const repo = createPullRequestRepository();
-    const github = createGithubRunner(repo, { advanceBaseBeforeTagPush: true });
+    const receivePackRace = installPostAdvertisementBaseAdvanceHook(repo);
+    const { advancedBaseSha } = receivePackRace;
+    const github = createGithubRunner(repo, { receivePackRace });
 
     await expect(landRepoWorkflow({
       cwd: repo.checkout,
@@ -817,17 +845,28 @@ describe('landRepoWorkflow', () => {
       approvedBy: 'reviewer',
       tagPrefix: 'v1.0.',
     }, { run: github.run })).rejects.toMatchObject({
-      code: 'COMMAND_FAILED',
+      code: 'BASE_ADVANCED_DURING_TAG_PUSH',
       details: {
+        expected: repo.snapshotSha,
+        actual: advancedBaseSha,
         remoteEffects: {
-          tag: { stage: 'push-started', status: 'unknown', name: 'v1.0.0', sha: repo.snapshotSha },
+          tag: { stage: 'rolled-back', status: 'none', name: 'v1.0.0', sha: repo.snapshotSha },
         },
       },
     });
 
-    expect(github.getAdvancedBaseSha()).toMatch(/^[0-9a-f]{40}$/);
-    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(github.getAdvancedBaseSha());
+    expect(git(repo.root, '--git-dir', repo.remote, 'rev-parse', 'refs/heads/main')).toBe(advancedBaseSha);
     expect(git(repo.root, '--git-dir', repo.remote, 'tag')).toBe('');
+
+    const tagPushes = github.calls.filter(call => call.command === 'git'
+      && call.args[0] === 'push'
+      && call.args.some(arg => arg.includes('refs/tags/v1.0.0')));
+    expect(tagPushes).toHaveLength(2);
+    expect(tagPushes[0].args).toContain('--force-with-lease=refs/tags/v1.0.0:');
+    expect(tagPushes[0].args).not.toContain('--atomic');
+    expect(tagPushes[0].args.some(arg => arg.includes('refs/heads/main'))).toBe(false);
+    expect(tagPushes[1].args).toContain(`--force-with-lease=refs/tags/v1.0.0:${repo.snapshotSha}`);
+    expect(tagPushes[1].args).toContain(':refs/tags/v1.0.0');
   });
 
   it('reports deterministic tag validation failures as not attempted', async () => {

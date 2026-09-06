@@ -52,7 +52,7 @@ Reviewer 调用：
 }
 ```
 
-`land` 不会推断 review 已通过。它会重新冻结 PR，任何 head/snapshot 漂移都会停止；随后使用 GitHub API 的 `sha` 做 head-match merge。若要求 tag，它只从远端 tags 数值计算下一版并精确推送；若要求 workflow，它等待匹配 tag 与 merge SHA 的 run 完成；最后只删除干净且明确指定的 worktree。
+`land` 不会推断 review 已通过。它会重新冻结 PR，任何 head/snapshot 漂移都会停止；随后使用 GitHub API 的 `sha` 做 head-match merge。若要求 tag，它只从远端 tags 数值计算下一版，用 create-only lease 推送，再复核 base 与 tag；发现推送期间 base 漂移时会用精确 tag lease 补偿删除并失败。标准 Git/GitHub receive-pack 不提供 compare-only base + create-tag 的跨 ref 原子事务，因此远端 hook 或 workflow 仍可能短暂看到随后被删除的 tag；若补偿删除也失败，错误会明确报告未知远端副作用。若要求 workflow，它等待匹配 tag 与 merge SHA 的 run 完成；最后只删除干净且明确指定的 worktree。
 
 ## 通用性与边界
 
