@@ -158,6 +158,9 @@ async function main() {
     const statusToggle = page.locator('.yeaft-session-actions .yeaft-topbar-vp-toggle').first();
     if (await statusToggle.getAttribute('aria-expanded') === 'true') await statusToggle.click();
     await capture('04-session-conversation.png', '.vp-turn-block', ['web/components/YeaftPage.js', 'web/components/MessageList.js', 'web/components/AssistantTurn.js'], '.yeaft-main');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.evaluate(() => window.Pinia.useChatStore().closeSessionSidebar());
+    await capture('04-session-mobile.png', '.vp-turn-block', ['web/components/YeaftPage.js', 'web/components/MessageList.js', 'web/components/AssistantTurn.js'], '.yeaft-main');
     await page.setViewportSize({ width: 1050, height: 780 });
     await page.evaluate(messages => { const chat = window.Pinia.useChatStore(); chat.closeSessionSidebar(); chat.messagesMap[chat.yeaftConversationId] = messages; }, fixture.teamConversation);
     await statusToggle.click();
@@ -220,7 +223,7 @@ async function main() {
       terminal: { checks, text: terminalText, scope: 'Actual node --check output; no test suite executed.' }, files: sources, wireRequests, screenshots };
     browserClosing = true;
     await browser.close(); browser = null;
-    // Only publish the complete validated six-image set.
+    // Only publish the complete validated screenshot set.
     check();
     await mkdir(output, { recursive: true });
     for (const screenshot of screenshots) await rename(path.join(stage, screenshot.file), path.join(output, screenshot.file));
